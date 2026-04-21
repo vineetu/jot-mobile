@@ -26,7 +26,7 @@ import Foundation
 ///  6. For command: skip cleanup (classifier owns the transform atomically),
 ///     publish the transformed prior, mark prior superseded, append with
 ///     `derivedFrom` + `instruction`.
-///  7. Transition the Live Activity into the shared 45-second follow-up
+///  7. Transition the Live Activity into the shared 30-second follow-up
 ///     window so the user sees that a command can be spoken next.
 ///
 /// That's a meaningful chunk of branching logic with multiple preconditions
@@ -50,7 +50,7 @@ import Foundation
 ///   - Has no Live Activity — the file transcription runs headless inside the
 ///     Shortcuts runtime.
 ///   - Has no "I just spoke and will keep speaking" ergonomic that makes
-///     chained-follow-up semantically coherent. The 45-second freshness window
+///     chained-follow-up semantically coherent. The 30-second freshness window
 ///     is a human-reach-to-rephrase measure against the last voice
 ///     interaction — it has no meaning for an asynchronous file-in Shortcut.
 ///

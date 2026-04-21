@@ -46,7 +46,7 @@ public struct DictationAttributes: ActivityAttributes {
         /// The raw transcript is running through Foundation Models cleanup.
         case cleaning
 
-        /// The 45-second chained-follow-up window is active. The user can
+        /// The 30-second chained-follow-up window is active. The user can
         /// dictate again and have the next utterance resolved as a command
         /// against the just-finished transcript.
         case followUp(expiresAt: Date)

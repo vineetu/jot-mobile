@@ -1,6 +1,7 @@
 import ActivityKit
 import AppIntents
 import Foundation
+import Observation
 
 /// The Action Button / Shortcuts entry point for Jot.
 ///
@@ -443,11 +444,14 @@ final class DictationControllerImpl: DictationController {
 /// recording layer later wants to update the activity directly (e.g. to show
 /// a live waveform) we'll promote this to a top-level type.
 @MainActor
+@Observable
 final class DictationActivityCoordinator {
     static let shared = DictationActivityCoordinator()
 
     private var handle: ActivityHandle?
     private var followUpExpiryTask: Task<Void, Never>?
+    private(set) var followUpExpiresAt: Date?
+    private(set) var isFollowUpActive = false
 
     /// Recording-start timestamp, captured on `start(startedAt:)` and cleared
     /// when the activity transitions into the post-dictation follow-up window.
@@ -467,8 +471,7 @@ final class DictationActivityCoordinator {
 
     func start(startedAt: Date) async {
         recordingStartedAt = startedAt
-        followUpExpiryTask?.cancel()
-        followUpExpiryTask = nil
+        clearFollowUpState()
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -502,8 +505,7 @@ final class DictationActivityCoordinator {
         }
 
         recordingStartedAt = startedAt
-        followUpExpiryTask?.cancel()
-        followUpExpiryTask = nil
+        clearFollowUpState()
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -544,8 +546,7 @@ final class DictationActivityCoordinator {
 
     func cancelPendingRecordingStart() async {
         recordingStartedAt = nil
-        followUpExpiryTask?.cancel()
-        followUpExpiryTask = nil
+        clearFollowUpState()
 
         guard let handle else { return }
 
@@ -558,8 +559,7 @@ final class DictationActivityCoordinator {
     }
 
     func update(phase: DictationAttributes.Phase) async {
-        followUpExpiryTask?.cancel()
-        followUpExpiryTask = nil
+        clearFollowUpState()
         guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(phase: phase),
@@ -587,8 +587,12 @@ final class DictationActivityCoordinator {
     }
 
     private func showFollowUpWindow() async {
-        guard let handle else { return }
         let expiresAt = Date().addingTimeInterval(ChainedFollowUp.freshnessWindow)
+        followUpExpiresAt = expiresAt
+        isFollowUpActive = true
+        scheduleFollowUpExpiry(at: expiresAt)
+
+        guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(
                 phase: .followUp(expiresAt: expiresAt)
@@ -596,7 +600,20 @@ final class DictationActivityCoordinator {
             staleDate: expiresAt
         )
         await handle.update(content)
-        scheduleFollowUpExpiry(at: expiresAt)
+    }
+
+    func dismissFollowUpWindow() async {
+        let expiresAt = followUpExpiresAt ?? Date()
+        clearFollowUpState()
+
+        guard let handle else { return }
+
+        let content = ActivityContent(
+            state: DictationAttributes.ContentState(phase: .followUp(expiresAt: expiresAt)),
+            staleDate: Date()
+        )
+        await handle.end(content, dismissAt: Date())
+        self.handle = nil
     }
 
     private func scheduleFollowUpExpiry(at deadline: Date) {
@@ -607,16 +624,26 @@ final class DictationActivityCoordinator {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
 
-            guard !Task.isCancelled, let handle else { return }
+            guard !Task.isCancelled else { return }
 
             let content = ActivityContent(
                 state: DictationAttributes.ContentState(phase: .followUp(expiresAt: deadline)),
                 staleDate: deadline
             )
+            self.followUpExpiresAt = nil
+            self.isFollowUpActive = false
+            self.followUpExpiryTask = nil
+            guard let handle else { return }
             await handle.end(content, dismissAt: Date())
             self.handle = nil
-            self.followUpExpiryTask = nil
         }
+    }
+
+    private func clearFollowUpState() {
+        followUpExpiryTask?.cancel()
+        followUpExpiryTask = nil
+        followUpExpiresAt = nil
+        isFollowUpActive = false
     }
 
     private static func waitForActivity(id: String) async -> Bool {

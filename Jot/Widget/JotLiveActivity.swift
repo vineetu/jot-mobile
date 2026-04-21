@@ -11,7 +11,7 @@ import WidgetKit
 ///   - `transcribing` – small spinner + "Transcribing…" label
 ///   - `processing`   – cancelable post-transcription command-resolution phase
 ///   - `cleaning`     – small spinner + "Polishing…" label
-///   - `followUp`     – active 45-second follow-up window with countdown
+///   - `followUp`     – active 30-second follow-up window with countdown
 ///   - `finished*`    – legacy compatibility states retained for older
 ///     activity payloads; the current pipeline goes straight to `followUp`
 @available(iOS 16.2, *)
@@ -162,14 +162,22 @@ private struct ExpandedBottom: View {
             .buttonStyle(.bordered)
             .frame(maxWidth: .infinity, alignment: .leading)
         case .followUp:
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Follow-up window")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text("Say a command or record again")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Follow-up window")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Say a command or record again")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Button(intent: DismissFollowUpIntent()) {
+                    Label("Close", systemImage: "xmark")
+                }
+                .tint(JotBrand.amber)
+                .buttonStyle(.bordered)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .finished, .finishedCommand:

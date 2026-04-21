@@ -34,7 +34,7 @@ import Foundation
 /// ("compose an email to Sarah" dictated two hours after "thanks for the
 /// reminder" must not become a command against "thanks for the reminder").
 ///
-/// 45 seconds is the team-lead-set value. It's long enough to cover "pause
+/// 30 seconds is the team-lead-set value. It's long enough to cover "pause
 /// to think, re-read what was captured, decide to tweak it" while staying
 /// inside the user's active rephrase window, and short enough that it
 /// doesn't cross reasonable session boundaries. Earlier candidates of 75s
@@ -46,6 +46,6 @@ import Foundation
 /// older than this window, the caller passes `nil` and no round-trip fires.
 enum ChainedFollowUp {
     /// How recent a prior transcript must be (in seconds) to be considered a
-    /// candidate for command resolution. See class doc for why 45.
-    static let freshnessWindow: TimeInterval = 45
+    /// candidate for command resolution. See class doc for why 30.
+    static let freshnessWindow: TimeInterval = 30
 }

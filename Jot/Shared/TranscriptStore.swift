@@ -213,7 +213,7 @@ enum TranscriptStore {
     /// transcript or treated as a brand-new dictation.
     ///
     /// See `ChainedFollowUp.freshnessWindow` for the team-lead-set value
-    /// of 45 seconds and the rationale.
+    /// of 30 seconds and the rationale.
     ///
     /// Same lifetime caveat as `append`: the returned `Transcript` is bound
     /// to a short-lived context. Retain the reference for the duration of

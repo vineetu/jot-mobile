@@ -71,6 +71,7 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showSettings: Bool = false
     @State private var activeTask: Task<Void, Never>?
+    @State private var activityCoordinator = DictationActivityCoordinator.shared
     @State private var postProcessingCoordinator = DictationPostProcessingCoordinator.shared
     @State private var pendingDeletion: Transcript?
     @State private var expandedClusterIDs: Set<UUID> = []
@@ -290,6 +291,10 @@ struct ContentView: View {
     }
 
     private var recDotIcon: String {
+        if phase == .idle && activityCoordinator.isFollowUpActive {
+            return "xmark"
+        }
+
         switch phase {
         case .idle: return "mic.fill"
         case .recording: return "stop.fill"
@@ -302,7 +307,7 @@ struct ContentView: View {
         switch phase {
         case .idle:
             if let deadline = followUpDeadline(at: now) {
-                return "Start recording. Follow-up available for \(followUpSecondsRemaining(until: deadline, now: now)) seconds"
+                return "Dismiss follow-up window. \(followUpSecondsRemaining(until: deadline, now: now)) seconds remaining"
             }
             return "Start recording"
         case .recording:
@@ -404,8 +409,8 @@ struct ContentView: View {
     }
 
     private func followUpDeadline(at now: Date) -> Date? {
-        guard phase == .idle, let mostRecent = transcripts.first else { return nil }
-        let deadline = mostRecent.createdAt.addingTimeInterval(ChainedFollowUp.freshnessWindow)
+        guard phase == .idle, activityCoordinator.isFollowUpActive,
+              let deadline = activityCoordinator.followUpExpiresAt else { return nil }
         return deadline > now ? deadline : nil
     }
 
@@ -871,6 +876,12 @@ struct ContentView: View {
 
     private func toggleRecording() {
         errorMessage = nil
+
+        if phase == .idle && activityCoordinator.isFollowUpActive {
+            dismissFollowUpWindow()
+            return
+        }
+
         switch phase {
         case .idle:
             startRecording()
@@ -886,6 +897,14 @@ struct ContentView: View {
     private func cancelPostProcessing() {
         lifecycleLog.info("cancelPostProcessing — forwarding cancel to shared coordinator")
         DictationPostProcessingCoordinator.shared.cancel()
+    }
+
+    private func dismissFollowUpWindow() {
+        lifecycleLog.info("dismissFollowUpWindow — forwarding dismiss to activity coordinator")
+        Task { @MainActor in
+            await DictationActivityCoordinator.shared.dismissFollowUpWindow()
+            phase = .idle
+        }
     }
 
     private func startRecording() {
