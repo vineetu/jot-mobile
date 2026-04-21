@@ -163,7 +163,9 @@ struct ContentView: View {
         .onChange(of: postProcessingCoordinator.stage) { _, newStage in
             switch newStage {
             case .idle:
-                break
+                if phase == .processing || phase == .cleaning {
+                    phase = .idle
+                }
             case .processing:
                 if phase == .transcribing || phase == .cleaning || phase == .processing {
                     phase = .processing
@@ -291,10 +293,6 @@ struct ContentView: View {
     }
 
     private var recDotIcon: String {
-        if phase == .idle && activityCoordinator.isFollowUpActive {
-            return "xmark"
-        }
-
         switch phase {
         case .idle: return "mic.fill"
         case .recording: return "stop.fill"
@@ -307,7 +305,7 @@ struct ContentView: View {
         switch phase {
         case .idle:
             if let deadline = followUpDeadline(at: now) {
-                return "Dismiss follow-up window. \(followUpSecondsRemaining(until: deadline, now: now)) seconds remaining"
+                return "Start follow-up recording. \(followUpSecondsRemaining(until: deadline, now: now)) seconds remaining"
             }
             return "Start recording"
         case .recording:
@@ -370,8 +368,9 @@ struct ContentView: View {
     /// `spinner + text` so the chip width barely shifts when the indicator
     /// appears — the pill's existing phase-keyed spring animation
     /// (`body → pill → .animation`) handles the residual width delta.
+    @ViewBuilder
     private func statusChip(now: Date) -> some View {
-        HStack(spacing: 6) {
+        let content = HStack(spacing: 6) {
             if phase == .transcribing || phase == .processing || phase == .cleaning {
                 ProgressView()
                     .controlSize(.mini)
@@ -381,8 +380,24 @@ struct ContentView: View {
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .tracking(2)
                 .foregroundStyle(statusChipColor(now: now))
+
+            if isFollowUpActive(at: now) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(statusChipColor(now: now))
+            }
         }
         .frame(minWidth: isFollowUpActive(at: now) ? 104 : 72, alignment: .trailing)
+
+        if isFollowUpActive(at: now) {
+            Button(action: dismissFollowUpWindow) {
+                content
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss follow-up window")
+        } else {
+            content
+        }
     }
 
     private func statusText(at now: Date) -> String {
@@ -876,11 +891,6 @@ struct ContentView: View {
 
     private func toggleRecording() {
         errorMessage = nil
-
-        if phase == .idle && activityCoordinator.isFollowUpActive {
-            dismissFollowUpWindow()
-            return
-        }
 
         switch phase {
         case .idle:

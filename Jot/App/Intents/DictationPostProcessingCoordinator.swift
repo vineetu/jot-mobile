@@ -38,6 +38,7 @@ final class DictationPostProcessingCoordinator {
         isCancellationRequested = true
         resolutionTask?.cancel()
         cleanupTask?.cancel()
+        stage = .idle
     }
 
     func finish() {

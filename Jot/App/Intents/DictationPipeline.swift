@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// End-of-recording tail shared across the three dictation *entry-point*
 /// intents: `RecordAndTranscribeIntent`, `DictateIntent`, and
@@ -77,6 +78,11 @@ import Foundation
 /// branchy downstream tail where divergence is actually costly.
 @MainActor
 enum DictationPipeline {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.jot.mobile.Jot",
+        category: "dictation-pipeline"
+    )
+
     /// Run the chained-follow-up pipeline on `transcript` and then move the
     /// Live Activity into the shared follow-up window.
     ///
@@ -126,6 +132,12 @@ enum DictationPipeline {
         let prior = TranscriptStore.mostRecent(within: ChainedFollowUp.freshnessWindow)
         let priorID = prior?.id
         let priorText = prior?.displayText
+        let priorAge = prior.map { Date().timeIntervalSince($0.createdAt) }
+        let uiFollowUpActive = DictationActivityCoordinator.shared.isFollowUpActive
+
+        logger.info(
+            "follow-up candidate — uiActive=\(uiFollowUpActive, privacy: .public) priorPresent=\(priorText != nil, privacy: .public) priorAge=\(priorAge ?? -1, privacy: .public) transcriptChars=\(transcript.count, privacy: .public)"
+        )
 
         await DictationActivityCoordinator.shared.update(phase: .processing)
 
@@ -138,6 +150,18 @@ enum DictationPipeline {
         } catch is CancellationError {
             resolution = .freshDictation
         }
+
+        let resolvedAsCommand: Bool
+        switch resolution {
+        case .freshDictation:
+            resolvedAsCommand = false
+        case .command:
+            resolvedAsCommand = true
+        }
+
+        logger.info(
+            "follow-up resolution — cancelled=\(postProcessing.isCancellationRequested, privacy: .public) command=\(resolvedAsCommand, privacy: .public)"
+        )
 
         let duration = Date().timeIntervalSince(startedAt)
         let effectiveResolution: CommandResolution =
@@ -154,11 +178,18 @@ enum DictationPipeline {
             if cleanup.enabled && !postProcessing.isCancellationRequested {
                 await DictationActivityCoordinator.shared.update(phase: .cleaning)
                 do {
-                    finalText = try await postProcessing.clean(
+                    let cleaned = try await postProcessing.clean(
                         transcript: transcript,
                         settings: cleanup
                     )
-                    cleanedText = finalText
+                    if postProcessing.isCancellationRequested {
+                        logger.info("cleanup result discarded after cancellation")
+                        finalText = transcript
+                        cleanedText = nil
+                    } else {
+                        finalText = cleaned
+                        cleanedText = cleaned
+                    }
                 } catch is CancellationError {
                     finalText = transcript
                     cleanedText = nil
