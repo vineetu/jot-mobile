@@ -249,6 +249,23 @@ enum DictationRuntimePhase: Sendable {
     case cleaning
 }
 
+enum AudioRecordingIntentPreflightError: LocalizedError, Sendable {
+    case liveActivitiesDisabled
+    case liveActivityRequestFailed(String)
+    case liveActivityNotObserved
+
+    var errorDescription: String? {
+        switch self {
+        case .liveActivitiesDisabled:
+            return "Live Activities are turned off for Jot. Turn them on, then try the Action Button again."
+        case .liveActivityRequestFailed(let detail):
+            return "Jot could not start the recording Live Activity: \(detail)"
+        case .liveActivityNotObserved:
+            return "Jot could not confirm the recording Live Activity started. Try again."
+        }
+    }
+}
+
 /// Process-wide owner of the `DictationController` the intents drive.
 ///
 /// ## Why this is now a lazy singleton instead of a register/await bridge
@@ -479,6 +496,67 @@ final class DictationActivityCoordinator {
         }
     }
 
+    func startForAudioRecordingIntent(startedAt: Date) async throws {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            throw AudioRecordingIntentPreflightError.liveActivitiesDisabled
+        }
+
+        recordingStartedAt = startedAt
+        followUpExpiryTask?.cancel()
+        followUpExpiryTask = nil
+
+        let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
+        let content = ActivityContent(state: initial, staleDate: nil)
+
+        if let handle {
+            await handle.update(content)
+            guard await Self.waitForActivity(id: handle.activity.id) else {
+                self.handle = nil
+                recordingStartedAt = nil
+                throw AudioRecordingIntentPreflightError.liveActivityNotObserved
+            }
+            return
+        }
+
+        let requested: Activity<DictationAttributes>
+        do {
+            requested = try Activity.request(
+                attributes: DictationAttributes(),
+                content: content,
+                pushType: nil
+            )
+        } catch {
+            recordingStartedAt = nil
+            throw AudioRecordingIntentPreflightError.liveActivityRequestFailed(
+                error.localizedDescription
+            )
+        }
+
+        handle = ActivityHandle(activity: requested)
+
+        guard await Self.waitForActivity(id: requested.id) else {
+            await requested.end(content, dismissalPolicy: .immediate)
+            handle = nil
+            recordingStartedAt = nil
+            throw AudioRecordingIntentPreflightError.liveActivityNotObserved
+        }
+    }
+
+    func cancelPendingRecordingStart() async {
+        recordingStartedAt = nil
+        followUpExpiryTask?.cancel()
+        followUpExpiryTask = nil
+
+        guard let handle else { return }
+
+        let content = ActivityContent(
+            state: DictationAttributes.ContentState(phase: .followUp(expiresAt: Date())),
+            staleDate: Date()
+        )
+        await handle.end(content, dismissAt: Date())
+        self.handle = nil
+    }
+
     func update(phase: DictationAttributes.Phase) async {
         followUpExpiryTask?.cancel()
         followUpExpiryTask = nil
@@ -540,6 +618,16 @@ final class DictationActivityCoordinator {
             self.followUpExpiryTask = nil
         }
     }
+
+    private static func waitForActivity(id: String) async -> Bool {
+        for _ in 0..<10 {
+            if Activity<DictationAttributes>.activities.contains(where: { $0.id == id }) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return false
+    }
 }
 
 /// `@unchecked Sendable` wrapper around `Activity<DictationAttributes>`.
@@ -573,5 +661,34 @@ private struct ActivityHandle: @unchecked Sendable {
         dismissAt: Date
     ) async {
         await activity.end(content, dismissalPolicy: .after(dismissAt))
+    }
+}
+
+extension AudioRecordingIntentPreflightError: CustomNSError {
+    static var errorDomain: String { "Jot.AudioRecordingIntentPreflightError" }
+
+    var errorCode: Int {
+        switch self {
+        case .liveActivitiesDisabled: return 0
+        case .liveActivityRequestFailed: return 1
+        case .liveActivityNotObserved: return 2
+        }
+    }
+
+    var errorUserInfo: [String: Any] {
+        [NSLocalizedDescriptionKey: errorDescription ?? "Live Activity preflight failed."]
+    }
+}
+
+extension AudioRecordingIntentPreflightError: CustomLocalizedStringResourceConvertible {
+    var localizedStringResource: LocalizedStringResource {
+        switch self {
+        case .liveActivitiesDisabled:
+            return "Turn on Live Activities for Jot to record from the Action Button."
+        case .liveActivityRequestFailed:
+            return "Jot could not start its recording indicator. Try the Action Button again."
+        case .liveActivityNotObserved:
+            return "Jot could not confirm the recording indicator started. Try again."
+        }
     }
 }

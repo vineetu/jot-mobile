@@ -160,29 +160,16 @@ struct RecordAndTranscribeIntent: AppIntent, AudioRecordingIntent, LiveActivityI
     @MainActor
     private func beginDictation(using controller: any DictationController) async throws {
         let startedAt = Date()
+        try await DictationActivityCoordinator.shared.startForAudioRecordingIntent(
+            startedAt: startedAt
+        )
 
-        // Apple's `AudioRecordingIntent` contract REQUIRES a running Live
-        // Activity when `AVAudioSession.setActive(true)` fires. Quote from
-        // the official docs (iOS 18.0+):
-        //
-        //   "In iOS, iPadOS, and watchOS, when you adopt the
-        //    AudioRecordingIntent protocol, you MUST start a Live Activity
-        //    when you begin the audio recording and keep it active as long
-        //    as you record audio. If you don't start a Live Activity, the
-        //    audio recording stops."
-        //
-        // We previously called `startRecording` (which runs setActive(true)
-        // inside RecordingService) BEFORE starting the Live Activity. On iOS
-        // 26 that sequence silently tore down the session milliseconds after
-        // activation — setActive returned success but the recording died
-        // before anything user-visible rendered. See
-        // `docs/research/ios26-audiorecording-action-button.md` §1 for the
-        // primary-source trail.
-        //
-        // Start the Live Activity FIRST so the precondition holds when the
-        // session goes active. Preserves the no-app-bounce UX.
-        await DictationActivityCoordinator.shared.start(startedAt: startedAt)
-        try await controller.startRecording(startedAt: startedAt)
+        do {
+            try await controller.startRecording(startedAt: startedAt)
+        } catch {
+            await DictationActivityCoordinator.shared.cancelPendingRecordingStart()
+            throw error
+        }
     }
 
     @MainActor
