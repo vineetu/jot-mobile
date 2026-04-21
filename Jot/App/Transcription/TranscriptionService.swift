@@ -169,7 +169,7 @@ final class TranscriptionService {
     /// nullified; the next call re-loads. That's intentional — we'd
     /// rather pay the re-load cost than risk jetsam mid-session.
     func warmUp() {
-        log.info("Parakeet warmUp requested — modelState=\(Self.describe(modelState), privacy: .public)")
+        log.info("Parakeet warmUp requested — modelState=\(Self.describe(self.modelState), privacy: .public)")
         _ = ensurePreparing()
     }
 
@@ -363,7 +363,7 @@ final class TranscriptionService {
         let prepareEndedAt = Date()
         let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
         log.info(
-            "Parakeet prepare wait end — source=\(label, privacy: .public) startedAt=\(Self.timestamp(prepareStartedAt), privacy: .public) endedAt=\(Self.timestamp(prepareEndedAt), privacy: .public) elapsedMS=\(prepareElapsedMS, privacy: .public) modelState=\(Self.describe(modelState), privacy: .public)"
+            "Parakeet prepare wait end — source=\(label, privacy: .public) startedAt=\(Self.timestamp(prepareStartedAt), privacy: .public) endedAt=\(Self.timestamp(prepareEndedAt), privacy: .public) elapsedMS=\(prepareElapsedMS, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
         )
         guard let manager else {
             throw TranscriptionError.loadFailed("Model manager unavailable after load.")
@@ -400,13 +400,13 @@ final class TranscriptionService {
 
     private func ensurePreparing() -> Task<Void, Error> {
         if let prepareTask {
-            log.info("Parakeet prepare reuse — modelState=\(Self.describe(modelState), privacy: .public)")
+            log.info("Parakeet prepare reuse — modelState=\(Self.describe(self.modelState), privacy: .public)")
             return prepareTask
         }
 
         let createdAt = Date()
         log.info(
-            "Parakeet prepare task create — startedAt=\(Self.timestamp(createdAt), privacy: .public) modelState=\(Self.describe(modelState), privacy: .public)"
+            "Parakeet prepare task create — startedAt=\(Self.timestamp(createdAt), privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
         )
         let task = Task { [weak self] in
             guard let self else { return }
