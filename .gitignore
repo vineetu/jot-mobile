@@ -33,3 +33,6 @@ Pods/
 
 # Build logs (captured by build-engineer, not source)
 build-logs/
+
+# Derived / build scratch (don't track)
+tmp/
