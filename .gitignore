@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Xcode user / derived artifacts
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+DerivedData/
+build/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# XcodeGen-generated project (regenerate with ./build.sh)
+*.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+
+# CocoaPods (not used, but just in case)
+Pods/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build logs (captured by build-engineer, not source)
+build-logs/

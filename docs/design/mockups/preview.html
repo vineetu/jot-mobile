@@ -1,0 +1,2465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Jot — visual design comparison</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;600;700;800&family=Space+Mono:wght@400;700&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    /* ---------- Reset + page frame ---------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --rounded-stack: ui-rounded, -apple-system, "SF Pro Rounded",
+                       "Inter", "Helvetica Neue", sans-serif;
+      --sans-stack: -apple-system, "Inter", system-ui, sans-serif;
+      --serif-ny: "Newsreader", "New York", "Iowan Old Style", Georgia, serif;
+      --serif-editorial: "Playfair Display", "New York", Georgia, serif;
+      --mono-stack: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+      --mono-nothing: "Space Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+    }
+
+    html, body {
+      background: #f3f3f5;
+      color: #1a1a1a;
+      font-family: var(--sans-stack);
+      font-feature-settings: "cv11", "ss01";
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    body {
+      padding: 48px 40px 120px;
+      max-width: 1700px;
+      margin: 0 auto;
+    }
+
+    /* ---------- Page header ---------- */
+    .page-header { margin-bottom: 56px; max-width: 880px; }
+    .page-header h1 {
+      font-size: 34px; font-weight: 700; letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    .page-header p {
+      font-size: 15px; line-height: 1.6; color: #4a4a4e;
+    }
+    .page-header a { color: #0a66ff; text-decoration: none; }
+    .page-header a:hover { text-decoration: underline; }
+    .page-header code {
+      font-family: var(--mono-stack); font-size: 13px;
+      background: #e8e8ec; padding: 1px 6px; border-radius: 4px;
+    }
+
+    /* ---------- Direction section ---------- */
+    .direction {
+      margin-bottom: 72px;
+      padding-bottom: 56px;
+      border-bottom: 1px solid #dcdce0;
+    }
+    .direction:last-of-type { border-bottom: none; }
+
+    .direction-head {
+      display: flex; align-items: baseline; flex-wrap: wrap; gap: 14px;
+      margin-bottom: 6px;
+    }
+    .direction-head h2 {
+      font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .direction-head .mood {
+      font-size: 14px; color: #7a7a7f; font-style: italic;
+    }
+    .direction .caption {
+      margin-top: 28px; max-width: 1040px;
+      font-size: 14px; line-height: 1.6; color: #4a4a4e;
+    }
+    .direction .caption strong { color: #1a1a1a; font-weight: 600; }
+
+    /* ---------- Phone grid ---------- */
+    .phone-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 32px;
+      margin-top: 28px;
+      justify-items: center;
+    }
+    @media (max-width: 1380px) {
+      .phone-grid { grid-template-columns: repeat(2, 1fr); gap: 40px; }
+    }
+
+    .phone-cell {
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    .state-label {
+      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: #8a8a90; font-weight: 600;
+    }
+
+    /* ---------- Generic iPhone hardware frame ---------- */
+    .iphone {
+      position: relative;
+      width: 320px; height: 680px;
+      border-radius: 48px;
+      padding: 6px;
+      background: linear-gradient(180deg, #1f1f21 0%, #0c0c0e 100%);
+      box-shadow:
+        0 18px 44px rgba(15, 15, 18, 0.22),
+        0 2px 8px rgba(15, 15, 18, 0.10),
+        inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .iphone .screen {
+      position: relative;
+      width: 100%; height: 100%;
+      border-radius: 42px;
+      overflow: hidden;
+    }
+    .iphone .island {
+      position: absolute;
+      top: 11px; left: 50%; transform: translateX(-50%);
+      width: 98px; height: 26px;
+      background: #070707;
+      border-radius: 14px;
+      z-index: 30;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+    }
+    .iphone .status-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 46px;
+      z-index: 20;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px 0;
+      font-size: 13px; font-weight: 600;
+      pointer-events: none;
+    }
+    .status-bar .sb-time { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+    .status-bar .sb-right { display: inline-flex; align-items: center; gap: 5px; }
+    .status-bar .sb-right svg { display: block; }
+
+    .content {
+      position: absolute;
+      top: 52px; left: 0; right: 0; bottom: 0;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Home indicator at bottom of every phone */
+    .home-indicator {
+      position: absolute;
+      bottom: 8px; left: 50%; transform: translateX(-50%);
+      width: 120px; height: 5px;
+      border-radius: 3px;
+      background: rgba(60,60,60,0.28);
+      z-index: 20;
+    }
+    .iphone.dark .home-indicator { background: rgba(255,255,255,0.32); }
+
+    /* ====================================================
+       1. APERTURE — Voice Memos native+
+    ==================================================== */
+    .aperture { background: #ffffff; color: #1a1a1a; }
+    .aperture .status-bar { color: #1a1a1a; }
+    .aperture .nav {
+      padding: 8px 24px 0; display: flex; justify-content: space-between;
+      align-items: center; height: 56px;
+    }
+    .aperture .nav .title {
+      font-family: var(--rounded-stack);
+      font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .aperture .nav .gear {
+      width: 32px; height: 32px; display: flex; align-items: center;
+      justify-content: center; color: #0a66ff;
+    }
+    .aperture .timer {
+      font-family: var(--rounded-stack);
+      font-size: 48px; font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      text-align: center;
+      margin-top: 14px;
+      color: #1a1a1a;
+    }
+    .aperture .timer.recording { color: #ff3b30; }
+
+    .aperture .mic-wrap {
+      position: relative;
+      width: 186px; height: 186px;
+      margin: 28px auto 0;
+    }
+    .aperture .mic-ring-svg {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      transform: rotate(-90deg);
+    }
+    .aperture .mic-ring-svg .track {
+      fill: none; stroke: rgba(0,0,0,0.09); stroke-width: 1;
+    }
+    .aperture .mic-ring-svg .arc {
+      fill: none; stroke-width: 5; stroke-linecap: round;
+      transition: stroke-dasharray 0.3s ease-out;
+    }
+    .aperture .mic-ring-svg .arc.spin {
+      transform-origin: 50% 50%;
+      animation: ring-spin 1.4s linear infinite;
+    }
+    @keyframes ring-spin { to { transform: rotate(360deg); } }
+    .aperture .mic-button {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 150px; height: 150px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .aperture .mic-button-inner {
+      width: 126px; height: 126px;
+      border-radius: 50%;
+      background: #0a66ff;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+    }
+    .aperture .mic-button-inner.recording { background: #ff3b30; transform: scale(0.97); }
+    .aperture .mic-button-inner svg { width: 38px; height: 38px; }
+
+    .aperture .caption {
+      text-align: center;
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #8a8a90;
+      font-weight: 600;
+      margin: 22px 0 14px;
+    }
+    .aperture .transcript {
+      margin: 0 20px;
+      background: #f2f2f4;
+      border: 1px solid rgba(0,0,0,0.04);
+      border-radius: 18px;
+      padding: 14px 16px;
+      min-height: 118px;
+      font-size: 14px; line-height: 1.5;
+      color: #1a1a1a;
+    }
+    .aperture .transcript.empty { color: #8a8a90; }
+    .aperture .actions {
+      display: flex; gap: 10px; margin: 14px 20px 0;
+    }
+    .aperture .actions.idle { opacity: 0.35; }
+    .aperture .btn-primary {
+      flex: 1; padding: 12px 14px;
+      background: #0a66ff; color: #fff;
+      border: none; border-radius: 12px;
+      font-family: var(--sans-stack);
+      font-size: 15px; font-weight: 600;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    .aperture .btn-secondary {
+      flex: 1; padding: 12px 14px;
+      background: rgba(10,102,255,0.10); color: #0a66ff;
+      border: none; border-radius: 12px;
+      font-size: 15px; font-weight: 600;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    .aperture .btn-primary.copied { background: #34c759; }
+
+    /* ====================================================
+       2. GRANOLA — Editorial whitespace
+    ==================================================== */
+    .granola { background: #fdfdfd; color: #121212; }
+    .granola .status-bar { color: #1a1a1a; }
+    .granola .nav {
+      padding: 8px 28px 0;
+      display: flex; justify-content: center; align-items: center;
+      height: 54px; position: relative;
+    }
+    .granola .nav .title {
+      font-family: var(--serif-ny);
+      font-size: 17px; font-weight: 600; letter-spacing: 0.03em;
+    }
+    .granola .nav .more {
+      position: absolute; right: 22px; top: 18px;
+      color: #7a7a7f;
+    }
+    .granola .body-col {
+      display: flex; flex-direction: column;
+      padding: 4px 28px 24px;
+      gap: 36px;
+      overflow: hidden;
+    }
+    .granola .meta {
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: #9c9ca0; font-weight: 500;
+      margin-top: 8px;
+    }
+    .granola .headline {
+      font-family: var(--serif-ny);
+      font-size: 36px; font-weight: 400;
+      line-height: 1.08;
+      letter-spacing: -0.015em;
+      color: #121212;
+    }
+    .granola .pill {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 20px;
+      border-radius: 999px;
+      background: rgba(248,248,250,0.85);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(0,0,0,0.06);
+    }
+    .granola .pill .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #0a66ff;
+      flex-shrink: 0;
+    }
+    .granola .pill .dot.recording {
+      background: #ff3b30;
+      animation: pulseCalm 1.8s ease-in-out infinite;
+    }
+    .granola .pill .label {
+      font-family: var(--rounded-stack);
+      font-size: 14px; font-weight: 500; color: #1a1a1a;
+    }
+    .granola .pill .time {
+      margin-left: auto;
+      font-family: var(--mono-stack);
+      font-size: 13px; font-variant-numeric: tabular-nums;
+      color: #7a7a7f;
+    }
+    .granola .transcript {
+      font-family: var(--serif-ny);
+      font-size: 17px; line-height: 1.55; color: #121212;
+      font-weight: 400;
+    }
+    .granola .transcript.placeholder {
+      color: #b5b5b8; font-style: normal;
+    }
+    .granola .footer {
+      display: flex; align-items: center; gap: 16px;
+      font-family: var(--rounded-stack);
+      font-size: 14px; font-weight: 500; color: #1a1a1a;
+      margin-top: 8px;
+    }
+    .granola .footer .divider {
+      width: 1px; height: 14px; background: rgba(0,0,0,0.14);
+    }
+    .granola .footer .discard { color: #ff3b30; }
+
+    @keyframes pulseCalm {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.75; }
+    }
+
+    /* ====================================================
+       3. PULSE — Dynamic Island-forward / dark OLED
+    ==================================================== */
+    .pulse { background: #000; color: #fff; }
+    .pulse.dark { }
+    .pulse .status-bar { color: #fff; }
+    .pulse .island-pill {
+      position: absolute;
+      top: 62px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px;
+      min-width: 220px; max-width: 260px;
+      height: 48px;
+      border-radius: 999px;
+      background: rgba(40,40,44,0.55);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 10px 32px rgba(0,0,0,0.45);
+      z-index: 15;
+    }
+    .pulse .island-pill.expanded { max-width: 300px; }
+    .pulse .island-mic {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.08);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; flex-shrink: 0;
+    }
+    .pulse .island-mic.recording { background: #ff3b30; }
+    .pulse .island-mic svg { width: 13px; height: 13px; }
+
+    .pulse .island-label {
+      font-family: var(--rounded-stack);
+      font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.9);
+      white-space: nowrap;
+    }
+    .pulse .island-time {
+      font-family: var(--mono-stack);
+      font-size: 11px; color: rgba(255,255,255,0.9);
+      font-variant-numeric: tabular-nums;
+      margin-left: auto;
+    }
+    .pulse .island-wave {
+      display: inline-flex; align-items: center; gap: 2px;
+      height: 20px;
+    }
+    .pulse .island-wave .bar {
+      width: 2.5px;
+      background: #fff;
+      border-radius: 2px;
+    }
+    .pulse .island-spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .pulse .log {
+      position: absolute;
+      top: 140px; left: 0; right: 0; bottom: 0;
+      padding: 20px 24px 40px;
+      overflow: hidden;
+    }
+    .pulse .log .empty-head {
+      font-family: var(--rounded-stack);
+      font-size: 18px; font-weight: 600; color: rgba(255,255,255,0.95);
+      margin-top: 40px;
+    }
+    .pulse .log .empty-body {
+      font-size: 13px; line-height: 1.55;
+      color: rgba(255,255,255,0.55);
+      margin-top: 8px;
+    }
+    .pulse .log-row {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 16px;
+      padding: 14px 15px;
+      margin-bottom: 14px;
+    }
+    .pulse .log-row .stamp {
+      font-family: var(--mono-stack);
+      font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: rgba(255,255,255,0.45);
+      margin-bottom: 6px;
+    }
+    .pulse .log-row .text {
+      font-size: 13.5px; line-height: 1.5;
+      color: rgba(255,255,255,0.92);
+    }
+    .pulse .log-row .row-actions {
+      display: flex; gap: 16px; margin-top: 10px;
+      font-size: 11px; font-weight: 500;
+      color: rgba(255,255,255,0.7);
+    }
+    .pulse .log-row .row-actions span {
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .pulse .log-row .row-actions svg { width: 11px; height: 11px; }
+    .pulse .log-row .row-actions .del { color: #ff6b60; }
+
+    .pulse .copied-badge {
+      position: absolute;
+      top: 118px; left: 50%; transform: translateX(-50%);
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px;
+      background: rgba(52, 199, 89, 0.16);
+      color: #6fe28c;
+      border-radius: 999px;
+      border: 1px solid rgba(52,199,89,0.36);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+      z-index: 16;
+    }
+
+    /* ====================================================
+       4. NOTHING JOT — Monochrome industrial / Swiss
+    ==================================================== */
+    .nothing {
+      color: #0a0a0a;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(0,0,0,0.14) 1px, transparent 1px) 0 0 / 10px 10px,
+        #f7f7f5;
+    }
+    .nothing .status-bar { color: #0a0a0a; }
+    .nothing .body-col {
+      position: absolute; inset: 52px 22px 10px;
+      display: flex; flex-direction: column;
+    }
+    .nothing .strip {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #0a0a0a;
+      font-family: var(--mono-nothing);
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 0.22em;
+    }
+    .nothing .strip.top { margin-top: 4px; }
+    .nothing .strip .status { color: #0a0a0a; }
+    .nothing .strip .status.rec { color: #e2291f; }
+
+    .nothing .big-timer {
+      font-family: var(--mono-nothing);
+      font-size: 62px; font-weight: 700;
+      letter-spacing: -0.02em;
+      text-align: center;
+      margin-top: 38px;
+      font-variant-numeric: tabular-nums;
+    }
+    .nothing .vu {
+      display: flex; gap: 2px; justify-content: center;
+      margin-top: 28px;
+    }
+    .nothing .vu .seg {
+      width: 8px; height: 22px;
+      background: rgba(0,0,0,0.10);
+    }
+    .nothing .vu .seg.on { background: #0a0a0a; }
+    .nothing .vu .seg.on-orange { background: #ff8c15; }
+    .nothing .vu .seg.on-red { background: #e2291f; }
+
+    .nothing .rec-btn {
+      display: flex; align-items: center; justify-content: center; gap: 14px;
+      margin-top: 22px;
+      padding: 14px 0;
+      border: 2px solid #0a0a0a;
+      border-radius: 6px;
+      font-family: var(--mono-nothing);
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: 0.32em;
+    }
+    .nothing .rec-btn .dot {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #0a0a0a;
+    }
+    .nothing .rec-btn .dot.rec { background: #e2291f; }
+    .nothing .transcript {
+      margin-top: 18px;
+      border: 1px solid rgba(0,0,0,0.6);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: var(--mono-nothing);
+      font-size: 11px; line-height: 1.5;
+      min-height: 94px;
+      color: #0a0a0a;
+      flex: 1;
+    }
+    .nothing .transcript.empty { color: #8a8a8a; }
+    .nothing .strip.bottom {
+      border-bottom: none;
+      border-top: 1px solid rgba(0,0,0,0.35);
+      margin-top: 10px;
+      color: #8a8a8a;
+    }
+    .nothing .copied-flash {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #0a0a0a; color: #f7f7f5;
+      margin-left: 8px;
+      font-size: 9px;
+      letter-spacing: 0.28em;
+    }
+
+    /* ====================================================
+       5. DICTAPHONE — Editorial luxury / warm retro
+    ==================================================== */
+    .dictaphone {
+      background: #f5efe0;
+      color: #231e1b;
+    }
+    .dictaphone .status-bar { color: #231e1b; }
+    .dictaphone .body-col {
+      position: absolute; inset: 56px 24px 24px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .dictaphone .masthead {
+      display: flex; align-items: baseline; gap: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(35,30,27,0.18);
+    }
+    .dictaphone .masthead .m-title {
+      font-family: var(--serif-editorial);
+      font-size: 32px; font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.01em;
+    }
+    .dictaphone .masthead .m-dot {
+      font-family: var(--serif-editorial);
+      font-size: 18px; color: rgba(35,30,27,0.4);
+    }
+    .dictaphone .masthead .m-tag {
+      font-family: var(--serif-editorial);
+      font-size: 12px; font-style: italic;
+      color: rgba(35,30,27,0.6);
+    }
+    .dictaphone .headline {
+      font-family: var(--serif-editorial);
+      font-size: 24px; font-weight: 400;
+      line-height: 1.2;
+      color: #231e1b;
+      margin-top: 4px;
+    }
+    .dictaphone .scribble {
+      height: 40px;
+      display: block;
+      width: 100%;
+    }
+    .dictaphone .rec-pill {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 20px;
+      background: rgba(255,255,255,0.55);
+      border: 1px solid rgba(35,30,27,0.12);
+      border-radius: 14px;
+      box-shadow: 0 6px 18px rgba(35,30,27,0.08);
+    }
+    .dictaphone .rec-pill .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #9e2120;
+    }
+    .dictaphone .rec-pill .dot.recording { background: #231e1b; }
+    .dictaphone .rec-pill .label {
+      font-family: var(--serif-editorial);
+      font-size: 14px; font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .dictaphone .rec-pill .time {
+      margin-left: auto;
+      font-family: var(--mono-stack);
+      font-size: 13px; color: rgba(35,30,27,0.55);
+      font-variant-numeric: tabular-nums;
+    }
+    .dictaphone .transcript {
+      font-family: var(--serif-editorial);
+      font-size: 16px; line-height: 1.5;
+      color: #231e1b;
+      margin-top: 4px;
+    }
+    .dictaphone .transcript.placeholder {
+      font-style: italic;
+      color: rgba(35,30,27,0.42);
+    }
+    .dictaphone .footer {
+      display: flex; gap: 18px;
+      margin-top: auto;
+      padding-top: 10px;
+    }
+    .dictaphone .footer button {
+      background: none; border: none;
+      font-family: var(--serif-editorial);
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: rgba(35,30,27,0.7);
+      padding: 2px 0;
+      border-bottom: 0.5px solid rgba(35,30,27,0.3);
+    }
+    .dictaphone .copied-marginalia {
+      margin-top: 8px;
+      font-family: var(--serif-editorial);
+      font-size: 11px; font-style: italic; letter-spacing: 0.04em;
+      color: #9e2120;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+
+    /* ====================================================
+       6. LEDGER — NothingJot × Pulse hybrid (amber / ruled)
+    ==================================================== */
+    .ledger {
+      background:
+        repeating-linear-gradient(
+          to bottom,
+          transparent 0 31.5px,
+          rgba(255,255,255,0.035) 31.5px 32px
+        ),
+        #0F0F12;
+      color: #fff;
+    }
+    .ledger .status-bar { color: rgba(255,255,255,0.92); }
+
+    .ledger-pill {
+      position: absolute;
+      top: 58px; left: 14px; right: 14px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      height: 52px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.07);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+      z-index: 15;
+    }
+    .ledger-pill .mic {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .ledger-pill .mic.recording {
+      background: #FFB81A;
+      color: #0F0F12;
+    }
+    .ledger-pill .mic svg { width: 13px; height: 13px; }
+
+    .ledger-pill .timer {
+      font-family: var(--mono-stack);
+      font-size: 12px; font-weight: 600;
+      color: rgba(255,255,255,0.92);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      flex-shrink: 0;
+    }
+    .ledger-pill .vu {
+      display: flex; align-items: center; gap: 2px;
+      flex: 1;
+      height: 20px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .ledger-pill .vu .bar {
+      width: 2px;
+      border-radius: 1px;
+      background: rgba(255,255,255,0.22);
+    }
+    .ledger-pill.recording .vu .bar { background: #FFB81A; }
+    .ledger-pill.transcribing .vu .bar { background: rgba(255,255,255,0.15); }
+    .ledger-pill .chip {
+      font-family: var(--mono-stack);
+      font-size: 9.5px; font-weight: 800;
+      letter-spacing: 0.2em;
+      color: rgba(255,255,255,0.6);
+      min-width: 44px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .ledger-pill .chip.rec { color: #FFB81A; }
+
+    .ledger-log {
+      position: absolute;
+      top: 128px; left: 0; right: 0; bottom: 0;
+      padding: 0 20px 30px;
+      overflow: hidden;
+    }
+    .ledger-entry { padding: 14px 0; }
+    .ledger-entry .hd {
+      font-family: var(--mono-stack);
+      font-size: 11px; font-weight: 700;
+      display: flex; gap: 8px; align-items: baseline;
+    }
+    .ledger-entry .hd .idx { color: #FFB81A; }
+    .ledger-entry .hd .sep { color: rgba(255,255,255,0.3); }
+    .ledger-entry .hd .tm { color: rgba(255,255,255,0.45); }
+    .ledger-entry .body {
+      margin-top: 8px;
+      font-size: 13px; line-height: 1.5;
+      color: rgba(255,255,255,0.92);
+    }
+    .ledger-entry .body.short { margin-top: 8px; }
+    .ledger-entry .acts {
+      margin-top: 10px;
+      display: flex; gap: 18px;
+    }
+    .ledger-entry .acts span {
+      font-family: var(--mono-stack);
+      font-size: 9px; font-weight: 800;
+      letter-spacing: 0.2em;
+      color: rgba(255,255,255,0.6);
+    }
+    .ledger-entry .acts span.del { color: #ff6b60; }
+    .ledger-rule {
+      height: 1px;
+      background: rgba(255,255,255,0.06);
+    }
+
+    /* ---------- Shared tiny status bar icon sizing ---------- */
+    .sb-icon { width: 14px; height: 10px; }
+    .sb-battery {
+      width: 22px; height: 11px;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+      padding: 1px;
+      position: relative;
+    }
+    .sb-battery::after {
+      content: "";
+      position: absolute;
+      right: -3px; top: 3px;
+      width: 2px; height: 4px;
+      background: currentColor;
+      border-radius: 0 1px 1px 0;
+    }
+    .sb-battery .fill {
+      display: block;
+      width: 80%; height: 100%;
+      background: currentColor;
+      border-radius: 1.5px;
+    }
+
+    /* ====================================================
+       HISTORY SURFACES — secondary-family directions
+       One extra phone per direction, dropped below the main
+       4-up grid. Shows the archive affordance (sheet / push /
+       drawer / tape-log) in its revealed state.
+    ==================================================== */
+    .history-row {
+      margin-top: 48px;
+      padding-top: 36px;
+      border-top: 1px dashed #d4d4d8;
+      display: flex;
+      gap: 48px;
+      align-items: flex-start;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+    .history-row .history-label {
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: #8a8a90; font-weight: 700; min-width: 148px;
+      padding-top: 6px;
+    }
+    .history-cell {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+      max-width: 320px;
+    }
+    .history-cell .state-label { align-self: flex-start; }
+    .history-cell .note {
+      font-size: 12px; line-height: 1.55; color: #6a6a70;
+      max-width: 320px;
+    }
+    .history-cell .note code {
+      font-family: var(--mono-stack); font-size: 11px;
+      background: #e8e8ec; padding: 1px 5px; border-radius: 3px;
+    }
+
+    /* ---------- Aperture — bottom sheet ---------- */
+    .aperture-sheet-hero {
+      position: absolute; inset: 0;
+      background: #ffffff;
+      opacity: 0.55; /* dimmed hero behind the sheet */
+      z-index: 5;
+    }
+    .aperture-sheet-scrim {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.18);
+      z-index: 6;
+    }
+    .aperture-sheet {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 58%;
+      background: #ffffff;
+      border-top-left-radius: 20px;
+      border-top-right-radius: 20px;
+      box-shadow: 0 -6px 24px rgba(0,0,0,0.12);
+      z-index: 10;
+      display: flex; flex-direction: column;
+      padding: 10px 18px 0;
+    }
+    .aperture-sheet .grabber {
+      width: 36px; height: 4px;
+      background: #d4d4d8;
+      border-radius: 2px;
+      align-self: center;
+      margin-bottom: 14px;
+    }
+    .aperture-sheet .search {
+      display: flex; align-items: center; gap: 8px;
+      background: #eeeef1;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 13px; color: #7a7a7f;
+      margin-bottom: 14px;
+    }
+    .aperture-sheet .search svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .aperture-sheet .sheet-title {
+      font-family: var(--rounded-stack);
+      font-size: 20px; font-weight: 700; letter-spacing: -0.01em;
+      color: #1a1a1a; margin-bottom: 10px;
+    }
+    .aperture-sheet .row {
+      display: flex; gap: 12px; align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #eeeef1;
+    }
+    .aperture-sheet .row:last-child { border-bottom: none; }
+    .aperture-sheet .row .info { flex: 1; min-width: 0; }
+    .aperture-sheet .row .meta {
+      font-family: var(--mono-stack);
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #8a8a90;
+      margin-bottom: 3px;
+    }
+    .aperture-sheet .row .preview {
+      font-size: 13px; line-height: 1.4; color: #1a1a1a;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .aperture-sheet .row .chev { color: #c4c4c8; font-size: 16px; flex-shrink: 0; }
+
+    /* ---------- Granola — archive push ---------- */
+    .granola-archive { background: #fefefd; color: #1a1a1a; }
+    .granola-archive .nav-bar {
+      display: flex; align-items: center; height: 44px;
+      padding: 0 16px; margin-top: 52px;
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+    }
+    .granola-archive .nav-bar .back {
+      font-size: 22px; color: #444448; margin-right: 10px;
+    }
+    .granola-archive .nav-bar .title {
+      font-family: var(--serif-ny); font-style: italic;
+      font-size: 14px; font-weight: 500; letter-spacing: 0.18em;
+      text-transform: uppercase; color: #3a3a3e;
+    }
+    .granola-archive .archive-body {
+      padding: 22px 26px; overflow: hidden;
+    }
+    .granola-archive .masthead {
+      font-family: var(--serif-ny); font-style: italic;
+      font-size: 15px; color: #8a8a90;
+      text-align: center;
+      margin: 8px 0 18px;
+    }
+    .granola-archive .entry {
+      padding: 14px 0;
+      border-bottom: 1px solid #f0ebe3;
+    }
+    .granola-archive .entry:last-child { border-bottom: none; }
+    .granola-archive .entry .eyebrow {
+      display: flex; align-items: baseline; gap: 10px;
+      margin-bottom: 6px;
+    }
+    .granola-archive .entry .label {
+      font-family: var(--serif-ny); font-style: italic; font-variant: small-caps;
+      font-size: 12px; font-weight: 500; color: #1a1a1a;
+      letter-spacing: 0.04em;
+    }
+    .granola-archive .entry .time {
+      font-family: var(--mono-stack);
+      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      color: #9a9a9f;
+    }
+    .granola-archive .entry .body {
+      font-family: var(--serif-ny);
+      font-size: 14px; line-height: 1.55; color: #2a2a2e;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .granola-archive .masthead-small {
+      font-family: var(--serif-ny); font-style: italic;
+      font-size: 13px; color: #9a9a9f;
+      text-align: center;
+      margin: 18px 0 10px;
+    }
+
+    /* ---------- NothingJot — tape-deck log ---------- */
+    .nothing-archive {
+      background: #fafafa;
+      color: #1a1a1a;
+      position: relative;
+    }
+    .nothing-archive::before {
+      content: "";
+      position: absolute; inset: 0;
+      background-image: radial-gradient(circle, rgba(0,0,0,0.08) 1px, transparent 1.1px);
+      background-size: 14px 14px;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .nothing-archive .nav-bar {
+      position: relative; z-index: 2;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px; height: 42px;
+      margin-top: 52px;
+      border-bottom: 1px solid rgba(0,0,0,0.18);
+      background: rgba(250,250,250,0.85);
+      backdrop-filter: blur(6px);
+    }
+    .nothing-archive .nav-bar .back {
+      font-family: var(--mono-nothing);
+      font-size: 13px; font-weight: 700; letter-spacing: 0.06em;
+      color: #1a1a1a;
+    }
+    .nothing-archive .nav-bar .count {
+      font-family: var(--mono-nothing);
+      font-size: 10px; font-weight: 700; letter-spacing: 0.18em;
+      color: #3a3a3e;
+    }
+    .nothing-archive .archive-body {
+      position: relative; z-index: 2;
+      padding: 0;
+      overflow: hidden;
+    }
+    .nothing-archive .date-banner {
+      font-family: var(--mono-nothing);
+      font-size: 10px; font-weight: 700; letter-spacing: 0.22em;
+      color: #5a5a5e;
+      padding: 10px 18px;
+      background: rgba(0,0,0,0.04);
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+    }
+    .nothing-archive .tape-row {
+      padding: 12px 18px 14px;
+      border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+    .nothing-archive .tape-row .hd {
+      font-family: var(--mono-nothing);
+      font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+      color: #1a1a1a;
+      margin-bottom: 5px;
+      display: flex; gap: 8px;
+    }
+    .nothing-archive .tape-row .hd .dur { color: #d23f1c; }
+    .nothing-archive .tape-row .body {
+      font-size: 12px; line-height: 1.5; color: #2a2a2e;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* ---------- Dictaphone — side drawer ---------- */
+    .dictaphone-drawer { background: #f5f0e2; color: #211a14; position: relative; }
+    .dictaphone-drawer .drawer-panel {
+      position: absolute; top: 52px; bottom: 0; left: 0;
+      width: 72%;
+      background: #f5f0e2;
+      border-right: 1px solid rgba(33,26,20,0.12);
+      padding: 18px 16px 24px;
+      overflow: hidden;
+      z-index: 10;
+    }
+    .dictaphone-drawer .drawer-panel .masthead {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 16px;
+    }
+    .dictaphone-drawer .drawer-panel .masthead svg { width: 14px; height: 14px; color: #9e2120; }
+    .dictaphone-drawer .drawer-panel .masthead .label {
+      font-family: var(--serif-editorial); font-style: italic;
+      font-size: 13px; font-weight: 500; color: #211a14;
+      letter-spacing: 0.04em;
+    }
+    .dictaphone-drawer .drawer-panel .date-head {
+      font-family: var(--serif-editorial); font-style: italic;
+      font-size: 12px; color: rgba(33,26,20,0.55);
+      text-align: center;
+      margin: 4px 0 10px;
+    }
+    .dictaphone-drawer .drawer-panel .entry {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(33,26,20,0.1);
+    }
+    .dictaphone-drawer .drawer-panel .entry:last-child { border-bottom: none; }
+    .dictaphone-drawer .drawer-panel .entry.current {
+      border-left: 2px solid #9e2120;
+      padding-left: 8px;
+      margin-left: -10px;
+    }
+    .dictaphone-drawer .drawer-panel .entry .label {
+      font-family: var(--serif-editorial); font-style: italic;
+      font-variant: small-caps;
+      font-size: 11px; font-weight: 600; color: #211a14;
+      letter-spacing: 0.04em;
+      margin-bottom: 2px;
+    }
+    .dictaphone-drawer .drawer-panel .entry .body {
+      font-family: var(--serif-editorial);
+      font-size: 12px; line-height: 1.5; color: rgba(33,26,20,0.85);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .dictaphone-drawer .peek {
+      position: absolute;
+      top: 52px; right: 0; bottom: 0;
+      width: 28%;
+      background: #f5f0e2;
+      box-shadow: inset 6px 0 18px rgba(33,26,20,0.18);
+      z-index: 5;
+    }
+    .dictaphone-drawer .peek::after {
+      content: "";
+      position: absolute; inset: 0;
+      background: rgba(33,26,20,0.22);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============================================================
+       Page header
+  ============================================================ -->
+  <header class="page-header">
+    <h1>Jot — visual design comparison</h1>
+    <p>
+      Five distinct design directions for Jot's iOS main screen, each rendered
+      as a browser-approximated iPhone mockup across four states: <em>idle</em>,
+      <em>recording</em>, <em>transcribing</em>, and <em>copied to clipboard</em>.
+      For the full rationale, HIG compliance table, micro-interactions catalog,
+      and recommended paths forward, see
+      <a href="../visual-interface-mockups.md">visual-interface-mockups.md</a>.
+      The live SwiftUI source for each variant lives alongside this file as
+      <code>1_Aperture.swift</code> through <code>5_Dictaphone.swift</code>. These HTML
+      renders are static approximations — Material blur, SF Rounded, and spring
+      animations are best-effort; the true feel is in Xcode Preview.
+    </p>
+  </header>
+
+  <!-- ============================================================
+       DIRECTION 1 — APERTURE
+  ============================================================ -->
+  <section class="direction" id="aperture">
+    <div class="direction-head">
+      <h2>1. Aperture</h2>
+      <span class="mood">Voice Memos native+ — what Apple would ship first-party</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone">
+          <div class="screen aperture">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right">
+                <svg class="sb-icon" viewBox="0 0 18 10" fill="currentColor"><rect x="0" y="6" width="3" height="4" rx="1"/><rect x="4" y="4" width="3" height="6" rx="1"/><rect x="8" y="2" width="3" height="8" rx="1"/><rect x="12" y="0" width="3" height="10" rx="1"/></svg>
+                <svg class="sb-icon" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 5.5 A10 10 0 0 1 15 5.5"/><path d="M3.5 7.5 A6 6 0 0 1 12.5 7.5"/><path d="M6 9.5 A2.5 2.5 0 0 1 10 9.5"/></svg>
+                <span class="sb-battery"><span class="fill"></span></span>
+              </span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+                <span class="gear">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.7l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.7-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.7.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.7 1.6 1.6 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.7l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.7.3h.1a1.6 1.6 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.7-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.7v.1a1.6 1.6 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>
+                </span>
+              </div>
+              <div class="timer">00:00</div>
+              <div class="mic-wrap">
+                <svg class="mic-ring-svg" viewBox="0 0 186 186">
+                  <circle class="track" cx="93" cy="93" r="90"/>
+                  <circle class="arc" cx="93" cy="93" r="90" stroke="#0a66ff" stroke-dasharray="102 464"/>
+                </svg>
+                <div class="mic-button">
+                  <div class="mic-button-inner">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="caption">Tap to dictate</div>
+              <div class="transcript empty">Your words will appear here.</div>
+              <div class="actions idle">
+                <button class="btn-primary">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  Copy
+                </button>
+                <button class="btn-secondary">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/></svg>
+                  Share
+                </button>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone">
+          <div class="screen aperture">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+                <span class="gear"></span>
+              </div>
+              <div class="timer recording">00:07</div>
+              <div class="mic-wrap">
+                <svg class="mic-ring-svg" viewBox="0 0 186 186">
+                  <circle class="track" cx="93" cy="93" r="90"/>
+                  <circle class="arc" cx="93" cy="93" r="90" stroke="#ff3b30" stroke-width="5" stroke-dasharray="407 160"/>
+                </svg>
+                <div class="mic-button">
+                  <div class="mic-button-inner recording">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="caption">Listening</div>
+              <div class="transcript empty">Your words will appear here.</div>
+              <div class="actions idle">
+                <button class="btn-primary">Copy</button>
+                <button class="btn-secondary">Share</button>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone">
+          <div class="screen aperture">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+                <span class="gear"></span>
+              </div>
+              <div class="timer">00:07</div>
+              <div class="mic-wrap">
+                <svg class="mic-ring-svg" viewBox="0 0 186 186">
+                  <circle class="track" cx="93" cy="93" r="90"/>
+                  <circle class="arc spin" cx="93" cy="93" r="90" stroke="#0a66ff" stroke-dasharray="140 427"/>
+                </svg>
+                <div class="mic-button">
+                  <div class="mic-button-inner" style="background:#0a66ff; opacity:0.55;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4v4M12 16v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4 12h4M16 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="caption">Transcribing…</div>
+              <div class="transcript empty">Writing it down.</div>
+              <div class="actions idle">
+                <button class="btn-primary">Copy</button>
+                <button class="btn-secondary">Share</button>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone">
+          <div class="screen aperture">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+                <span class="gear"></span>
+              </div>
+              <div class="timer">00:07</div>
+              <div class="mic-wrap">
+                <svg class="mic-ring-svg" viewBox="0 0 186 186">
+                  <circle class="track" cx="93" cy="93" r="90"/>
+                  <circle class="arc" cx="93" cy="93" r="90" stroke="#0a66ff"/>
+                </svg>
+                <div class="mic-button">
+                  <div class="mic-button-inner">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="caption">Copied to clipboard</div>
+              <div class="transcript">Meeting at 4pm tomorrow. Tell Sarah to bring the prototype.</div>
+              <div class="actions">
+                <button class="btn-primary copied">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg>
+                  Copied
+                </button>
+                <button class="btn-secondary">Share</button>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-row">
+      <div class="history-label">History surface</div>
+      <div class="history-cell">
+        <div class="state-label">Bottom sheet · .medium detent</div>
+        <div class="iphone">
+          <div class="screen aperture">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <!-- Dimmed hero (simplified) -->
+            <div class="content" style="opacity:0.35;">
+              <div class="nav">
+                <div class="title">Jot</div>
+              </div>
+              <div style="flex:1;"></div>
+            </div>
+            <div class="aperture-sheet-scrim"></div>
+            <div class="aperture-sheet">
+              <div class="grabber"></div>
+              <div class="sheet-title">Transcripts</div>
+              <div class="search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                <span>Search transcripts</span>
+              </div>
+              <div class="row">
+                <div class="info">
+                  <div class="meta">Today · 9:02 AM · 00:12</div>
+                  <div class="preview">Ship the release notes. Don't forget the migration bullet — the one about the app-group container.</div>
+                </div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <div class="info">
+                  <div class="meta">Today · 8:47 AM · 00:09</div>
+                  <div class="preview">Remind me to pick up oat milk on the way home.</div>
+                </div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <div class="info">
+                  <div class="meta">Yesterday · 5:18 PM · 00:14</div>
+                  <div class="preview">Tell Sarah the prototype is ready. Meeting at 4pm tomorrow.</div>
+                </div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <div class="info">
+                  <div class="meta">Yesterday · 11:34 AM · 00:07</div>
+                  <div class="preview">Parakeet model finished downloading in 47 seconds — much faster than I expected.</div>
+                </div>
+                <span class="chev">›</span>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <p class="note">
+          Tap the hairline drag-handle above the home-indicator (or swipe up) to
+          summon a native <code>.sheet</code> with three <code>.presentationDetents</code>:
+          small (12% peek · 3 recents), medium (42% · scrollable + search), large
+          (.large · full archive with date sections). Same gesture users already
+          know from Maps and Find My.
+        </p>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>Aperture</strong> is the safest direction — it reads like a native Apple app by
+      borrowing Voice Memos' vocabulary: a large SF Rounded timer, a mic button inside a
+      hairline ring that doubles as the level meter, a quiet all-caps caption, and a gray
+      transcript container with a Copy/Share row muted until there's a result. Pairs best
+      with <em>press-and-hold</em> dictation (the ring becomes the hold-arc) and suffix
+      commands (the caption hosts "Command detected — tightened"). HIG compliance: 10/10
+      — zero brand risk, and every v1 requirement from §1 of the brief is solved inside
+      Apple's own vocabulary.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       DIRECTION 2 — GRANOLA
+  ============================================================ -->
+  <section class="direction" id="granola">
+    <div class="direction-head">
+      <h2>2. Granola</h2>
+      <span class="mood">Editorial whitespace — the whole app is a sentence</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone">
+          <div class="screen granola">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+                <span class="more">
+                  <svg width="18" height="4" viewBox="0 0 18 4" fill="currentColor"><circle cx="2" cy="2" r="1.5"/><circle cx="9" cy="2" r="1.5"/><circle cx="16" cy="2" r="1.5"/></svg>
+                </span>
+              </div>
+              <div class="body-col">
+                <div class="meta">Monday, April 20 · On device</div>
+                <div class="headline">Ready to listen.</div>
+                <div class="pill">
+                  <span class="dot"></span>
+                  <span class="label">Tap to dictate</span>
+                  <span class="time">00:00</span>
+                </div>
+                <div class="transcript placeholder">
+                  The transcript will appear here as a paragraph — the way you'd read a letter, not a receipt.
+                </div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone">
+          <div class="screen granola">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+              </div>
+              <div class="body-col">
+                <div class="meta">Monday, April 20 · On device</div>
+                <div class="headline">Listening…</div>
+                <div class="pill">
+                  <span class="dot recording"></span>
+                  <span class="label">Tap to stop</span>
+                  <span class="time">00:07</span>
+                </div>
+                <div class="transcript placeholder">
+                  The transcript will appear here as a paragraph — the way you'd read a letter, not a receipt.
+                </div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone">
+          <div class="screen granola">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+              </div>
+              <div class="body-col">
+                <div class="meta">Monday, April 20 · On device</div>
+                <div class="headline">Writing it down…</div>
+                <div class="pill">
+                  <span class="dot" style="background:#888; animation: pulseCalm 1.2s ease-in-out infinite;"></span>
+                  <span class="label">One moment</span>
+                  <span class="time">00:07</span>
+                </div>
+                <div class="transcript placeholder">
+                  Just a breath — the words are being set in type.
+                </div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone">
+          <div class="screen granola">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="content">
+              <div class="nav">
+                <span class="title">Jot</span>
+              </div>
+              <div class="body-col">
+                <div class="meta">Monday, April 20 · On device · <span style="color:#34c759;">Copied to clipboard</span></div>
+                <div class="headline">Here you go.</div>
+                <div class="pill">
+                  <span class="dot"></span>
+                  <span class="label">Tap to dictate</span>
+                  <span class="time">00:07</span>
+                </div>
+                <div class="transcript">
+                  Meeting at 4pm tomorrow. Tell Sarah to bring the prototype.
+                </div>
+                <div class="footer">
+                  <span>Copy</span>
+                  <span class="divider"></span>
+                  <span>Share</span>
+                  <span class="divider"></span>
+                  <span class="discard">Discard</span>
+                </div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-row">
+      <div class="history-label">History surface</div>
+      <div class="history-cell">
+        <div class="state-label">Archive · NavigationStack push</div>
+        <div class="iphone">
+          <div class="screen granola-archive">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="nav-bar">
+              <span class="back">‹</span>
+              <span class="title">Archive</span>
+            </div>
+            <div class="archive-body">
+              <div class="masthead">· Tuesday, 21 April ·</div>
+              <div class="entry">
+                <div class="eyebrow">
+                  <span class="label">Entry 42.</span>
+                  <span class="time">9:02 am · 00:12</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container.</div>
+              </div>
+              <div class="entry">
+                <div class="eyebrow">
+                  <span class="label">Entry 41.</span>
+                  <span class="time">8:47 am · 00:09</span>
+                </div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+              </div>
+              <div class="masthead-small">· Monday, 20 April ·</div>
+              <div class="entry">
+                <div class="eyebrow">
+                  <span class="label">Entry 40.</span>
+                  <span class="time">5:18 pm · 00:14</span>
+                </div>
+                <div class="body">Tell Sarah the prototype is ready. Meeting at 4pm tomorrow.</div>
+              </div>
+              <div class="entry">
+                <div class="eyebrow">
+                  <span class="label">Entry 39.</span>
+                  <span class="time">11:34 am · 00:07</span>
+                </div>
+                <div class="body">Parakeet model finished downloading in 47 seconds — much faster than I expected.</div>
+              </div>
+              <div class="masthead-small">· Sunday, 19 April ·</div>
+              <div class="entry">
+                <div class="eyebrow">
+                  <span class="label">Entry 38.</span>
+                  <span class="time">3:02 pm · 00:21</span>
+                </div>
+                <div class="body">Draft reply to Marcus about the Q2 roadmap — need to push back on the integration-first framing.</div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <p class="note">
+          A serif <em>Archive</em> link in the nav bar's trailing position pushes
+          a full-screen read-mode archive. Date mastheads in italic NY serif,
+          numbered entries (<code>Entry 42.</code>), two-line previews in the
+          same serif. Pull-down <code>.searchable</code> handles search.
+          Scene-change instead of drawer keeps the literary calm.
+        </p>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>Granola</strong> strips chrome to prose. A massive New York serif headline
+      mirrors state ("Ready to listen." → "Listening…" → "Writing it down…" → "Here you
+      go."), a single Material pill hosts the toggle and timer, and the transcript sits
+      on the page as serif body text — no container, no frame. Pairs best with <em>implicit
+      routing</em> (the headline becomes "Sending to Marcus…") and <em>chained follow-ups</em>
+      (previous transcript fades to 40% and the new one cross-fades in). HIG compliance:
+      8/10 — deviates from Apple's preference for filled containers, justified by the
+      app's promise of quiet.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       DIRECTION 3 — PULSE
+  ============================================================ -->
+  <section class="direction" id="pulse">
+    <div class="direction-head">
+      <h2>3. Pulse</h2>
+      <span class="mood">Dynamic-Island-forward — the interface disappears</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone dark">
+          <div class="screen pulse">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="island-pill">
+              <div class="island-mic">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </div>
+              <span class="island-label">Jot — tap to dictate</span>
+            </div>
+
+            <div class="log">
+              <div class="empty-head">No captures yet</div>
+              <div class="empty-body">Tap the island above and start talking. Transcripts land here — newest first.</div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone dark">
+          <div class="screen pulse">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="island-pill expanded">
+              <div class="island-mic recording">
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              </div>
+              <div class="island-wave">
+                <span class="bar" style="height:6px;"></span>
+                <span class="bar" style="height:14px;"></span>
+                <span class="bar" style="height:9px;"></span>
+                <span class="bar" style="height:18px;"></span>
+                <span class="bar" style="height:12px;"></span>
+                <span class="bar" style="height:20px;"></span>
+                <span class="bar" style="height:7px;"></span>
+                <span class="bar" style="height:15px;"></span>
+                <span class="bar" style="height:11px;"></span>
+                <span class="bar" style="height:17px;"></span>
+                <span class="bar" style="height:8px;"></span>
+                <span class="bar" style="height:14px;"></span>
+                <span class="bar" style="height:10px;"></span>
+                <span class="bar" style="height:6px;"></span>
+                <span class="bar" style="height:13px;"></span>
+              </div>
+              <span class="island-time">0:07</span>
+            </div>
+
+            <div class="log">
+              <div class="empty-head" style="opacity:0.45;">No captures yet</div>
+              <div class="empty-body">Listening… your words will land in the log below.</div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone dark">
+          <div class="screen pulse">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="island-pill">
+              <div class="island-spinner"></div>
+              <span class="island-label">Transcribing</span>
+            </div>
+
+            <div class="log">
+              <div class="empty-head" style="opacity:0.45;">No captures yet</div>
+              <div class="empty-body">On-device inference — a moment, then done.</div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone dark">
+          <div class="screen pulse">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="island-pill">
+              <div class="island-mic">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </div>
+              <span class="island-label">Jot — tap to dictate</span>
+            </div>
+
+            <div class="copied-badge">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg>
+              Copied to clipboard
+            </div>
+
+            <div class="log">
+              <div class="log-row">
+                <div class="stamp">9:41 AM · 00:07</div>
+                <div class="text">Meeting at 4pm tomorrow. Tell Sarah to bring the prototype.</div>
+                <div class="row-actions">
+                  <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</span>
+                  <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/></svg>Share</span>
+                  <span class="del"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>Delete</span>
+                </div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>Pulse</strong> hides the app chrome entirely — a floating <em>island pill</em>
+      pinned below the Dynamic Island hosts the mic button, a waveform during recording,
+      and a state label; transcripts accumulate as a reverse-chronological log of cards.
+      Dark-OLED by default (the island metaphor only works on dark, and OLED iPhones save
+      battery). Pairs best with <em>chained follow-ups</em> (the log is the chain) and
+      <em>press-and-hold</em> (island color flips to amber for hold-commands). HIG
+      compliance: 7/10 — dark-only deviates from "support both appearances," but every
+      primitive used is Apple's own.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       DIRECTION 4 — NOTHING JOT
+  ============================================================ -->
+  <section class="direction" id="nothing">
+    <div class="direction-head">
+      <h2>4. NothingJot</h2>
+      <span class="mood">Monochrome industrial / Swiss — the most opinionated variant</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone">
+          <div class="screen nothing">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="strip top">
+                <span>JOT · 01</span>
+                <span class="status">STANDBY</span>
+              </div>
+              <div class="big-timer">00:00</div>
+              <div class="vu">
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span>
+              </div>
+              <div class="rec-btn">
+                <span class="dot"></span>
+                <span>REC</span>
+              </div>
+              <div class="transcript empty">&gt; awaiting input</div>
+              <div class="strip bottom">
+                <span>ON-DEVICE · PARAKEET</span>
+                <span>v1.0</span>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone">
+          <div class="screen nothing">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="strip top">
+                <span>JOT · 01</span>
+                <span class="status rec">● REC</span>
+              </div>
+              <div class="big-timer">00:07</div>
+              <div class="vu">
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span><span class="seg on"></span><span class="seg on"></span>
+                <span class="seg on"></span>
+                <span class="seg on-orange"></span><span class="seg on-orange"></span><span class="seg on-orange"></span>
+                <span class="seg on-orange"></span>
+                <span class="seg on-red"></span><span class="seg on-red"></span>
+                <span class="seg"></span><span class="seg"></span>
+              </div>
+              <div class="rec-btn">
+                <span class="dot rec"></span>
+                <span>STOP</span>
+              </div>
+              <div class="transcript empty">&gt; listening…</div>
+              <div class="strip bottom">
+                <span>ON-DEVICE · PARAKEET</span>
+                <span>v1.0</span>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone">
+          <div class="screen nothing">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="strip top">
+                <span>JOT · 01</span>
+                <span class="status">PROC</span>
+              </div>
+              <div class="big-timer">00:07</div>
+              <div class="vu">
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+              </div>
+              <div class="rec-btn">
+                <span class="dot"></span>
+                <span>REC</span>
+              </div>
+              <div class="transcript empty">&gt; processing…</div>
+              <div class="strip bottom">
+                <span>ON-DEVICE · PARAKEET</span>
+                <span>v1.0</span>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone">
+          <div class="screen nothing">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="strip top">
+                <span>JOT · 01</span>
+                <span>DONE<span class="copied-flash">CPY</span></span>
+              </div>
+              <div class="big-timer">00:07</div>
+              <div class="vu">
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+                <span class="seg"></span><span class="seg"></span><span class="seg"></span>
+              </div>
+              <div class="rec-btn">
+                <span class="dot"></span>
+                <span>REC</span>
+              </div>
+              <div class="transcript">&gt; meeting at 4pm tomorrow. tell sarah to bring the prototype.</div>
+              <div class="strip bottom">
+                <span>ON-DEVICE · PARAKEET</span>
+                <span>v1.0</span>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-row">
+      <div class="history-label">History surface</div>
+      <div class="history-cell">
+        <div class="state-label">Tape-deck log · full-screen push</div>
+        <div class="iphone">
+          <div class="screen nothing-archive">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="nav-bar">
+              <span class="back">‹ BACK</span>
+              <span class="count">ARCHIVE · 0042 ENTRIES</span>
+            </div>
+            <div class="archive-body">
+              <div class="date-banner">TUE · 21 APR 2026</div>
+              <div class="tape-row">
+                <div class="hd">
+                  <span>#0042</span><span>·</span><span>09:02</span><span>·</span><span class="dur">00:12</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container.</div>
+              </div>
+              <div class="tape-row">
+                <div class="hd">
+                  <span>#0041</span><span>·</span><span>08:47</span><span>·</span><span class="dur">00:09</span>
+                </div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+              </div>
+              <div class="date-banner">MON · 20 APR 2026</div>
+              <div class="tape-row">
+                <div class="hd">
+                  <span>#0040</span><span>·</span><span>17:18</span><span>·</span><span class="dur">00:14</span>
+                </div>
+                <div class="body">Tell Sarah the prototype is ready. Meeting at 4pm tomorrow.</div>
+              </div>
+              <div class="tape-row">
+                <div class="hd">
+                  <span>#0039</span><span>·</span><span>11:34</span><span>·</span><span class="dur">00:07</span>
+                </div>
+                <div class="body">Parakeet model finished downloading in 47 seconds — much faster than I expected.</div>
+              </div>
+              <div class="date-banner">SUN · 19 APR 2026</div>
+              <div class="tape-row">
+                <div class="hd">
+                  <span>#0038</span><span>·</span><span>15:02</span><span>·</span><span class="dur">00:21</span>
+                </div>
+                <div class="body">Draft reply to Marcus about the Q2 roadmap — need to push back on the integration-first framing.</div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <p class="note">
+          A 44pt-tall bottom strip (<code>ARCHIVE · 0042 ENTRIES</code>) pushes
+          into a mono tape-deck log. Each row is <code>#0042 · 09:02 · 00:18</code>
+          (index · time · duration) on one mono header line; transcript body in
+          SF Pro below. Date sections as full-width mono-tracked banners. Reads
+          like a print-out from a studio logger.
+        </p>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>NothingJot</strong> takes cues from Nothing OS, Teenage Engineering's OP-1, and
+      Braun calculators — SF Mono everywhere, an 84pt mono timer, a 24-segment VU meter that
+      climbs primary → orange → red, and a dot-matrix canvas in the background. The most
+      memorable variant, and the most niche. Pairs best with <em>suffix commands</em> (the
+      top strip could flash amber "SUFFIX ● CLEAN") but struggles with <em>implicit routing</em>
+      — this aesthetic is "instrument," not "assistant." HIG compliance: 5/10 —
+      deliberately non-Apple-shippable, best shipped as an opt-in "Workshop" theme rather
+      than the default.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       DIRECTION 5 — DICTAPHONE
+  ============================================================ -->
+  <section class="direction" id="dictaphone">
+    <div class="direction-head">
+      <h2>5. Dictaphone</h2>
+      <span class="mood">Editorial luxury / warm retro — a pocket recorder for an essayist</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone">
+          <div class="screen dictaphone">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="masthead">
+                <span class="m-title">Jot</span>
+                <span class="m-dot">·</span>
+                <span class="m-tag">dictate, quietly</span>
+              </div>
+              <div class="headline">A place to speak, and be written down.</div>
+              <svg class="scribble" viewBox="0 0 280 40" preserveAspectRatio="none">
+                <path d="M0,20 L6,19 L12,21 L18,20 L24,18 L30,22 L36,20 L42,19 L48,21 L54,20 L60,18 L66,22 L72,20 L78,19 L84,21 L90,20 L96,18 L102,22 L108,20 L114,19 L120,21 L126,20 L132,18 L138,22 L144,20 L150,19 L156,21 L162,20 L168,18 L174,22 L180,20 L186,19 L192,21 L198,20 L204,18 L210,22 L216,20 L222,19 L228,21 L234,20 L240,18 L246,22 L252,20 L258,19 L264,21 L270,20 L280,20"
+                      fill="none" stroke="rgba(35,30,27,0.35)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <div class="rec-pill">
+                <span class="dot"></span>
+                <span class="label">Begin dictation</span>
+                <span class="time">00:00</span>
+              </div>
+              <div class="transcript placeholder">
+                — Your transcription will set here, like prose from a notebook.
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone">
+          <div class="screen dictaphone">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="masthead">
+                <span class="m-title">Jot</span>
+                <span class="m-dot">·</span>
+                <span class="m-tag">dictate, quietly</span>
+              </div>
+              <div class="headline">Listening, carefully.</div>
+              <svg class="scribble" viewBox="0 0 280 40" preserveAspectRatio="none">
+                <path d="M0,20 L4,14 L8,27 L12,11 L16,31 L20,18 L24,7 L28,29 L32,13 L36,24 L40,9 L44,28 L48,15 L52,22 L56,11 L60,31 L64,17 L68,25 L72,13 L76,29 L80,12 L84,23 L88,16 L92,8 L96,30 L100,14 L104,27 L108,11 L112,26 L116,18 L120,9 L124,32 L128,17 L132,23 L136,12 L140,28 L144,14 L148,25 L152,10 L156,30 L160,19 L164,21 L168,13 L172,27 L176,11 L180,24 L184,16 L188,29 L192,14 L196,20 L200,8 L204,31 L208,17 L212,25 L216,12 L220,28 L224,15 L228,22 L232,11 L236,30 L240,19 L244,26 L248,13 L252,24 L256,17 L260,10 L264,29 L268,15 L272,23 L276,12 L280,20"
+                      fill="none" stroke="#9e2120" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <div class="rec-pill">
+                <span class="dot recording"></span>
+                <span class="label">End recording</span>
+                <span class="time">00:07</span>
+              </div>
+              <div class="transcript placeholder">
+                — Your words are being caught on paper.
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone">
+          <div class="screen dictaphone">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="masthead">
+                <span class="m-title">Jot</span>
+                <span class="m-dot">·</span>
+                <span class="m-tag">dictate, quietly</span>
+              </div>
+              <div class="headline">Setting the type…</div>
+              <svg class="scribble" viewBox="0 0 280 40" preserveAspectRatio="none">
+                <path d="M0,20 L40,20 L44,18 L48,22 L52,20 L280,20"
+                      fill="none" stroke="rgba(35,30,27,0.25)" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="3 4"/>
+              </svg>
+              <div class="rec-pill">
+                <span class="dot" style="background:rgba(35,30,27,0.5); animation: pulseCalm 1.3s ease-in-out infinite;"></span>
+                <span class="label">Please wait</span>
+                <span class="time">00:07</span>
+              </div>
+              <div class="transcript placeholder">
+                — A moment, while the ink sets.
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone">
+          <div class="screen dictaphone">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="body-col">
+              <div class="masthead">
+                <span class="m-title">Jot</span>
+                <span class="m-dot">·</span>
+                <span class="m-tag">dictate, quietly</span>
+              </div>
+              <div class="headline">Fresh ink.</div>
+              <svg class="scribble" viewBox="0 0 280 40" preserveAspectRatio="none">
+                <path d="M0,20 L280,20"
+                      fill="none" stroke="rgba(35,30,27,0.25)" stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+              <div class="rec-pill">
+                <span class="dot"></span>
+                <span class="label">Begin dictation</span>
+                <span class="time">00:07</span>
+              </div>
+              <div class="transcript">
+                Meeting at 4pm tomorrow. Tell Sarah to bring the prototype.
+              </div>
+              <div class="copied-marginalia">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 10 18 20 6"/></svg>
+                Copied to clipboard
+              </div>
+              <div class="footer">
+                <button>Copy</button>
+                <button>Share</button>
+                <button>New entry</button>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-row">
+      <div class="history-label">History surface</div>
+      <div class="history-cell">
+        <div class="state-label">Leading-edge drawer · open 72%</div>
+        <div class="iphone">
+          <div class="screen dictaphone-drawer">
+            <div class="status-bar" style="color:#211a14;">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+            <div class="drawer-panel">
+              <div class="masthead">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4Z"/><path d="M4 17a3 3 0 0 1 3-3h12"/></svg>
+                <span class="label">archive · 42 entries</span>
+              </div>
+              <div class="date-head">· Tuesday, 21 April ·</div>
+              <div class="entry current">
+                <div class="label">Entry #42</div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container.</div>
+              </div>
+              <div class="entry">
+                <div class="label">Entry #41</div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+              </div>
+              <div class="date-head" style="margin-top:12px;">· Monday, 20 April ·</div>
+              <div class="entry">
+                <div class="label">Entry #40</div>
+                <div class="body">Tell Sarah the prototype is ready. Meeting at 4pm tomorrow.</div>
+              </div>
+              <div class="entry">
+                <div class="label">Entry #39</div>
+                <div class="body">Parakeet model finished downloading in 47 seconds — much faster than I expected.</div>
+              </div>
+              <div class="date-head" style="margin-top:12px;">· Sunday, 19 April ·</div>
+              <div class="entry">
+                <div class="label">Entry #38</div>
+                <div class="body">Draft reply to Marcus about the Q2 roadmap — need to push back on the integration-first framing.</div>
+              </div>
+            </div>
+            <div class="peek"></div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <p class="note">
+          Tap <code>book.closed</code> in the masthead: main surface slides 72%
+          right, revealing a cream sidebar of past entries from the leading edge.
+          Italic serif date headers, numbered <code>Entry #42</code> labels,
+          two-line previews. Crimson rule marks the current entry. The notebook
+          metaphor — <em>turning a page</em>, not a modal drawer from below.
+        </p>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>Dictaphone</strong> trades semantic neutrality for one justified brand color —
+      a warm cream paper tone with espresso ink and a deep crimson accent — and replaces
+      amplitude bars with a single continuous scribble stroke that redraws on input. New
+      York serif everywhere, SF Mono for the timer, underlined serif buttons in the footer.
+      Pairs best with <em>implicit routing</em> ("To Marcus:") and <em>chained follow-ups</em>
+      (previous transcript slides up into smaller "marginalia"). HIG compliance: 6/10 —
+      the cream is a brand deviation, justified by the same precedent Apple uses in
+      Journal, Books, and Apple TV+ literary pages.
+    </p>
+  </section>
+
+  <!-- ============================================================
+       DIRECTION 6 — LEDGER
+  ============================================================ -->
+  <section class="direction" id="ledger">
+    <div class="direction-head">
+      <h2>6. Ledger</h2>
+      <span class="mood">NothingJot × Pulse hybrid — instrument DNA on Pulse's bones</span>
+    </div>
+
+    <div class="phone-grid">
+      <!-- IDLE -->
+      <div class="phone-cell">
+        <div class="state-label">Idle</div>
+        <div class="iphone dark">
+          <div class="screen ledger">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="ledger-pill">
+              <div class="mic">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </div>
+              <span class="timer">00:00</span>
+              <div class="vu">
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+              </div>
+              <span class="chip">READY</span>
+            </div>
+
+            <div class="ledger-log">
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0041</span><span class="sep">·</span><span class="tm">9:02 AM</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container. That's the only thing that breaks people.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0040</span><span class="sep">·</span><span class="tm">8:47 AM</span>
+                </div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECORDING -->
+      <div class="phone-cell">
+        <div class="state-label">Recording</div>
+        <div class="iphone dark">
+          <div class="screen ledger">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="ledger-pill recording">
+              <div class="mic recording">
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              </div>
+              <span class="timer">00:07</span>
+              <div class="vu">
+                <span class="bar" style="height:8px"></span><span class="bar" style="height:14px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:18px"></span>
+                <span class="bar" style="height:11px"></span><span class="bar" style="height:16px"></span>
+                <span class="bar" style="height:7px"></span><span class="bar" style="height:20px"></span>
+                <span class="bar" style="height:10px"></span><span class="bar" style="height:15px"></span>
+                <span class="bar" style="height:8px"></span><span class="bar" style="height:13px"></span>
+              </div>
+              <span class="chip rec">REC</span>
+            </div>
+
+            <div class="ledger-log">
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0041</span><span class="sep">·</span><span class="tm">9:02 AM</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container. That's the only thing that breaks people.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0040</span><span class="sep">·</span><span class="tm">8:47 AM</span>
+                </div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSCRIBING -->
+      <div class="phone-cell">
+        <div class="state-label">Transcribing</div>
+        <div class="iphone dark">
+          <div class="screen ledger">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="ledger-pill transcribing">
+              <div class="mic">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </div>
+              <span class="timer">00:07</span>
+              <div class="vu">
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:4px"></span>
+              </div>
+              <span class="chip">PROC</span>
+            </div>
+
+            <div class="ledger-log">
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0041</span><span class="sep">·</span><span class="tm">9:02 AM</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container. That's the only thing that breaks people.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0040</span><span class="sep">·</span><span class="tm">8:47 AM</span>
+                </div>
+                <div class="body">Remind me to pick up oat milk on the way home.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPIED -->
+      <div class="phone-cell">
+        <div class="state-label">Copied to clipboard</div>
+        <div class="iphone dark">
+          <div class="screen ledger">
+            <div class="status-bar">
+              <span class="sb-time">9:41</span>
+              <span class="sb-right"><span class="sb-battery"><span class="fill"></span></span></span>
+            </div>
+            <div class="island"></div>
+
+            <div class="ledger-pill">
+              <div class="mic">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M18 11a6 6 0 0 1-12 0M12 17v3M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </div>
+              <span class="timer">00:00</span>
+              <div class="vu">
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+                <span class="bar" style="height:6px"></span><span class="bar" style="height:6px"></span>
+              </div>
+              <span class="chip">DONE</span>
+            </div>
+
+            <div class="ledger-log">
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0042</span><span class="sep">·</span><span class="tm">9:41 AM</span>
+                </div>
+                <div class="body">Ledger direction — instrument pill at the top, amber accents instead of red, ruled paper instead of dot-matrix. The transcript log is the page; each entry gets a number.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+              <div class="ledger-entry">
+                <div class="hd">
+                  <span class="idx">#0041</span><span class="sep">·</span><span class="tm">9:02 AM</span>
+                </div>
+                <div class="body">Ship the release notes. Don't forget the migration bullet — the one about the app-group container.</div>
+                <div class="acts"><span>COPY</span><span>SHARE</span><span class="del">DELETE</span></div>
+              </div>
+              <div class="ledger-rule"></div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="caption">
+      <strong>Ledger</strong> is the 6th direction — NothingJot's <em>instrument</em> DNA
+      (mono timer, VU meter, "operating-a-device" feel) grafted onto Pulse's bones
+      (floating pill at the top, reverse-chronological log below, dark-first). Every
+      Nothing-specific detail is deliberately replaced: <em>horizontal ledger rules</em>
+      instead of dot-matrix; <em>amber</em> (warm CRT phosphor) instead of red; <em>SF Mono</em>
+      instead of Ndot; <em>pill-only chrome</em> instead of the top-strip "JOT · 01" brand
+      header. Numbered entries (<code>#0041</code>) frame the log as a running notebook
+      rather than a chat feed. Pairs best with <em>chained follow-ups</em> (the ledger
+      <em>is</em> the chain) and <em>suffix commands</em> (the status chip flips amber —
+      <code>CLEAN</code>, <code>EMAIL</code> — without introducing a second hue). HIG
+      compliance: 7/10 — dark-first, same asterisk as Pulse, but every primitive (Material,
+      semantic system colors, SF Mono) is Apple's own.
+    </p>
+  </section>
+
+</body>
+</html>
