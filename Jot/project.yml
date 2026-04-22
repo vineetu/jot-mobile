@@ -54,6 +54,13 @@ targets:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: YES
         NSMicrophoneUsageDescription: "Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone."
+        # Required for ActivityKit. Without this key, Activity.request(...)
+        # fails with "Target does not include NSSupportsLiveActivities plist
+        # key" and AudioRecordingIntent cannot activate the audio session.
+        # Verified in Console.app syslog 2026-04-21 20:06:59 — liveactivitiesd
+        # rejected the request for widget(containingProcess: com.jot.mobile.Jot).
+        # See: https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities
+        NSSupportsLiveActivities: YES
         UIBackgroundModes:
           - audio
         LSApplicationQueriesSchemes:
