@@ -127,9 +127,15 @@ struct ContentView: View {
 
             log
 
-            pill
-                .padding(.bottom, 10)
-                .padding(.horizontal, 14)
+            VStack(spacing: 8) {
+                if transcriptionService.modelState != .ready {
+                    parakeetWarmupBanner
+                }
+
+                pill
+            }
+            .padding(.bottom, 10)
+            .padding(.horizontal, 14)
         }
         .preferredColorScheme(.dark)
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
@@ -227,6 +233,31 @@ struct ContentView: View {
             .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
             .animation(.spring(response: 0.42, dampingFraction: 0.85), value: phase)
         }
+    }
+
+    private var parakeetWarmupBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(amber)
+
+            Text("Warming up Parakeet model. First transcription may take up to 20 seconds.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.74))
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Warming up Parakeet model. First transcription may take up to 20 seconds.")
     }
 
     private var settingsDivider: some View {
