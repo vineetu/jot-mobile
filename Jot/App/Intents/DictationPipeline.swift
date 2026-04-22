@@ -117,10 +117,10 @@ enum DictationPipeline {
         }
 
         // Pull the most recent prior transcript that falls inside the
-        // freshness window. `TranscriptStore.mostRecent(within:)` returns
-        // `nil` when the store is empty or the newest row is older than the
-        // window, so `priorText == nil` is the clean "no follow-up candidate"
-        // signal that `CleanupService.resolveUtterance` short-circuits on.
+        // freshness window, but only offer it to the classifier while the
+        // follow-up window is still active. Dismissing the UI has to collapse
+        // the next utterance back to fresh dictation even if the timestamp is
+        // still inside the 30s window.
         //
         // Snapshot `id` + `displayText` into locals here rather than holding
         // the `Transcript` reference across the `await`: we're on `@MainActor`
@@ -130,10 +130,10 @@ enum DictationPipeline {
         // `TranscriptStore.mostRecent` constructs inline. Snapshot-then-release
         // is cheap and keeps the context short-lived.
         let prior = TranscriptStore.mostRecent(within: ChainedFollowUp.freshnessWindow)
-        let priorID = prior?.id
-        let priorText = prior?.displayText
-        let priorAge = prior.map { Date().timeIntervalSince($0.createdAt) }
         let uiFollowUpActive = DictationActivityCoordinator.shared.isFollowUpActive
+        let priorID = uiFollowUpActive ? prior?.id : nil
+        let priorText = uiFollowUpActive ? prior?.displayText : nil
+        let priorAge = prior.map { Date().timeIntervalSince($0.createdAt) }
 
         logger.info(
             "follow-up candidate — uiActive=\(uiFollowUpActive, privacy: .public) priorPresent=\(priorText != nil, privacy: .public) priorAge=\(priorAge ?? -1, privacy: .public) transcriptChars=\(transcript.count, privacy: .public)"
@@ -159,13 +159,20 @@ enum DictationPipeline {
             resolvedAsCommand = true
         }
 
-        logger.info(
-            "follow-up resolution — cancelled=\(postProcessing.isCancellationRequested, privacy: .public) command=\(resolvedAsCommand, privacy: .public)"
-        )
-
         let duration = Date().timeIntervalSince(startedAt)
         let effectiveResolution: CommandResolution =
             postProcessing.isCancellationRequested ? .freshDictation : resolution
+        let tookCommandBranch: Bool
+        switch effectiveResolution {
+        case .freshDictation:
+            tookCommandBranch = false
+        case .command:
+            tookCommandBranch = true
+        }
+
+        logger.info(
+            "follow-up resolution — cancelled=\(postProcessing.isCancellationRequested, privacy: .public) resolvedAsCommand=\(resolvedAsCommand, privacy: .public) finalCommandBranch=\(tookCommandBranch, privacy: .public)"
+        )
 
         switch effectiveResolution {
         case .freshDictation:
