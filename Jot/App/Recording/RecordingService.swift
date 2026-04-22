@@ -226,33 +226,16 @@ final class RecordingService {
         priorOptions = session.categoryOptions
 
         do {
-            // 2026-04-21 fix for Action Button: user hit
-            // "Audio session could not be configured: Session activation failed"
-            // on v14. Recording-engineer's hypothesis ranking put
-            // `cannotInterruptOthers` at 35% (nonmixable .playAndRecord
-            // activating in background) and `badParam -50` at 18% (option
-            // tuple illegal at runtime despite docs claiming it's valid).
-            //
-            // The fix below addresses both:
-            //  - Add `.mixWithOthers` so the session is NOT nonmixable,
-            //    eliminating `cannotInterruptOthers` in background
-            //    activation. Dictation doesn't need to interrupt media
-            //    playback to work.
-            //  - Drop `.allowBluetoothHFP` from the option set. HFP routing
-            //    is the most likely source of `badParam -50` since Apple has
-            //    been tightening routing constraints on iOS 26; we don't need
-            //    it for the primary mic case, and it's orthogonal to the
-            //    no-DSP `.measurement` mode.
-            //  - Keep `.defaultToSpeaker` so any audible feedback plays
-            //    through the main speaker instead of the earpiece.
-            //
-            // `.measurement` mode is preserved — it's what disables AGC/DSP
-            // and keeps the signal Parakeet is trained on.
-            log.info("configureSession — calling setCategory(.playAndRecord, .measurement, [.defaultToSpeaker, .mixWithOthers])")
+            // 2026-04-21 approved fix for the Action Button `AURemoteIO`
+            // invalid-state failure: stop asking the background path to bring
+            // up a duplex `.playAndRecord` graph when it only needs microphone
+            // input. `.record` keeps the no-DSP `.measurement` mode while
+            // avoiding the output leg that was implicated in the `what` trace.
+            log.info("configureSession — calling setCategory(.record, .measurement, [.mixWithOthers])")
             try session.setCategory(
-                .playAndRecord,
+                .record,
                 mode: .measurement,
-                options: [.defaultToSpeaker, .mixWithOthers]
+                options: [.mixWithOthers]
             )
             log.info("configureSession — setCategory OK; now calling setActive(true)")
             try session.setActive(true, options: [])
