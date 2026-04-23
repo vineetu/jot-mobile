@@ -613,7 +613,7 @@ struct ContentView: View {
     private var parakeetWarmupGhostNote: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                TimelineView(.periodic(from: warmupGhostStartDate ?? .now, by: 1)) { context in
                     Text("WARMING · \(warmupElapsedSeconds(at: context.date))S")
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .tracking(2)
@@ -635,7 +635,7 @@ struct ContentView: View {
                 .accessibilityLabel("Dismiss warming note")
             }
 
-            Text("— first transcription may take ~20s —")
+            Text("— first transcription may take ~30s —")
                 .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                 .tracking(2)
                 .foregroundStyle(.white.opacity(0.55))
@@ -645,7 +645,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Warming. \(warmupElapsedSeconds()) seconds elapsed. First transcription may take about 20 seconds."
+            "Warming. \(warmupElapsedSeconds()) seconds elapsed. First transcription may take about 30 seconds."
         )
     }
 
@@ -660,14 +660,12 @@ struct ContentView: View {
 
     private func handleWarmupGhostTransition(to state: TranscriptionService.ModelState) {
         switch state {
-        case .loading:
-            if warmupGhostStartDate == nil {
-                warmupGhostStartDate = Date()
-            }
         case .ready:
             resetWarmupGhostSession()
         default:
-            break
+            if warmupGhostStartDate == nil {
+                warmupGhostStartDate = Date()
+            }
         }
     }
 
