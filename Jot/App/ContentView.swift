@@ -78,6 +78,7 @@ struct ContentView: View {
     @State private var confirmedCopyIDs: Set<UUID> = []
     @State private var copyConfirmationTasks: [UUID: Task<Void, Never>] = [:]
     @State private var handledAutoCopyIDs: Set<UUID> = []
+    @AppStorage("followUpDiscoveryState") private var followUpDiscoveryStateRaw = "unseen"
 
     /// Per-transcript expansion for LONG individual transcripts. When a
     /// transcript's body exceeds `collapsedRowLineLimit` lines, it renders
@@ -113,6 +114,12 @@ struct ContentView: View {
     /// opens them. This is count-based, not time-based, so dense rapid-fire
     /// follow-ups collapse predictably.
     private let autoExpandedClusterBudget = 1
+
+    private enum FollowUpDiscoveryState: String {
+        case unseen
+        case dismissed
+        case learned
+    }
 
     // MARK: Body
 
@@ -533,6 +540,11 @@ struct ContentView: View {
 
     private var clusters: [Cluster] { computeClusters(from: transcripts) }
 
+    private var followUpDiscoveryState: FollowUpDiscoveryState {
+        get { FollowUpDiscoveryState(rawValue: followUpDiscoveryStateRaw) ?? .unseen }
+        nonmutating set { followUpDiscoveryStateRaw = newValue.rawValue }
+    }
+
     private var log: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -615,6 +627,9 @@ struct ContentView: View {
         } else {
             VStack(spacing: 0) {
                 rootRow(cluster.root, isSuperseded: cluster.isSuperseded)
+                if shouldShowFollowUpDiscoveryRow(for: cluster.root) {
+                    followUpDiscoveryRow
+                }
                 ForEach(cluster.descendants) { child in
                     descendantDivider
                     descendantRow(child)
@@ -902,6 +917,39 @@ struct ContentView: View {
         .padding(.top, 2)
     }
 
+    private var followUpDiscoveryRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text("FOLLOW · \(Int(ChainedFollowUp.freshnessWindow))S TO REWRITE THIS")
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(.white.opacity(0.55))
+                Spacer(minLength: 8)
+                Button {
+                    followUpDiscoveryState = .dismissed
+                } label: {
+                    Text("DISMISS")
+                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss follow-up help")
+            }
+
+            Text("— try: \"make it friendlier\" or \"make it shorter\" —")
+                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Follow. \(Int(ChainedFollowUp.freshnessWindow)) seconds to rewrite this. Try make it friendlier or make it shorter."
+        )
+    }
+
     private func copyButton(entry: Transcript) -> some View {
         Button {
             copy(entry)
@@ -923,6 +971,13 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .contentTransition(.opacity)
+    }
+
+    private func shouldShowFollowUpDiscoveryRow(for entry: Transcript) -> Bool {
+        guard followUpDiscoveryState == .unseen else { return false }
+        guard activityCoordinator.isFollowUpActive else { return false }
+        guard entry.id == transcripts.first?.id else { return false }
+        return !entry.isDerived
     }
 
     /// Clamp instruction previews so a rambling command ("make this more
@@ -976,6 +1031,9 @@ struct ContentView: View {
 
     private func dismissFollowUpWindow() {
         lifecycleLog.info("dismissFollowUpWindow — forwarding dismiss to activity coordinator")
+        if followUpDiscoveryState == .unseen {
+            followUpDiscoveryState = .dismissed
+        }
         Task { @MainActor in
             await DictationActivityCoordinator.shared.dismissFollowUpWindow()
             phase = .idle
@@ -984,6 +1042,9 @@ struct ContentView: View {
 
     private func startRecording() {
         lifecycleLog.info("startRecording — dispatching to RecordingService.start()")
+        if followUpDiscoveryState == .unseen, activityCoordinator.isFollowUpActive {
+            followUpDiscoveryState = .learned
+        }
         activeTask?.cancel()
         activeTask = Task {
             do {
@@ -1136,7 +1197,7 @@ struct ContentView: View {
     private func triggerCopyConfirmation(for transcriptID: UUID) {
         copyConfirmationTasks[transcriptID]?.cancel()
 
-        withAnimation(.smooth(duration: 0.14)) {
+        _ = withAnimation(.smooth(duration: 0.14)) {
             confirmedCopyIDs.insert(transcriptID)
         }
 
@@ -1147,7 +1208,7 @@ struct ContentView: View {
                 return
             }
 
-            withAnimation(.easeInOut(duration: 0.26)) {
+            _ = withAnimation(.easeInOut(duration: 0.26)) {
                 confirmedCopyIDs.remove(transcriptID)
             }
 
