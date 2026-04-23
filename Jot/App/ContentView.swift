@@ -33,6 +33,7 @@ struct ContentView: View {
     @Environment(RecordingService.self) private var recordingService
     @Environment(TranscriptionService.self) private var transcriptionService
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
 
     /// The ledger itself. SwiftData rebroadcasts changes from any writer on
     /// the same `ModelContainer`, so a headless intent's `TranscriptStore.append`
@@ -78,6 +79,8 @@ struct ContentView: View {
     @State private var confirmedCopyIDs: Set<UUID> = []
     @State private var copyConfirmationTasks: [UUID: Task<Void, Never>] = [:]
     @State private var handledAutoCopyIDs: Set<UUID> = []
+    @State private var warmupGhostStartDate: Date?
+    @State private var warmupGhostDismissed = false
     @AppStorage("followUpDiscoveryState") private var followUpDiscoveryStateRaw = "unseen"
 
     /// Per-transcript expansion for LONG individual transcripts. When a
@@ -169,12 +172,23 @@ struct ContentView: View {
             actionHaptic.prepare()
             successHaptic.prepare()
             syncAutoCopyConfirmation()
+            handleWarmupGhostTransition(to: transcriptionService.modelState)
         }
         .onChange(of: errorMessage) { _, new in
             if let new { AccessibilityNotification.Announcement(new).post() }
         }
         .onChange(of: transcripts.map(\.id)) { _, _ in
             syncAutoCopyConfirmation()
+        }
+        .onChange(of: transcriptionService.modelState) { _, newState in
+            handleWarmupGhostTransition(to: newState)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                resetWarmupGhostSession()
+            } else if newPhase == .active {
+                handleWarmupGhostTransition(to: transcriptionService.modelState)
+            }
         }
         .onChange(of: postProcessingCoordinator.stage) { _, newStage in
             switch newStage {
@@ -555,7 +569,7 @@ struct ContentView: View {
                 Spacer().frame(height: 20)
 
                 if transcripts.isEmpty {
-                    if transcriptionService.modelState != .ready {
+                    if shouldShowWarmupGhostNote {
                         parakeetWarmupGhostNote
                     }
 
@@ -580,7 +594,7 @@ struct ContentView: View {
                     errorCard(errorMessage)
                 }
 
-                if !transcripts.isEmpty, transcriptionService.modelState != .ready {
+                if !transcripts.isEmpty, shouldShowWarmupGhostNote {
                     parakeetWarmupGhostNote
                 }
 
@@ -603,10 +617,28 @@ struct ContentView: View {
 
     private var parakeetWarmupGhostNote: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("WARMING")
-                .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                .tracking(2)
-                .foregroundStyle(.white.opacity(0.42))
+            HStack(spacing: 10) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("WARMING · \(warmupElapsedSeconds(at: context.date))S")
+                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                        .tracking(2)
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.42))
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    warmupGhostDismissed = true
+                } label: {
+                    Text("DISMISS")
+                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss warming note")
+            }
 
             Text("— first transcription may take ~20s —")
                 .font(.system(.subheadline, design: .monospaced).weight(.semibold))
@@ -617,7 +649,36 @@ struct ContentView: View {
         .padding(.vertical, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Warming. First transcription may take about 20 seconds.")
+        .accessibilityLabel(
+            "Warming. \(warmupElapsedSeconds()) seconds elapsed. First transcription may take about 20 seconds."
+        )
+    }
+
+    private var shouldShowWarmupGhostNote: Bool {
+        transcriptionService.modelState != .ready && !warmupGhostDismissed
+    }
+
+    private func warmupElapsedSeconds(at date: Date = .now) -> Int {
+        guard let warmupGhostStartDate else { return 0 }
+        return max(0, Int(date.timeIntervalSince(warmupGhostStartDate).rounded(.down)))
+    }
+
+    private func handleWarmupGhostTransition(to state: TranscriptionService.ModelState) {
+        switch state {
+        case .loading:
+            if warmupGhostStartDate == nil {
+                warmupGhostStartDate = Date()
+            }
+        case .ready:
+            resetWarmupGhostSession()
+        default:
+            break
+        }
+    }
+
+    private func resetWarmupGhostSession() {
+        warmupGhostStartDate = nil
+        warmupGhostDismissed = false
     }
 
     @ViewBuilder
