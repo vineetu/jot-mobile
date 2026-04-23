@@ -176,6 +176,7 @@ enum TranscriptStore {
     ///   empty/whitespace-only and the call was a no-op.
     @discardableResult
     static func append(
+        id: UUID = UUID(),
         raw: String,
         cleaned: String? = nil,
         duration: TimeInterval? = nil,
@@ -187,6 +188,7 @@ enum TranscriptStore {
 
         let context = ModelContext(JotModelContainer.shared)
         let transcript = Transcript(
+            id: id,
             text: raw,
             cleanedText: cleaned,
             durationSeconds: duration,

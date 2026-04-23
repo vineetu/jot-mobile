@@ -75,6 +75,9 @@ struct ContentView: View {
     @State private var postProcessingCoordinator = DictationPostProcessingCoordinator.shared
     @State private var pendingDeletion: Transcript?
     @State private var expandedClusterIDs: Set<UUID> = []
+    @State private var confirmedCopyIDs: Set<UUID> = []
+    @State private var copyConfirmationTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var handledAutoCopyIDs: Set<UUID> = []
 
     /// Per-transcript expansion for LONG individual transcripts. When a
     /// transcript's body exceeds `collapsedRowLineLimit` lines, it renders
@@ -97,6 +100,7 @@ struct ContentView: View {
     // dealloc. `@State` persists the reference across reconstructions.
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .soft)
+    @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var actionHaptic = UIImpactFeedbackGenerator(style: .rigid)
     @State private var successHaptic = UINotificationFeedbackGenerator()
 
@@ -154,11 +158,16 @@ struct ContentView: View {
         .onAppear {
             startHaptic.prepare()
             stopHaptic.prepare()
+            copyHaptic.prepare()
             actionHaptic.prepare()
             successHaptic.prepare()
+            syncAutoCopyConfirmation()
         }
         .onChange(of: errorMessage) { _, new in
             if let new { AccessibilityNotification.Announcement(new).post() }
+        }
+        .onChange(of: transcripts.map(\.id)) { _, _ in
+            syncAutoCopyConfirmation()
         }
         .onChange(of: postProcessingCoordinator.stage) { _, newStage in
             switch newStage {
@@ -179,6 +188,10 @@ struct ContentView: View {
         .onDisappear {
             vuTimer?.invalidate()
             vuTimer = nil
+            for task in copyConfirmationTasks.values {
+                task.cancel()
+            }
+            copyConfirmationTasks.removeAll()
         }
     }
 
@@ -873,7 +886,7 @@ struct ContentView: View {
 
     private func actionRow(entry: Transcript) -> some View {
         HStack(spacing: 18) {
-            actionButton("COPY") { copy(entry) }
+            copyButton(entry: entry)
             ShareLink(item: entry.displayText) {
                 Text("SHARE")
                     .font(.system(size: 10, weight: .heavy, design: .monospaced))
@@ -887,6 +900,29 @@ struct ContentView: View {
             Spacer()
         }
         .padding(.top, 2)
+    }
+
+    private func copyButton(entry: Transcript) -> some View {
+        Button {
+            copy(entry)
+        } label: {
+            Group {
+                if confirmedCopyIDs.contains(entry.id) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                        Text("COPIED")
+                    }
+                } else {
+                    Text("COPY")
+                }
+            }
+            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+            .tracking(2)
+            .foregroundStyle(.white.opacity(0.6))
+        }
+        .buttonStyle(.plain)
+        .contentTransition(.opacity)
     }
 
     /// Clamp instruction previews so a rambling command ("make this more
@@ -1079,8 +1115,48 @@ struct ContentView: View {
 
     private func copy(_ entry: Transcript) {
         UIPasteboard.general.string = entry.displayText
-        actionHaptic.impactOccurred()
-        actionHaptic.prepare()
+        copyHaptic.impactOccurred()
+        copyHaptic.prepare()
+        announceCopyConfirmation()
+        triggerCopyConfirmation(for: entry.id)
+    }
+
+    private func syncAutoCopyConfirmation() {
+        guard
+            let payload = ClipboardHandoff.pendingAutoCopyConfirmation(),
+            transcripts.contains(where: { $0.id == payload.transcriptID }),
+            !handledAutoCopyIDs.contains(payload.transcriptID)
+        else { return }
+
+        handledAutoCopyIDs.insert(payload.transcriptID)
+        announceCopyConfirmation()
+        triggerCopyConfirmation(for: payload.transcriptID)
+    }
+
+    private func triggerCopyConfirmation(for transcriptID: UUID) {
+        copyConfirmationTasks[transcriptID]?.cancel()
+
+        withAnimation(.smooth(duration: 0.14)) {
+            confirmedCopyIDs.insert(transcriptID)
+        }
+
+        copyConfirmationTasks[transcriptID] = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(1040))
+            } catch {
+                return
+            }
+
+            withAnimation(.easeInOut(duration: 0.26)) {
+                confirmedCopyIDs.remove(transcriptID)
+            }
+
+            copyConfirmationTasks[transcriptID] = nil
+        }
+    }
+
+    private func announceCopyConfirmation() {
+        UIAccessibility.post(notification: .announcement, argument: "Copied to clipboard")
     }
 
     private func confirmDelete(_ entry: Transcript) {

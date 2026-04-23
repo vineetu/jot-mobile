@@ -206,12 +206,18 @@ enum DictationPipeline {
                 cleanedText = nil
             }
 
-            ClipboardHandoff.publish(transcript: finalText)
+            let transcriptID = UUID()
 
             TranscriptStore.append(
+                id: transcriptID,
                 raw: transcript,
                 cleaned: cleanedText,
                 duration: duration
+            )
+
+            ClipboardHandoff.publish(
+                transcript: finalText,
+                autoCopiedTranscriptID: transcriptID
             )
 
             let preview = String(finalText.prefix(60))
@@ -219,12 +225,18 @@ enum DictationPipeline {
 
         case .command(let instruction, let result):
             guard !postProcessing.isCancellationRequested else {
-                ClipboardHandoff.publish(transcript: transcript)
+                let transcriptID = UUID()
 
                 TranscriptStore.append(
+                    id: transcriptID,
                     raw: transcript,
                     cleaned: nil,
                     duration: duration
+                )
+
+                ClipboardHandoff.publish(
+                    transcript: transcript,
+                    autoCopiedTranscriptID: transcriptID
                 )
 
                 let preview = String(transcript.prefix(60))
@@ -260,18 +272,24 @@ enum DictationPipeline {
             // writer itself. Don't flip without one of those in place.
             // See `TranscriptHistoryMirror+SwiftData.swift` for the
             // equivalent note from the mirror side of the contract.
-            ClipboardHandoff.publish(transcript: result)
+            let transcriptID = UUID()
 
             if let priorID {
                 TranscriptStore.markSuperseded(id: priorID)
             }
 
             TranscriptStore.append(
+                id: transcriptID,
                 raw: transcript,
                 cleaned: result,
                 duration: duration,
                 derivedFrom: priorID,
                 instruction: instruction
+            )
+
+            ClipboardHandoff.publish(
+                transcript: result,
+                autoCopiedTranscriptID: transcriptID
             )
 
             let preview = String(result.prefix(60))

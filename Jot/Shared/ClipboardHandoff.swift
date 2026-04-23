@@ -12,6 +12,7 @@ enum ClipboardHandoff {
     /// Freshness window. After this, the keyboard treats the clipboard as
     /// unrelated to Jot even if it still contains the transcript.
     static let freshnessWindow: TimeInterval = 30
+    static let copyConfirmationWindow: TimeInterval = 1.3
 
     /// Atomic handoff payload. Persisted as a single JSON blob under one key so
     /// a keyboard read can never observe a half-updated pair (new timestamp with
@@ -21,16 +22,35 @@ enum ClipboardHandoff {
         let preview: String
     }
 
+    /// Auto-copy confirmation payload for the main app ledger row.
+    struct AutoCopyConfirmation: Codable, Sendable {
+        let transcriptID: UUID
+        let timestamp: Date
+    }
+
     /// Called by the main app after a successful dictation.
     /// Writes the transcript to the system clipboard and stamps App Group state.
-    static func publish(transcript: String) {
+    static func publish(transcript: String, autoCopiedTranscriptID: UUID? = nil) {
         UIPasteboard.general.string = transcript
+        let now = Date()
         let payload = FreshDictation(
-            timestamp: Date(),
+            timestamp: now,
             preview: String(transcript.prefix(80))
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         AppGroup.defaults.set(data, forKey: AppGroup.Keys.lastDictation)
+
+        if let autoCopiedTranscriptID {
+            let confirmation = AutoCopyConfirmation(
+                transcriptID: autoCopiedTranscriptID,
+                timestamp: now
+            )
+            guard let confirmationData = try? JSONEncoder().encode(confirmation) else { return }
+            AppGroup.defaults.set(
+                confirmationData,
+                forKey: AppGroup.Keys.lastAutoCopiedTranscript
+            )
+        }
     }
 
     /// Called by the keyboard extension on appearance.
@@ -51,5 +71,17 @@ enum ClipboardHandoff {
     /// re-offer on subsequent keyboard appearances.
     static func markConsumed() {
         AppGroup.defaults.removeObject(forKey: AppGroup.Keys.lastDictation)
+    }
+
+    static func pendingAutoCopyConfirmation() -> AutoCopyConfirmation? {
+        guard
+            let data = AppGroup.defaults.data(forKey: AppGroup.Keys.lastAutoCopiedTranscript),
+            let payload = try? JSONDecoder().decode(AutoCopyConfirmation.self, from: data)
+        else { return nil }
+
+        let age = Date().timeIntervalSince(payload.timestamp)
+        guard age >= 0, age < copyConfirmationWindow else { return nil }
+
+        return payload
     }
 }

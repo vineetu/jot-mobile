@@ -26,6 +26,7 @@ enum AppGroup {
         // two-key pair so the keyboard extension can't observe a torn write
         // (new timestamp + stale preview, or vice versa).
         static let lastDictation = "jot.lastDictation"
+        static let lastAutoCopiedTranscript = "jot.lastAutoCopiedTranscript"
 
         // User-configurable cleanup behavior, shared between main app and keyboard.
         static let cleanupEnabled = "jot.cleanup.enabled"
