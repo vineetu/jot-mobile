@@ -695,14 +695,14 @@ struct ContentView: View {
                 if shouldShowInitialFollowUpDiscoveryRow(for: cluster.root) {
                     followUpDiscoveryRow(
                         title: "FOLLOW · \(Int(ChainedFollowUp.freshnessWindow))S TO REWRITE THIS",
-                        message: "— try: \"make it friendlier\" or \"make it shorter\" —",
-                        accessibilityLabel: "Follow. \(Int(ChainedFollowUp.freshnessWindow)) seconds to rewrite this. Try make it friendlier or make it shorter."
+                        message: "— start with: \(CleanupService.discoveryCommandExamples.joined(separator: ", ")) —",
+                        accessibilityLabel: "Follow. \(Int(ChainedFollowUp.freshnessWindow)) seconds to rewrite this. Start with \(CleanupService.discoveryCommandExamples.joined(separator: ", "))."
                     )
                 } else if shouldShowContextualCorrectionRow(for: cluster.root) {
                     followUpDiscoveryRow(
                         title: "NEW DICTATION",
-                        message: "— saved as a new entry. to rewrite previous, try \"change that to…\" or \"make it…\" —",
-                        accessibilityLabel: "New dictation. Saved as a new entry. To rewrite previous, try change that to or make it."
+                        message: "— saved as new. to rewrite previous, start with: \(CleanupService.contextualCorrectionExamples.joined(separator: " / ")) —",
+                        accessibilityLabel: "New dictation. Saved as new. To rewrite previous, start with \(CleanupService.contextualCorrectionExamples.joined(separator: ", "))."
                     )
                 }
                 ForEach(cluster.descendants) { child in

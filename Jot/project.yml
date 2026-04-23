@@ -168,6 +168,20 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
 
+  JotTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Jot
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jot.mobile.Jot.Tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+
 schemes:
   Jot:
     build:
@@ -177,6 +191,8 @@ schemes:
       config: Debug
     test:
       config: Debug
+      targets:
+        - JotTests
     profile:
       config: Release
     analyze:
