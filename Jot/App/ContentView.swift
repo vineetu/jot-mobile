@@ -613,26 +613,33 @@ struct ContentView: View {
     private var parakeetWarmupGhostNote: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                TimelineView(.periodic(from: warmupGhostStartDate ?? .now, by: 1)) { context in
-                    Text("WARMING · \(warmupElapsedSeconds(at: context.date))S")
-                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                        .tracking(2)
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.42))
-                }
+                Text("WARMING")
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(.white.opacity(0.42))
 
                 Spacer(minLength: 8)
 
-                Button {
-                    warmupGhostDismissed = true
-                } label: {
-                    Text("DISMISS")
-                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                        .tracking(2)
-                        .foregroundStyle(.white.opacity(0.55))
+                HStack(spacing: 12) {
+                    TimelineView(.periodic(from: warmupGhostStartDate ?? .now, by: 1)) { context in
+                        Text("\(warmupCountdownSeconds(at: context.date))S")
+                            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                            .tracking(2)
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+
+                    Button {
+                        warmupGhostDismissed = true
+                    } label: {
+                        Text("[ DISMISS ]")
+                            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                            .tracking(2)
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss warming note")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss warming note")
             }
 
             Text("— first transcription may take ~30s —")
@@ -645,7 +652,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Warming. \(warmupElapsedSeconds()) seconds elapsed. First transcription may take about 30 seconds."
+            "Warming. \(warmupCountdownSeconds()) seconds remaining. First transcription may take about 30 seconds."
         )
     }
 
@@ -656,6 +663,10 @@ struct ContentView: View {
     private func warmupElapsedSeconds(at date: Date = .now) -> Int {
         guard let warmupGhostStartDate else { return 0 }
         return max(0, Int(date.timeIntervalSince(warmupGhostStartDate).rounded(.down)))
+    }
+
+    private func warmupCountdownSeconds(at date: Date = .now) -> Int {
+        max(0, 30 - warmupElapsedSeconds(at: date))
     }
 
     private func handleWarmupGhostTransition(to state: TranscriptionService.ModelState) {
