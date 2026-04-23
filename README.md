@@ -1,63 +1,108 @@
-# Jot Mobile — iOS 26 Experiment
+# Jot
 
-A throwaway iOS app to verify three architectural bets before committing to a full Jot iOS port:
+> **Speak, and it's written. Speak again, and it's rewritten.**
 
-1. **Parakeet TDT 0.6B v3 runs on iPhone Neural Engine** — via FluidAudio, same stack as the Mac app
-2. **Apple Foundation Models (iOS 26) do a good job cleaning up rambly speech** — one API call, free, on-device
-3. **The "hybrid keyboard" UX is possible** — main app records, keyboard extension smart-pastes from clipboard. Nobody has shipped this pattern.
+Native iOS dictation. Tap the mic, speak, and the transcript lands on your clipboard — ready to paste anywhere. Then speak again within 30 seconds to rewrite it with your voice. Entirely on-device. No cloud. No accounts. No telemetry.
 
-If all three work, we have a real product wedge vs Wispr Flow (cloud, bouncing) and Google AI Edge Eloquent (on-device but app-confined, no system integration).
+## How it works
 
-## Scope — explicitly minimal
+**1. Tap the mic.** From inside the app, the Dynamic Island, or your Jot keyboard.
 
-This is NOT a port of `JOT-Transcribe`. This is a separate sandbox that shares **only** the transcription engine choice and the cleanup philosophy. Once the experiments answer go/no-go, we decide whether to:
-- fold this into the Mac repo as a second target,
-- keep it as a standalone iOS product, or
-- scrap it and ship only on Mac.
+**2. Speak naturally.** The pill shows amplitude in real time. No length limits. Cancel any time.
 
-## Out of scope for this experiment
+**3. Transcript lands on your clipboard.** Paste it into Messages, Notes, Slack — any app.
 
-- Polished UI, Live Activities beyond a bare pill, app icons, onboarding, settings sync, library/history, sharing across devices. Those come AFTER go/no-go.
-- Android. Parakeet requires Apple Neural Engine — this is an Apple-only bet.
-- Pre-iOS-26 devices. Apple Foundation Models require iOS 26 + Apple Intelligence (iPhone 15 Pro and later, M-series iPad). That's the target cohort.
+**4. (Optional) Speak a follow-up.** Within 30 seconds, say *"make it friendlier"* or *"make it shorter"* and Jot rewrites the previous transcript in place. No typing, no re-speaking from scratch.
 
-## Platform targets
+## Capabilities
 
-| | Version | Rationale |
-|---|---|---|
-| iOS deployment target | **26.0** | SpeechAnalyzer + Foundation Models framework |
-| Xcode | 26 beta or later | iOS 26 SDK |
-| Swift | 6.0+ | Strict concurrency |
-| Devices | iPhone 15 Pro, 16, 17 series; M-series iPad | Apple Intelligence required |
+**On-device privacy.** Audio is transcribed locally on the Apple Neural Engine using [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) via [FluidAudio](https://github.com/FluidInference/FluidAudio). Nothing crosses the network. Run Little Snitch — you'll see silence during transcription.
+
+**Voice-driven follow-up.** A 30-second window after every dictation turns your next utterance into a potential rewrite command. An on-device LLM (Apple Foundation Models) classifies *command* vs *new dictation*. A deterministic pre-classifier catches obvious command shapes ("change that to...", "make it...") without an LLM round-trip. No network, no leak.
+
+**Full-access keyboard.** A custom keyboard extension with one-tap paste from your transcript history. Switch to the Jot keyboard from any app, insert a previous transcript without leaving.
+
+**Live Activity + Dynamic Island.** Recording status, transcribing progress, and the 30-second follow-up countdown are visible from any screen on the system. Tap to dismiss the follow-up window without opening the app.
+
+**Transcript history.** Every dictation is saved on-device (SwiftData). Your history stays with you; nothing syncs anywhere.
+
+**Honest UX.** Chrome is monospaced, tracked caps, em-dash wraps. Status is a ghost ledger note, not a toast. The UI reads like a terminal log, not a setup wizard — because one more permission prompt is not a feature.
+
+## Innovations
+
+**Chained follow-up as voice-driven editing.** Most dictation apps hand you raw text. Jot lets you iterate on it by speaking — the 30-second window is an editing mode in disguise. "A second thought" becomes a clean rewrite, classified locally, applied to the previous transcript in place.
+
+**Ledger aesthetic.** Inspired by terminal logs: monospaced fonts, tracked caps for system labels (`READY`, `PROC`, `CLEAN`, `FOLLOW`), em-dash wraps for placeholder voice (`— no entries —`), muted gray hierarchy, amber only for the recording dot.
+
+**Cold-load honesty.** The first transcription after launching Jot takes ~19 seconds to load Parakeet into the Neural Engine. Instead of lying about it, Jot shows a ghost ledger note:
+
+```
+WARMING
+— first transcription may take ~20s —
+```
+
+Reactive to actual model state. Vanishes instantly when the load completes. Subsequent recordings are ~100ms.
+
+## What's coming
+
+### Background model warming
+
+Core ML's ANE-compiled cache persists across app launches and device reboots (per [WWDC23 session 10049](https://developer.apple.com/videos/play/wwdc2023/10049/)). We're building a `BGProcessingTask` that wakes Jot periodically to keep that cache primed — so after the very first use, every cold launch becomes a warm load.
+
+### Action Button (with an honest platform caveat)
+
+The dream: **press the Action Button → mic starts instantly → no app visible → paste the transcript when you're done.** Zero bounce.
+
+**What works today:**
+
+- iOS 18+ `AudioRecordingIntent` promotes the intent's `perform()` into the main app process
+- `NSSupportsLiveActivities` declared, Live Activity starts cleanly
+- iOS recognizes Jot as actively recording; the audio session activates without foregrounding
+
+**What doesn't (yet):** `AVAudioEngine.start()` fails with OSStatus `'what'` (2003329396 — "invalid state") when the app is `running-active-NotVisible`. The same session configuration succeeds while visible. Same process. Same session ID. The only delta is process visibility.
+
+Apple DTS [thread 65604](https://developer.apple.com/forums/thread/65604) (Quinn "The Eskimo!") confirms the rule:
+
+> *"The audio background support only allows you to continue using an audio session that you created in the foreground; it does not allow you to start a session from the background."*
+
+The limit is at the `AVAudioSession` layer. `AVAudioRecorder` hits the same rule — we researched it. The Action Button path promotes your process and registers you as recording, but Apple doesn't grant a *cold-start* exception.
+
+**Current fallback:** Action Button bound to `DictateIntent` (`openAppWhenRun = true`) briefly bounces the app, records, returns. It works; it's just not zero-bounce.
+
+**Research lanes we're watching:**
+
+- `BGContinuedProcessingTask` (iOS 26+) — foreground-start, background-continue. Might allow a stealth foreground flicker that reads as zero-bounce.
+- Pre-established engine — keep a recording-ready session alive across app launches via the audio background mode.
+- iOS releases — Apple may ease the restriction in a future version.
+
+We're not shipping a zero-bounce Action Button until it actually works on the current platform. No vapor.
+
+## Tech
+
+Swift 6 · SwiftUI + UIKit interop · SwiftData · [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet TDT 0.6B v3) · Apple Foundation Models · ActivityKit · `AVAudioEngine` + `AVAudioConverter` (16 kHz mono Float32) · Custom keyboard extension with Full Access
+
+## Requirements
+
+- Apple Silicon iPhone (iPhone 15 Pro or later — Apple Intelligence + ANE required)
+- iOS 26.0+
 
 ## Build
 
-We use [XcodeGen](https://github.com/yonaskolb/XcodeGen) so the project is reproducible from a YAML spec and plays well with git.
+Jot is reproducible from [XcodeGen](https://github.com/yonaskolb/XcodeGen) specs so the Xcode project stays out of git.
 
 ```bash
-# One-time
 brew install xcodegen
-
-# Generate the Xcode project (re-run any time project.yml changes)
-cd Jot
-xcodegen
-
-# Open
+cd Jot/
+xcodegen              # regenerate the Xcode project from project.yml
 open Jot.xcodeproj
 ```
 
-Then in Xcode: select a real device (Simulator does NOT support Apple Neural Engine — Parakeet won't work), sign with your team, build & run.
+Then pick a real device (the Simulator doesn't have the Neural Engine, so Parakeet won't run), sign with your Apple ID team, and build.
 
-## Targets
+## Related
 
-1. **Jot** — main iOS app. Records, transcribes, optionally cleans up, copies to clipboard.
-2. **JotKeyboard** — custom keyboard extension. Zero ML. Reads a "fresh dictation" signal from App Group; if present, shows a one-tap "Paste transcription" affordance OR auto-inserts (toggleable).
-3. **JotWidget** — widget extension that hosts a Live Activity for in-flight recording (the Dynamic Island pill).
+- [**Jot for macOS**](https://jot.ideaflow.page) — the desktop sibling: press a hotkey, speak, text appears at your cursor. Same transcription engine, different surface.
 
-## Test plan — see `EXPERIMENTS.md`
+## License
 
-Four experiments, each with a pass/fail criterion. If any fail, we stop and reconsider.
-
-## What this repo is NOT
-
-A production-quality iOS app. The point is to answer questions. Code is deliberately minimal, comments are sparse, error handling is "print and continue". Resist the urge to polish before the experiments pass.
+TBD
