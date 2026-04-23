@@ -81,7 +81,8 @@ struct ContentView: View {
     @State private var handledAutoCopyIDs: Set<UUID> = []
     @State private var warmupGhostStartDate: Date?
     @State private var warmupGhostDismissed = false
-    @AppStorage("followUpDiscoveryState") private var followUpDiscoveryStateRaw = "unseen"
+    @AppStorage(FollowUpDiscoveryStore.key) private var followUpDiscoveryStateRaw =
+        FollowUpDiscoveryState.unseen.rawValue
 
     /// Per-transcript expansion for LONG individual transcripts. When a
     /// transcript's body exceeds `collapsedRowLineLimit` lines, it renders
@@ -117,12 +118,6 @@ struct ContentView: View {
     /// opens them. This is count-based, not time-based, so dense rapid-fire
     /// follow-ups collapse predictably.
     private let autoExpandedClusterBudget = 1
-
-    private enum FollowUpDiscoveryState: String {
-        case unseen
-        case dismissed
-        case learned
-    }
 
     // MARK: Body
 
@@ -688,8 +683,18 @@ struct ContentView: View {
         } else {
             VStack(spacing: 0) {
                 rootRow(cluster.root, isSuperseded: cluster.isSuperseded)
-                if shouldShowFollowUpDiscoveryRow(for: cluster.root) {
-                    followUpDiscoveryRow
+                if shouldShowInitialFollowUpDiscoveryRow(for: cluster.root) {
+                    followUpDiscoveryRow(
+                        title: "FOLLOW · \(Int(ChainedFollowUp.freshnessWindow))S TO REWRITE THIS",
+                        message: "— try: \"make it friendlier\" or \"make it shorter\" —",
+                        accessibilityLabel: "Follow. \(Int(ChainedFollowUp.freshnessWindow)) seconds to rewrite this. Try make it friendlier or make it shorter."
+                    )
+                } else if shouldShowContextualCorrectionRow(for: cluster.root) {
+                    followUpDiscoveryRow(
+                        title: "NEW DICTATION",
+                        message: "— saved as a new entry. to rewrite previous, try \"change that to…\" or \"make it…\" —",
+                        accessibilityLabel: "New dictation. Saved as a new entry. To rewrite previous, try change that to or make it."
+                    )
                 }
                 ForEach(cluster.descendants) { child in
                     descendantDivider
@@ -978,10 +983,14 @@ struct ContentView: View {
         .padding(.top, 2)
     }
 
-    private var followUpDiscoveryRow: some View {
+    private func followUpDiscoveryRow(
+        title: String,
+        message: String,
+        accessibilityLabel: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Text("FOLLOW · \(Int(ChainedFollowUp.freshnessWindow))S TO REWRITE THIS")
+                Text(title)
                     .font(.system(size: 10, weight: .heavy, design: .monospaced))
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.55))
@@ -998,7 +1007,7 @@ struct ContentView: View {
                 .accessibilityLabel("Dismiss follow-up help")
             }
 
-            Text("— try: \"make it friendlier\" or \"make it shorter\" —")
+            Text(message)
                 .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                 .tracking(2)
                 .foregroundStyle(.white.opacity(0.45))
@@ -1006,9 +1015,7 @@ struct ContentView: View {
         }
         .padding(.top, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "Follow. \(Int(ChainedFollowUp.freshnessWindow)) seconds to rewrite this. Try make it friendlier or make it shorter."
-        )
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private func copyButton(entry: Transcript) -> some View {
@@ -1034,8 +1041,24 @@ struct ContentView: View {
         .contentTransition(.opacity)
     }
 
-    private func shouldShowFollowUpDiscoveryRow(for entry: Transcript) -> Bool {
-        guard followUpDiscoveryState == .unseen else { return false }
+    private func shouldShowInitialFollowUpDiscoveryRow(for entry: Transcript) -> Bool {
+        guard followUpDiscoveryState == .awaitingFirstFollowUp else { return false }
+        guard canShowFollowUpDiscoveryRow(for: entry) else { return false }
+        return !entry.isDerived
+    }
+
+    private func shouldShowContextualCorrectionRow(for entry: Transcript) -> Bool {
+        guard followUpDiscoveryState == .awaitingContextAck else { return false }
+        guard canShowFollowUpDiscoveryRow(for: entry) else { return false }
+        guard !entry.isDerived else { return false }
+        guard let previousEntry = transcripts.dropFirst().first else { return false }
+        let gap = entry.createdAt.timeIntervalSince(previousEntry.createdAt)
+        return gap >= 0 && gap <= ChainedFollowUp.freshnessWindow
+    }
+
+    private func canShowFollowUpDiscoveryRow(for entry: Transcript) -> Bool {
+        guard transcriptionService.modelState == .ready else { return false }
+        guard phase == .idle else { return false }
         guard activityCoordinator.isFollowUpActive else { return false }
         guard entry.id == transcripts.first?.id else { return false }
         return !entry.isDerived
@@ -1092,7 +1115,7 @@ struct ContentView: View {
 
     private func dismissFollowUpWindow() {
         lifecycleLog.info("dismissFollowUpWindow — forwarding dismiss to activity coordinator")
-        if followUpDiscoveryState == .unseen {
+        if followUpDiscoveryState != .learned {
             followUpDiscoveryState = .dismissed
         }
         Task { @MainActor in
@@ -1103,9 +1126,6 @@ struct ContentView: View {
 
     private func startRecording() {
         lifecycleLog.info("startRecording — dispatching to RecordingService.start()")
-        if followUpDiscoveryState == .unseen, activityCoordinator.isFollowUpActive {
-            followUpDiscoveryState = .learned
-        }
         activeTask?.cancel()
         activeTask = Task {
             do {

@@ -215,6 +215,11 @@ enum DictationPipeline {
                 duration: duration
             )
 
+            updateFollowUpDiscoveryState(
+                wasFollowUpUtterance: uiFollowUpActive,
+                resolvedAsCommand: false
+            )
+
             ClipboardHandoff.publish(
                 transcript: finalText,
                 autoCopiedTranscriptID: transcriptID
@@ -232,6 +237,11 @@ enum DictationPipeline {
                     raw: transcript,
                     cleaned: nil,
                     duration: duration
+                )
+
+                updateFollowUpDiscoveryState(
+                    wasFollowUpUtterance: uiFollowUpActive,
+                    resolvedAsCommand: false
                 )
 
                 ClipboardHandoff.publish(
@@ -287,6 +297,11 @@ enum DictationPipeline {
                 instruction: instruction
             )
 
+            updateFollowUpDiscoveryState(
+                wasFollowUpUtterance: uiFollowUpActive,
+                resolvedAsCommand: true
+            )
+
             ClipboardHandoff.publish(
                 transcript: result,
                 autoCopiedTranscriptID: transcriptID
@@ -297,6 +312,24 @@ enum DictationPipeline {
                 instruction: instruction,
                 preview: preview
             )
+        }
+    }
+
+    private static func updateFollowUpDiscoveryState(
+        wasFollowUpUtterance: Bool,
+        resolvedAsCommand: Bool
+    ) {
+        switch FollowUpDiscoveryStore.state {
+        case .dismissed, .learned:
+            return
+        case .unseen where !wasFollowUpUtterance:
+            FollowUpDiscoveryStore.state = .awaitingFirstFollowUp
+        case .unseen, .awaitingFirstFollowUp, .awaitingContextAck where wasFollowUpUtterance:
+            FollowUpDiscoveryStore.state = resolvedAsCommand ? .learned : .awaitingContextAck
+        case .awaitingFirstFollowUp, .awaitingContextAck:
+            break
+        case .learned, .dismissed:
+            break
         }
     }
 }
