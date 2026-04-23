@@ -127,13 +127,7 @@ struct ContentView: View {
 
             log
 
-            VStack(spacing: 8) {
-                if transcriptionService.modelState != .ready {
-                    parakeetWarmupBanner
-                }
-
-                pill
-            }
+            pill
             .padding(.bottom, 10)
             .padding(.horizontal, 14)
         }
@@ -233,31 +227,6 @@ struct ContentView: View {
             .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
             .animation(.spring(response: 0.42, dampingFraction: 0.85), value: phase)
         }
-    }
-
-    private var parakeetWarmupBanner: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .tint(amber)
-
-            Text("Warming up Parakeet model. First transcription may take up to 20 seconds.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.74))
-                .multilineTextAlignment(.center)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Warming up Parakeet model. First transcription may take up to 20 seconds.")
     }
 
     private var settingsDivider: some View {
@@ -560,8 +529,14 @@ struct ContentView: View {
                 // eyebrow into the notch / Dynamic Island."
                 Spacer().frame(height: 20)
 
-                if transcripts.isEmpty && errorMessage == nil {
-                    emptyState
+                if transcripts.isEmpty {
+                    if transcriptionService.modelState != .ready {
+                        parakeetWarmupGhostNote
+                    }
+
+                    if errorMessage == nil {
+                        emptyState
+                    }
                 } else {
                     ForEach(Array(clusters.enumerated()), id: \.element.id) { index, cluster in
                         clusterBlock(cluster, at: index)
@@ -580,6 +555,10 @@ struct ContentView: View {
                     errorCard(errorMessage)
                 }
 
+                if !transcripts.isEmpty, transcriptionService.modelState != .ready {
+                    parakeetWarmupGhostNote
+                }
+
                 // Bottom clearance for the pill. 76pt ≈ pill height (52pt) +
                 // bottom padding (10pt) + breathing room (14pt). Keeps the
                 // newest transcript from visually tucking under the pill's
@@ -595,6 +574,25 @@ struct ContentView: View {
         // user lands already looking at their most recent dictation,
         // adjacent to the pill they're about to press for the next one.
         .defaultScrollAnchor(.bottom)
+    }
+
+    private var parakeetWarmupGhostNote: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("WARMING")
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.42))
+
+            Text("— first transcription may take ~20s —")
+                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Warming. First transcription may take about 20 seconds.")
     }
 
     @ViewBuilder
