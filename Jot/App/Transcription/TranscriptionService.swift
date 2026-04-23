@@ -94,6 +94,7 @@ final class TranscriptionService {
     private(set) var modelState: ModelState = .notLoaded
 
     private let log = Logger(subsystem: "com.jot.mobile.Jot", category: "transcription")
+    private let backgroundWarmLog = Logger(subsystem: "com.jot.mobile.Jot", category: "background-warm")
     private let signposter = OSSignposter(subsystem: "com.jot.mobile.Jot", category: "transcription")
 
     private let version: AsrModelVersion = .v3
@@ -171,6 +172,63 @@ final class TranscriptionService {
     func warmUp() {
         log.info("Parakeet warmUp requested — modelState=\(Self.describe(self.modelState), privacy: .public)")
         _ = ensurePreparing()
+    }
+
+    func warmUpInBackground() async -> Bool {
+        if self.modelState == .ready {
+            self.backgroundWarmLog.info("BG warm no-op — model already ready")
+            return true
+        }
+
+        let directory = Self.modelDirectory(repoFolder: self.repoFolderName)
+        let modelsOnDisk = AsrModels.modelsExist(at: directory, version: self.version)
+        guard modelsOnDisk else {
+            self.backgroundWarmLog.info(
+                "BG warm skipped — models missing directory=\(directory.path, privacy: .public)"
+            )
+            return false
+        }
+
+        let startedAt = Date()
+        self.backgroundWarmLog.info(
+            "BG warm prepare begin — startedAt=\(Self.timestamp(startedAt), privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public) directory=\(directory.path, privacy: .public)"
+        )
+
+        do {
+            try await self.ensurePreparing().value
+            let endedAt = Date()
+            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
+            self.backgroundWarmLog.info(
+                "BG warm prepare end — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
+            )
+            return true
+        } catch is CancellationError {
+            let endedAt = Date()
+            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
+            self.backgroundWarmLog.notice(
+                "BG warm prepare cancelled — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public)"
+            )
+            return false
+        } catch {
+            let endedAt = Date()
+            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
+            self.backgroundWarmLog.error(
+                "BG warm prepare failed — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+    }
+
+    func cancelBackgroundWarm() {
+        guard self.modelState != .ready else { return }
+        self.backgroundWarmLog.notice(
+            "BG warm cancellation requested — modelState=\(Self.describe(self.modelState), privacy: .public)"
+        )
+        self.prepareTask?.cancel()
+        self.prepareTask = nil
+        if self.manager == nil {
+            self.modelState = .notLoaded
+        }
     }
 
     // MARK: - Sample-based inference (in-app record flow)

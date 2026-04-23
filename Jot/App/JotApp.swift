@@ -1,11 +1,13 @@
 import SwiftUI
 import SwiftData
 import os.log
+import UIKit
 
 private let lifecycleLog = Logger(subsystem: "com.jot.mobile.Jot", category: "app-lifecycle")
 
 @main
 struct JotApp: App {
+    @UIApplicationDelegateAdaptor(JotAppDelegate.self) private var appDelegate
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var cleanupService: CleanupService

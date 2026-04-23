@@ -63,6 +63,9 @@ targets:
         NSSupportsLiveActivities: YES
         UIBackgroundModes:
           - audio
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.jot.mobile.Jot.warm-parakeet
         LSApplicationQueriesSchemes:
           - messages
         CFBundleURLTypes:
@@ -78,6 +81,7 @@ targets:
       - package: FluidAudio
         product: FluidAudio
       - sdk: AppIntents.framework
+      - sdk: BackgroundTasks.framework
       - target: JotKeyboard
       - target: JotWidget
     settings:
