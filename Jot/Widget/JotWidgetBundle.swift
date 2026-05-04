@@ -7,7 +7,6 @@ import WidgetKit
 /// we only ship the Live Activity — if we later add a home-screen or lock
 /// screen widget, list it here too.
 @main
-@available(iOS 16.2, *)
 struct JotWidgetBundle: WidgetBundle {
     var body: some Widget {
         JotLiveActivity()

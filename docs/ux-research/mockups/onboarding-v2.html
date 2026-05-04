@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<!--
+  Variant 2 — "Superwhisper-inspired"
+  Thesis: Soft monochrome (slate / off-white), hairline strokes, single-line glyphs,
+  model-status card with a Superwhisper-like material treatment, restrained motion
+  implied through subtle gradients. A less-stock, more product-flavored take while
+  staying Apple-respectful.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot Onboarding — V2 Superwhisper-inspired</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    --bg-page: #f6f6f4;
+    --bg-card: #ffffff;
+    --bg-card-2: #fafaf8;
+    --label: #111113;
+    --label-secondary: #5a5a5f;
+    --label-tertiary: #9a9a9f;
+    --hairline: rgba(17,17,19,0.08);
+    --hairline-strong: rgba(17,17,19,0.14);
+    --accent: #111113;
+    --accent-soft: rgba(17,17,19,0.05);
+    --green: #34a853;
+    --red: #c93636;
+    --amber: #c98a1a;
+    --mono-fill: #f1f1ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-page: #0e0e10;
+      --bg-card: #18181b;
+      --bg-card-2: #131316;
+      --label: #f5f5f3;
+      --label-secondary: #a3a3a8;
+      --label-tertiary: #6a6a6f;
+      --hairline: rgba(255,255,255,0.08);
+      --hairline-strong: rgba(255,255,255,0.16);
+      --accent: #f5f5f3;
+      --accent-soft: rgba(255,255,255,0.06);
+      --mono-fill: #1f1f22;
+    }
+    body { background: #060607; }
+    .device { box-shadow: 0 0 0 1px #2b2b2f, 0 30px 60px rgba(0,0,0,.6); }
+    .step-card { box-shadow: 0 0 0 0.5px var(--hairline); }
+  }
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #ebebe7;
+  }
+  .device {
+    width: 393px;
+    background: var(--bg-page);
+    color: var(--label);
+    border-radius: 56px;
+    box-shadow: 0 0 0 1px #d6d6d2, 0 30px 60px rgba(0,0,0,.18);
+    overflow: hidden;
+    position: relative;
+  }
+  .notch {
+    position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+    width: 126px; height: 37px; background: #000; border-radius: 20px; z-index: 20;
+  }
+  .status-bar {
+    height: 54px; padding: 18px 32px 0; display: flex; align-items: center;
+    justify-content: space-between; font-size: 17px; font-weight: 600;
+  }
+  .step-caption {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--label-tertiary); padding: 0 24px; margin: 32px 0 10px;
+  }
+  .step-card {
+    background: var(--bg-card);
+    margin: 0 16px;
+    border-radius: 18px;
+    padding: 28px 22px;
+    box-shadow: 0 0 0 0.5px var(--hairline);
+  }
+  .step-card-soft {
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-card-2) 100%);
+  }
+  .hairline { height: 1px; background: var(--hairline); }
+  .step-separator {
+    height: 1px; background: var(--hairline); margin: 0 24px;
+  }
+  .btn-primary {
+    background: var(--accent); color: var(--bg-card); width: 100%;
+    padding: 14px; border-radius: 12px; font-size: 15px; font-weight: 500;
+    text-align: center; letter-spacing: -0.01em;
+  }
+  .btn-secondary {
+    background: transparent; color: var(--label-secondary); width: 100%;
+    padding: 12px; font-size: 14px; font-weight: 400;
+    text-align: center;
+  }
+  .btn-ghost {
+    background: var(--accent-soft); color: var(--label); width: 100%;
+    padding: 13px; border-radius: 12px; font-size: 14px; font-weight: 500;
+    text-align: center;
+  }
+  .progress-track {
+    height: 3px; border-radius: 2px; background: var(--hairline-strong); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--label);
+    background-image: linear-gradient(90deg, var(--label) 0%, var(--label-secondary) 100%);
+  }
+  .glyph {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 44px; height: 44px; border-radius: 12px;
+    box-shadow: inset 0 0 0 1px var(--hairline-strong);
+    background: var(--bg-card-2);
+    color: var(--label);
+  }
+  .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--label-secondary);
+    font-size: 11px; font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 13px 0; min-height: 44px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .row:last-child { border-bottom: none; }
+  .toggle-on {
+    width: 36px; height: 20px; background: var(--label); border-radius: 10px; position: relative;
+  }
+  .toggle-on::after {
+    content: ""; position: absolute; top: 2px; left: 18px; width: 16px; height: 16px;
+    background: var(--bg-card); border-radius: 50%;
+  }
+  .page-bg { background: var(--bg-page); padding-bottom: 32px; }
+  .status-card {
+    background: var(--mono-fill);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .alert {
+    background: var(--bg-card); border-radius: 18px; padding: 22px;
+    margin: 0 24px;
+    box-shadow: 0 0 0 0.5px var(--hairline-strong), 0 12px 30px rgba(0,0,0,.06);
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-10 gap-6">
+
+  <!-- Variant Caption -->
+  <div class="max-w-[393px] text-center px-4">
+    <h1 class="text-2xl font-semibold tracking-tight" style="color:#1d1d1f">Variant 2 — Superwhisper-inspired</h1>
+    <p class="text-sm mt-2" style="color:#6e6e73">
+      Soft monochrome ground, hairline strokes, mono captions for system labels, model-status card with a Superwhisper-like material treatment. Product-flavored, Apple-respectful.
+    </p>
+  </div>
+
+  <!-- Device -->
+  <div class="device">
+    <div class="notch"></div>
+
+    <div class="status-bar">
+      <span>9:41</span>
+      <span class="text-base">●●●● 5G ▮</span>
+    </div>
+
+    <div class="page-bg">
+
+      <!-- STEP 1 — Welcome -->
+      <div class="step-caption">01 / Welcome</div>
+      <div class="step-card step-card-soft">
+        <div class="flex items-center gap-3">
+          <div class="glyph" style="background:#000; color:#fff; box-shadow:none;">
+            <span class="text-lg font-semibold">J</span>
+          </div>
+          <span class="mono text-[11px]" style="color:var(--label-tertiary); letter-spacing:0.12em">JOT · ON-DEVICE DICTATION</span>
+        </div>
+        <h2 class="text-[30px] leading-[1.1] font-semibold tracking-tight mt-8">Speak.<br/>It's written.</h2>
+        <p class="text-[14px] mt-4 leading-relaxed" style="color:var(--label-secondary)">
+          A native iOS dictation utility. Tap the mic, speak naturally, and the transcript lands on your clipboard — entirely on your iPhone. No cloud, no accounts, no telemetry.
+        </p>
+        <div class="pt-8 space-y-2">
+          <button class="btn-primary">Get started</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 2 — Microphone permission -->
+      <div class="step-caption">02 / Microphone</div>
+      <div class="step-card">
+        <div class="flex items-start gap-3">
+          <div class="glyph">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </div>
+          <div class="flex-1">
+            <h2 class="text-[20px] font-semibold tracking-tight">Microphone access</h2>
+            <p class="text-[13px] mt-2 leading-relaxed" style="color:var(--label-secondary)">
+              Required for recording. Audio is transcribed locally on the Apple Neural Engine — never sent to a server.
+            </p>
+          </div>
+        </div>
+        <div class="pt-8 space-y-2">
+          <button class="btn-primary">Allow microphone</button>
+          <button class="btn-secondary">Skip for now</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 3 — Model download -->
+      <div class="step-caption">03 / Speech model</div>
+      <div class="step-card">
+        <div class="flex items-start gap-3">
+          <div class="glyph">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          </div>
+          <div class="flex-1">
+            <h2 class="text-[20px] font-semibold tracking-tight">Parakeet TDT 0.6B</h2>
+            <p class="text-[13px] mt-2 leading-relaxed" style="color:var(--label-secondary)">
+              Speech recognition runs on this device. Download once, use forever offline.
+            </p>
+          </div>
+        </div>
+
+        <div class="status-card mt-6">
+          <div class="flex items-center justify-between">
+            <span class="pill"><span class="dot" style="background:var(--amber)"></span> Downloading</span>
+            <span class="mono text-[12px]" style="color:var(--label-secondary)">19%</span>
+          </div>
+          <div class="progress-track mt-4"><div class="progress-fill" style="width:19%"></div></div>
+          <div class="flex justify-between mt-3">
+            <span class="mono text-[11px]" style="color:var(--label-tertiary)">240 MB · 1,250 MB</span>
+            <span class="mono text-[11px]" style="color:var(--label-tertiary)">~ 4 min remaining</span>
+          </div>
+          <div class="hairline my-4"></div>
+          <div class="flex items-center justify-between">
+            <span class="text-[13px]">Wi-Fi only</span>
+            <div class="toggle-on"></div>
+          </div>
+        </div>
+
+        <div class="pt-7 space-y-2">
+          <button class="btn-ghost">Cancel download</button>
+          <button class="btn-secondary">Skip for now</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 4 — Enable keyboard -->
+      <div class="step-caption">04 / Jot keyboard</div>
+      <div class="step-card">
+        <div class="flex items-start gap-3">
+          <div class="glyph">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h10"/></svg>
+          </div>
+          <div class="flex-1">
+            <h2 class="text-[20px] font-semibold tracking-tight">Enable Jot keyboard</h2>
+            <p class="text-[13px] mt-2 leading-relaxed" style="color:var(--label-secondary)">
+              Add Jot as a system keyboard so you can dictate from any app.
+            </p>
+          </div>
+        </div>
+
+        <div class="status-card mt-5">
+          <div class="row" style="border-color:var(--hairline)">
+            <span class="mono text-[11px]" style="color:var(--label-tertiary); width:18px">01</span>
+            <span class="text-[13px] flex-1 ml-2">Settings → General → <span class="mono">Keyboard</span></span>
+          </div>
+          <div class="row" style="border-color:var(--hairline)">
+            <span class="mono text-[11px]" style="color:var(--label-tertiary); width:18px">02</span>
+            <span class="text-[13px] flex-1 ml-2">Keyboards → Add New Keyboard</span>
+          </div>
+          <div class="row">
+            <span class="mono text-[11px]" style="color:var(--label-tertiary); width:18px">03</span>
+            <span class="text-[13px] flex-1 ml-2">Tap <strong>Jot</strong></span>
+          </div>
+        </div>
+
+        <div class="pt-7 space-y-2">
+          <button class="btn-primary">Open keyboard settings</button>
+          <button class="btn-secondary">Skip for now</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 5 — Allow Full Access -->
+      <div class="step-caption">05 / Full access</div>
+      <div class="step-card">
+        <div class="flex items-start gap-3">
+          <div class="glyph">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0"/></svg>
+          </div>
+          <div class="flex-1">
+            <h2 class="text-[20px] font-semibold tracking-tight">Allow Full Access</h2>
+            <p class="text-[13px] mt-2 leading-relaxed" style="color:var(--label-secondary)">
+              Required for the keyboard to read your transcripts and paste them. Without it, Jot can't deliver text.
+            </p>
+          </div>
+        </div>
+
+        <div class="status-card mt-5" style="background:var(--bg-card-2)">
+          <div class="flex items-start gap-2">
+            <span style="color:var(--green); font-size:13px">●</span>
+            <p class="text-[12px]" style="color:var(--label-secondary)">
+              <strong style="color:var(--label)">Privacy:</strong> Transcripts stay on this iPhone. No network requests, no telemetry. Run Little Snitch — you'll see silence.
+            </p>
+          </div>
+        </div>
+
+        <div class="pt-7 space-y-2">
+          <button class="btn-primary">Open keyboard settings</button>
+          <button class="btn-secondary">Skip for now</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 6 — Test dictation -->
+      <div class="step-caption">06 / Test dictation</div>
+      <div class="step-card">
+        <div class="flex items-start gap-3">
+          <div class="glyph">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+          </div>
+          <div class="flex-1">
+            <h2 class="text-[20px] font-semibold tracking-tight">Try it out</h2>
+            <p class="text-[13px] mt-2 leading-relaxed" style="color:var(--label-secondary)">
+              Tap the globe to switch to Jot, then tap the mic and speak.
+            </p>
+          </div>
+        </div>
+
+        <div class="mt-5 px-4 py-5 rounded-xl" style="background:var(--mono-fill); border:1px dashed var(--hairline-strong)">
+          <span class="mono text-[12px]" style="color:var(--label-tertiary)">— tap mic on Jot keyboard to test —</span>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3">
+          <span class="pill"><span class="dot" style="background:var(--label-tertiary)"></span> Idle</span>
+          <span class="text-[11px]" style="color:var(--label-tertiary)">Watching for keyboard input…</span>
+        </div>
+
+        <div class="pt-7 space-y-2">
+          <button class="btn-primary">Continue</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-2"></div>
+
+      <!-- STEP 7 — Done -->
+      <div class="step-caption">07 / Done</div>
+      <div class="step-card step-card-soft">
+        <div class="flex items-center gap-3">
+          <div class="glyph" style="background:var(--green); color:#fff; box-shadow:none">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+          </div>
+          <span class="mono text-[11px]" style="color:var(--label-tertiary); letter-spacing:0.12em">READY</span>
+        </div>
+        <h2 class="text-[24px] leading-tight font-semibold tracking-tight mt-6">You're set up</h2>
+        <p class="text-[14px] mt-3 leading-relaxed" style="color:var(--label-secondary)">
+          Tap the mic anywhere to dictate. Re-run setup, manage cleanup, or add vocabulary in Settings.
+        </p>
+
+        <div class="status-card mt-5" style="background:var(--bg-card)">
+          <div class="row">
+            <span class="text-[14px]">Re-run setup</span>
+            <span style="color:var(--label-tertiary)">›</span>
+          </div>
+          <div class="row">
+            <span class="text-[14px]">AI cleanup</span>
+            <span style="color:var(--label-tertiary)">›</span>
+          </div>
+          <div class="row">
+            <span class="text-[14px]">Vocabulary</span>
+            <span style="color:var(--label-tertiary)">›</span>
+          </div>
+          <div class="row">
+            <span class="text-[14px]">Help</span>
+            <span style="color:var(--label-tertiary)">›</span>
+          </div>
+        </div>
+
+        <div class="pt-7">
+          <button class="btn-primary">Take me to Jot</button>
+        </div>
+      </div>
+
+      <div class="step-separator my-4"></div>
+
+      <!-- ERROR STATE — Mic denied alert -->
+      <div class="step-caption" style="color:var(--red)">Recovery / Mic permission denied</div>
+      <div class="my-4">
+        <div class="alert">
+          <div class="flex items-start gap-3">
+            <div class="glyph" style="background:rgba(201,54,54,0.08); color:var(--red); box-shadow:inset 0 0 0 1px rgba(201,54,54,0.2)">!</div>
+            <div class="flex-1">
+              <h3 class="text-[16px] font-semibold">Microphone access is off</h3>
+              <p class="text-[12px] mt-2" style="color:var(--label-secondary)">
+                You won't be able to record until you turn it on in iOS Settings. Returning will refresh this screen automatically.
+              </p>
+            </div>
+          </div>
+          <div class="hairline my-5"></div>
+          <div class="space-y-2">
+            <button class="btn-primary">Open Settings</button>
+            <button class="btn-secondary">Skip for now</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="text-xs" style="color:#86868b">iPhone 15 Pro · 393 × 852 · light-dominant, dark-mode aware</div>
+
+</body>
+</html>

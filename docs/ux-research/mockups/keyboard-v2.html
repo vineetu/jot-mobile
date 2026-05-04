@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<!--
+  Jot iOS — Keyboard Variant 2: "Mic + Wispr-style status zone"
+
+  Thesis: Mic in the center, BUT with a 60pt status zone above it that morphs
+  across keyboard states. Idle shows "Tap mic to dictate" copy. Recording shows
+  the X / amplitude waveform / ✓ shape (Wispr Flow's recording-zone pattern,
+  adapted from desktop). Selection shows the 3 preset prompt chips. Gives users
+  state feedback INSIDE the keyboard itself — no need to look at the Dynamic
+  Island or a Live Activity.
+
+  References:
+   - Wispr Flow (iOS): X / waveform / ✓ recording-zone shape, mic placement
+     https://docs.wisprflow.ai/articles/7453988911-set-up-the-flow-keyboard-on-iphone
+   - Superwhisper (Mac, primary visual reference): monochrome status copy
+     ("Transcribing on Parakeet…", not "Loading…"), warm-resume restraint
+     https://superwhisper.com/
+
+  Liquid Glass usage: applied to the status zone itself — this IS where it earns
+  its keep, per the constraint. The status zone is the only chrome that benefits
+  from the depth/blur/translucency.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jot Keyboard — V2: Mic + Status Zone</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg-primary: #FFFFFF;
+      --bg-secondary: #F2F2F7;
+      --bg-tertiary: #FFFFFF;
+      --bg-keyboard: #D1D4DB;
+      --label-primary: #000000;
+      --label-secondary: rgba(60, 60, 67, 0.60);
+      --label-tertiary: rgba(60, 60, 67, 0.30);
+      --label-quaternary: rgba(60, 60, 67, 0.18);
+      --separator: rgba(60, 60, 67, 0.29);
+      --separator-opaque: #C6C6C8;
+      --tint: #007AFF;
+      --bubble-incoming: #E9E9EB;
+      --bubble-outgoing: #007AFF;
+      --warm-ring: rgba(0, 122, 255, 0.55);
+
+      --glass-bg: rgba(255, 255, 255, 0.55);
+      --glass-stroke: rgba(255, 255, 255, 0.65);
+      --glass-shadow: 0 1px 0 rgba(255,255,255,0.40) inset, 0 8px 22px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-primary: #000000;
+        --bg-secondary: #1C1C1E;
+        --bg-tertiary: #2C2C2E;
+        --bg-keyboard: #2A2A2C;
+        --label-primary: #FFFFFF;
+        --label-secondary: rgba(235, 235, 245, 0.60);
+        --label-tertiary: rgba(235, 235, 245, 0.30);
+        --label-quaternary: rgba(235, 235, 245, 0.18);
+        --separator: rgba(84, 84, 88, 0.65);
+        --separator-opaque: #38383A;
+        --tint: #0A84FF;
+        --bubble-incoming: #26252A;
+        --bubble-outgoing: #0A84FF;
+        --warm-ring: rgba(10, 132, 255, 0.55);
+
+        --glass-bg: rgba(58, 58, 60, 0.50);
+        --glass-stroke: rgba(255, 255, 255, 0.10);
+        --glass-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 8px 22px rgba(0,0,0,0.40), 0 0 0 0.5px rgba(0,0,0,0.40);
+      }
+    }
+    * { -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+      background: #0B0B0C;
+      color: #E5E5E7;
+    }
+    .device {
+      width: 393px;
+      height: 852px;
+      border-radius: 55px;
+      background: var(--bg-primary);
+      box-shadow: 0 0 0 10px #1A1A1C, 0 30px 80px rgba(0,0,0,0.55);
+      overflow: hidden;
+      position: relative;
+      color: var(--label-primary);
+    }
+    .device-frame-row {
+      display: flex; gap: 32px; align-items: flex-start;
+    }
+    .island {
+      position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+      width: 126px; height: 37px; background: #000; border-radius: 20px; z-index: 50;
+    }
+    .status-bar {
+      height: 54px; padding: 18px 32px 0 32px;
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 17px; font-weight: 600; color: var(--label-primary);
+    }
+    .nav-bar {
+      height: 88px; border-bottom: 0.5px solid var(--separator);
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+      padding-bottom: 8px; background: var(--bg-primary);
+    }
+    .nav-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: linear-gradient(135deg, #8E8E93, #636366);
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 12px; font-weight: 600;
+    }
+    .nav-name { font-size: 11px; color: var(--label-secondary); margin-top: 2px; }
+    .nav-back {
+      position: absolute; left: 16px; bottom: 12px;
+      color: var(--tint); font-size: 17px;
+    }
+    .convo {
+      padding: 12px 12px;
+      display: flex; flex-direction: column; gap: 6px;
+      background: var(--bg-primary);
+      flex: 1; overflow: hidden;
+    }
+    .bubble {
+      max-width: 75%; padding: 8px 12px; border-radius: 18px;
+      font-size: 15px; line-height: 1.3;
+    }
+    .bubble.in { background: var(--bubble-incoming); color: var(--label-primary); align-self: flex-start; }
+    .bubble.out { background: var(--bubble-outgoing); color: white; align-self: flex-end; }
+    .bubble.selected {
+      background: var(--bubble-incoming); color: var(--label-primary); align-self: flex-start;
+      box-shadow: 0 0 0 2px var(--tint);
+    }
+    .bubble.selected .sel-text { background: rgba(0,122,255,0.30); padding: 0 1px; }
+    @media (prefers-color-scheme: dark) {
+      .bubble.selected .sel-text { background: rgba(10,132,255,0.40); }
+    }
+    .compose {
+      border-top: 0.5px solid var(--separator);
+      padding: 8px; background: var(--bg-primary);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .compose-input {
+      flex: 1; border: 0.5px solid var(--separator-opaque); border-radius: 18px;
+      padding: 7px 12px; font-size: 16px; color: var(--label-tertiary);
+      background: var(--bg-primary);
+    }
+    .compose-icon {
+      width: 32px; height: 32px; border-radius: 50%; background: var(--bg-secondary);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--label-secondary); font-size: 16px;
+    }
+    /* Keyboard */
+    .keyboard {
+      background: var(--bg-keyboard);
+      padding: 12px 8px 18px 8px;
+      position: relative;
+    }
+    .keyboard::before {
+      content: ""; position: absolute; top: 0; left: 0; right: 0;
+      height: 0.5px; background: var(--separator);
+    }
+    .kbd-frame {
+      height: 248px;
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+      position: relative;
+      padding-top: 12px;
+      gap: 22px;
+    }
+    .kbd-jot-mark {
+      position: absolute; left: 16px; top: 16px;
+      font-size: 13px; color: var(--label-secondary);
+      letter-spacing: 0.04em; font-weight: 500;
+    }
+    .kbd-globe {
+      position: absolute; right: 16px; bottom: 18px;
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--label-primary);
+    }
+    .kbd-globe svg { width: 22px; height: 22px; fill: currentColor; }
+
+    /* === LIQUID GLASS STATUS ZONE === */
+    /* This is where iOS 26 Liquid Glass earns its keep — it's the chrome that
+       benefits most from depth/translucency. Not blanket-applied to keys. */
+    .status-zone {
+      width: 320px;
+      height: 60px;
+      border-radius: 18px;
+      background: var(--glass-bg);
+      backdrop-filter: blur(24px) saturate(180%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      border: 0.5px solid var(--glass-stroke);
+      box-shadow: var(--glass-shadow);
+      display: flex; align-items: center; justify-content: center;
+      padding: 0 14px;
+      gap: 12px;
+      color: var(--label-primary);
+      font-size: 14px;
+    }
+    .status-zone .copy {
+      color: var(--label-secondary);
+      font-size: 14px;
+    }
+    /* Recording shape: ✕ / waveform / ✓ */
+    .rec-row { display: flex; width: 100%; align-items: center; justify-content: space-between; }
+    .rec-btn {
+      width: 36px; height: 36px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(120,120,128,0.20);
+      color: var(--label-primary);
+      font-size: 16px; font-weight: 600;
+    }
+    .rec-btn.cancel { color: #FF3B30; }
+    .rec-btn.confirm { color: #34C759; }
+    .waveform {
+      flex: 1; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      gap: 3px;
+    }
+    .waveform .bar {
+      width: 3px; border-radius: 2px;
+      background: var(--label-primary);
+      opacity: 0.85;
+    }
+    /* Selection state: 3 chips */
+    .chip-row { display: flex; gap: 6px; width: 100%; align-items: center; justify-content: center; }
+    .chip {
+      padding: 6px 12px;
+      border-radius: 12px;
+      background: rgba(120,120,128,0.18);
+      color: var(--label-primary);
+      font-size: 13px; font-weight: 500;
+    }
+    .chip.active {
+      background: var(--tint); color: white;
+    }
+
+    /* Mic button */
+    .mic {
+      width: 96px; height: 96px;
+      border-radius: 50%;
+      background: var(--tint);
+      color: white;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.20) inset, 0 8px 22px rgba(0,122,255,0.30);
+      position: relative;
+    }
+    .mic.recording {
+      background: #FF3B30;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.20) inset, 0 8px 22px rgba(255,59,48,0.35);
+    }
+    .mic.disabled {
+      background: var(--bg-tertiary); color: var(--label-quaternary); box-shadow: none;
+    }
+    .mic.warm::after {
+      content: ""; position: absolute; inset: -7px; border-radius: 50%;
+      border: 1px solid var(--warm-ring);
+    }
+    .mic-glyph { width: 38px; height: 38px; }
+    .stop-square { width: 24px; height: 24px; background: white; border-radius: 4px; }
+
+    .footnote {
+      position: absolute; bottom: 64px; left: 0; right: 0;
+      text-align: center; font-size: 12px; color: var(--label-secondary); padding: 0 32px;
+    }
+    .footnote a { color: var(--tint); text-decoration: none; }
+
+    .caption {
+      color: #9CA3AF; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
+      margin: 24px 0 8px 0; font-weight: 600;
+    }
+    .caption-sub { color: #6B7280; font-size: 11px; margin-bottom: 14px; }
+    .thesis {
+      max-width: 818px; color: #C9C9CD; font-size: 14px; line-height: 1.55; margin: 0 0 8px 0;
+    }
+    .thesis strong { color: #fff; }
+    .mode-pill {
+      display: inline-block; padding: 2px 10px; border-radius: 999px;
+      font-size: 10px; letter-spacing: 0.10em; text-transform: uppercase; font-weight: 600;
+      background: #1F1F22; color: #C9C9CD; margin-left: 8px;
+    }
+
+    .frame-light .device {
+      --bg-primary: #FFFFFF; --bg-secondary: #F2F2F7; --bg-tertiary: #FFFFFF;
+      --bg-keyboard: #D1D4DB; --label-primary: #000000;
+      --label-secondary: rgba(60,60,67,0.60); --label-tertiary: rgba(60,60,67,0.30);
+      --label-quaternary: rgba(60,60,67,0.18); --separator: rgba(60,60,67,0.29);
+      --separator-opaque: #C6C6C8; --tint: #007AFF;
+      --bubble-incoming: #E9E9EB; --bubble-outgoing: #007AFF;
+      --warm-ring: rgba(0,122,255,0.55);
+      --glass-bg: rgba(255,255,255,0.55); --glass-stroke: rgba(255,255,255,0.65);
+      --glass-shadow: 0 1px 0 rgba(255,255,255,0.40) inset, 0 8px 22px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04);
+    }
+    .frame-dark .device {
+      --bg-primary: #000000; --bg-secondary: #1C1C1E; --bg-tertiary: #2C2C2E;
+      --bg-keyboard: #2A2A2C; --label-primary: #FFFFFF;
+      --label-secondary: rgba(235,235,245,0.60); --label-tertiary: rgba(235,235,245,0.30);
+      --label-quaternary: rgba(235,235,245,0.18); --separator: rgba(84,84,88,0.65);
+      --separator-opaque: #38383A; --tint: #0A84FF;
+      --bubble-incoming: #26252A; --bubble-outgoing: #0A84FF;
+      --warm-ring: rgba(10,132,255,0.55);
+      --glass-bg: rgba(58,58,60,0.50); --glass-stroke: rgba(255,255,255,0.10);
+      --glass-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 8px 22px rgba(0,0,0,0.40), 0 0 0 0.5px rgba(0,0,0,0.40);
+    }
+    .frame-dark .bubble.selected .sel-text { background: rgba(10,132,255,0.40); }
+    .frame-light .bubble.selected .sel-text { background: rgba(0,122,255,0.30); }
+  </style>
+</head>
+<body class="min-h-screen p-10">
+
+  <header class="max-w-6xl mx-auto mb-8">
+    <div class="text-xs tracking-widest text-gray-500 uppercase font-semibold">Jot iOS — Keyboard Mockup</div>
+    <h1 class="text-3xl font-semibold text-white mt-2">V2 · Mic + Status Zone <span class="mode-pill">Wispr-shape</span></h1>
+    <p class="thesis mt-3">
+      <strong>Mic centered, with a Liquid-Glass status zone above it that morphs across states.</strong>
+      Idle shows guidance copy. Recording shows the <strong>✕ / waveform / ✓</strong> shape borrowed from
+      <strong>Wispr Flow</strong>'s recording controls — pure cancel, live amplitude, confirm. Selection
+      shows the 3 prompt chips. The point: the keyboard tells the user where they are in the flow without
+      relying on the Dynamic Island or app foreground. Status copy borrows from <strong>Superwhisper</strong>'s
+      discipline (model-aware, never generic). Liquid Glass is applied ONLY to the status zone — that's
+      where translucency and depth carry meaning, not on every key.
+    </p>
+    <p class="text-xs text-gray-500 mt-2">iPhone 15 Pro · 393×852 · Light + Dark · Host context: Messages compose</p>
+  </header>
+
+  <!-- ============ STATE 1: IDLE / NO SELECTION ============ -->
+  <div class="caption max-w-6xl mx-auto">State 1 · Idle, no selection</div>
+  <div class="caption-sub max-w-6xl mx-auto">Status zone shows ghost-copy guidance. Mic prominent below.</div>
+  <div class="device-frame-row max-w-6xl mx-auto justify-center">
+
+    <div class="frame-light">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Tap mic to dictate</span>
+            </div>
+            <div class="mic">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame-dark">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Tap mic to dictate</span>
+            </div>
+            <div class="mic">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STATE 2: NO FULL ACCESS ============ -->
+  <div class="caption max-w-6xl mx-auto">State 2 · Idle, no Full Access</div>
+  <div class="caption-sub max-w-6xl mx-auto">Status zone hosts the permission copy with deep-link. Mic disabled.</div>
+  <div class="device-frame-row max-w-6xl mx-auto justify-center">
+    <div class="frame-light">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Enable Full Access in <span style="color: var(--tint);">Settings → Keyboards</span></span>
+            </div>
+            <div class="mic disabled">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="frame-dark">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Enable Full Access in <span style="color: var(--tint);">Settings → Keyboards</span></span>
+            </div>
+            <div class="mic disabled">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STATE 3: RECORDING (in-app) ============ -->
+  <div class="caption max-w-6xl mx-auto">State 3 · Recording (in-app)</div>
+  <div class="caption-sub max-w-6xl mx-auto">Status zone morphs to ✕ / live waveform / ✓ (Wispr Flow shape). Mic doubles as Stop. Cancel and confirm in the zone are alternates to mic-tap stop.</div>
+  <div class="device-frame-row max-w-6xl mx-auto justify-center">
+    <div class="frame-light">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot · rec</div>
+            <div class="status-zone">
+              <div class="rec-row">
+                <div class="rec-btn cancel">✕</div>
+                <div class="waveform">
+                  <div class="bar" style="height: 8px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                  <div class="bar" style="height: 22px"></div>
+                  <div class="bar" style="height: 14px"></div>
+                  <div class="bar" style="height: 26px"></div>
+                  <div class="bar" style="height: 18px"></div>
+                  <div class="bar" style="height: 28px"></div>
+                  <div class="bar" style="height: 12px"></div>
+                  <div class="bar" style="height: 20px"></div>
+                  <div class="bar" style="height: 24px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                  <div class="bar" style="height: 22px"></div>
+                  <div class="bar" style="height: 10px"></div>
+                  <div class="bar" style="height: 18px"></div>
+                  <div class="bar" style="height: 14px"></div>
+                  <div class="bar" style="height: 26px"></div>
+                  <div class="bar" style="height: 8px"></div>
+                  <div class="bar" style="height: 20px"></div>
+                  <div class="bar" style="height: 12px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                </div>
+                <div class="rec-btn confirm">✓</div>
+              </div>
+            </div>
+            <div class="mic recording">
+              <div class="stop-square"></div>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="frame-dark">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot · rec</div>
+            <div class="status-zone">
+              <div class="rec-row">
+                <div class="rec-btn cancel">✕</div>
+                <div class="waveform">
+                  <div class="bar" style="height: 8px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                  <div class="bar" style="height: 22px"></div>
+                  <div class="bar" style="height: 14px"></div>
+                  <div class="bar" style="height: 26px"></div>
+                  <div class="bar" style="height: 18px"></div>
+                  <div class="bar" style="height: 28px"></div>
+                  <div class="bar" style="height: 12px"></div>
+                  <div class="bar" style="height: 20px"></div>
+                  <div class="bar" style="height: 24px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                  <div class="bar" style="height: 22px"></div>
+                  <div class="bar" style="height: 10px"></div>
+                  <div class="bar" style="height: 18px"></div>
+                  <div class="bar" style="height: 14px"></div>
+                  <div class="bar" style="height: 26px"></div>
+                  <div class="bar" style="height: 8px"></div>
+                  <div class="bar" style="height: 20px"></div>
+                  <div class="bar" style="height: 12px"></div>
+                  <div class="bar" style="height: 16px"></div>
+                </div>
+                <div class="rec-btn confirm">✓</div>
+              </div>
+            </div>
+            <div class="mic recording">
+              <div class="stop-square"></div>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STATE 4: IDLE WITH SELECTION ============ -->
+  <div class="caption max-w-6xl mx-auto">State 4 · Idle, with selected text</div>
+  <div class="caption-sub max-w-6xl mx-auto">Status zone hosts the 3 prompt chips (segmented). Mic glyph swaps to ✦ wand. Long-press to bypass and start fresh dictation.</div>
+  <div class="device-frame-row max-w-6xl mx-auto justify-center">
+    <div class="frame-light">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble selected">
+            <span class="sel-text">hey i was thinking maybe we could push the meeting to tomorrow if that works ok</span>
+          </div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <div class="chip-row">
+                <div class="chip active">Articulate</div>
+                <div class="chip">Shorter</div>
+                <div class="chip">Professional</div>
+              </div>
+            </div>
+            <div class="mic">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M14.5 5l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zm-9 9l1.4 2.8L9.7 18l-2.8 1.4L5.5 22l-1.4-2.6L1.3 18l2.8-1.4L5.5 14zM18 13l.7 1.4L20 15l-1.3.6L18 17l-.7-1.4L16 15l1.3-.6L18 13zM4 4l.7 1.4L6 6l-1.3.6L4 8l-.7-1.4L2 6l1.3-.6L4 4z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="frame-dark">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble selected">
+            <span class="sel-text">hey i was thinking maybe we could push the meeting to tomorrow if that works ok</span>
+          </div>
+          <div class="bubble in">Cool</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <div class="chip-row">
+                <div class="chip active">Articulate</div>
+                <div class="chip">Shorter</div>
+                <div class="chip">Professional</div>
+              </div>
+            </div>
+            <div class="mic">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M14.5 5l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zm-9 9l1.4 2.8L9.7 18l-2.8 1.4L5.5 22l-1.4-2.6L1.3 18l2.8-1.4L5.5 14zM18 13l.7 1.4L20 15l-1.3.6L18 17l-.7-1.4L16 15l1.3-.6L18 13zM4 4l.7 1.4L6 6l-1.3.6L4 8l-.7-1.4L2 6l1.3-.6L4 4z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STATE 5: WARM RESUME ============ -->
+  <div class="caption max-w-6xl mx-auto">State 5 · Warm-resume window (60s after stop)</div>
+  <div class="caption-sub max-w-6xl mx-auto">Status zone shows "Last session ready" hint (Superwhisper-style model-aware copy). Thin accent ring on mic.</div>
+  <div class="device-frame-row max-w-6xl mx-auto justify-center">
+    <div class="frame-light">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble out">I'm thinking we should push the meeting to tomorrow afternoon if that works for everyone.</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Last session ready · 30s ago</span>
+            </div>
+            <div class="mic warm">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="frame-dark">
+      <div class="device">
+        <div class="island"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="nav-bar relative">
+          <div class="nav-back">‹ 12</div><div class="nav-avatar">A</div><div class="nav-name">Alex</div>
+        </div>
+        <div class="convo" style="height: 290px;">
+          <div class="bubble in">Hey, can you send me the rewrite?</div>
+          <div class="bubble out">One sec, dictating it now</div>
+          <div class="bubble out">I'm thinking we should push the meeting to tomorrow afternoon if that works for everyone.</div>
+        </div>
+        <div class="compose">
+          <div class="compose-icon">+</div><div class="compose-input">iMessage</div><div class="compose-icon">↑</div>
+        </div>
+        <div class="keyboard">
+          <div class="kbd-frame">
+            <div class="kbd-jot-mark">jot</div>
+            <div class="status-zone">
+              <span class="copy">Last session ready · 30s ago</span>
+            </div>
+            <div class="mic warm">
+              <svg class="mic-glyph" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+              </svg>
+            </div>
+            <div class="kbd-globe">
+              <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18c-2 0-3.7-1.5-4.6-3.7h9.2C15.7 18.5 14 20 12 20zm-5.4-5.7a8 8 0 0 1 0-4.6h2.1a13.2 13.2 0 0 0 0 4.6zm0-6.6C7.5 5.5 9.2 4 12 4s4.5 1.5 5.4 3.7h-2.1a11.5 11.5 0 0 0-6.6 0zm10.8 1.9a8 8 0 0 1 0 4.6h-2.1a13.2 13.2 0 0 0 0-4.6z"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="max-w-6xl mx-auto mt-16 mb-8 text-xs text-gray-500">
+    <p>V2 trade-offs:</p>
+    <ul class="list-disc pl-5 mt-2 space-y-1 text-gray-400">
+      <li><strong>Pro:</strong> in-keyboard state feedback — user never wonders "is it recording?" Reduces dependence on Live Activity / Dynamic Island.</li>
+      <li><strong>Pro:</strong> the ✕ / waveform / ✓ shape gives users a real cancel-without-paste path that V1 lacks.</li>
+      <li><strong>Pro:</strong> needs container→keyboard amplitude IPC (per `keyboard-status-bar-design.md`); bigger build surface.</li>
+      <li><strong>Con:</strong> mic-doubles-as-stop AND zone has a stop button — duplicated affordance; needs a clear "primary stop = mic, escape hatch = ✕" interaction story.</li>
+    </ul>
+  </footer>
+</body>
+</html>

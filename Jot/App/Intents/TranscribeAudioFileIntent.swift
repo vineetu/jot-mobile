@@ -152,8 +152,8 @@ struct TranscribeAudioFileIntent: AppIntent {
         // `_ =` so the closure's inferred type stays `Void`. We don't need
         // the returned `Transcript` here — ledger reflection is driven by
         // the main app's `@Query` re-firing after the insert.
-        await MainActor.run {
-            _ = TranscriptStore.append(
+        try await MainActor.run {
+            _ = try TranscriptStore.append(
                 raw: rawForLedger,
                 cleaned: cleanedForLedger,
                 duration: nil

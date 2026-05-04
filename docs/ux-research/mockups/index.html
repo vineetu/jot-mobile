@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jot iOS — UX Mockups</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui;
+    margin: 0; padding: 32px;
+    background: #f6f6f4;
+    color: #111113;
+    max-width: 1100px;
+    margin-inline: auto;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0e0e10; color: #ededed; }
+  }
+  h1 { font-size: 28px; letter-spacing: -0.5px; margin: 0 0 8px; }
+  .lead { color: #6b6b70; margin-bottom: 32px; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: #6b6b70; margin: 32px 0 12px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  a.card {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    background: white;
+    border: 0.5px solid rgba(0,0,0,0.12);
+    border-radius: 12px;
+    padding: 16px 18px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    a.card { background: #1c1c1e; border-color: rgba(255,255,255,0.08); }
+  }
+  a.card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .v {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.6px;
+    text-transform: uppercase; color: #6d5ae6;
+    margin-bottom: 6px;
+  }
+  .name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .desc { font-size: 13px; color: #6b6b70; }
+  footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 0.5px solid rgba(0,0,0,0.1);
+    font-size: 12px;
+    color: #6b6b70;
+  }
+</style>
+</head>
+<body>
+
+<h1>Jot iOS — UX Mockups</h1>
+<p class="lead">12 static iPhone-frame variants. v1 Apple-native baseline · v2 Superwhisper-flavored · v3 Liquid Glass maximalist.</p>
+
+<h2>Record &amp; Transcript</h2>
+<div class="grid">
+  <a class="card" href="record-v1.html"><div class="v">v1</div><div class="name">Voice Memos minimal</div><div class="desc">Stock List + bottom-anchored mic. The Apple-native baseline.</div></a>
+  <a class="card" href="record-v2.html"><div class="v">v2</div><div class="name">Superwhisper morphing pill</div><div class="desc">Single Liquid Glass capsule walks all states; pill→card pattern.</div></a>
+  <a class="card" href="record-v3.html"><div class="v">v3</div><div class="name">Liquid Glass tabbed</div><div class="desc">Full iOS 26 tab bar + glass mic + glass cards. Maximalist.</div></a>
+</div>
+
+<h2>Onboarding</h2>
+<div class="grid">
+  <a class="card" href="onboarding-v1.html"><div class="v">v1</div><div class="name">Apple System Setup analog</div><div class="desc">Looks like the iCloud / Face ID first-run flow.</div></a>
+  <a class="card" href="onboarding-v2.html"><div class="v">v2</div><div class="name">Superwhisper-inspired</div><div class="desc">Soft monochrome, mono section labels, ledger pill on Done.</div></a>
+  <a class="card" href="onboarding-v3.html"><div class="v">v3</div><div class="name">Liquid Glass cinematic</div><div class="desc">Hero gradients, oversized type, glass cards. Expressive.</div></a>
+</div>
+
+<h2>Keyboard</h2>
+<div class="grid">
+  <a class="card" href="keyboard-v1.html"><div class="v">v1</div><div class="name">Pure mic</div><div class="desc">Single large mic, nothing else. Maximum simplicity.</div></a>
+  <a class="card" href="keyboard-v2.html"><div class="v">v2</div><div class="name">Mic + Wispr-style status zone</div><div class="desc">Top zone morphs: copy → X / waveform / ✓ → preset chips.</div></a>
+  <a class="card" href="keyboard-v3.html"><div class="v">v3</div><div class="name">Mic + accessory bar</div><div class="desc">Thin top bar for paste pill / history / settings + mic below.</div></a>
+</div>
+
+<h2>Settings</h2>
+<div class="grid">
+  <a class="card" href="settings-v1.html"><div class="v">v1</div><div class="name">Apple Settings analog</div><div class="desc">Stock Form(.grouped) — looks like a page out of iOS Settings.</div></a>
+  <a class="card" href="settings-v2.html"><div class="v">v2</div><div class="name">Superwhisper table-rows</div><div class="desc">Off-white ground, denser rows, model card with verified pill.</div></a>
+  <a class="card" href="settings-v3.html"><div class="v">v3</div><div class="name">Liquid Glass cards</div><div class="desc">Each section a glass card on a textured backdrop. Maximalist.</div></a>
+</div>
+
+<footer>
+Currently shipping in the iOS sim build: record-v1, onboarding-v1, settings-v1 (the Apple-native baselines). Pickable later: any v2 / v3 swap is a UI-layer change.
+</footer>
+
+</body>
+</html>

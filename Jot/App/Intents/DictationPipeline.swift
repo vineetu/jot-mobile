@@ -70,7 +70,8 @@ import OSLog
 ///   - Running its idempotency guard on `currentPhase`.
 ///   - Capturing `recordingStartedAt` off the coordinator before `finish`
 ///     clears it.
-///   - Calling `stopAndTranscribe()` and feeding the raw transcript in.
+///   - Calling `stopAndTranscribe()` and feeding the raw transcript + stop
+///     timestamp in.
 ///
 /// That split keeps the helper from needing to know about per-intent
 /// concerns (cold-launch bridge waits, different `openAppWhenRun` contracts,
@@ -79,7 +80,7 @@ import OSLog
 @MainActor
 enum DictationPipeline {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.jot.mobile.Jot",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.vineetu.jot.mobile.Jot",
         category: "dictation-pipeline"
     )
 
@@ -90,8 +91,10 @@ enum DictationPipeline {
     ///   - `transcript` is the raw Parakeet output from
     ///     `controller.stopAndTranscribe()` — no pre-cleanup, no trimming.
     ///   - `startedAt` was snapshotted off `DictationActivityCoordinator.shared
-    ///     .recordingStartedAt` before any coordinator phase update, so the
-    ///     wall-clock duration reflects "mic-on" rather than "mic-off".
+    ///     .recordingStartedAt` before any coordinator phase update.
+    ///   - `stoppedAt` was captured immediately after `RecordingService.stop()`
+    ///     drained samples, so persisted duration excludes transcription,
+    ///     follow-up classification, and cleanup latency.
     ///   - `controller` is the main-app dictation controller; the helper
     ///     calls `controller.cleanup(...)` only on the fresh-dictation branch.
     ///   - The caller has already transitioned the activity to `.transcribing`.
@@ -104,8 +107,10 @@ enum DictationPipeline {
     static func completeEndOfRecording(
         transcript: String,
         startedAt: Date,
+        stoppedAt: Date,
         controller: any DictationController
     ) async throws {
+        let duration = max(0, stoppedAt.timeIntervalSince(startedAt))
         let cleanup = CleanupSettings.load()
         let postProcessing = DictationPostProcessingCoordinator.shared
 
@@ -114,6 +119,7 @@ enum DictationPipeline {
         defer {
             postProcessing.finish()
             controller.endPostProcessing()
+            RecordingService.shared.markPipelineFinished()
         }
 
         // Pull the most recent prior transcript that falls inside the
@@ -159,7 +165,6 @@ enum DictationPipeline {
             resolvedAsCommand = true
         }
 
-        let duration = Date().timeIntervalSince(startedAt)
         let effectiveResolution: CommandResolution =
             postProcessing.isCancellationRequested ? .freshDictation : resolution
         let tookCommandBranch: Bool
@@ -208,7 +213,7 @@ enum DictationPipeline {
 
             let transcriptID = UUID()
 
-            TranscriptStore.append(
+            try TranscriptStore.append(
                 id: transcriptID,
                 raw: transcript,
                 cleaned: cleanedText,
@@ -224,6 +229,7 @@ enum DictationPipeline {
                 transcript: finalText,
                 autoCopiedTranscriptID: transcriptID
             )
+            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
             let preview = String(finalText.prefix(60))
             await DictationActivityCoordinator.shared.finish(preview: preview)
@@ -232,7 +238,7 @@ enum DictationPipeline {
             guard !postProcessing.isCancellationRequested else {
                 let transcriptID = UUID()
 
-                TranscriptStore.append(
+                try TranscriptStore.append(
                     id: transcriptID,
                     raw: transcript,
                     cleaned: nil,
@@ -248,6 +254,7 @@ enum DictationPipeline {
                     transcript: transcript,
                     autoCopiedTranscriptID: transcriptID
                 )
+                CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
                 let preview = String(transcript.prefix(60))
                 await DictationActivityCoordinator.shared.finish(preview: preview)
@@ -285,10 +292,10 @@ enum DictationPipeline {
             let transcriptID = UUID()
 
             if let priorID {
-                TranscriptStore.markSuperseded(id: priorID)
+                try TranscriptStore.markSuperseded(id: priorID)
             }
 
-            TranscriptStore.append(
+            try TranscriptStore.append(
                 id: transcriptID,
                 raw: transcript,
                 cleaned: result,
@@ -306,6 +313,7 @@ enum DictationPipeline {
                 transcript: result,
                 autoCopiedTranscriptID: transcriptID
             )
+            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
             let preview = String(result.prefix(60))
             await DictationActivityCoordinator.shared.finishCommand(
@@ -324,12 +332,10 @@ enum DictationPipeline {
             return
         case .unseen where !wasFollowUpUtterance:
             FollowUpDiscoveryStore.state = .awaitingFirstFollowUp
-        case .unseen, .awaitingFirstFollowUp, .awaitingContextAck where wasFollowUpUtterance:
-            FollowUpDiscoveryStore.state = resolvedAsCommand ? .learned : .awaitingContextAck
-        case .awaitingFirstFollowUp, .awaitingContextAck:
-            break
-        case .learned, .dismissed:
-            break
+        case .unseen, .awaitingFirstFollowUp, .awaitingContextAck:
+            if wasFollowUpUtterance {
+                FollowUpDiscoveryStore.state = resolvedAsCommand ? .learned : .awaitingContextAck
+            }
         }
     }
 }

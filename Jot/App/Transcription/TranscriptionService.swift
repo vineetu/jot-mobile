@@ -5,7 +5,7 @@ import UIKit
 import os.log
 import os.signpost
 
-/// On-device transcription via FluidAudio's Parakeet TDT 0.6B v3 (Apple Neural Engine).
+/// On-device transcription via FluidAudio's Parakeet TDT 0.6B v2 (Apple Neural Engine).
 ///
 /// Two callers:
 /// - `ContentView` (in-app record button) → `transcribe(samples: [Float])` after
@@ -92,15 +92,19 @@ final class TranscriptionService {
     @MainActor static let shared = TranscriptionService()
 
     private(set) var modelState: ModelState = .notLoaded
+    var speechModelIdentifier: String { Self.speechModelIdentifier }
 
-    private let log = Logger(subsystem: "com.jot.mobile.Jot", category: "transcription")
-    private let backgroundWarmLog = Logger(subsystem: "com.jot.mobile.Jot", category: "background-warm")
-    private let signposter = OSSignposter(subsystem: "com.jot.mobile.Jot", category: "transcription")
+    private let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+    private let backgroundWarmLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "background-warm")
+    private let signposter = OSSignposter(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
 
-    private let version: AsrModelVersion = .v3
-    private let repoFolderName = "parakeet-tdt-0.6b-v3-coreml"
+    private static let speechModelIdentifier = Repo.parakeetV2.rawValue
+
+    private let version: AsrModelVersion = .v2
+    private let standIn: (any TranscriptionStandIn)?
     private var manager: AsrManager?
     private var prepareTask: Task<Void, Error>?
+    private var prepareGeneration = 0
 
     private var isTranscribing: Bool = false
 
@@ -113,7 +117,8 @@ final class TranscriptionService {
     @ObservationIgnored
     private nonisolated(unsafe) var memoryWarningObserver: NSObjectProtocol?
 
-    init() {
+    init(standIn: (any TranscriptionStandIn)? = TranscriptionStandInFactory.make()) {
+        self.standIn = standIn
         subscribeMemoryWarnings()
     }
 
@@ -170,17 +175,29 @@ final class TranscriptionService {
     /// nullified; the next call re-loads. That's intentional — we'd
     /// rather pay the re-load cost than risk jetsam mid-session.
     func warmUp() {
+        if standIn != nil {
+            modelState = .ready
+            log.info("Parakeet warmUp satisfied by simulator transcription stand-in")
+            return
+        }
+
         log.info("Parakeet warmUp requested — modelState=\(Self.describe(self.modelState), privacy: .public)")
         _ = ensurePreparing()
     }
 
     func warmUpInBackground() async -> Bool {
+        if standIn != nil {
+            self.modelState = .ready
+            self.backgroundWarmLog.info("BG warm satisfied by simulator transcription stand-in")
+            return true
+        }
+
         if self.modelState == .ready {
             self.backgroundWarmLog.info("BG warm no-op — model already ready")
             return true
         }
 
-        let directory = Self.modelDirectory(repoFolder: self.repoFolderName)
+        let directory = Self.modelDirectory()
         let modelsOnDisk = AsrModels.modelsExist(at: directory, version: self.version)
         guard modelsOnDisk else {
             self.backgroundWarmLog.info(
@@ -219,6 +236,41 @@ final class TranscriptionService {
         }
     }
 
+    func purgeAndReload() async {
+        // Reclaim any orphaned .purging-* dirs from prior crashed purges before
+        // we create another one.
+        Self.sweepOrphanedPurgingDirs()
+
+        prepareTask?.cancel()
+        prepareTask = nil
+        prepareGeneration += 1
+        manager = nil
+
+        let modelDir = Self.modelDirectory()
+        let purgingDir = Self.purgingModelDirectory(for: modelDir)
+        do {
+            if FileManager.default.fileExists(atPath: modelDir.path) {
+                try FileManager.default.moveItem(at: modelDir, to: purgingDir)
+                log.notice(
+                    "Moved Parakeet model cache aside for purge — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public)"
+                )
+                Self.deletePurgedModelDirectory(purgingDir)
+            } else {
+                log.info("Parakeet model cache already absent at \(modelDir.path, privacy: .public)")
+            }
+        } catch {
+            let summary = "Could not move model cache aside for purge: \(error.localizedDescription)"
+            modelState = .failed(summary)
+            log.error(
+                "Parakeet purge failed — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+
+        modelState = .notLoaded
+        warmUp()
+    }
+
     func cancelBackgroundWarm() {
         guard self.modelState != .ready else { return }
         self.backgroundWarmLog.notice(
@@ -226,6 +278,7 @@ final class TranscriptionService {
         )
         self.prepareTask?.cancel()
         self.prepareTask = nil
+        self.prepareGeneration += 1
         if self.manager == nil {
             self.modelState = .notLoaded
         }
@@ -234,6 +287,17 @@ final class TranscriptionService {
     // MARK: - Sample-based inference (in-app record flow)
 
     func transcribe(samples: [Float]) async throws -> String {
+        if let standIn {
+            guard !isTranscribing else { throw TranscriptionError.busy }
+            isTranscribing = true
+            defer { isTranscribing = false }
+
+            log.info("Simulator transcription stand-in begin — sampleCount=\(samples.count, privacy: .public)")
+            let result = try await standIn.transcribe(samples: samples)
+            log.info("Simulator transcription stand-in end — chars=\(result.count, privacy: .public)")
+            return result
+        }
+
         try Self.guardAudioLength(sampleCount: samples.count)
         guard !isTranscribing else { throw TranscriptionError.busy }
 
@@ -291,11 +355,22 @@ final class TranscriptionService {
     ///
     /// ### Observability
     ///
-    /// Logs at each step via `os.log` subsystem `com.jot.mobile.Jot`, category
-    /// `transcription`. Pull with `log show --predicate 'subsystem == "com.jot.mobile.Jot"'`
+    /// Logs at each step via `os.log` subsystem `com.vineetu.jot.mobile.Jot`, category
+    /// `transcription`. Pull with `log show --predicate 'subsystem == "com.vineetu.jot.mobile.Jot"'`
     /// or via Console.app to diagnose Shortcut-triggered failures where the
     /// bridged `NSError.code` loses the typed error's context.
     func transcribe(audioFileURL url: URL) async throws -> String {
+        if let standIn {
+            guard !isTranscribing else { throw TranscriptionError.busy }
+            isTranscribing = true
+            defer { isTranscribing = false }
+
+            log.info("Simulator file transcription stand-in begin — file=\(url.lastPathComponent, privacy: .public)")
+            let result = try await standIn.transcribe(samples: [])
+            log.info("Simulator file transcription stand-in end — chars=\(result.count, privacy: .public)")
+            return result
+        }
+
         log.info(
             "transcribe(audioFileURL:) entry — path=\(url.lastPathComponent, privacy: .public) ext=\(url.pathExtension, privacy: .public) exists=\(FileManager.default.fileExists(atPath: url.path), privacy: .public)"
         )
@@ -393,7 +468,7 @@ final class TranscriptionService {
     /// and waiting would just chew through the headless budget. Fail fast; let
     /// the user retry once the main-app download finishes.
     private func ensureModelIsDownloadedOrThrow() throws {
-        let directory = Self.modelDirectory(repoFolder: repoFolderName)
+        let directory = Self.modelDirectory()
         let exists = AsrModels.modelsExist(at: directory, version: version)
         log.info("ensureModelIsDownloadedOrThrow — directory=\(directory.path, privacy: .public) modelsExist=\(exists, privacy: .public)")
         if !exists {
@@ -466,22 +541,31 @@ final class TranscriptionService {
         log.info(
             "Parakeet prepare task create — startedAt=\(Self.timestamp(createdAt), privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
         )
+        let generation = prepareGeneration
         let task = Task { [weak self] in
             guard let self else { return }
-            try await self.loadOrFail()
+            try await self.loadOrFail(generation: generation)
         }
         prepareTask = task
         return task
     }
 
-    private func loadOrFail() async throws {
+    private func loadOrFail(generation: Int) async throws {
+        #if targetEnvironment(simulator)
+        try checkPrepareGeneration(generation)
+        modelState = .ready
+        log.info("Parakeet load bypassed on simulator")
+        return
+        #endif
+
         if manager != nil {
             modelState = .ready
             log.info("Parakeet load skip — manager already ready")
             return
         }
 
-        let directory = Self.modelDirectory(repoFolder: repoFolderName)
+        try checkPrepareGeneration(generation)
+        let directory = Self.modelDirectory()
         let modelsOnDisk = AsrModels.modelsExist(at: directory, version: version)
         let prepareStartedAt = Date()
         let prepareInterval = signposter.beginInterval("parakeet-prepare")
@@ -496,6 +580,7 @@ final class TranscriptionService {
         } catch {
             let summary = "Could not create model cache: \(error.localizedDescription)"
             modelState = .failed(summary)
+            prepareTask = nil
             let prepareEndedAt = Date()
             let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
             signposter.endInterval("parakeet-prepare", prepareInterval)
@@ -529,19 +614,47 @@ final class TranscriptionService {
                     version: version,
                     progressHandler: progress
                 )
+                try checkPrepareGeneration(generation)
                 let downloadEndedAt = Date()
                 let downloadElapsedMS = Self.elapsedMilliseconds(from: downloadStartedAt, to: downloadEndedAt)
                 signposter.endInterval("parakeet-download", downloadInterval)
                 log.info(
                     "Parakeet download end — startedAt=\(Self.timestamp(downloadStartedAt), privacy: .public) endedAt=\(Self.timestamp(downloadEndedAt), privacy: .public) elapsedMS=\(downloadElapsedMS, privacy: .public) directory=\(directory.path, privacy: .public)"
                 )
+            } catch is CancellationError {
+                let downloadEndedAt = Date()
+                let downloadElapsedMS = Self.elapsedMilliseconds(from: downloadStartedAt, to: downloadEndedAt)
+                signposter.endInterval("parakeet-download", downloadInterval)
+                if prepareGeneration == generation {
+                    prepareTask = nil
+                }
+                if prepareGeneration == generation, manager == nil {
+                    modelState = .notLoaded
+                }
+                log.notice(
+                    "Parakeet download cancelled — startedAt=\(Self.timestamp(downloadStartedAt), privacy: .public) endedAt=\(Self.timestamp(downloadEndedAt), privacy: .public) elapsedMS=\(downloadElapsedMS, privacy: .public)"
+                )
+                throw CancellationError()
             } catch {
                 let downloadEndedAt = Date()
                 let downloadElapsedMS = Self.elapsedMilliseconds(from: downloadStartedAt, to: downloadEndedAt)
                 signposter.endInterval("parakeet-download", downloadInterval)
+                guard prepareGeneration == generation, !Task.isCancelled else {
+                    if prepareGeneration == generation {
+                        prepareTask = nil
+                    }
+                    if prepareGeneration == generation, manager == nil {
+                        modelState = .notLoaded
+                    }
+                    log.notice(
+                        "Parakeet download cancelled after error — startedAt=\(Self.timestamp(downloadStartedAt), privacy: .public) endedAt=\(Self.timestamp(downloadEndedAt), privacy: .public) elapsedMS=\(downloadElapsedMS, privacy: .public)"
+                    )
+                    throw CancellationError()
+                }
                 let summary = "Download failed: \(error.localizedDescription)"
                 try? FileManager.default.removeItem(at: directory)
                 modelState = .failed(summary)
+                prepareTask = nil
                 log.error(
                     "Parakeet download failed — startedAt=\(Self.timestamp(downloadStartedAt), privacy: .public) endedAt=\(Self.timestamp(downloadEndedAt), privacy: .public) elapsedMS=\(downloadElapsedMS, privacy: .public) error=\(summary, privacy: .public)"
                 )
@@ -558,8 +671,10 @@ final class TranscriptionService {
         )
         do {
             let models = try await AsrModels.load(from: directory, version: version)
+            try checkPrepareGeneration(generation)
             let manager = AsrManager()
             try await manager.loadModels(models)
+            try checkPrepareGeneration(generation)
             self.manager = manager
             modelState = .ready
             let loadEndedAt = Date()
@@ -574,15 +689,51 @@ final class TranscriptionService {
             log.info(
                 "Parakeet prepare end — startedAt=\(Self.timestamp(prepareStartedAt), privacy: .public) endedAt=\(Self.timestamp(prepareEndedAt), privacy: .public) elapsedMS=\(prepareElapsedMS, privacy: .public) downloadedThisCall=\(downloadedThisCall, privacy: .public)"
             )
-        } catch {
-            let summary = "Load failed: \(error.localizedDescription)"
-            modelState = .failed(summary)
+        } catch is CancellationError {
+            if prepareGeneration == generation {
+                prepareTask = nil
+            }
+            if prepareGeneration == generation, manager == nil {
+                modelState = .notLoaded
+            }
             let loadEndedAt = Date()
             let loadElapsedMS = Self.elapsedMilliseconds(from: loadStartedAt, to: loadEndedAt)
             let prepareEndedAt = Date()
             let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
             signposter.endInterval("parakeet-load", loadInterval)
             signposter.endInterval("parakeet-prepare", prepareInterval)
+            log.notice(
+                "Parakeet load cancelled — startedAt=\(Self.timestamp(loadStartedAt), privacy: .public) endedAt=\(Self.timestamp(loadEndedAt), privacy: .public) elapsedMS=\(loadElapsedMS, privacy: .public) source=\(loadSource, privacy: .public)"
+            )
+            log.notice(
+                "Parakeet prepare cancelled — startedAt=\(Self.timestamp(prepareStartedAt), privacy: .public) endedAt=\(Self.timestamp(prepareEndedAt), privacy: .public) elapsedMS=\(prepareElapsedMS, privacy: .public) downloadedThisCall=\(downloadedThisCall, privacy: .public)"
+            )
+            throw CancellationError()
+        } catch {
+            let summary = "Load failed: \(error.localizedDescription)"
+            let loadEndedAt = Date()
+            let loadElapsedMS = Self.elapsedMilliseconds(from: loadStartedAt, to: loadEndedAt)
+            let prepareEndedAt = Date()
+            let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
+            signposter.endInterval("parakeet-load", loadInterval)
+            signposter.endInterval("parakeet-prepare", prepareInterval)
+            guard prepareGeneration == generation, !Task.isCancelled else {
+                if prepareGeneration == generation {
+                    prepareTask = nil
+                }
+                if prepareGeneration == generation, manager == nil {
+                    modelState = .notLoaded
+                }
+                log.notice(
+                    "Parakeet load cancelled after error — startedAt=\(Self.timestamp(loadStartedAt), privacy: .public) endedAt=\(Self.timestamp(loadEndedAt), privacy: .public) elapsedMS=\(loadElapsedMS, privacy: .public) source=\(loadSource, privacy: .public)"
+                )
+                log.notice(
+                    "Parakeet prepare cancelled after error — startedAt=\(Self.timestamp(prepareStartedAt), privacy: .public) endedAt=\(Self.timestamp(prepareEndedAt), privacy: .public) elapsedMS=\(prepareElapsedMS, privacy: .public) downloadedThisCall=\(downloadedThisCall, privacy: .public)"
+                )
+                throw CancellationError()
+            }
+            modelState = .failed(summary)
+            prepareTask = nil
             log.error(
                 "Parakeet load failed — startedAt=\(Self.timestamp(loadStartedAt), privacy: .public) endedAt=\(Self.timestamp(loadEndedAt), privacy: .public) elapsedMS=\(loadElapsedMS, privacy: .public) source=\(loadSource, privacy: .public) error=\(summary, privacy: .public)"
             )
@@ -593,21 +744,74 @@ final class TranscriptionService {
         }
     }
 
-    private static func modelDirectory(repoFolder: String) -> URL {
-        let root: URL
-        do {
-            root = try FileManager.default.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-        } catch {
-            fatalError("Application Support is unavailable: \(error)")
+    private static func modelDirectory() -> URL {
+        MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV2)
+    }
+
+    /// Sweep stale `<modelDir>.purging-*` siblings left behind by interrupted
+    /// purges (crash/jetsam/kill mid-`deletePurgedModelDirectory`). Best-effort,
+    /// detached. Called once at app launch and again at the start of every
+    /// `purgeAndReload()`. Each orphan can be ~1.25 GB so this is real disk.
+    @discardableResult
+    static func sweepOrphanedPurgingDirs() -> Int {
+        let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+        let modelDir = Self.modelDirectory()
+        let parent = modelDir.deletingLastPathComponent()
+        let prefix = modelDir.lastPathComponent + ".purging-"
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: parent.path),
+              let entries = try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil) else {
+            return 0
         }
-        return root
-            .appendingPathComponent("Jot/Models/Parakeet", isDirectory: true)
-            .appendingPathComponent(repoFolder, isDirectory: true)
+        var count = 0
+        for url in entries where url.lastPathComponent.hasPrefix(prefix) {
+            count += 1
+            let target = url
+            Task.detached(priority: .utility) { @Sendable in
+                let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+                do {
+                    try FileManager.default.removeItem(at: target)
+                    log.info("Swept orphaned purging dir at \(target.path, privacy: .public)")
+                } catch {
+                    log.error("Could not sweep purging dir — directory=\(target.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        if count > 0 {
+            log.notice("Found \(count, privacy: .public) orphaned .purging-* dir(s) under \(parent.path, privacy: .public); deletion dispatched")
+        }
+        return count
+    }
+
+    private static func purgingModelDirectory(for modelDir: URL) -> URL {
+        modelDir
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "\(modelDir.lastPathComponent).purging-\(UUID().uuidString)",
+                isDirectory: true
+            )
+    }
+
+    private static func deletePurgedModelDirectory(_ directory: URL) {
+        Task.detached(priority: .utility) {
+            let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+            do {
+                if FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                    log.notice("Deleted purged Parakeet model cache at \(directory.path, privacy: .public)")
+                }
+            } catch {
+                log.error(
+                    "Could not delete purged Parakeet model cache — directory=\(directory.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func checkPrepareGeneration(_ generation: Int) throws {
+        guard prepareGeneration == generation, !Task.isCancelled else {
+            throw CancellationError()
+        }
     }
 
     // MARK: - Audio file decode + resample

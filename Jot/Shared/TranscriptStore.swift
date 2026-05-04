@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import SwiftData
 
 /// Process-wide SwiftData container for Jot's transcript history.
@@ -101,19 +102,20 @@ enum JotModelContainer {
 /// - `TranscribeAudioFileIntent.perform()` — after its transcription completes
 /// - `RecordAndTranscribeIntent.endDictation(...)` — after cleanup+clipboard
 ///
-/// Both intent call sites already run on `@MainActor` (the `perform()`
-/// bodies are `@MainActor func`), so they can call `TranscriptStore.append`
-/// directly with no hop.
+/// Intent call sites either already run on `@MainActor` or hop with
+/// `MainActor.run` before calling `TranscriptStore.append`, because SwiftData
+/// contexts are actor-bound.
 ///
-/// ## Drops, not throws
+/// ## Failure handling
 ///
-/// This is fire-and-forget on purpose: throwing from a Shortcuts intent
-/// surface after the user already saw a successful transcription copied to
-/// their clipboard would be the worst of both worlds — they got the value
-/// but also a confusing error chrome. We log+drop instead. The only
-/// preventable failure mode (empty raw transcript) is filtered at the top.
+/// SwiftData save failures are logged and thrown so hot paths can surface
+/// the persistence failure instead of returning a transcript that never
+/// reached disk. The only non-error no-op is empty raw text, which returns
+/// `nil`.
 @MainActor
 enum TranscriptStore {
+    private static let logger = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcript-store")
+
     /// `UserDefaults`-backed counter for the ledger number. Survives deletes
     /// so a given transcript's `#NNNN` label doesn't shift around as earlier
     /// rows are removed. Per-device, not synced — matches the rest of the
@@ -182,7 +184,7 @@ enum TranscriptStore {
         duration: TimeInterval? = nil,
         derivedFrom: UUID? = nil,
         instruction: String? = nil
-    ) -> Transcript? {
+    ) throws -> Transcript? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -197,7 +199,12 @@ enum TranscriptStore {
             instruction: instruction
         )
         context.insert(transcript)
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript append save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
 
         // Refresh the keyboard's JSON mirror so the next keyboard
         // presentation sees the new entry without a round-trip through
@@ -231,7 +238,14 @@ enum TranscriptStore {
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
         descriptor.fetchLimit = 1
-        guard let row = try? context.fetch(descriptor).first else { return nil }
+        let row: Transcript?
+        do {
+            row = try context.fetch(descriptor).first
+        } catch {
+            logger.error("Transcript mostRecent fetch failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        guard let row else { return nil }
         let age = -row.createdAt.timeIntervalSinceNow
         return age <= window ? row : nil
     }
@@ -249,17 +263,29 @@ enum TranscriptStore {
     ///
     /// - Parameter id: the transcript to mark. Typically the prior
     ///   transcript in a chained-command result pair.
-    static func markSuperseded(id: UUID) {
+    static func markSuperseded(id: UUID) throws {
         let context = ModelContext(JotModelContainer.shared)
         var descriptor = FetchDescriptor<Transcript>(
             predicate: #Predicate<Transcript> { $0.id == id }
         )
         descriptor.fetchLimit = 1
-        guard let transcript = try? context.fetch(descriptor).first else { return }
+        let transcript: Transcript?
+        do {
+            transcript = try context.fetch(descriptor).first
+        } catch {
+            logger.error("Transcript supersede fetch failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        guard let transcript else { return }
         // First-mark wins. Re-marking would re-stamp the timestamp which is
         // never what the caller wants (and would churn the mirror refresh).
         guard transcript.supersededAt == nil else { return }
         transcript.supersededAt = Date()
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript supersede save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
 }

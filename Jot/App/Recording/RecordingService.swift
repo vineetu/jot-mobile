@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import os.log
+import Synchronization
 
 @MainActor
 @Observable
@@ -63,6 +64,8 @@ final class RecordingService {
     @MainActor static let shared = RecordingService()
 
     private(set) var isRecording: Bool = false
+    private(set) var isStopInFlight: Bool = false
+    private(set) var isPipelineInFlight: Bool = false
 
     /// Normalized RMS amplitude (0.0 – 1.0) updated at ~30 Hz while a recording
     /// is active; `nil` when idle. This is the contract the status-pill
@@ -75,7 +78,7 @@ final class RecordingService {
     /// `AmplitudeGate` — do **not** try to publish per-buffer.
     private(set) var currentAmplitude: Float? = nil
 
-    private let log = Logger(subsystem: "com.jot.mobile.Jot", category: "recording")
+    private let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "recording")
 
     private var engine: AVAudioEngine?
     private var capture: CaptureContext?
@@ -91,7 +94,7 @@ final class RecordingService {
     init() {}
 
     func start() async throws {
-        guard !isRecording else { throw RecordingError.alreadyRunning }
+        guard !isRecording, !isPipelineInFlight else { throw RecordingError.alreadyRunning }
 
         try configureSession()
 
@@ -148,8 +151,9 @@ final class RecordingService {
         // at smaller buffers), so gating here avoids flooding the run loop
         // with amplitude updates that Observation would dirty-track redundantly.
         let amplitudeGate = AmplitudeGate(intervalMS: 33)
+        let appGroupAmplitudeGate = AmplitudeGate(intervalMS: 100)
         let tapLog = log  // local Sendable copy; avoids capturing MainActor `self`
-        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [capture, tapOnce, amplitudeGate, tapLog, weak self] pcm, _ in
+        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [capture, tapOnce, amplitudeGate, appGroupAmplitudeGate, tapLog, weak self] pcm, _ in
             if tapOnce.fireOnce() {
                 tapLog.debug("[recording] first tap callback on \(Thread.current.description, privacy: .public)")
             }
@@ -167,9 +171,13 @@ final class RecordingService {
                 // `self` here is the outer closure's already-weak capture,
                 // so it's an `Optional<RecordingService>`. The Task reads it
                 // by value; if the service has deallocated by the time the
-                // MainActor turn runs, `self?.…` short-circuits harmlessly.
+                // MainActor turn runs, the guard returns harmlessly.
                 Task { @MainActor in
-                    self?.currentAmplitude = amp
+                    guard let self, self.isRecording else { return }
+                    self.currentAmplitude = amp
+                    if appGroupAmplitudeGate.shouldFire() {
+                        AmplitudeProjection.write(amplitude: amp)
+                    }
                 }
             }
         }
@@ -187,34 +195,48 @@ final class RecordingService {
         self.engine = engine
         self.capture = capture
         subscribeSystemObservers(engine: engine)
+        let startedAt = Date()
         isRecording = true
+        publishRecordingState(isRecording: true, startedAt: startedAt)
         log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
     }
 
     func stop() async throws -> [Float] {
-        // Tolerant of the case where an interruption / route change already
-        // tore down the engine internally: the UI still calls stop() and
-        // expects whatever samples we collected. Only throw `.notRunning` if
-        // we have no capture at all — there was nothing to stop.
-        guard let capture else { throw RecordingError.notRunning }
+        isStopInFlight = true
+        isPipelineInFlight = true
 
-        if let engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+        do {
+            // Tolerant of the case where an interruption / route change already
+            // tore down the engine internally: the UI still calls stop() and
+            // expects whatever samples we collected. Only throw `.notRunning` if
+            // we have no capture at all — there was nothing to stop.
+            guard let capture else { throw RecordingError.notRunning }
+
+            if let engine {
+                engine.inputNode.removeTap(onBus: 0)
+                engine.stop()
+            }
+
+            let samples = capture.drain()
+
+            unsubscribeSystemObservers()
+            self.engine = nil
+            self.capture = nil
+            restoreSession()
+            isRecording = false
+            currentAmplitude = nil
+            AmplitudeProjection.clear()
+            publishRecordingState(isRecording: false, startedAt: nil)
+
+            let seconds = Double(samples.count) / Self.sampleRate
+            log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
+            isStopInFlight = false
+            return samples
+        } catch {
+            isStopInFlight = false
+            isPipelineInFlight = false
+            throw error
         }
-
-        let samples = capture.drain()
-
-        unsubscribeSystemObservers()
-        self.engine = nil
-        self.capture = nil
-        restoreSession()
-        isRecording = false
-        currentAmplitude = nil
-
-        let seconds = Double(samples.count) / Self.sampleRate
-        log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
-        return samples
     }
 
     // MARK: - Session
@@ -253,6 +275,7 @@ final class RecordingService {
             log.error(
                 "configureSession FAILED — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) localizedDescription=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
             )
+            restoreSession()
             throw RecordingError.sessionConfiguration(error)
         }
     }
@@ -308,6 +331,11 @@ final class RecordingService {
     /// Discards captured samples silently. If the caller needs the samples,
     /// they must call `stop()` on the happy path, not this.
     func forceStop() {
+        guard !isStopInFlight else {
+            log.notice("Force-stop skipped because stop is already in flight.")
+            return
+        }
+
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -318,7 +346,23 @@ final class RecordingService {
         restoreSession()
         isRecording = false
         currentAmplitude = nil
+        AmplitudeProjection.clear()
+        publishRecordingState(isRecording: false, startedAt: nil)
         log.info("Force-stop complete (scene-disconnect / hard interruption path).")
+    }
+
+    /// Protects a user-initiated stop before its async task gets a MainActor turn.
+    ///
+    /// `ContentView` starts stop/transcribe work in an unstructured task. If the
+    /// app backgrounds between the button tap and that task reaching `stop()`,
+    /// the lifecycle force-stop path can otherwise tear down `capture` first.
+    func markStopInFlight() {
+        guard capture != nil || isRecording else { return }
+        isStopInFlight = true
+    }
+
+    func markPipelineFinished() {
+        isPipelineInFlight = false
     }
 
     // MARK: - System observers (best-practices §2.3, §2.4, §2.5)
@@ -422,7 +466,20 @@ final class RecordingService {
         restoreSession()
         isRecording = false
         currentAmplitude = nil
+        AmplitudeProjection.clear()
+        publishRecordingState(isRecording: false, startedAt: nil)
         log.info("Internal stop (\(reason, privacy: .public)) — samples retained for drain")
+    }
+
+    private func publishRecordingState(isRecording: Bool, startedAt: Date?) {
+        RecordingStateProjection.write(
+            state: RecordingStateProjection(
+                isRecording: isRecording,
+                startedAt: startedAt,
+                lastUpdatedAt: Date()
+            )
+        )
+        CrossProcessNotification.post(name: CrossProcessNotification.recordingStateChanged)
     }
 
     // MARK: - Target format
@@ -577,11 +634,18 @@ private final class CaptureContext: @unchecked Sendable {
             return
         }
 
-        var supplied = false
+        let supplied = Mutex<Bool>(false)
         var err: NSError?
         let status = converter.convert(to: outBuffer, error: &err) { _, inputStatus in
-            if supplied { inputStatus.pointee = .noDataNow; return nil }
-            supplied = true
+            let firstCall = supplied.withLock { value -> Bool in
+                if value { return false }
+                value = true
+                return true
+            }
+            if !firstCall {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
             inputStatus.pointee = .haveData
             return pcm
         }

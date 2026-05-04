@@ -38,8 +38,9 @@ import SwiftUI
 /// ## iOS 26 / Liquid Glass
 ///
 /// iOS 26 bumps row height by +2 pt and rounds the corner radius from 5 to 9.
-/// We detect it with `#available(iOS 26.0, *)`; if you need to force the
-/// pre-iOS-26 look for testing, initialize with `liquidGlass: false`.
+/// iOS 26 is our minimum deployment target, so Liquid Glass is always available.
+/// If you need to force the pre-iOS-26 look for testing, initialize with
+/// `liquidGlass: false`.
 struct KeyboardMetrics: Equatable {
 
     // MARK: - Inputs
@@ -49,8 +50,9 @@ struct KeyboardMetrics: Equatable {
     let availableWidth: CGFloat
 
     /// Whether iOS 26 Liquid Glass styling is active (thicker rows + rounder
-    /// caps). The convenience initializer picks this from `#available`; pass
-    /// explicitly to force one style in previews / tests.
+    /// caps). The convenience initializer hardcodes this to `true` (iOS 26 is
+    /// our minimum deployment target); pass explicitly to force the pre-iOS-26
+    /// look for previews / tests.
     let liquidGlass: Bool
 
     // MARK: - Derived row sizing
@@ -129,15 +131,9 @@ struct KeyboardMetrics: Equatable {
 }
 
 extension KeyboardMetrics {
-    /// Convenience initializer that resolves Liquid Glass from the runtime
-    /// iOS version. On iOS 26+, returns a metrics struct with Liquid Glass
-    /// enabled; otherwise the pre-iOS-26 profile.
+    /// Convenience initializer for the default iOS 26 Liquid Glass profile.
     init(availableWidth: CGFloat) {
         self.availableWidth = availableWidth
-        if #available(iOS 26.0, *) {
-            self.liquidGlass = true
-        } else {
-            self.liquidGlass = false
-        }
+        self.liquidGlass = true
     }
 }

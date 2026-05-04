@@ -183,11 +183,11 @@ extension KeyboardFeedback {
     func firePress(for descriptor: KeyboardKeyDescriptor) {
         selectionTick()
         switch descriptor {
-        case .letter, .literal, .space:
+        case .literal, .space:
             inputClick()
         case .backspace:
             deleteClick()
-        case .shift, .returnKey, .planeToggle, .historyKey:
+        case .returnKey:
             systemClick()
         }
     }

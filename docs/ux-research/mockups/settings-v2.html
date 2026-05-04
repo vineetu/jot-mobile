@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<!--
+  Variant 2 — "Superwhisper table-rows"
+  Thesis: A slicker, less-stock take that stays Apple-respectful. Monochrome ground (off-white /
+  soft gray instead of the iOS-blue grouped table bg), denser rows, model status as a
+  Superwhisper-flavored card with subtle material chrome and a verified glyph, rewrite presets
+  rendered as inline tag chips on a single row instead of a push-disclosure. Section headers are
+  refined sentence-case rather than caps. Apple-respectful, but with deliberate density and a
+  product-specific feel.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot — Settings (V2, Superwhisper table-rows)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    --bg: #f6f6f4;            /* off-white, slightly warm */
+    --surface: #ffffff;
+    --surface-2: #fbfbf9;
+    --label: #1a1a1c;
+    --secondaryLabel: #6b6b70;
+    --tertiaryLabel: #9a9a9f;
+    --separator: rgba(0, 0, 0, 0.07);
+    --separator-strong: rgba(0, 0, 0, 0.10);
+    --accent: #1a1a1c;        /* monochrome accent */
+    --accent-tint: rgba(0, 0, 0, 0.04);
+    --green: #2f9e54;
+    --orange: #c97a16;
+    --red: #c0392b;
+    --chip-bg: rgba(0,0,0,0.045);
+    --chip-bd: rgba(0,0,0,0.08);
+    --shadow-card: 0 1px 0 rgba(0,0,0,0.03), 0 6px 18px -10px rgba(0,0,0,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e10;
+      --surface: #18181a;
+      --surface-2: #1d1d20;
+      --label: #ededee;
+      --secondaryLabel: #9a9a9f;
+      --tertiaryLabel: #6b6b70;
+      --separator: rgba(255, 255, 255, 0.07);
+      --separator-strong: rgba(255, 255, 255, 0.10);
+      --accent: #ededee;
+      --accent-tint: rgba(255, 255, 255, 0.04);
+      --green: #4cc97a;
+      --orange: #e0a04a;
+      --red: #ff6b5e;
+      --chip-bg: rgba(255,255,255,0.05);
+      --chip-bd: rgba(255,255,255,0.09);
+      --shadow-card: 0 1px 0 rgba(255,255,255,0.03), 0 6px 18px -10px rgba(0,0,0,0.6);
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #d8d8dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #050505; }
+  }
+
+  .device {
+    width: 393px; height: 852px;
+    border-radius: 55px;
+    background: #1a1a1a;
+    padding: 12px;
+    box-shadow: 0 30px 60px -20px rgba(0,0,0,0.45);
+  }
+  .screen {
+    width: 100%; height: 100%;
+    border-radius: 44px;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--label);
+    position: relative;
+  }
+  .island {
+    position: absolute;
+    top: 11px; left: 50%; transform: translateX(-50%);
+    width: 124px; height: 37px;
+    background: #000; border-radius: 20px;
+    z-index: 10;
+  }
+  .status-bar {
+    height: 54px;
+    padding: 18px 32px 0 32px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 16px; font-weight: 600;
+  }
+
+  .nav-bar {
+    height: 44px;
+    padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: relative;
+  }
+  .nav-back {
+    font-size: 17px;
+    color: var(--label);
+    display: flex; align-items: center; gap: 4px;
+    opacity: 0.85;
+  }
+  .nav-title {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 17px; font-weight: 600;
+  }
+
+  .content {
+    height: calc(100% - 54px - 44px);
+    overflow-y: auto;
+    padding: 4px 16px 32px 16px;
+  }
+
+  /* Refined section header — sentence case, smaller, with subtle rule */
+  .sec-header {
+    padding: 22px 4px 8px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--secondaryLabel);
+    letter-spacing: 0.2px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sec-header::after {
+    content: "";
+    flex: 1; height: 1px;
+    background: var(--separator);
+  }
+  .sec-footer {
+    padding: 10px 6px 0 6px;
+    font-size: 12px;
+    color: var(--tertiaryLabel);
+    line-height: 1.4;
+  }
+
+  /* Card group */
+  .card {
+    background: var(--surface);
+    border-radius: 14px;
+    border: 1px solid var(--separator);
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+  }
+
+  /* Row, denser than V1 */
+  .row {
+    display: flex; align-items: center;
+    min-height: 40px;
+    padding: 9px 14px;
+    font-size: 15px;
+    position: relative;
+  }
+  .row + .row::before {
+    content: "";
+    position: absolute; top: 0; left: 14px; right: 0;
+    height: 1px;
+    background: var(--separator);
+  }
+  .row-label { flex: 1; color: var(--label); }
+  .row-detail { color: var(--secondaryLabel); font-size: 14px; margin-left: 10px; }
+  .chev { color: var(--tertiaryLabel); margin-left: 8px; font-size: 15px; }
+
+  /* Toggle (monochrome) */
+  .toggle {
+    width: 44px; height: 26px;
+    background: var(--label);
+    border-radius: 14px;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .toggle.off { background: rgba(0,0,0,0.12); }
+  @media (prefers-color-scheme: dark) {
+    .toggle.off { background: rgba(255,255,255,0.14); }
+  }
+  .toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 20px;
+    width: 22px; height: 22px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .toggle.off::after { left: 2px; }
+
+  /* Model status card — Superwhisper flavored */
+  .model-card {
+    background: var(--surface);
+    border-radius: 14px;
+    border: 1px solid var(--separator);
+    padding: 16px;
+    box-shadow: var(--shadow-card);
+    position: relative;
+    overflow: hidden;
+  }
+  .model-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 50%);
+    pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) {
+    .model-card::before {
+      background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0) 60%);
+    }
+  }
+  .model-head {
+    display: flex; align-items: flex-start; gap: 12px;
+    position: relative;
+  }
+  .model-glyph {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: var(--accent-tint);
+    border: 1px solid var(--separator);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .model-name {
+    font-size: 16px; font-weight: 600; color: var(--label);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .verified {
+    color: var(--green);
+    font-size: 12px;
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .model-meta {
+    font-size: 12px;
+    color: var(--secondaryLabel);
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background: var(--green); margin-right:5px; vertical-align: 1px; }
+  .model-actions {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--separator);
+    display: flex; gap: 8px;
+    position: relative;
+  }
+  .btn {
+    flex: 1;
+    padding: 9px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid var(--separator-strong);
+    color: var(--label);
+    background: var(--surface-2);
+  }
+  .btn.subtle { background: transparent; }
+
+  /* Inline tag chips for presets row */
+  .preset-chips {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 4px 14px 12px 14px;
+  }
+  .chip {
+    font-size: 12px;
+    color: var(--label);
+    background: var(--chip-bg);
+    border: 1px solid var(--chip-bd);
+    border-radius: 999px;
+    padding: 3px 9px;
+  }
+  .chip-meta {
+    font-size: 11px;
+    color: var(--tertiaryLabel);
+    align-self: center;
+  }
+
+  /* Disabled / soon */
+  .disabled .row, .disabled .row-detail, .disabled .row-label { color: var(--tertiaryLabel) !important; }
+  .badge {
+    font-size: 10px; font-weight: 600;
+    color: var(--secondaryLabel);
+    background: var(--chip-bg);
+    border: 1px solid var(--chip-bd);
+    padding: 2px 6px;
+    border-radius: 6px;
+    margin-left: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  /* Privacy pledge inline */
+  .pledge {
+    margin: 8px 4px 0 4px;
+    padding: 12px 14px;
+    background: var(--accent-tint);
+    border-radius: 12px;
+    font-size: 12px;
+    color: var(--secondaryLabel);
+    line-height: 1.5;
+  }
+  .pledge strong { color: var(--label); }
+
+  /* Caption */
+  .caption {
+    max-width: 393px;
+    color: #444;
+    font-size: 13px;
+    line-height: 1.4;
+    margin-bottom: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .caption { color: #aaa; }
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start p-8 gap-6">
+
+  <div class="caption">
+    <strong>V2 — Superwhisper table-rows.</strong> Off-white monochrome ground, denser rows, model
+    status rendered as a flavored card (verified glyph, action strip), rewrite presets as inline
+    chips instead of a push. Apple-respectful, but with product-specific density.
+  </div>
+
+  <div class="device">
+    <div class="island"></div>
+    <div class="screen">
+
+      <div class="status-bar">
+        <div>9:41</div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <span style="font-size:13px;">●●●●●</span>
+          <span style="margin-left:4px;">􀙇</span>
+          <span>􀛨</span>
+        </div>
+      </div>
+
+      <div class="nav-bar">
+        <a class="nav-back" href="#"><span style="font-size:22px; line-height:1;">‹</span><span>Back</span></a>
+        <div class="nav-title">Settings</div>
+      </div>
+
+      <div class="content">
+
+        <!-- SPEECH MODEL: hero card -->
+        <div class="sec-header"><span>Speech model</span></div>
+        <div class="model-card">
+          <div class="model-head">
+            <div class="model-glyph">⌬</div>
+            <div style="flex:1; min-width:0;">
+              <div class="model-name">
+                Parakeet TDT v2
+                <span class="verified" title="Files verified">✓ verified</span>
+              </div>
+              <div class="model-meta">
+                <span class="dot"></span>Installed · 1.25 GB on disk · last verified today, 14:22
+              </div>
+            </div>
+          </div>
+          <div class="model-actions">
+            <div class="btn subtle">Re-download</div>
+            <div class="btn">Wi-Fi only · On</div>
+          </div>
+        </div>
+        <div class="sec-footer">Runs locally on the Apple Neural Engine. Nothing leaves the device.</div>
+
+        <!-- KEYBOARD -->
+        <div class="sec-header"><span>Keyboard</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-label">Jot keyboard</div>
+            <div class="row-detail" style="color: var(--green); font-weight:500;"><span class="dot"></span>Full Access · On</div>
+            <div class="chev">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Auto-paste</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row" style="border-bottom: 0; padding-bottom: 6px;">
+            <div class="row-label">Rewrite presets</div>
+            <div class="chip-meta">3 built-in</div>
+          </div>
+          <div class="preset-chips">
+            <span class="chip">Make it casual</span>
+            <span class="chip">Make it formal</span>
+            <span class="chip">Make it concise</span>
+          </div>
+        </div>
+        <div class="sec-footer">Tap the Jot keyboard row to open iOS Settings → General → Keyboard. Presets aren't editable yet.</div>
+
+        <!-- ABOUT -->
+        <div class="sec-header"><span>About</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-label" style="color: var(--label); font-weight: 500;">Re-run setup wizard</div>
+            <div class="chev">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Version</div>
+            <div class="row-detail">0.2.0 (14)</div>
+          </div>
+          <div class="row">
+            <div class="row-label">GitHub</div>
+            <div class="chev">↗</div>
+          </div>
+        </div>
+        <div class="pledge">
+          <strong>Your words stay on your iPhone.</strong> Audio is transcribed on the Neural Engine.
+          No accounts, no cloud, no telemetry. Run Little Snitch — you'll see silence.
+        </div>
+
+        <!-- COMING LATER -->
+        <div class="sec-header"><span>Coming later</span></div>
+        <div class="card disabled">
+          <div class="row">
+            <div class="row-label">AI cleanup<span class="badge">soon</span></div>
+            <div class="chev">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Keep recordings<span class="badge">soon</span></div>
+            <div class="row-detail">Forever</div>
+            <div class="chev">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Reset settings<span class="badge">soon</span></div>
+          </div>
+          <div class="row">
+            <div class="row-label" style="color: var(--red); opacity: 0.5;">Erase all data<span class="badge">soon</span></div>
+          </div>
+        </div>
+        <div class="sec-footer" style="padding-bottom:24px;">Provider choice, retention, and destructive actions land once the AI pane is whole.</div>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>

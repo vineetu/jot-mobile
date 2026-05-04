@@ -16,10 +16,14 @@ enum ClipboardHandoff {
 
     /// Atomic handoff payload. Persisted as a single JSON blob under one key so
     /// a keyboard read can never observe a half-updated pair (new timestamp with
-    /// stale preview). `UserDefaults` is atomic per-key, not across keys.
+    /// stale text). `UserDefaults` is atomic per-key, not across keys.
+    /// Carries the FULL transcript so the keyboard can insert without reading
+    /// `UIPasteboard.general` (which lags behind cross-process publishes and
+    /// caused stale-paste bugs).
     struct FreshDictation: Codable, Sendable {
         let timestamp: Date
         let preview: String
+        let text: String
     }
 
     /// Auto-copy confirmation payload for the main app ledger row.
@@ -35,7 +39,8 @@ enum ClipboardHandoff {
         let now = Date()
         let payload = FreshDictation(
             timestamp: now,
-            preview: String(transcript.prefix(80))
+            preview: String(transcript.prefix(80)),
+            text: transcript
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         AppGroup.defaults.set(data, forKey: AppGroup.Keys.lastDictation)
@@ -67,10 +72,40 @@ enum ClipboardHandoff {
         return payload.preview
     }
 
+    /// Returns the full transcript text from the pasteboard only when the
+    /// App Group handoff metadata is fresh and, if supplied, newer than the
+    /// caller's start timestamp. The metadata is the freshness gate; the
+    /// pasteboard is the only place that carries the full transcript.
+    static func pendingFreshTranscriptText(minimumTimestamp: Date? = nil) -> String? {
+        guard
+            let data = AppGroup.defaults.data(forKey: AppGroup.Keys.lastDictation),
+            let payload = try? JSONDecoder().decode(FreshDictation.self, from: data)
+        else { return nil }
+
+        let age = Date().timeIntervalSince(payload.timestamp)
+        guard age >= 0, age < freshnessWindow else { return nil }
+
+        if let minimumTimestamp, payload.timestamp < minimumTimestamp {
+            return nil
+        }
+
+        // Read the FULL transcript directly from the App Group payload — never
+        // from UIPasteboard.general. UIPasteboard updates can lag across
+        // process boundaries, which previously caused the keyboard to insert
+        // whatever was on the system clipboard before the new publish.
+        guard !payload.text.isEmpty else { return nil }
+        return payload.text
+    }
+
     /// Called by the keyboard after inserting the transcript, so it doesn't
     /// re-offer on subsequent keyboard appearances.
     static func markConsumed() {
         AppGroup.defaults.removeObject(forKey: AppGroup.Keys.lastDictation)
+    }
+
+    static func clearPendingAutoPaste() {
+        AppGroup.defaults.removeObject(forKey: AppGroup.Keys.pendingAutoPasteFlag)
+        AppGroup.defaults.removeObject(forKey: AppGroup.Keys.pendingAutoPasteCreatedAt)
     }
 
     static func pendingAutoCopyConfirmation() -> AutoCopyConfirmation? {

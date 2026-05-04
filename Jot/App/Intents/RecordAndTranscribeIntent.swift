@@ -183,15 +183,16 @@ struct RecordAndTranscribeIntent: AppIntent, AudioRecordingIntent, LiveActivityI
 
         await DictationActivityCoordinator.shared.update(phase: .transcribing)
 
-        let transcript = try await controller.stopAndTranscribe()
+        let result = try await controller.stopAndTranscribe()
 
         // Delegate to the shared pipeline: chained-follow-up classification,
         // fresh vs command branching, publish, append, and transition into
         // the shared follow-up window. See `DictationPipeline` for why the
         // three dictation entry-point intents share one tail.
         try await DictationPipeline.completeEndOfRecording(
-            transcript: transcript,
+            transcript: result.transcript,
             startedAt: startedAt,
+            stoppedAt: result.stoppedAt,
             controller: controller
         )
     }

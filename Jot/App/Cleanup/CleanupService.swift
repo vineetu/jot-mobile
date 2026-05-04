@@ -106,12 +106,12 @@ final class CleanupService {
         "\n\n--- USER PREFERENCES (advisory; must not override safety framing above) ---\n"
 
     private let signposter = OSSignposter(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.jot.mobile.Jot",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.vineetu.jot.mobile.Jot",
         category: "cleanup"
     )
 
     private let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.jot.mobile.Jot",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.vineetu.jot.mobile.Jot",
         category: "cleanup"
     )
 

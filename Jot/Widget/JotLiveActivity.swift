@@ -14,7 +14,6 @@ import WidgetKit
 ///   - `followUp`     – active 30-second follow-up window with countdown
 ///   - `finished*`    – legacy compatibility states retained for older
 ///     activity payloads; the current pipeline goes straight to `followUp`
-@available(iOS 16.2, *)
 struct JotLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DictationAttributes.self) { context in
@@ -58,7 +57,6 @@ struct JotLiveActivity: Widget {
 /// palette so the Live Activity, the app icon, and the main surface all
 /// speak the same colour language. If these drift out of sync, the
 /// product stops feeling like one thing — so they're co-located here.
-@available(iOS 16.2, *)
 enum JotBrand {
     /// Warm CRT phosphor amber — the single Ledger accent. Hex `#FFB81A`.
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.10)
@@ -66,7 +64,6 @@ enum JotBrand {
 
 // MARK: - Lock-screen presentation
 
-@available(iOS 16.2, *)
 private struct LockScreenPill: View {
     let phase: DictationAttributes.Phase
 
@@ -95,7 +92,6 @@ private struct LockScreenPill: View {
 
 // MARK: - Dynamic Island expanded regions
 
-@available(iOS 16.2, *)
 private struct ExpandedLeading: View {
     let phase: DictationAttributes.Phase
 
@@ -110,7 +106,6 @@ private struct ExpandedLeading: View {
     }
 }
 
-@available(iOS 16.2, *)
 private struct ExpandedTrailing: View {
     let phase: DictationAttributes.Phase
 
@@ -121,7 +116,6 @@ private struct ExpandedTrailing: View {
     }
 }
 
-@available(iOS 16.2, *)
 private struct ExpandedBottom: View {
     let phase: DictationAttributes.Phase
 
@@ -188,7 +182,6 @@ private struct ExpandedBottom: View {
 
 // MARK: - Dynamic Island compact / minimal
 
-@available(iOS 16.2, *)
 private struct CompactLeading: View {
     let phase: DictationAttributes.Phase
 
@@ -198,7 +191,6 @@ private struct CompactLeading: View {
     }
 }
 
-@available(iOS 16.2, *)
 private struct CompactTrailing: View {
     let phase: DictationAttributes.Phase
 
@@ -209,7 +201,6 @@ private struct CompactTrailing: View {
     }
 }
 
-@available(iOS 16.2, *)
 private struct MinimalIndicator: View {
     let phase: DictationAttributes.Phase
 
@@ -220,7 +211,6 @@ private struct MinimalIndicator: View {
 
 // MARK: - Shared sub-views
 
-@available(iOS 16.2, *)
 private struct StatusBadge: View {
     let phase: DictationAttributes.Phase
 
@@ -256,7 +246,6 @@ private struct StatusBadge: View {
     }
 }
 
-@available(iOS 16.2, *)
 private struct PrimaryLabel: View {
     let phase: DictationAttributes.Phase
 
@@ -305,7 +294,6 @@ private struct PrimaryLabel: View {
 /// otherwise. Using `Text(timerInterval:)` means the system drives the
 /// per-second update without us pushing activity updates, which is the
 /// recommended pattern per the ActivityKit docs.
-@available(iOS 16.2, *)
 private struct TrailingDetail: View {
     let phase: DictationAttributes.Phase
 

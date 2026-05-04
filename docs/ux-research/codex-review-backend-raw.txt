@@ -1,0 +1,35 @@
+I couldn’t write `/Users/vsriram/code/jot-mobile/docs/ux-research/codex-review-backend.md`: the sandbox only allows writes under `/Users/vsriram/code/jot-mobile/Jot`, and rejected the sibling `docs` path. No files were changed.
+
+## Critical issues (would break MVP1)
+1. **Confirmed - MVP1 API contract does not match the code.** `RecordingService` has `start()` (`Jot/App/Recording/RecordingService.swift:93`), `stop()` (`:194`), `forceStop()` (`:310`), and `currentAmplitude` (`:76`), but no `startRecording()`, `stopAndTranscribe()`, or `modelState`. Those start/stop/transcribe names are on `DictationController` (`Jot/App/Intents/DictateIntent.swift:218`, `:226`). `ClipboardHandoff` has `publish(...)`, not `write(...)` (`Jot/Shared/ClipboardHandoff.swift:33`). `TranscriptStore` has `append`, `mostRecent`, `markSuperseded` (`Jot/Shared/TranscriptStore.swift:178`, `:228`, `:252`), not delete/history APIs. Literal MVP1 calls will not compile.
+
+2. **Confirmed - AVAudioSession config can leak after partial start failure.** `start()` calls `configureSession()` before any cleanup scope (`RecordingService.swift:93`). `configureSession()` saves prior session state, calls `setCategory`, then `setActive(true)` (`:222`, `:235`, `:241`). If activation throws after category succeeds, the catch logs and throws without `restoreSession()` (`:243`; restore is at `:260`). Next start can capture Jot’s leaked `.record` state as “prior.”
+
+3. **Confirmed - warm-up failure is sticky.** `warmUp()` calls `ensurePreparing()` (`TranscriptionService.swift:174`). `ensurePreparing()` always reuses non-nil `prepareTask` (`:472`), but failure paths set `.failed` and throw without clearing it (`:509`, `:551`, `:590`). One transient model/download failure can make all future warmups/transcribes fail until process restart or manual cancellation.
+
+4. **Confirmed - simulator fallback is incomplete.** The stand-in only bypasses `transcribe(samples:)` (`SimulatorStandIn.swift:8`; `TranscriptionService.swift:238`). `JotApp` still calls real `warmUp()` on launch (`JotApp.swift:63`), and recording still uses real `AVAudioEngine.start()` unguarded (`RecordingService.swift:98`, `:180`). Simulator can still hit model/mic runtime hazards and `modelState` may never become `.ready`.
+
+5. **Confirmed - lifecycle `forceStop()` is not wired.** `forceStop()` exists (`RecordingService.swift:310`) but has no call sites. `JotApp` only warms model/refreshes mirror (`JotApp.swift:63`); `ContentView` scenePhase only resets warmup UI (`ContentView.swift:181`). Foreground auto-start can hit `.alreadyRunning` if a prior recording survived backgrounding (`RecordingService.swift:94`).
+
+## Significant issues (would degrade MVP1)
+1. **Confirmed - BG warm cancellation can poison state or duplicate loaders.** Expiration cancels warm task and calls `cancelBackgroundWarm()` (`JotAppDelegate.swift:57`). That nils `prepareTask` (`TranscriptionService.swift:224`), while the old task can still catch cancellation as failure and set `.failed` (`:551`, `:590`).
+
+2. **Confirmed - stale amplitude can resurrect after stop.** Tap callback enqueues `currentAmplitude = amp` without checking active recording (`RecordingService.swift:166`). `stop()`/`forceStop()` nil it (`:213`, `:320`), but a queued task can republish non-nil while idle.
+
+3. **Confirmed - persistence failures are swallowed.** `TranscriptStore.append` uses `try? context.save()` and returns a transcript anyway (`TranscriptStore.swift:189`, `:200`). `markSuperseded` and delete also swallow save errors (`:263`; `ContentView.swift:1316`). MVP1 can claim success while history did not persist.
+
+4. **Possible - live SwiftData refresh across contexts is assumed, not tested.** UI uses scene `modelContext`/`@Query` (`ContentView.swift:33`, `:41`); `TranscriptStore.append` writes through a fresh context (`TranscriptStore.swift:189`). The comment asserts rebroadcasting (`ContentView.swift:38`), but I found no test proving it.
+
+5. **Confirmed - stop/transcribe loses audio on model failure.** `DictationControllerImpl.stopAndTranscribe()` drains samples, then transcribes (`DictateIntent.swift:406`, `:413`). If load/inference fails, audio is already gone and not persisted.
+
+6. **Confirmed - audio tap does allocations/conversion on render path.** `CaptureContext.ingest` allocates buffers, converts, builds an `Array`, and appends under lock per tap (`RecordingService.swift:568`, `:576`, `:582`, `:600`). That is risky for capture quality under pressure.
+
+## Notes / future cleanup
+- **Confirmed:** Swift 6 strict concurrency is enabled (`Jot/project.yml:12`) and `xcodebuild ... build` succeeded.
+- **Unknown:** simulator tests could not run because CoreSimulatorService/cache writes were blocked by the environment.
+- **Confirmed:** I did not find the old persistent `ActiveSessionFlag` pattern. Recording liveness is in-memory (`RecordingService.swift:65`; `DictateIntent.swift:376`).
+
+## Verdict
+The backend is **not safe to build MVP1 on top of as-is** if the dependency list is literal. Pre-implementation patches are required: API/facade alignment, AVAudioSession restore on configure failure, retryable/cancellation-safe `prepareTask`, complete simulator mode for warmup/modelState/recording, lifecycle `forceStop()` wiring, and observable transcript persistence failures.
+
+External refs checked: Apple `AVAudioSession`, `interruptionNotification`, `BGProcessingTask`, and SwiftData `ModelContext` docs.

@@ -3,10 +3,10 @@ import Foundation
 import UIKit
 import os.log
 
-private let backgroundWarmLog = Logger(subsystem: "com.jot.mobile.Jot", category: "background-warm")
+private let backgroundWarmLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "background-warm")
 
 final class JotAppDelegate: NSObject, UIApplicationDelegate {
-    static let backgroundWarmTaskIdentifier = "com.jot.mobile.Jot.warm-parakeet"
+    static let backgroundWarmTaskIdentifier = "com.vineetu.jot.mobile.Jot.warm-parakeet"
 
     func application(
         _ application: UIApplication,

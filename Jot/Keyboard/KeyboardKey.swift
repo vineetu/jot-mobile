@@ -1,11 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// A single rendered key on the keyboard. Receives a descriptor + the current
-/// shift state + the width it should occupy, and emits the tap event via
-/// `onTap`. Press-in visual highlight is handled here; the controller is
-/// responsible for any behavior on release (insertion, modifier toggle,
-/// advance-input-mode, etc).
+/// A single rendered key on the keyboard. Receives a descriptor + the width it
+/// should occupy, and emits the tap event via `onTap`. Press-in visual
+/// highlight is handled here; the controller is responsible for behavior on
+/// release (insertion, delete, etc).
 ///
 /// ## Why not `Button(action:)`
 ///
@@ -30,18 +29,17 @@ import UIKit
 ///    `UIImpactFeedbackGenerator(.light)` for rapid typing.
 /// 3. **Audio** — dispatches by key class. Input keys (letters, digits,
 ///    punctuation, space) fire `UIDevice.playInputClick()` which plays
-///    SystemSoundID 1104 when the system keyboard-sound toggle is on.
-///    Delete fires 1155; system keys (shift, plane toggle, return, globe,
-///    history) fire 1156. See ``KeyboardFeedback`` for the dispatch table.
+    ///    SystemSoundID 1104 when the system keyboard-sound toggle is on.
+    ///    Delete fires 1155; return fires 1156. See ``KeyboardFeedback`` for
+    ///    the dispatch table.
 ///
 /// ## Preview bubble ("key pop-up")
 ///
-/// Character keys (``KeyboardKeyDescriptor/letter`` and ``.literal``) show a
-/// balloon above the key on press, displaying the same glyph in a much
-/// larger light-weight font. Suppressed for every action key (shift, delete,
-/// return, space, plane toggle, globe, history) — those have no callout on
-/// iOS native either. Also suppressed in landscape (compact vertical size
-/// class) to stay inside the keyboard bounds.
+    /// Character keys (``KeyboardKeyDescriptor/literal``) show a balloon above
+    /// the key on press, displaying the same glyph in a much larger light-weight
+    /// font. Suppressed for action keys and space — those have no callout on
+    /// iOS native either. Also suppressed in landscape (compact vertical size
+    /// class) to stay inside the keyboard bounds.
 ///
 /// The bubble is wider than the key cap (keyWidth + 26 pt) and extends
 /// ~70 pt above the key top. We render it via `.overlay(alignment: .top)`
@@ -49,7 +47,6 @@ import UIKit
 /// frame by default, so the bubble renders cleanly into the row above.
 struct KeyboardKey: View {
     let descriptor: KeyboardKeyDescriptor
-    let shiftState: ShiftState
     let width: CGFloat
     let height: CGFloat
     /// Corner radius pulled from ``KeyboardMetrics`` — 5 pt pre-iOS-26, 9 pt
@@ -78,7 +75,7 @@ struct KeyboardKey: View {
             .gesture(pressGesture)
             .overlay(alignment: .top) { previewBubble }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(descriptor.accessibilityLabel(for: shiftState))
+            .accessibilityLabel(descriptor.accessibilityLabel())
             .accessibilityAddTraits(.isKeyboardKey)
     }
 
@@ -106,27 +103,24 @@ struct KeyboardKey: View {
 
     @ViewBuilder
     private var content: some View {
-        if let symbol = descriptor.symbolName(for: shiftState) {
+        if let symbol = descriptor.symbolName() {
             Image(systemName: symbol)
                 .imageScale(.medium)
-        } else if let label = descriptor.label(for: shiftState) {
+        } else if let label = descriptor.label() {
             Text(label)
                 .kerning(0)
         }
     }
 
-    /// Apple's keycap font: semi-bold for letters, regular for compact labels
-    /// like `123` / `ABC` / `#+=`. Size tuned to match the native keyboard at
-    /// standard iPhone widths.
+    /// Apple's keycap font. Size tuned to match the native keyboard at standard
+    /// iPhone widths.
     private var font: Font {
         switch descriptor {
-        case .letter, .literal:
+        case .literal:
             return .system(size: 22, weight: .regular, design: .default)
         case .space:
             return .system(size: 14, weight: .regular, design: .default)
-        case .planeToggle:
-            return .system(size: 15, weight: .regular, design: .default)
-        case .shift, .backspace, .historyKey, .returnKey:
+        case .returnKey, .backspace:
             return .system(size: 18, weight: .regular, design: .default)
         }
     }
@@ -191,23 +185,20 @@ struct KeyboardKey: View {
         // match iOS native.
         if verticalSizeClass == .compact { return false }
         switch descriptor {
-        case .letter, .literal:
+        case .literal:
             return true
-        case .space, .returnKey, .backspace, .shift,
-             .planeToggle, .historyKey:
+        case .space, .returnKey, .backspace:
             return false
         }
     }
 
     /// The glyph the bubble should display. Only resolvable for character
-    /// keys; `nil` otherwise. Respects the current shift state for letters.
+    /// keys; `nil` otherwise.
     private var previewCharacter: String? {
         switch descriptor {
-        case .letter(let base):
-            return shiftState.isUppercased ? base.uppercased() : base
         case .literal(let text):
             return text
-        default:
+        case .space, .returnKey, .backspace:
             return nil
         }
     }

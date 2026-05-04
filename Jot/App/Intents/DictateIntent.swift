@@ -190,7 +190,7 @@ struct DictateIntent: AppIntent {
 
         await DictationActivityCoordinator.shared.update(phase: .transcribing)
 
-        let transcript = try await controller.stopAndTranscribe()
+        let result = try await controller.stopAndTranscribe()
 
         // Delegate to the shared pipeline. Must match the
         // `RecordAndTranscribeIntent` call site exactly — "no code-path
@@ -199,8 +199,9 @@ struct DictateIntent: AppIntent {
         // (clipboard, ledger rows, chained-follow-up classification) as
         // users who bind the primary intent. See `DictationPipeline`.
         try await DictationPipeline.completeEndOfRecording(
-            transcript: transcript,
+            transcript: result.transcript,
             startedAt: startedAt,
+            stoppedAt: result.stoppedAt,
             controller: controller
         )
     }
@@ -225,8 +226,8 @@ protocol DictationController: AnyObject {
     /// microphone permission is denied.
     func startRecording(startedAt: Date) async throws
 
-    /// Stop capture and return the raw transcript.
-    func stopAndTranscribe() async throws -> String
+    /// Stop capture and return the raw transcript plus the mic-off timestamp.
+    func stopAndTranscribe() async throws -> DictationStopResult
 
     /// Run cleanup over the transcript using the provided settings.
     func cleanup(transcript: String, settings: CleanupSettings) async throws -> String
@@ -236,6 +237,11 @@ protocol DictationController: AnyObject {
 
     /// End the post-transcription follow-up resolution window.
     func endPostProcessing()
+}
+
+struct DictationStopResult: Sendable {
+    let transcript: String
+    let stoppedAt: Date
 }
 
 /// The intent's view of runtime state. Separate from
@@ -361,7 +367,7 @@ final class DictationIntentBridge {
 ///   (`DictationPipeline.completeEndOfRecording`) owns the
 ///   chained-follow-up classification, clipboard publish, ledger append, and
 ///   Live Activity finish. The controller's `stopAndTranscribe()` returns the
-///   raw transcript and the pipeline takes it from there.
+///   raw transcript plus mic-off timestamp and the pipeline takes it from there.
 /// - Live Activity updates during recording. The
 ///   `DictationActivityCoordinator` singleton owns the pill. The intent's
 ///   `perform()` wires the two together — keeping both out of this class.
@@ -403,7 +409,7 @@ final class DictationControllerImpl: DictationController {
         currentPhase = .recording
     }
 
-    func stopAndTranscribe() async throws -> String {
+    func stopAndTranscribe() async throws -> DictationStopResult {
         currentPhase = .transcribing
         // Mark idle on any exit path — success or throw — so a failed
         // transcription doesn't leave the toggle stuck in `.transcribing`
@@ -411,8 +417,14 @@ final class DictationControllerImpl: DictationController {
         defer { currentPhase = .idle }
 
         let samples = try await recording.stop()
-        let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
-        return transcript
+        let stoppedAt = Date()
+        do {
+            let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
+            return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt)
+        } catch {
+            recording.markPipelineFinished()
+            throw error
+        }
     }
 
     func cleanup(transcript: String, settings: CleanupSettings) async throws -> String {

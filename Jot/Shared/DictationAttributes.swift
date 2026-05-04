@@ -12,7 +12,6 @@ import Foundation
 /// The static attributes are intentionally empty: everything meaningful is in
 /// `ContentState`, which is delivered via `Activity.update(_:)` as the
 /// dictation moves through phases.
-@available(iOS 16.2, *)
 public struct DictationAttributes: ActivityAttributes {
     /// The phase the pill is currently displaying. The current state machine
     /// flows:

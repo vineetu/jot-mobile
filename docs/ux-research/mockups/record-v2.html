@@ -1,0 +1,886 @@
+<!doctype html>
+<!--
+  Variant 2 — "Superwhisper morphing pill"
+  Thesis: One Liquid Glass capsule walks Idle → Recording → Transcribing → Delivered inside a single
+  surface. Result text lands inside the same capsule that just held the recording state, dwells ~1.5s,
+  then dissolves into the top row of a stock list below. Monochrome ground, single accent. Pill-on-top,
+  history below. Inspired by Superwhisper's Mac pill aesthetic translated to a phone surface.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Jot — Record v2 (Superwhisper morphing pill)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+      /* Light — restrained monochrome, single accent (system blue) */
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --label: #0a0a0a;
+      --label-2: rgba(60,60,67,0.62);
+      --label-3: rgba(60,60,67,0.30);
+      --separator: rgba(60,60,67,0.13);
+      --accent: #0a84ff;            /* single accent — used sparingly */
+      --warn: #ff9500;
+      --destructive: #ff3b30;
+
+      --glass-fill: rgba(255,255,255,0.65);
+      --glass-border: rgba(0,0,0,0.06);
+      --glass-shadow: 0 8px 30px rgba(0,0,0,0.08), 0 1px 0 rgba(255,255,255,0.6) inset;
+    }
+    .dark {
+      --bg: #0b0b0d;
+      --surface: #18181b;
+      --label: #fafafa;
+      --label-2: rgba(235,235,245,0.62);
+      --label-3: rgba(235,235,245,0.28);
+      --separator: rgba(255,255,255,0.08);
+      --accent: #0a84ff;
+      --warn: #ff9f0a;
+      --destructive: #ff453a;
+
+      --glass-fill: rgba(36,36,40,0.55);
+      --glass-border: rgba(255,255,255,0.08);
+      --glass-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05) inset;
+    }
+
+    body {
+      font-family: var(--font);
+      background: #d6d6db;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .device {
+      width: 393px;
+      height: 852px;
+      border-radius: 55px;
+      background: var(--bg);
+      color: var(--label);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 0 0 10px #1a1a1a, 0 25px 60px rgba(0,0,0,0.35);
+    }
+    /* Subtle background gradient to give the glass something to refract */
+    .device::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(60% 40% at 50% 0%, rgba(10,132,255,0.08), transparent 70%),
+        radial-gradient(50% 30% at 80% 100%, rgba(10,132,255,0.04), transparent 70%);
+      pointer-events: none;
+    }
+    .dark.device::before {
+      background:
+        radial-gradient(60% 40% at 50% 0%, rgba(10,132,255,0.16), transparent 70%),
+        radial-gradient(50% 30% at 80% 100%, rgba(10,132,255,0.08), transparent 70%);
+    }
+    .notch {
+      position: absolute;
+      top: 11px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 126px;
+      height: 37px;
+      background: #000;
+      border-radius: 100px;
+      z-index: 50;
+    }
+    .status-bar {
+      height: 54px;
+      padding: 18px 32px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--label);
+      position: relative;
+      z-index: 5;
+    }
+    .home-indicator {
+      position: absolute;
+      bottom: 9px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 134px;
+      height: 5px;
+      border-radius: 3px;
+      background: var(--label);
+      opacity: 0.85;
+      z-index: 50;
+    }
+
+    .body-area {
+      position: absolute;
+      top: 54px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      overflow: hidden;
+      padding: 8px 20px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .nav-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 4px 0;
+    }
+    .nav-title {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0.32px;
+    }
+    .gear {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--label-2);
+      font-size: 18px;
+    }
+
+    /* Liquid Glass capsule — the only custom-drawn surface */
+    .capsule {
+      backdrop-filter: blur(40px) saturate(180%);
+      -webkit-backdrop-filter: blur(40px) saturate(180%);
+      background: var(--glass-fill);
+      border: 0.5px solid var(--glass-border);
+      box-shadow: var(--glass-shadow);
+      border-radius: 100px;
+      transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 22px 24px;
+      position: relative;
+      align-self: center;
+    }
+
+    /* Idle */
+    .capsule.idle {
+      width: 160px;
+      height: 160px;
+    }
+    .capsule.idle .mic-glyph {
+      font-size: 38px;
+      color: var(--label);
+      opacity: 0.92;
+    }
+    .capsule .label {
+      font-size: 13px;
+      color: var(--label-2);
+      font-weight: 500;
+    }
+
+    /* Recording */
+    .capsule.recording {
+      width: 220px;
+      height: 180px;
+    }
+    .capsule.recording .timer {
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--label);
+    }
+    .capsule .waveform {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 36px;
+      margin-top: 4px;
+    }
+    .capsule .waveform .bar {
+      width: 3px;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+    .capsule .stop-hint {
+      font-size: 12px;
+      color: var(--label-2);
+      margin-top: 2px;
+    }
+
+    /* Transcribing */
+    .capsule.transcribing {
+      width: 180px;
+      height: 120px;
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2.5px solid var(--label-3);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Delivered — capsule expands into a card holding the transcript */
+    .capsule.delivered {
+      width: 100%;
+      max-width: 353px;
+      min-height: 140px;
+      border-radius: 28px;
+      padding: 18px 20px;
+      align-items: stretch;
+    }
+    .capsule.delivered .delivered-text {
+      font-size: 15px;
+      line-height: 1.5;
+      color: var(--label);
+      margin-bottom: 10px;
+    }
+    .delivered-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--label-2);
+    }
+    .delivered-foot .copied {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .delivered-foot .copy-glyph {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10,132,255,0.12);
+      color: var(--accent);
+    }
+
+    /* Failed */
+    .capsule.failed {
+      width: 240px;
+      min-height: 130px;
+      padding: 18px 22px;
+    }
+    .capsule.failed .warn-glyph {
+      color: var(--warn);
+      font-size: 22px;
+    }
+    .capsule.failed .err-text {
+      font-size: 13px;
+      color: var(--label);
+      text-align: center;
+      line-height: 1.4;
+    }
+    .try-again-btn {
+      margin-top: 6px;
+      padding: 6px 14px;
+      border-radius: 100px;
+      background: var(--label);
+      color: var(--bg);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* History list (stock list rows; the deviation is only the capsule above) */
+    .history {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .history-header {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: var(--label-2);
+      padding: 8px 4px 6px;
+      font-weight: 600;
+    }
+    .h-row {
+      padding: 14px 4px;
+      border-bottom: 0.5px solid var(--separator);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .h-row .text {
+      font-size: 15px;
+      line-height: 1.4;
+      color: var(--label);
+    }
+    .h-row .meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      color: var(--label-2);
+      font-variant-numeric: tabular-nums;
+    }
+    .h-row .meta .actions {
+      margin-left: auto;
+      display: flex;
+      gap: 14px;
+    }
+    .h-row .meta .actions span {
+      color: var(--label-2);
+      font-weight: 500;
+      font-size: 13px;
+    }
+    .h-row .meta .actions .delete { color: var(--destructive); }
+
+    /* Highlighted "freshly delivered" first row (after pill→card hand-off) */
+    .h-row.fresh {
+      background: linear-gradient(to right, rgba(10,132,255,0.06), transparent);
+      border-radius: 8px;
+      margin: 0 -4px;
+      padding: 14px 8px;
+    }
+
+    /* Caption + grid scaffolding */
+    .caption {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 1.4px;
+      color: #555;
+      text-transform: uppercase;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    .thesis {
+      max-width: 820px;
+      margin: 0 auto 32px;
+      padding: 16px 20px;
+      background: #fff;
+      border-left: 3px solid #0a84ff;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #333;
+      border-radius: 4px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 36px;
+      justify-content: center;
+      padding: 32px 12px 80px;
+    }
+    .col {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    .col-header {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+      color: #444;
+      text-align: center;
+    }
+
+    /* Annotation pointing to the morph */
+    .annot {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      color: var(--label-2);
+      text-transform: uppercase;
+      text-align: center;
+      margin-top: 4px;
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+
+<header class="max-w-3xl mx-auto pt-8 px-6">
+  <h1 class="text-2xl font-bold mb-2">Jot iOS — Record + Transcript · Variant 2</h1>
+  <p class="text-sm text-gray-600">Superwhisper morphing pill · One capsule walks every state</p>
+</header>
+
+<div class="thesis">
+  <strong>Thesis:</strong> A single Liquid Glass capsule pinned at the top of the screen morphs Idle → Recording → Transcribing → Delivered inside one container. The transcript lands inside the same surface that just held the recording state, dwells ~1.5s, then dissolves into the top row of a stock list below. Monochrome ground, system blue as the only accent, restrained motion. Inspired by Superwhisper's Mac pill — translated for one-handed phone use.
+</div>
+
+<div class="grid">
+
+  <!-- LIGHT COLUMN -->
+  <div class="col">
+    <div class="col-header">Light Mode</div>
+
+    <!-- 1. Idle -->
+    <div>
+      <div class="caption">1 · Idle / Ready</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule idle">
+            <div class="mic-glyph">●</div>
+            <div class="label">Tap to dictate</div>
+          </div>
+          <div class="annot">— same capsule walks every state —</div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Remember to refill the prescription before Friday.</div>
+              <div class="meta"><span>Tue · 0:09</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 2. Recording -->
+    <div>
+      <div class="caption">2 · Recording</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule recording">
+            <div class="timer">0:07</div>
+            <div class="waveform">
+              <div class="bar" style="height:6px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:24px"></div>
+              <div class="bar" style="height:12px"></div>
+              <div class="bar" style="height:20px"></div>
+              <div class="bar" style="height:30px"></div>
+              <div class="bar" style="height:18px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:8px"></div>
+              <div class="bar" style="height:18px"></div>
+              <div class="bar" style="height:26px"></div>
+              <div class="bar" style="height:16px"></div>
+              <div class="bar" style="height:10px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:22px"></div>
+              <div class="bar" style="height:12px"></div>
+            </div>
+            <div class="stop-hint">Listening — tap to stop</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 3. Transcribing -->
+    <div>
+      <div class="caption">3 · Transcribing</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule transcribing">
+            <div class="spinner"></div>
+            <div class="label">Transcribing…</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 4. Delivered (capsule expanded into card; auto-copy chip; ~1.5s dwell) -->
+    <div>
+      <div class="caption">4 · Delivered (lands inside capsule, ~1.5s dwell)</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule delivered">
+            <div class="delivered-text">Tell Sam I'll grab the keys on the way out and meet at the side door around six.</div>
+            <div class="delivered-foot">
+              <span class="copied">⧉ Copied</span>
+              <span style="font-variant-numeric: tabular-nums;">just now · 0:11</span>
+            </div>
+          </div>
+          <div class="annot">— card dissolves to top row in ~1.5s —</div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 5. History (after the dwell — fresh row at top, capsule back to idle) -->
+    <div>
+      <div class="caption">5 · History (capsule back to idle, fresh row at top)</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule idle">
+            <div class="mic-glyph">●</div>
+            <div class="label">Tap to dictate</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row fresh">
+              <div class="text">Tell Sam I'll grab the keys on the way out and meet at the side door around six.</div>
+              <div class="meta"><span>just now · 0:11</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Remember to refill the prescription before Friday.</div>
+              <div class="meta"><span>Tue · 0:09</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 6. Failed -->
+    <div>
+      <div class="caption">6 · Failed (silent capture)</div>
+      <div class="device">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule failed">
+            <div class="warn-glyph">⚠</div>
+            <div class="err-text">No speech detected. Check that your microphone isn't muted.</div>
+            <div class="try-again-btn">Try again</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- DARK COLUMN -->
+  <div class="col">
+    <div class="col-header">Dark Mode</div>
+
+    <!-- 1. Idle -->
+    <div>
+      <div class="caption">1 · Idle / Ready</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule idle">
+            <div class="mic-glyph">●</div>
+            <div class="label">Tap to dictate</div>
+          </div>
+          <div class="annot">— same capsule walks every state —</div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Remember to refill the prescription before Friday.</div>
+              <div class="meta"><span>Tue · 0:09</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 2. Recording -->
+    <div>
+      <div class="caption">2 · Recording</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule recording">
+            <div class="timer">0:07</div>
+            <div class="waveform">
+              <div class="bar" style="height:6px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:24px"></div>
+              <div class="bar" style="height:12px"></div>
+              <div class="bar" style="height:20px"></div>
+              <div class="bar" style="height:30px"></div>
+              <div class="bar" style="height:18px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:8px"></div>
+              <div class="bar" style="height:18px"></div>
+              <div class="bar" style="height:26px"></div>
+              <div class="bar" style="height:16px"></div>
+              <div class="bar" style="height:10px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar" style="height:22px"></div>
+              <div class="bar" style="height:12px"></div>
+            </div>
+            <div class="stop-hint">Listening — tap to stop</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 3. Transcribing -->
+    <div>
+      <div class="caption">3 · Transcribing</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule transcribing">
+            <div class="spinner"></div>
+            <div class="label">Transcribing…</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 4. Delivered -->
+    <div>
+      <div class="caption">4 · Delivered (lands inside capsule, ~1.5s dwell)</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule delivered">
+            <div class="delivered-text">Tell Sam I'll grab the keys on the way out and meet at the side door around six.</div>
+            <div class="delivered-foot">
+              <span class="copied">⧉ Copied</span>
+              <span style="font-variant-numeric: tabular-nums;">just now · 0:11</span>
+            </div>
+          </div>
+          <div class="annot">— card dissolves to top row in ~1.5s —</div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 5. History -->
+    <div>
+      <div class="caption">5 · History (capsule back to idle, fresh row at top)</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule idle">
+            <div class="mic-glyph">●</div>
+            <div class="label">Tap to dictate</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row fresh">
+              <div class="text">Tell Sam I'll grab the keys on the way out and meet at the side door around six.</div>
+              <div class="meta"><span>just now · 0:11</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Remember to refill the prescription before Friday.</div>
+              <div class="meta"><span>Tue · 0:09</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+    <!-- 6. Failed -->
+    <div>
+      <div class="caption">6 · Failed (silent capture)</div>
+      <div class="device dark">
+        <div class="notch"></div>
+        <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+        <div class="body-area">
+          <div class="nav-row">
+            <div class="nav-title">Jot</div>
+            <div class="gear">⚙</div>
+          </div>
+          <div class="capsule failed">
+            <div class="warn-glyph">⚠</div>
+            <div class="err-text">No speech detected. Check that your microphone isn't muted.</div>
+            <div class="try-again-btn">Try again</div>
+          </div>
+          <div class="history">
+            <div class="history-header">History</div>
+            <div class="h-row">
+              <div class="text">Pick up oat milk on the way home tonight.</div>
+              <div class="meta"><span>Yesterday · 0:08</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+            <div class="h-row">
+              <div class="text">Need to follow up with Maya about the lease renewal.</div>
+              <div class="meta"><span>Wed · 0:14</span><span class="actions"><span>⧉</span><span class="delete">✕</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+</body>
+</html>

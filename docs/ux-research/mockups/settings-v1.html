@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<!--
+  Variant 1 — "Apple Settings analog"
+  Thesis: The most boring, stock iOS Settings translation possible. Form(.grouped) in HTML.
+  Native gray section headers in caps, white card sections with hairline dividers, chevrons
+  on disclosure rows, native toggle styling. Looks like a page out of iOS Settings. NO Liquid
+  Glass, NO custom cards. The point: prove the most native version is good enough — and that
+  any deviation (V2/V3) must justify itself against this baseline.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot — Settings (V1, Apple Settings analog)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    /* Apple semantic colors — light */
+    --systemBackground: #ffffff;
+    --secondarySystemBackground: #f2f2f7;     /* grouped table bg */
+    --tertiarySystemBackground: #ffffff;       /* cell bg */
+    --label: #000000;
+    --secondaryLabel: rgba(60, 60, 67, 0.60);
+    --tertiaryLabel: rgba(60, 60, 67, 0.30);
+    --separator: rgba(60, 60, 67, 0.29);       /* hairline */
+    --systemBlue: #007AFF;
+    --systemGreen: #34C759;
+    --systemOrange: #FF9500;
+    --systemRed: #FF3B30;
+    --systemGray: #8E8E93;
+    --systemGray2: #AEAEB2;
+    --systemGray5: #E5E5EA;
+    --systemGray6: #F2F2F7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --systemBackground: #000000;
+      --secondarySystemBackground: #000000;
+      --tertiarySystemBackground: #1C1C1E;
+      --label: #ffffff;
+      --secondaryLabel: rgba(235, 235, 245, 0.60);
+      --tertiaryLabel: rgba(235, 235, 245, 0.30);
+      --separator: rgba(84, 84, 88, 0.65);
+      --systemBlue: #0A84FF;
+      --systemGreen: #30D158;
+      --systemOrange: #FF9F0A;
+      --systemRed: #FF453A;
+      --systemGray: #8E8E93;
+      --systemGray5: #2C2C2E;
+      --systemGray6: #1C1C1E;
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #d8d8dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0a0a0a; }
+  }
+
+  /* iPhone 15 Pro frame */
+  .device {
+    width: 393px;
+    height: 852px;
+    border-radius: 55px;
+    background: #1a1a1a;
+    padding: 12px;
+    box-shadow: 0 30px 60px -20px rgba(0,0,0,0.45);
+    position: relative;
+  }
+  .screen {
+    width: 100%; height: 100%;
+    border-radius: 44px;
+    overflow: hidden;
+    background: var(--secondarySystemBackground);
+    color: var(--label);
+    position: relative;
+  }
+  /* Dynamic Island */
+  .island {
+    position: absolute;
+    top: 11px; left: 50%; transform: translateX(-50%);
+    width: 124px; height: 37px;
+    background: #000; border-radius: 20px;
+    z-index: 10;
+  }
+  /* Status bar */
+  .status-bar {
+    height: 54px;
+    padding: 18px 32px 0 32px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 16px; font-weight: 600;
+    color: var(--label);
+  }
+  .status-right { display: flex; gap: 6px; align-items: center; }
+
+  /* Nav bar */
+  .nav-bar {
+    height: 44px;
+    padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--secondarySystemBackground);
+    position: relative;
+  }
+  .nav-back {
+    color: var(--systemBlue);
+    font-size: 17px;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .nav-title {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 17px; font-weight: 600;
+  }
+
+  /* Section header — all caps, gray */
+  .sec-header {
+    padding: 24px 32px 6px 32px;
+    font-size: 13px;
+    color: var(--secondaryLabel);
+    text-transform: uppercase;
+    letter-spacing: -0.08px;
+  }
+  .sec-footer {
+    padding: 8px 32px 0 32px;
+    font-size: 13px;
+    color: var(--secondaryLabel);
+    line-height: 1.35;
+  }
+
+  /* Grouped section card */
+  .group {
+    margin: 0 16px;
+    background: var(--tertiarySystemBackground);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .row {
+    display: flex; align-items: center;
+    min-height: 44px;
+    padding: 11px 16px;
+    font-size: 17px;
+    color: var(--label);
+    position: relative;
+  }
+  .row + .row::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 16px; right: 0;
+    height: 0.5px;
+    background: var(--separator);
+  }
+  .row-label { flex: 1; }
+  .row-detail {
+    color: var(--secondaryLabel);
+    font-size: 17px;
+    margin-left: 8px;
+  }
+  .chevron {
+    color: var(--tertiaryLabel);
+    font-size: 17px;
+    margin-left: 8px;
+  }
+
+  /* iOS toggle */
+  .toggle {
+    width: 51px; height: 31px;
+    background: var(--systemGreen);
+    border-radius: 16px;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .toggle.off { background: var(--systemGray5); }
+  .toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 22px;
+    width: 27px; height: 27px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.15), 0 1px 1px rgba(0,0,0,0.06);
+  }
+  .toggle.off::after { left: 2px; }
+
+  /* Status dot */
+  .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--systemGreen);
+    margin-right: 6px;
+  }
+
+  .button-row {
+    color: var(--systemBlue);
+    font-size: 17px;
+  }
+  .button-row.destructive { color: var(--systemRed); }
+
+  .disabled-group { opacity: 0.45; }
+  .disabled-group .row { color: var(--secondaryLabel); }
+  .badge-soon {
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--systemGray5);
+    color: var(--secondaryLabel);
+    padding: 2px 7px;
+    border-radius: 8px;
+    margin-left: 8px;
+  }
+
+  /* Caption above the device */
+  .caption {
+    max-width: 393px;
+    color: #444;
+    font-size: 13px;
+    line-height: 1.4;
+    margin-bottom: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .caption { color: #aaa; }
+  }
+
+  /* Scrollable content */
+  .content {
+    height: calc(100% - 54px - 44px);
+    overflow-y: auto;
+    padding-bottom: 24px;
+  }
+
+  /* Cell tap arrow ›  use simple unicode */
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start p-8 gap-6">
+
+  <div class="caption">
+    <strong>V1 — Apple Settings analog.</strong> Stock iOS <code>Form(.grouped)</code> in HTML.
+    Gray caps headers, white grouped cards with hairline dividers, blue tinted action rows,
+    standard chevrons. The boring baseline that V2 and V3 must beat.
+  </div>
+
+  <div class="device">
+    <div class="island"></div>
+    <div class="screen">
+
+      <!-- status bar -->
+      <div class="status-bar">
+        <div>9:41</div>
+        <div class="status-right">
+          <span style="font-size:13px;">●●●●●</span>
+          <span style="margin-left:4px;">􀙇</span>
+          <span>􀛨</span>
+        </div>
+      </div>
+
+      <!-- nav bar -->
+      <div class="nav-bar">
+        <a class="nav-back" href="#">
+          <span style="font-size:22px; line-height:1;">‹</span>
+          <span>Back</span>
+        </a>
+        <div class="nav-title">Settings</div>
+      </div>
+
+      <div class="content">
+
+        <!-- Speech model -->
+        <div class="sec-header">Speech model</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-label">Parakeet TDT v2</div>
+          </div>
+          <div class="row" style="align-items:flex-start; padding-top:10px; padding-bottom:12px;">
+            <div class="row-label" style="font-size:15px; color:var(--secondaryLabel); line-height:1.35;">
+              <span class="dot"></span>Installed · 1.25 GB · Verified today
+            </div>
+          </div>
+          <div class="row button-row">
+            <div class="row-label">Re-download model</div>
+          </div>
+        </div>
+        <div class="sec-footer">Runs entirely on the Neural Engine. ~1.25 GB on disk.</div>
+
+        <!-- Keyboard -->
+        <div class="sec-header">Keyboard</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-label">Jot keyboard</div>
+            <div class="row-detail">Full Access · On</div>
+            <div class="chevron">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Auto-paste</div>
+            <div class="toggle"></div>
+          </div>
+          <div class="row">
+            <div class="row-label">Rewrite presets</div>
+            <div class="row-detail">3</div>
+            <div class="chevron">›</div>
+          </div>
+        </div>
+        <div class="sec-footer">
+          Full Access lets the keyboard read your last transcript so it can paste on first appearance.
+          Opens iOS Settings → General → Keyboard.
+        </div>
+
+        <!-- About -->
+        <div class="sec-header">About</div>
+        <div class="group">
+          <div class="row button-row">
+            <div class="row-label">Re-run setup wizard</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Version</div>
+            <div class="row-detail">0.2.0 (build 14)</div>
+          </div>
+          <div class="row">
+            <div class="row-label">GitHub</div>
+            <div class="chevron">↗</div>
+          </div>
+        </div>
+        <div class="sec-footer">
+          Your words stay on your iPhone. No accounts, no cloud, no telemetry.
+        </div>
+
+        <!-- Future / coming-soon -->
+        <div class="sec-header" style="margin-top:8px;">Coming later</div>
+        <div class="group disabled-group">
+          <div class="row">
+            <div class="row-label">AI cleanup<span class="badge-soon">SOON</span></div>
+            <div class="chevron">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Keep recordings<span class="badge-soon">SOON</span></div>
+            <div class="row-detail">Forever</div>
+            <div class="chevron">›</div>
+          </div>
+          <div class="row">
+            <div class="row-label">Reset settings<span class="badge-soon">SOON</span></div>
+          </div>
+          <div class="row button-row destructive" style="opacity:0.6;">
+            <div class="row-label">Erase all data<span class="badge-soon">SOON</span></div>
+          </div>
+        </div>
+        <div class="sec-footer" style="padding-bottom:24px;">
+          Provider choice, retention, and destructive actions land once the AI pane is whole.
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

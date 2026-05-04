@@ -6,7 +6,7 @@ import Foundation
 /// Every target in `project.yml` must list this group under
 /// `com.apple.security.application-groups`.
 enum AppGroup {
-    static let identifier = "group.com.jot.mobile.shared"
+    static let identifier = "group.com.vineetu.jot.mobile.shared"
 
     /// `UserDefaults` is documented as thread-safe but does not conform to
     /// `Sendable`, so Swift 6 strict concurrency flags it in a `static let`.
@@ -32,5 +32,8 @@ enum AppGroup {
         static let cleanupEnabled = "jot.cleanup.enabled"
         static let cleanupInstructions = "jot.cleanup.instructions"
         static let keyboardAutoPasteEnabled = "jot.keyboard.autoPaste"
+        static let pendingAutoPasteFlag = "jot.keyboard.pendingAutoPaste"
+        static let pendingAutoPasteCreatedAt = "jot.keyboard.pendingAutoPaste.createdAt"
+        static let recordingAmplitude = "jot.recording.amplitude"
     }
 }

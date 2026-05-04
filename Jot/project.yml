@@ -1,6 +1,6 @@
 name: Jot
 options:
-  bundleIdPrefix: com.jot.mobile
+  bundleIdPrefix: com.vineetu.jot.mobile
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
@@ -15,9 +15,9 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CURRENT_PROJECT_VERSION: "1"
     MARKETING_VERSION: "0.1.0"
-    # User's free personal team (tejastej.dc@gmail.com). Pinned so xcodegen
+    # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
-    DEVELOPMENT_TEAM: "6966SNKBNF"
+    DEVELOPMENT_TEAM: "8VB2ULDN22"
 
 packages:
   FluidAudio:
@@ -52,31 +52,30 @@ targets:
           UISceneConfigurations: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        UIRequiresFullScreen: YES
         NSMicrophoneUsageDescription: "Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone."
         # Required for ActivityKit. Without this key, Activity.request(...)
         # fails with "Target does not include NSSupportsLiveActivities plist
         # key" and AudioRecordingIntent cannot activate the audio session.
         # Verified in Console.app syslog 2026-04-21 20:06:59 — liveactivitiesd
-        # rejected the request for widget(containingProcess: com.jot.mobile.Jot).
+        # rejected the request for widget(containingProcess: com.vineetu.jot.mobile.Jot).
         # See: https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities
         NSSupportsLiveActivities: YES
         UIBackgroundModes:
           - audio
           - processing
         BGTaskSchedulerPermittedIdentifiers:
-          - com.jot.mobile.Jot.warm-parakeet
+          - com.vineetu.jot.mobile.Jot.warm-parakeet
         LSApplicationQueriesSchemes:
           - messages
         CFBundleURLTypes:
-          - CFBundleURLName: com.jot.mobile
+          - CFBundleURLName: com.vineetu.jot.mobile
             CFBundleURLSchemes:
               - jot
     entitlements:
       path: Resources/Jot.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.com.jot.mobile.shared
+          - group.com.vineetu.jot.mobile.shared
     dependencies:
       - package: FluidAudio
         product: FluidAudio
@@ -86,9 +85,14 @@ targets:
       - target: JotWidget
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jot.mobile.Jot
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot
         GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPhone-only (1). iPad (2) was previously paired with the now-deprecated
+        # UIRequiresFullScreen=YES to suppress iPad's all-orientations
+        # requirement. With UIRequiresFullScreen gone (iOS 26 deprecation),
+        # iPad would force us to support landscape, which doesn't fit a
+        # one-handed dictation UX. MVP target is iPhone 15 Pro+, so iPhone-only.
+        TARGETED_DEVICE_FAMILY: "1"
       # `JOT_APP_HOST` gates main-app-only bodies inside files that live in
       # `Shared/` and are therefore also compiled into widget + keyboard
       # extensions. Used by `StopDictationIntent` so its `perform()` body can
@@ -124,10 +128,10 @@ targets:
       path: Resources/Keyboard.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.com.jot.mobile.shared
+          - group.com.vineetu.jot.mobile.shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jot.mobile.Jot.Keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Keyboard
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
       configs:
@@ -150,7 +154,7 @@ targets:
       path: Resources/Widget.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.com.jot.mobile.shared
+          - group.com.vineetu.jot.mobile.shared
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
@@ -164,7 +168,7 @@ targets:
       - sdk: AppIntents.framework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jot.mobile.Jot.Widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Widget
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
 
@@ -177,7 +181,7 @@ targets:
       - target: Jot
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jot.mobile.Jot.Tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: ""
         BUNDLE_LOADER: ""

@@ -115,7 +115,7 @@ struct StopDictationIntent: AppIntent, LiveActivityIntent {
 
         await DictationActivityCoordinator.shared.update(phase: .transcribing)
 
-        let transcript = try await controller.stopAndTranscribe()
+        let result = try await controller.stopAndTranscribe()
 
         // Delegate to the shared pipeline — same tail as
         // `RecordAndTranscribeIntent.endDictation` and
@@ -125,8 +125,9 @@ struct StopDictationIntent: AppIntent, LiveActivityIntent {
         // classification) — that's what keeps the "two ways to stop, same
         // outcome" user-facing invariant honest.
         try await DictationPipeline.completeEndOfRecording(
-            transcript: transcript,
+            transcript: result.transcript,
             startedAt: startedAt,
+            stoppedAt: result.stoppedAt,
             controller: controller
         )
 

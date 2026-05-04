@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<!--
+  Variant 3 — "Liquid Glass cinematic"
+  Thesis: Hero glass backdrop, larger typography, full-screen step-by-step transitions
+  implied. iOS 26 Liquid Glass surfaces, generous imagery, expressive. The maximalist
+  take so we can ask "does this hurt or help first-run vs V1?"
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot Onboarding — V3 Liquid Glass</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    --label: #0c0c0e;
+    --label-secondary: rgba(12,12,14,0.62);
+    --label-tertiary: rgba(12,12,14,0.42);
+    --label-on-glass: #ffffff;
+    --label-on-glass-secondary: rgba(255,255,255,0.78);
+    --accent: #007aff;
+    --accent-glass: rgba(10,132,255,0.92);
+    --green: #34c759;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --glass-stroke: rgba(255,255,255,0.42);
+    --glass-stroke-dark: rgba(255,255,255,0.14);
+    --hairline: rgba(255,255,255,0.28);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --label: #f5f5f7;
+      --label-secondary: rgba(245,245,247,0.7);
+      --label-tertiary: rgba(245,245,247,0.45);
+      --accent: #0a84ff;
+    }
+    body { background: #050508; }
+    .device { box-shadow: 0 0 0 1px #2a2a2f, 0 30px 70px rgba(0,0,0,.7); }
+  }
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #d8d8de;
+  }
+  .device {
+    width: 393px;
+    color: var(--label);
+    border-radius: 56px;
+    box-shadow: 0 0 0 1px #c8c8cf, 0 30px 60px rgba(0,0,0,.22);
+    overflow: hidden;
+    position: relative;
+    background: #000;
+  }
+  .notch {
+    position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+    width: 126px; height: 37px; background: #000; border-radius: 20px; z-index: 30;
+  }
+  .status-bar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 25;
+    height: 54px; padding: 18px 32px 0; display: flex; align-items: center;
+    justify-content: space-between; font-size: 17px; font-weight: 600;
+    color: #fff; mix-blend-mode: difference;
+  }
+
+  /* Hero gradient backdrops per step */
+  .hero {
+    position: relative;
+    overflow: hidden;
+    padding: 84px 24px 36px;
+    color: var(--label-on-glass);
+  }
+  .hero-1 { background: radial-gradient(120% 80% at 30% 10%, #ff8a4c 0%, #ff4d8d 38%, #7a35ff 70%, #1a1a3a 100%); }
+  .hero-2 { background: radial-gradient(120% 80% at 70% 20%, #4ad6ff 0%, #5b6cff 45%, #2a1c5e 100%); }
+  .hero-3 { background: radial-gradient(120% 80% at 40% 30%, #00e1c4 0%, #008a9b 50%, #0a2638 100%); }
+  .hero-4 { background: radial-gradient(120% 80% at 60% 10%, #ffd86b 0%, #ff7a4c 50%, #4a1430 100%); }
+  .hero-5 { background: radial-gradient(120% 80% at 30% 20%, #b478ff 0%, #4d34c9 55%, #1a0d40 100%); }
+  .hero-6 { background: radial-gradient(120% 80% at 70% 30%, #6dffb0 0%, #2bb673 55%, #0c2a26 100%); }
+  .hero-7 { background: radial-gradient(120% 80% at 50% 20%, #ffe8a3 0%, #ffb074 35%, #c44a8a 70%, #2c1444 100%); }
+  .hero-error { background: radial-gradient(120% 80% at 50% 30%, #ff8a8a 0%, #c93636 50%, #4a0d0d 100%); }
+
+  /* Liquid Glass material */
+  .glass {
+    background: rgba(255,255,255,0.18);
+    backdrop-filter: blur(40px) saturate(160%);
+    -webkit-backdrop-filter: blur(40px) saturate(160%);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 28px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.4),
+      inset 0 -1px 0 rgba(0,0,0,0.05),
+      0 20px 60px rgba(0,0,0,0.18);
+  }
+  .glass-dark {
+    background: rgba(20,20,24,0.42);
+    backdrop-filter: blur(40px) saturate(140%);
+    -webkit-backdrop-filter: blur(40px) saturate(140%);
+    border: 1px solid var(--glass-stroke-dark);
+    border-radius: 22px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.18),
+      0 12px 40px rgba(0,0,0,0.25);
+  }
+  .glass-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 999px;
+    background: rgba(255,255,255,0.18);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid var(--glass-stroke);
+    color: #fff; font-size: 12px; font-weight: 500;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.35);
+  }
+  .glass-btn-primary {
+    width: 100%;
+    padding: 16px;
+    border-radius: 18px;
+    background: rgba(255,255,255,0.94);
+    color: #000;
+    font-size: 17px; font-weight: 600;
+    text-align: center;
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.5);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.9),
+      0 12px 30px rgba(0,0,0,0.18);
+  }
+  .glass-btn-secondary {
+    width: 100%;
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    font-size: 15px; font-weight: 500;
+    text-align: center;
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.22);
+  }
+  .glass-btn-ghost {
+    width: 100%; padding: 12px;
+    color: rgba(255,255,255,0.78); font-size: 14px; font-weight: 400;
+    text-align: center;
+  }
+
+  .progress-track {
+    height: 6px; border-radius: 3px;
+    background: rgba(255,255,255,0.18); overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #fff 0%, rgba(255,255,255,0.6) 100%);
+    box-shadow: 0 0 12px rgba(255,255,255,0.6);
+  }
+
+  .glyph-large {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 96px; height: 96px; border-radius: 28px;
+    background: rgba(255,255,255,0.18);
+    backdrop-filter: blur(30px);
+    border: 1px solid var(--glass-stroke);
+    color: #fff;
+    font-size: 42px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.5),
+      0 18px 50px rgba(0,0,0,0.25);
+  }
+
+  .step-caption {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255,255,255,0.65);
+  }
+
+  .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+
+  .row-glass {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .row-glass:last-child { border-bottom: none; }
+
+  .toggle-on {
+    width: 44px; height: 26px; background: var(--green); border-radius: 14px; position: relative;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .toggle-on::after {
+    content: ""; position: absolute; top: 2px; left: 20px; width: 22px; height: 22px;
+    background: #fff; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  }
+
+  .device-section { position: relative; }
+
+  .step-divider {
+    height: 8px;
+    background: #000;
+    position: relative;
+  }
+
+  .label-on-page {
+    position: absolute; top: 14px; left: 24px; z-index: 5;
+    color: rgba(255,255,255,0.55);
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+  }
+
+  .small-glass-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 14px;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: #fff;
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-10 gap-6">
+
+  <!-- Variant Caption -->
+  <div class="max-w-[420px] text-center px-4">
+    <h1 class="text-2xl font-semibold tracking-tight" style="color:#1d1d1f">Variant 3 — Liquid Glass cinematic</h1>
+    <p class="text-sm mt-2" style="color:#6e6e73">
+      Hero gradient backdrops per step with iOS 26 Liquid Glass surfaces, large typography, expressive imagery. The maximalist take — does it help or hurt first-run vs V1?
+    </p>
+  </div>
+
+  <!-- Device -->
+  <div class="device">
+    <div class="notch"></div>
+
+    <div class="status-bar">
+      <span>9:41</span>
+      <span class="text-base">●●●● 5G ▮</span>
+    </div>
+
+    <!-- STEP 1 — Welcome -->
+    <div class="device-section">
+      <div class="label-on-page">Step 1 · Welcome</div>
+      <div class="hero hero-1" style="padding-top:120px; padding-bottom:48px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large" style="background:rgba(0,0,0,0.5)">
+            <span style="font-size:44px; font-weight:700">J</span>
+          </div>
+          <h2 class="text-[42px] leading-[1] font-bold tracking-tight mt-7">Speak.<br/>It's written.</h2>
+          <p class="text-[16px] mt-5 mx-2 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Native iOS dictation. Tap the mic, speak, and the transcript lands on your clipboard. Entirely on your iPhone.
+          </p>
+        </div>
+        <div class="mt-12 space-y-2">
+          <button class="glass-btn-primary">Get Started</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 2 — Microphone permission -->
+    <div class="device-section">
+      <div class="label-on-page">Step 2 · Microphone</div>
+      <div class="hero hero-2" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </div>
+          <h2 class="text-[34px] leading-[1.05] font-bold tracking-tight mt-7">Allow your mic</h2>
+          <p class="text-[15px] mt-4 mx-2 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Audio is transcribed locally on the Apple Neural Engine. Nothing crosses the network.
+          </p>
+        </div>
+        <div class="mt-10 space-y-2">
+          <button class="glass-btn-primary">Allow Microphone</button>
+          <button class="glass-btn-ghost">Skip for now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 3 — Model download -->
+    <div class="device-section">
+      <div class="label-on-page">Step 3 · Speech model</div>
+      <div class="hero hero-3" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          </div>
+          <h2 class="text-[32px] leading-[1.05] font-bold tracking-tight mt-7">Downloading Parakeet</h2>
+          <p class="text-[14px] mt-3 mx-3 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Speech recognition runs on this device. Download once, use forever offline.
+          </p>
+        </div>
+
+        <div class="glass-dark mt-8 p-5">
+          <div class="flex items-center justify-between mb-4">
+            <span class="glass-pill"><span style="width:6px; height:6px; border-radius:50%; background:#ffd86b; display:inline-block"></span> Downloading</span>
+            <span class="mono text-[14px] text-white">19%</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" style="width:19%"></div></div>
+          <div class="flex justify-between mt-3">
+            <span class="mono text-[11px]" style="color:rgba(255,255,255,0.7)">240 MB / 1,250 MB</span>
+            <span class="mono text-[11px]" style="color:rgba(255,255,255,0.7)">~ 4 min remaining</span>
+          </div>
+
+          <div class="row-glass mt-3" style="border-top:1px solid var(--hairline); padding-top:14px">
+            <span class="text-[14px] text-white">Wi-Fi only</span>
+            <div class="toggle-on"></div>
+          </div>
+        </div>
+
+        <div class="mt-7 space-y-2">
+          <button class="glass-btn-secondary">Cancel Download</button>
+          <button class="glass-btn-ghost">Skip for now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 4 — Enable keyboard -->
+    <div class="device-section">
+      <div class="label-on-page">Step 4 · Jot keyboard</div>
+      <div class="hero hero-4" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h10"/></svg>
+          </div>
+          <h2 class="text-[32px] leading-[1.05] font-bold tracking-tight mt-7">Add the Jot keyboard</h2>
+          <p class="text-[14px] mt-3 mx-3 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Dictate from any app. Walk these three taps in iOS Settings.
+          </p>
+        </div>
+
+        <div class="glass-dark mt-7 p-4 space-y-3">
+          <div class="small-glass-row">
+            <span class="mono text-[11px]" style="color:rgba(255,255,255,0.6); width:18px">01</span>
+            <span class="text-[13px]">Settings → General → <span class="mono">Keyboard</span></span>
+          </div>
+          <div class="small-glass-row">
+            <span class="mono text-[11px]" style="color:rgba(255,255,255,0.6); width:18px">02</span>
+            <span class="text-[13px]">Keyboards → Add New Keyboard</span>
+          </div>
+          <div class="small-glass-row">
+            <span class="mono text-[11px]" style="color:rgba(255,255,255,0.6); width:18px">03</span>
+            <span class="text-[13px]">Tap <strong>Jot</strong></span>
+          </div>
+        </div>
+
+        <div class="mt-7 space-y-2">
+          <button class="glass-btn-primary">Open Keyboard Settings</button>
+          <button class="glass-btn-ghost">Skip for now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 5 — Allow Full Access -->
+    <div class="device-section">
+      <div class="label-on-page">Step 5 · Full access</div>
+      <div class="hero hero-5" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large">
+            <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0"/></svg>
+          </div>
+          <h2 class="text-[32px] leading-[1.05] font-bold tracking-tight mt-7">Allow Full Access</h2>
+          <p class="text-[14px] mt-3 mx-3 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            So the keyboard can read your transcripts and paste them into any app.
+          </p>
+        </div>
+
+        <div class="glass-dark mt-7 p-5">
+          <div class="flex items-start gap-3">
+            <span style="color:#6dffb0; font-size:16px; line-height:1">●</span>
+            <div>
+              <p class="text-white text-[13px] font-semibold">On-device privacy</p>
+              <p class="text-[12px] mt-1" style="color:rgba(255,255,255,0.7)">
+                Your transcripts stay on this iPhone. No network, no telemetry. Run Little Snitch — you'll see silence.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-7 space-y-2">
+          <button class="glass-btn-primary">Open Keyboard Settings</button>
+          <button class="glass-btn-ghost">Skip for now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 6 — Test dictation -->
+    <div class="device-section">
+      <div class="label-on-page">Step 6 · Test dictation</div>
+      <div class="hero hero-6" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+          </div>
+          <h2 class="text-[32px] leading-[1.05] font-bold tracking-tight mt-7">Try it out</h2>
+          <p class="text-[14px] mt-3 mx-3 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Switch to Jot via the globe key, tap the mic, and speak. Your words show up here.
+          </p>
+        </div>
+
+        <div class="glass-dark mt-7 p-5" style="min-height:96px; display:flex; align-items:center; justify-content:center">
+          <span class="mono text-[13px]" style="color:rgba(255,255,255,0.5)">— tap mic on Jot keyboard to test —</span>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3 justify-center">
+          <span class="glass-pill"><span style="width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,0.6); display:inline-block"></span> Listening for input</span>
+        </div>
+
+        <div class="mt-7 space-y-2">
+          <button class="glass-btn-primary">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider"></div>
+
+    <!-- STEP 7 — Done -->
+    <div class="device-section">
+      <div class="label-on-page">Step 7 · Done</div>
+      <div class="hero hero-7" style="padding-top:96px; padding-bottom:48px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large" style="background:rgba(52,199,89,0.85); border-color:rgba(255,255,255,0.6)">
+            <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+          </div>
+          <h2 class="text-[40px] leading-[1] font-bold tracking-tight mt-7">You're set.</h2>
+          <p class="text-[15px] mt-4 mx-2 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            Tap the mic anywhere to dictate. Re-run setup, manage cleanup, or add vocabulary in Settings.
+          </p>
+        </div>
+
+        <div class="glass-dark mt-7 p-2">
+          <div class="row-glass" style="padding:14px">
+            <span class="text-[14px] text-white">Re-run setup</span>
+            <span style="color:rgba(255,255,255,0.5)">›</span>
+          </div>
+          <div class="row-glass" style="padding:14px">
+            <span class="text-[14px] text-white">AI cleanup</span>
+            <span style="color:rgba(255,255,255,0.5)">›</span>
+          </div>
+          <div class="row-glass" style="padding:14px">
+            <span class="text-[14px] text-white">Vocabulary</span>
+            <span style="color:rgba(255,255,255,0.5)">›</span>
+          </div>
+          <div class="row-glass" style="padding:14px">
+            <span class="text-[14px] text-white">Help</span>
+            <span style="color:rgba(255,255,255,0.5)">›</span>
+          </div>
+        </div>
+
+        <div class="mt-8">
+          <button class="glass-btn-primary">Take Me to Jot</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-divider" style="height:14px; background:#1a0606"></div>
+
+    <!-- ERROR STATE — Mic denied -->
+    <div class="device-section">
+      <div class="label-on-page" style="color:rgba(255,255,255,0.7)">Recovery · Mic denied</div>
+      <div class="hero hero-error" style="padding-top:96px; padding-bottom:40px;">
+        <div class="flex flex-col items-center text-center">
+          <div class="glyph-large" style="background:rgba(255,255,255,0.2); border-color:rgba(255,255,255,0.5)">
+            <span style="font-size:44px; font-weight:700">!</span>
+          </div>
+          <h2 class="text-[28px] leading-[1.05] font-bold tracking-tight mt-7">Mic access is off</h2>
+          <p class="text-[14px] mt-3 mx-3 leading-relaxed" style="color:var(--label-on-glass-secondary)">
+            You won't be able to record until you turn it on in iOS Settings. Returning here will refresh automatically.
+          </p>
+        </div>
+
+        <div class="mt-9 space-y-2">
+          <button class="glass-btn-primary">Open Settings</button>
+          <button class="glass-btn-ghost">Skip for now</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="text-xs" style="color:#86868b">iPhone 15 Pro · 393 × 852 · light-dominant, dark-mode aware</div>
+
+</body>
+</html>
