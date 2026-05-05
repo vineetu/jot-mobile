@@ -7,15 +7,13 @@ import UIKit
 struct KeyboardView: View {
     let hasFullAccess: Bool
     let hasPasteboardContent: Bool
-    let canRewriteSelection: Bool
-    let activeRewritePresetID: String?
+    let hasSelection: Bool
     let recordingState: KeyboardRecordingState
     let needsInputModeSwitchKey: Bool
     let returnKeyType: UIReturnKeyType
     let historyEntries: [TranscriptHistoryMirror.Entry]
     let showHistory: Bool
 
-    let onRewrite: (RewritePreset) -> Void
     let onCopy: () -> Void
     let onPaste: () -> Void
     let onTapToSpeak: () -> Void
@@ -136,11 +134,12 @@ struct KeyboardView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     Text(recordingState.streamingPartialText)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(Color(uiColor: .label))
+                        .lineSpacing(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
                         .id("streamingTail")
                         // Cap the VoiceOver label to the last ~200 chars so a
                         // multi-minute dictation doesn't make VO read the
@@ -151,15 +150,37 @@ struct KeyboardView: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
                 .frame(height: 64)
+                // Vertical edge fade so partials enter and exit the strip
+                // softly rather than hard-clipping against the rounded
+                // corners — Messages-style caption affordance.
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.00),
+                            .init(color: .black, location: 0.14),
+                            .init(color: .black, location: 0.86),
+                            .init(color: .clear, location: 1.00),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
                 .background(
                     // `Color(.systemGray6)` is intentionally low-contrast in
                     // dark mode — matches Apple's Messages composer
                     // reference for a soft, recessed caption strip. Don't
                     // bump the contrast without revisiting that comparison
                     // (kb-fixer round 2 / Issue 8 verdict).
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(.systemGray6))
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(uiColor: .systemGray6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color(uiColor: .separator), lineWidth: 0.5)
+                        )
                 )
+                .transition(reduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .move(edge: .top)))
                 .onAppear {
                     // First appearance can already have many words — `onChange`
                     // won't fire if the projection arrived before the view
@@ -173,6 +194,52 @@ struct KeyboardView: View {
                     }
                 }
             }
+        } else {
+            // Reserve the same 64pt slot whether streaming text is showing
+            // or not so the keyboard total height stays constant and the
+            // bottom row never reflows. Resting state shows a subtle
+            // italic caption affordance — communicates the strip's purpose
+            // without competing for attention. Hidden from VoiceOver because
+            // the mic button already carries the actionable hint.
+            //
+            // Placeholder copy is phase-aware: while a recording exists but
+            // no partials have arrived yet ("warming up"), or while the
+            // pipeline is mid-transcription, the strip says so. Otherwise
+            // the strip nudges the user toward dictation.
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .systemGray6).opacity(0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 0.5)
+                    )
+                Text(streamingPlaceholderText)
+                    .font(.subheadline.italic())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .padding(.horizontal, 16)
+            }
+            .frame(height: 64)
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// Idle placeholder copy. Phase-aware so the strip narrates the
+    /// in-flight pipeline state when partials haven't arrived yet — keeps
+    /// the user oriented after they tap the mic without flooding them with
+    /// motion.
+    private var streamingPlaceholderText: String {
+        if recordingState.isRecording {
+            return "Listening…"
+        }
+        switch recordingState.phase {
+        case .transcribing, .processing, .cleaning, .publishing:
+            return "Transcribing…"
+        case .failed:
+            return "Recording failed — tap mic to retry"
+        case .idle, .recording:
+            return "Speak to dictate"
         }
     }
 
@@ -185,7 +252,7 @@ struct KeyboardView: View {
     /// `return` / globe / space stay visible after the streaming preview
     /// strip is added on top.
     private var actionAndMicRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             actionChipRow
                 .frame(maxWidth: .infinity)
             compactMicCTA
@@ -196,22 +263,10 @@ struct KeyboardView: View {
     private var actionChipRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(RewritePreset.allCases) { preset in
-                    let isRewriting = activeRewritePresetID == preset.id
-                    chip(
-                        title: preset.title,
-                        systemImage: preset.iconName,
-                        enabled: canRewriteSelection,
-                        isLoading: isRewriting
-                    ) {
-                        onRewrite(preset)
-                    }
-                }
-
                 chip(
                     title: "Copy",
                     systemImage: "doc.on.doc",
-                    enabled: hasFullAccess && canRewriteSelection,
+                    enabled: hasFullAccess && hasSelection,
                     action: onCopy
                 )
 
@@ -231,14 +286,15 @@ struct KeyboardView: View {
     ///
     /// Replaces the previous full-width 64pt-tall pill. Same tap targets
     /// (Full Access prompt fallthrough; tap-to-stop while recording),
-    /// same accessibility surface — just packed into a 120×44 rectangle so
+    /// same accessibility surface — just packed into an 84×44 rectangle so
     /// the keyboard reclaims ~74pt of vertical real estate for the streaming
-    /// preview strip + bottom row.
+    /// preview strip + bottom row, and the action chip row gains ~36pt of
+    /// horizontal budget so Copy / Paste fit at 393pt iPhone width without
+    /// horizontal scrolling.
     ///
-    /// Width set to 120pt (up from 108pt) for localization headroom — the
-    /// label text scales to "Aufnehmen" / "Enregistrer" in DE/FR without
-    /// truncation. Costs ~12pt of chip-row horizontal budget which still
-    /// leaves enough scroll room at 393pt iPhone width.
+    /// At 84pt the label uses `minimumScaleFactor` to absorb the longer
+    /// localizations (DE "Aufnehmen", FR "Enregistrer"). The English
+    /// "Speak" / "Unlock" idle labels fit comfortably alongside the icon.
     private var compactMicCTA: some View {
         Button {
             feedback.longPressImpact()
@@ -256,33 +312,56 @@ struct KeyboardView: View {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 15, weight: .semibold))
                             Text(elapsedText(now: context.date))
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                         }
                     }
                     .scaleEffect(iconScale)
+                } else if hasFullAccess, recordingState.isInflightPostRecording {
+                    // In-flight after stop: show a small progress spinner +
+                    // label so the user understands the tap landed and the
+                    // pipeline is still working. Disabled at the controller
+                    // level (mic taps are ignored during in-flight phases),
+                    // but the visual signal closes the feedback loop.
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                        Text("Working")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 } else {
                     HStack(spacing: 6) {
                         Image(systemName: hasFullAccess ? "mic.fill" : "lock.shield")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                         Text(hasFullAccess ? "Speak" : "Unlock")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
                 }
             }
             .foregroundStyle(hasFullAccess ? .white : Color(uiColor: .label))
-            .padding(.horizontal, 12)
-            .frame(width: 120, height: 44)
+            .padding(.horizontal, 8)
+            .frame(width: 84, height: 44)
             .background(micBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay { compactMicHalo }
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isRecording)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isInflightPostRecording)
         .accessibilityLabel(micAccessibilityLabel)
         .accessibilityHint(micAccessibilityHint)
+        .accessibilityAddTraits(recordingState.isRecording
+                                ? [.isButton, .startsMediaSession]
+                                : .isButton)
     }
 
     @ViewBuilder
@@ -395,23 +474,25 @@ struct KeyboardView: View {
                     ProgressView()
                         .controlSize(.small)
                         .tint(Color.accentColor)
-                        .frame(width: 13, height: 13)
+                        .frame(width: 14, height: 14)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
                 }
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.76)
+                    .minimumScaleFactor(0.8)
             }
-            .padding(.horizontal, 12)
-            .frame(minWidth: 76, minHeight: 44)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
         }
         .buttonStyle(ChipButtonStyle(enabled: enabled, isLoading: isLoading))
         .disabled(!enabled || isLoading)
-        .opacity((enabled || isLoading) ? 1 : 0.38)
+        .opacity((enabled || isLoading) ? 1 : 0.4)
         .accessibilityLabel(title)
+        .accessibilityAddTraits(.isButton)
     }
 
     private func keyButton<Content: View>(
@@ -449,6 +530,14 @@ struct KeyboardView: View {
     private var micBackground: AnyShapeStyle {
         if hasFullAccess, recordingState.isRecording {
             return AnyShapeStyle(Color(uiColor: .systemRed))
+        }
+
+        if hasFullAccess, recordingState.isInflightPostRecording {
+            // Slightly muted accent so the in-flight state reads as "still
+            // working, don't tap" without flashing back to idle. Avoids a
+            // second hue (red → orange → blue) that would confuse the user
+            // about whether the recording succeeded.
+            return AnyShapeStyle(Color.accentColor.opacity(0.65))
         }
 
         if hasFullAccess {
@@ -523,14 +612,6 @@ struct KeyboardView: View {
             feedback.systemClick()
         }
         feedback.selectionTick()
-    }
-}
-
-private extension RewritePreset {
-    var iconName: String {
-        switch self {
-        case .rewrite: return "sparkles"
-        }
     }
 }
 

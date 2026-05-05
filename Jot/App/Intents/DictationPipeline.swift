@@ -517,50 +517,20 @@ enum DictationPipeline {
         }
     }
 
-    /// Cut C (warm-resume) post-publish Live Activity transition.
-    ///
-    /// Called from the four `completeEndOfRecording` tail sites where today's
-    /// pipeline transitions the activity into `.followUp` (the 30-second
-    /// chained-follow-up window). When `RecordingService.shared.isInWarmHold`
-    /// is true (warm-hold toggle ON, default), the activity instead enters
-    /// `.warmHold(expiresAt:)` for the full 60-second warm window — that's
-    /// the App Review 2.5.14 disclosure surface for the orange iOS recording
-    /// indicator that stays on while the engine is paused.
-    ///
-    /// The chained-follow-up classifier still operates from the same 30s
-    /// freshness window via `TranscriptStore.mostRecent(within:)` at the next
-    /// `completeEndOfRecording` invocation — the LA phase doesn't gate
-    /// classification, only the visible disclosure prompt.
-    ///
-    /// Fresh-dictation paths (the `.freshDictation`, cancellation, and
-    /// command-persistence-failure branches) call the no-instruction overload;
-    /// the command-success path calls the overload that carries the
-    /// instruction so that a non-warm fallback uses `finishCommand(...)` to
-    /// preserve the "Command: <instruction>" outcome rendering.
+    /// Post-publish Live Activity transition into the 30-second
+    /// chained-follow-up window. The fresh-dictation paths (the
+    /// `.freshDictation`, cancellation, and command-persistence-failure
+    /// branches) call the no-instruction overload; the command-success path
+    /// calls the overload that carries the instruction so `finishCommand(...)`
+    /// preserves the "Command: <instruction>" outcome rendering.
     private static func transitionPostPublish(preview: String) async {
-        if RecordingService.shared.isInWarmHold,
-           let expiresAt = RecordingService.shared.currentWarmHoldExpiresAt,
-           expiresAt > Date() {
-            await DictationActivityCoordinator.shared.transitionToWarmHold(
-                expiresAt: expiresAt
-            )
-        } else {
-            await DictationActivityCoordinator.shared.finish(preview: preview)
-        }
+        await DictationActivityCoordinator.shared.finish(preview: preview)
     }
 
     private static func transitionPostPublish(instruction: String, preview: String) async {
-        if RecordingService.shared.isInWarmHold,
-           let expiresAt = RecordingService.shared.currentWarmHoldExpiresAt,
-           expiresAt > Date() {
-            await DictationActivityCoordinator.shared.transitionToWarmHold(
-                expiresAt: expiresAt
-            )
-        } else {
-            await DictationActivityCoordinator.shared.finishCommand(
-                instruction: instruction,
-                preview: preview
-            )
-        }
+        await DictationActivityCoordinator.shared.finishCommand(
+            instruction: instruction,
+            preview: preview
+        )
     }
 }

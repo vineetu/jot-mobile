@@ -45,60 +45,49 @@ enum AppGroup {
         // `Shared/TerminalSessionLog.swift`.
         static let terminalSessionLog = "jot.pipeline.terminalSessionLog"
 
-        /// Cut C warm-hold opt-out. When `true` (default), `RecordingService.stop()`
-        /// pauses the audio engine instead of tearing it down so the next
-        /// `start()` resumes in ~10–50ms. Side effects are user-visible: orange
-        /// recording indicator stays on, other apps' audio is muted, Live
-        /// Activity / Dynamic Island chip remains during the warm window. The
-        /// user can opt out from Settings → "Hold mic warm after stop."
-        ///
-        /// Both targets need to read it: the main app to gate the engine.pause
-        /// path, the keyboard extension to render its mic CTA correctly during
-        /// the warm phase (so the CTA doesn't show "ready to start" while the
-        /// indicator is still on). The missing-key default is `true` — see
-        /// `AppGroup.holdMicWarmAfterStop` accessor.
-        ///
-        /// **IMPORTANT: read via the `AppGroup.holdMicWarmAfterStop` accessor,
-        /// NOT via `defaults.bool(forKey:)`.** `bool(forKey:)` returns `false`
-        /// for both "never written" and "explicit false," which collapses the
-        /// default-on semantics. The accessor uses `object(forKey:)` to
-        /// preserve the distinction. We deliberately do NOT use
-        /// `UserDefaults.register(defaults:)` to seed the default — it would
-        /// require boot-time registration in every process (main app + keyboard
-        /// + widget) and any miss would silently default to false. The
-        /// accessor's missing-key default is the single, auditable source of
-        /// truth.
-        static let holdMicWarmAfterStop = "jot.recording.holdMicWarmAfterStop"
-
         /// Latest live partial-transcript text from the FluidAudio EOU
         /// streaming model. Written by `StreamingPartial` (main app) on every
         /// callback and finalize/reset; read by the keyboard extension to
         /// render the live caption strip above the mic CTA. Empty string when
         /// no recording is active or no partial has emitted yet.
         static let streamingPartialText = "jot.streaming.partialText"
+
+        /// User-facing toggle for whether the Dynamic Island / lock-screen
+        /// banner show streaming partial-transcript text while recording.
+        /// Default `true` (transcript visible). When `false`, the writer
+        /// (`StreamingPartial.publishProjection`) skips its `Activity.update`
+        /// call entirely so `ContentState.lastWordsPreview` stays `nil` —
+        /// structural privacy via writer-side suppression. Satisfies the
+        /// App Review 2.5.14 "user can opt out of live transcript on lock
+        /// screen" disclosure requirement.
+        ///
+        /// **IMPORTANT: read via the
+        /// `AppGroup.liveActivityTranscriptEnabled` accessor, NOT via
+        /// `defaults.bool(forKey:)`.** `bool(forKey:)` collapses "never set"
+        /// and "explicit false" into the same value, which would silently
+        /// flip the user-facing default to OFF on first launch.
+        static let liveActivityTranscriptEnabled = "jot.liveActivity.transcriptEnabled"
     }
 
-    /// Whether the warm-hold post-stop engine pause is enabled (Cut C). Default
-    /// `true` — the missing-key case (fresh install, never-set, or removed by
-    /// the user from a Settings toggle that writes via this same accessor)
-    /// returns `true` so first-run behavior matches the user-locked default.
-    /// Settings UI flips this; `RecordingService` reads it on every `stop()`
-    /// to decide between warm-pause and full-teardown.
+    /// Whether streaming partial-transcript text is rendered in the Dynamic
+    /// Island expanded `.center` region and the lock-screen banner's
+    /// second-line subline while recording. Default `true` — the
+    /// missing-key case (fresh install, never-set) returns `true` so
+    /// first-run behavior matches the user-locked default. Settings UI
+    /// flips this; `StreamingPartial.publishProjection(_:)` reads it on
+    /// every callback to decide whether to call `Activity.update` at all.
     ///
-    /// Uses `object(forKey:)` rather than `bool(forKey:)` because the latter
-    /// returns `false` for both "never written" and "written false," which
-    /// collapses the default-on semantics. The accessor is nonisolated so the
-    /// keyboard extension and the main app can both read it without an actor
-    /// hop — the underlying `UserDefaults` is thread-safe per Apple's docs.
-    static var holdMicWarmAfterStop: Bool {
+    /// Uses `object(forKey:)` rather than `bool(forKey:)` to preserve the
+    /// default-on semantics across "never written" vs "explicit false."
+    static var liveActivityTranscriptEnabled: Bool {
         get {
-            if let value = defaults.object(forKey: Keys.holdMicWarmAfterStop) as? Bool {
+            if let value = defaults.object(forKey: Keys.liveActivityTranscriptEnabled) as? Bool {
                 return value
             }
             return true
         }
         set {
-            defaults.set(newValue, forKey: Keys.holdMicWarmAfterStop)
+            defaults.set(newValue, forKey: Keys.liveActivityTranscriptEnabled)
         }
     }
 }

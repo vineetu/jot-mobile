@@ -119,44 +119,6 @@ final class RecordingService {
     private var priorMode: AVAudioSession.Mode?
     private var priorOptions: AVAudioSession.CategoryOptions?
 
-    // MARK: - Warm-hold state (Cut C)
-    //
-    // When `AppGroup.holdMicWarmAfterStop` is true, `stop()` calls
-    // `engine.pause()` instead of full teardown and parks the engine + audio
-    // session in a "warm" state for ~60 seconds. The next `start()` resumes
-    // from the paused engine in ~10–50ms instead of paying the ~200–400ms
-    // cold-setup cost (configureSession + AVAudioEngine alloc + converter
-    // alloc + prepare + session activation).
-    //
-    // Trade-off accepted by the user (see `tmp/research-warm-resume-design.md`
-    // §4 Cut C and the round-5 USER DECISION at line 8): the orange iOS
-    // recording indicator stays on for the warm window, other apps' audio is
-    // muted, and the Live Activity / Dynamic Island chip remains. That
-    // visibility IS the App Review 2.5.14 disclosure — see the Settings
-    // toggle copy in `App/Settings/SettingsView.swift`.
-    //
-    // Invariant: when `isWarmHeld == true`, all of the following hold:
-    //   - `isRecording == false` (no active capture)
-    //   - `engine != nil` and engine is paused (NOT stopped)
-    //   - `capture == nil` (samples were drained at stop())
-    //   - `observers` retained (so an interruption while warm fires
-    //     `endWarmHold()`)
-    //   - audio session remains active (no `restoreSession()` was called)
-    //   - `warmHardwareFormat` and `warmConverter` are stored so a resume
-    //     install can re-create the tap + CaptureContext without rebuilding
-    //     the engine
-    //   - `warmHoldExpiresAt` is set, `warmHoldTask` is alive
-    private var isWarmHeld: Bool = false
-    private var warmHoldExpiresAt: Date?
-    private var warmHoldTask: Task<Void, Never>?
-    private var warmHardwareFormat: AVAudioFormat?
-    private var warmConverter: AVAudioConverter?
-
-    /// Bounded warm window. Per the design doc this is ~60s; the exact value
-    /// is the user-visible promise rendered in the Settings toggle copy and
-    /// the Live Activity countdown. Don't tune this without updating both.
-    static let warmHoldDuration: TimeInterval = 60
-
     // MARK: - Streaming preview (dual-model-streaming)
     //
     // Per-recording streaming engine + queue + drain task for the live
@@ -305,120 +267,8 @@ final class RecordingService {
 
     func start() async throws {
         guard !isRecording else { throw RecordingError.alreadyRunning }
+        guard !isPipelineInFlight else { throw RecordingError.alreadyRunning }
 
-        // The `isPipelineInFlight` guard is RELAXED for the warm-resume fast
-        // path. The original guard's purpose is to prevent a fresh capture
-        // from interleaving with an in-flight transcription's drain — but
-        // the warm-resume path uses a fresh `CaptureContext` (allocated
-        // below) and a fresh tap install on the SAME paused engine. The
-        // prior pipeline's transcription is operating on samples that were
-        // ALREADY drained at warm-stop (`capture` was nil'd immediately
-        // after `capture.drain()` in stop()'s warm branch), so there is no
-        // shared mutable storage between the two recordings. Letting
-        // warm-resume proceed during pipeline-in-flight is what makes the
-        // user-promised "instant restart" reachable in practical sessions:
-        // the prior pipeline takes 3-10s, the warm window is 60s — without
-        // this relaxation, the keyboard / Action Button / "Record again"
-        // paths within the first 10s would throw `.alreadyRunning`.
-        //
-        // The prior pipeline's `markPipelineFinished()` flips
-        // `isPipelineInFlight = false` whenever it completes — that's safe
-        // for the new recording, which never re-reads the flag after
-        // entering this method.
-        let canWarmResume = isWarmHeld
-            && engine != nil
-            && warmHardwareFormat != nil
-            && warmConverter != nil
-        if !canWarmResume {
-            guard !isPipelineInFlight else { throw RecordingError.alreadyRunning }
-        }
-
-        // ===== Warm-resume fast path (Cut C) =====
-        //
-        // If we're currently in warm-hold, the engine is paused with the
-        // audio session still active. Skip `configureSession()`, skip the
-        // engine alloc, skip `engine.prepare()`. Reuse the cached converter
-        // + hardware format to install a fresh tap on a new CaptureContext
-        // (the previous capture was drained and nil'd at stop()-time). Cancel
-        // the warm-expiration task so it doesn't fire `endWarmHold()` on top
-        // of an active recording.
-        //
-        // The system observers remain attached from the prior `start()` —
-        // we deliberately did NOT unsubscribe them at warm-stop because we
-        // want interruptions during the warm window to land in the same
-        // handlers (which now fire `endWarmHold()` if currently warm).
-        //
-        // Resume path latency target: ~10–50ms (engine.start() on an already-
-        // prepared paused graph). Cold path remains ~200–400ms.
-        if isWarmHeld,
-           let warmEngine = engine,
-           let hardwareFormat = warmHardwareFormat,
-           let converter = warmConverter {
-            cancelWarmHoldTask()
-            isWarmHeld = false
-            warmHoldExpiresAt = nil
-
-            let capture = CaptureContext(
-                converter: converter,
-                inputFormat: hardwareFormat,
-                target: Self.target,
-                log: log
-            )
-
-            // Pre-allocate the streaming queue BEFORE installTap so the tap's
-            // first callback already has a queue to push into. The engine +
-            // drain task are kicked off async post-engine.start() so the
-            // ~200-500ms loadModels cold path doesn't block start() return.
-            // Tap pushes pile up in the queue until the drain task spawns;
-            // this is bounded by the ~50-200ms typical kickoff latency.
-            let streamingQueue = StreamingBufferQueue()
-            self.streamingQueue = streamingQueue
-
-            installTap(on: warmEngine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
-
-            do {
-                try warmEngine.start()
-            } catch {
-                // Engine refused to resume. Tear down completely so subsequent
-                // start()s take the cold path. We've already cleared
-                // `isWarmHeld`, so calling `endWarmHold()` here would no-op —
-                // do the full-teardown work inline. Same shape as `endWarmHold`
-                // minus the `isWarmHeld` guard.
-                warmEngine.inputNode.removeTap(onBus: 0)
-                warmEngine.stop()
-                unsubscribeSystemObservers()
-                self.engine = nil
-                self.capture = nil
-                self.warmHardwareFormat = nil
-                self.warmConverter = nil
-                self.streamingQueue = nil
-                restoreSession()
-                publishRecordingState(isRecording: false, startedAt: nil)
-                log.error(
-                    "warm resume engine.start() failed: \(error.localizedDescription, privacy: .public) — fell back to full teardown"
-                )
-                throw RecordingError.engineStart(error)
-            }
-
-            self.capture = capture
-            let startedAt = Date()
-            isRecording = true
-            publishRecordingState(isRecording: true, startedAt: startedAt)
-            setCurrentRecordingStartedAt(startedAt)
-            publishPipelinePhase(.recording)
-            log.info("Recording resumed from warm hold (no cold setup paid)")
-
-            // Fire-and-forget streaming kickoff. Cleanup-on-every-stop
-            // policy means we instantiate + load a fresh manager per
-            // recording; the ~200-500ms ANE load runs off MainActor and
-            // doesn't block this method's return.
-            Task { [weak self] in
-                await self?.kickOffStreamingSession()
-            }
-            return
-        }
-
-        // ===== Cold-start path (no warm hold available) =====
         try configureSession()
 
         let engine = AVAudioEngine()
@@ -431,15 +281,11 @@ final class RecordingService {
         }
 
         let capture = CaptureContext(converter: converter, inputFormat: hardwareFormat, target: Self.target, log: log)
-        // Stash these on the service so a later warm-resume can re-use them
-        // without reconstructing. Cleared by `endWarmHold()` (full teardown).
-        self.warmHardwareFormat = hardwareFormat
-        self.warmConverter = converter
 
-        // Pre-allocate the streaming queue BEFORE installTap. See the
-        // warm-resume path above for rationale. Tap closures capture this
-        // by value (lock-protected `@unchecked Sendable` queue) so post-
-        // alloc kickoff just constructs the engine + drain task against it.
+        // Pre-allocate the streaming queue BEFORE installTap. Tap closures
+        // capture this by value (lock-protected `@unchecked Sendable` queue)
+        // so post-alloc kickoff just constructs the engine + drain task
+        // against it.
         let streamingQueue = StreamingBufferQueue()
         self.streamingQueue = streamingQueue
 
@@ -451,8 +297,6 @@ final class RecordingService {
         } catch {
             input.removeTap(onBus: 0)
             restoreSession()
-            self.warmHardwareFormat = nil
-            self.warmConverter = nil
             self.streamingQueue = nil
             throw RecordingError.engineStart(error)
         }
@@ -481,14 +325,6 @@ final class RecordingService {
     /// tap block (RMS amplitude → ~30Hz MainActor publication + 100ms
     /// AppGroup amplitude projection + first-buffer diagnostic log gated by
     /// `TapOnceGate`).
-    ///
-    /// Factored from the original inline `start()` body so the warm-resume
-    /// path can reinstall a tap on the same paused engine using a fresh
-    /// `CaptureContext` (the previous capture was drained at warm-stop and
-    /// nil'd; reusing it would re-emit the prior recording's storage on the
-    /// new tap's first ingest call). The cold-start path also routes through
-    /// here so the two paths stay observably identical from the audio
-    /// thread's perspective.
     ///
     /// The `@Sendable` annotation on `tapBlock` is load-bearing — see the
     /// pre-factor history of this file at HEAD~ for the full diagnostic
@@ -546,85 +382,6 @@ final class RecordingService {
             // we have no capture at all — there was nothing to stop.
             guard let capture else { throw RecordingError.notRunning }
 
-            // Decide warm vs cold teardown ONCE here so the rest of the
-            // method body has a single branch to read. The toggle read MUST
-            // happen at stop()-time, not at start()-time — the user could
-            // have flipped the toggle in Settings between start and stop.
-            //
-            // Also gate on engine being non-nil: if the engine was torn down
-            // by an interruption observer (`internalStop`), there's nothing
-            // to pause, so we must take the cold-teardown path regardless.
-            let warmEnabled = AppGroup.holdMicWarmAfterStop
-            let canEnterWarm = warmEnabled
-                && engine != nil
-                && warmHardwareFormat != nil
-                && warmConverter != nil
-
-            if canEnterWarm, let engine {
-                // ===== Warm-stop path (Cut C) =====
-                //
-                // MainActor-atomic block — DO NOT introduce `await` between
-                // `engine.pause()` and `isWarmHeld = true`. The no-interleaving
-                // invariant is correctness-load-bearing for `handleInterruption`
-                // / `handleRouteChange` / `handleEngineConfigChange`: those
-                // observers dispatch into `Task { @MainActor }`, and the
-                // queued task body cannot run while this synchronous block
-                // holds MainActor. Once the warm-set sequence finishes, those
-                // tasks see `isWarmHeld == true` and route to
-                // `endWarmHold(reason:)` instead of `internalStop`. An
-                // intervening await would break that ordering and let an
-                // interrupt fire before warm flags are set.
-                //
-                // Order matters here. Remove tap FIRST so post-pause buffers
-                // can't still dispatch into a CaptureContext we're about to
-                // nil. Drain the capture for the in-flight transcription
-                // pipeline. THEN engine.pause() — the AVAudioEngine docs say
-                // pause() is the documented "preserve graph state, suspend
-                // I/O" primitive; the AURemoteIO unit stays warm and the
-                // audio session stays active. We deliberately do NOT call
-                // `restoreSession()`, do NOT `unsubscribeSystemObservers()`,
-                // do NOT clear `warmHardwareFormat` / `warmConverter`.
-                //
-                // Schedule a 60s timer that fires `endWarmHold()` if no
-                // start() arrives. The timer is held in `warmHoldTask` so a
-                // resume can cancel it (see start()'s warm-resume branch).
-                engine.inputNode.removeTap(onBus: 0)
-                engine.pause()
-
-                let samples = capture.drain()
-                self.capture = nil
-
-                isRecording = false
-                currentAmplitude = nil
-                AmplitudeProjection.clear()
-                publishRecordingState(isRecording: false, startedAt: nil)
-
-                isWarmHeld = true
-                let expiresAt = Date().addingTimeInterval(Self.warmHoldDuration)
-                warmHoldExpiresAt = expiresAt
-                scheduleWarmHoldExpiration()
-
-                // Streaming teardown happens OUTSIDE the MainActor-atomic
-                // block above (which spans removeTap through
-                // scheduleWarmHoldExpiration). Per the in-block comment,
-                // an `await` between `engine.pause()` and `isWarmHeld = true`
-                // would let an interrupt observer reach internalStop instead
-                // of endWarmHold. Tearing down streaming after the atomic
-                // block preserves that invariant. Cleanup-on-every-stop
-                // policy applies to warm-stop too — even though the audio
-                // engine stays warm for ~60s, the streaming model is
-                // released to free its ~66 MB ANE working memory.
-                await tearDownStreamingSession()
-
-                let seconds = Double(samples.count) / Self.sampleRate
-                log.info(
-                    "Recording stopped (warm) — \(samples.count) samples (~\(seconds, privacy: .public)s); engine paused, warm window \(Self.warmHoldDuration, privacy: .public)s"
-                )
-                isStopInFlight = false
-                return samples
-            }
-
-            // ===== Cold-stop path (warm disabled or unavailable) =====
             if let engine {
                 engine.inputNode.removeTap(onBus: 0)
                 engine.stop()
@@ -645,8 +402,6 @@ final class RecordingService {
             unsubscribeSystemObservers()
             self.engine = nil
             self.capture = nil
-            self.warmHardwareFormat = nil
-            self.warmConverter = nil
             restoreSession()
             isRecording = false
             currentAmplitude = nil
@@ -761,18 +516,6 @@ final class RecordingService {
             return
         }
 
-        // Warm-hold cleanup must run on the same path. `endWarmHold()` is
-        // idempotent and a no-op when not warm, so we route through it
-        // unconditionally. After it returns, fall through to the existing
-        // teardown shape — for the warm path that's all no-ops (engine,
-        // capture, observers already cleared). For the active-recording
-        // path it's the original behavior.
-        if isWarmHeld {
-            cancelWarmHoldTask()
-            isWarmHeld = false
-            warmHoldExpiresAt = nil
-        }
-
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -780,8 +523,6 @@ final class RecordingService {
         unsubscribeSystemObservers()
         self.engine = nil
         self.capture = nil
-        self.warmHardwareFormat = nil
-        self.warmConverter = nil
         // Streaming teardown is async but `forceStop` is synchronous (called
         // from background-handler closures with limited wallclock). Hand off
         // to a detached Task — the queue is signaled EOS, the drain task
@@ -856,106 +597,6 @@ final class RecordingService {
     /// would step on the existing pipeline-in-flight invariant.
     func markPipelineInFlight() {
         isPipelineInFlight = true
-    }
-
-    // MARK: - Warm-hold (Cut C)
-    //
-    // Two transitions out of warm-hold exist:
-    //   1. `start()` resumes the paused engine — see start()'s warm-resume
-    //      branch. That path cancels `warmHoldTask` and clears warm state
-    //      itself; it does NOT call `endWarmHold()`.
-    //   2. `endWarmHold()` performs full teardown: `engine.stop()` ,
-    //      `unsubscribeSystemObservers()`, `restoreSession()`. Called by
-    //      timer expiration, the user flipping the Settings toggle off
-    //      mid-warm, an interruption arriving during the warm window, the
-    //      `EndWarmHoldIntent` "Stop holding" Live Activity button, and
-    //      `forceStop()` (scene-disconnect path).
-
-    /// Returns whether the service is currently sitting in the warm-hold
-    /// post-stop window. Surfaced for the keyboard extension's mic CTA
-    /// (so it can render a warm affordance instead of the cold "tap to
-    /// start" affordance) and the Live Activity update path.
-    var isInWarmHold: Bool { isWarmHeld }
-
-    /// Wall-clock instant the current warm window ends, or `nil` if not
-    /// currently warm. Renders the Live Activity countdown via
-    /// `Text(timerInterval: now ... expiresAt, countsDown: true)` without
-    /// activity update churn.
-    var currentWarmHoldExpiresAt: Date? { warmHoldExpiresAt }
-
-    /// Full teardown of a warm-paused engine. Called by the warm timer when
-    /// no resume arrived in time, by the user flipping the Settings toggle
-    /// off mid-warm, by interruption / route / engine-config observers
-    /// firing during warm, and by the "Stop holding" Live Activity intent.
-    /// Idempotent: a no-op if not currently warm.
-    func endWarmHold(reason: String) {
-        guard isWarmHeld else { return }
-        log.info("Ending warm hold (\(reason, privacy: .public))")
-
-        cancelWarmHoldTask()
-        isWarmHeld = false
-        warmHoldExpiresAt = nil
-
-        if let engine {
-            // Tap was already removed at the warm-stop. Pause-then-stop is
-            // legal per AVAudioEngine docs.
-            engine.stop()
-        }
-        unsubscribeSystemObservers()
-        self.engine = nil
-        self.capture = nil
-        self.warmHardwareFormat = nil
-        self.warmConverter = nil
-        restoreSession()
-
-        // Defensive: a fresh recording would publish its own true state,
-        // but during warm the keyboard extension may have been showing
-        // a "warm" CTA — give it a clear `false` to settle on.
-        publishRecordingState(isRecording: false, startedAt: nil)
-
-        // End the Live Activity if it's currently rendering `.warmHold`.
-        // Fire-and-forget: this method is called from synchronous contexts
-        // (interrupt observer, Settings toggle onChange, forceStop) AND from
-        // async contexts (warm-timer Task body, EndWarmHoldIntent). The
-        // dispatch is a Task hop because the coordinator's dismiss method is
-        // async; engine teardown semantics don't depend on the activity
-        // ending, so the Task hop is non-blocking. `dismissWarmHold()` is
-        // idempotent — no-ops when the activity isn't in `.warmHold` (e.g.
-        // when warm ended before the followUp expiry handed off).
-        Task { @MainActor in
-            await DictationActivityCoordinator.shared.dismissWarmHold()
-        }
-    }
-
-    /// Settings flips the warm-hold toggle. If the user just turned it OFF
-    /// while a warm window is active, end the warm hold immediately so the
-    /// orange indicator drops at the same time the user expects it to.
-    /// Called from `SettingsView` after the toggle write.
-    func applyWarmHoldToggleChange() {
-        let nowEnabled = AppGroup.holdMicWarmAfterStop
-        if !nowEnabled, isWarmHeld {
-            endWarmHold(reason: "Settings toggle disabled mid-warm")
-        }
-    }
-
-    private func scheduleWarmHoldExpiration() {
-        cancelWarmHoldTask()
-        warmHoldTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(Self.warmHoldDuration))
-            } catch {
-                // Cancellation: a `start()` resume path or an early
-                // `endWarmHold()` cancelled us. Either way, exit.
-                return
-            }
-            guard let self, self.isWarmHeld else { return }
-            self.endWarmHold(reason: "warm timer expired")
-        }
-    }
-
-    private func cancelWarmHoldTask() {
-        warmHoldTask?.cancel()
-        warmHoldTask = nil
     }
 
     // MARK: - Pipeline phase + heartbeat (v7 auto-paste design)
@@ -1174,18 +815,8 @@ final class RecordingService {
         guard let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            if isWarmHeld {
-                // The warm-hold engine was paused but the session was still
-                // active — iOS interrupting us means the warm window's
-                // implicit promise (resumable in <50ms) is broken. Tear down
-                // immediately rather than try to resume into an interrupted
-                // session.
-                log.notice("Audio session interrupted during warm hold — ending warm")
-                endWarmHold(reason: "interruption during warm")
-            } else {
-                log.notice("Audio session interrupted — stopping recording")
-                internalStop(reason: "interruption")
-            }
+            log.notice("Audio session interrupted — stopping recording")
+            internalStop(reason: "interruption")
         case .ended:
             // Per spec: do not auto-resume. User re-presses Record.
             // `.shouldResume` only advises us; we still defer to the user.
@@ -1198,13 +829,8 @@ final class RecordingService {
     private func handleRouteChange(reasonRaw: UInt) {
         guard let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
         if reason == .oldDeviceUnavailable {
-            if isWarmHeld {
-                log.notice("Audio route device went away during warm hold — ending warm")
-                endWarmHold(reason: "route change during warm")
-            } else {
-                log.notice("Audio route device went away — stopping recording")
-                internalStop(reason: "route change")
-            }
+            log.notice("Audio route device went away — stopping recording")
+            internalStop(reason: "route change")
         }
         // `.newDeviceAvailable` and friends are ignored: iOS already did the
         // right routing, and interrupting capture on every AirPod reconnect
@@ -1212,15 +838,6 @@ final class RecordingService {
     }
 
     private func handleEngineConfigChange() {
-        if isWarmHeld {
-            // Engine reconfig while the engine is paused means the cached
-            // hardware format is stale. The warm path's promise (instant
-            // resume on the same graph) doesn't survive reconfig — fall
-            // through to full teardown.
-            log.notice("Engine configuration changed during warm hold — ending warm")
-            endWarmHold(reason: "engine config change during warm")
-            return
-        }
         log.notice("Engine configuration changed — stopping recording")
         internalStop(reason: "engine config change")
     }
@@ -1267,11 +884,6 @@ final class RecordingService {
         // Hand the capture ref to the dispatch task; nil ours so the next
         // start() builds a fresh CaptureContext rather than reusing this one.
         self.capture = nil
-        // Clear the warm cache too — a future stop() with the toggle on
-        // can't enter warm hold without an engine, so leaving the cached
-        // format/converter behind would be misleading.
-        self.warmHardwareFormat = nil
-        self.warmConverter = nil
 
         // Streaming teardown — same fire-and-forget shape as `forceStop`.
         // `internalStop` is synchronous (interrupt-observer path) so we

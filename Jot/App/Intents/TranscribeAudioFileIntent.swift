@@ -75,7 +75,7 @@ struct TranscribeAudioFileIntent: AppIntent {
         """
         Transcribe an audio file on-device using Parakeet. \
         Designed to chain after Shortcuts' built-in Record Audio action. \
-        Fully local — nothing leaves your iPhone.
+        Fully local — nothing leaves your device.
         """,
         categoryName: "Dictation"
     )

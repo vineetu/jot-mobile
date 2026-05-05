@@ -3,213 +3,310 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-/// Live Activity presentation for an in-flight Jot dictation and its
-/// immediately-following command window.
+/// Live Activity presentation for an in-flight Jot dictation.
 ///
-/// The activity renders seven phases (see `DictationAttributes.Phase`):
-///   - `recording`    – pulsing red dot + monotonic elapsed-time counter
-///   - `transcribing` – small spinner + "Transcribing…" label
-///   - `processing`   – cancelable post-transcription command-resolution phase
-///   - `cleaning`     – small spinner + "Polishing…" label
-///   - `followUp`     – active 30-second follow-up window with countdown
-///   - `warmHold`     – Cut C post-stop warm window: amber chip with countdown,
-///     "Record again" + "Stop holding" buttons in the expanded view
-///   - `finished*`    – legacy compatibility states retained for older
-///     activity payloads; the current pipeline goes straight to `followUp`
+/// Renders four user-visible states (collapsed from `DictationAttributes.Phase`'s
+/// engine phases per design.md §2):
+///
+///   - **Recording** — `.recording(startedAt:)` → static red dot + system-driven
+///     elapsed-time counter. Compact and minimal stay text-free; expanded
+///     center renders `lastWordsPreview` when toggle is on.
+///   - **Transcribing** — `.transcribing | .processing | .cleaning` → circular
+///     `ProgressView` + static `…` glyph. Engine-phase distinctions are not
+///     user-visible; one label `"Transcribing"` for all three.
+///   - **Done flash** — `.followUp | .finished | .finishedCommand` → green
+///     check, no trailing column. Activity self-dismisses after 2.0s via
+///     `Activity.end(_, dismissalPolicy: .after(...))` from app code.
+///   - **Idle** — no activity, no DI surface.
+///
+/// Hard rules (design.md §4):
+///   - No custom continuous animations. No `.repeatForever`, no `withAnimation`.
+///   - The only motion is system-driven: switch-branch crossfade, `ProgressView`
+///     spinner, `Text(timerInterval:)` tick.
+///   - `Text(timerInterval:)` always passes `showsHours: false` — Apple's
+///     default is `true` which renders `0:00:14` instead of `0:14`.
+///
+/// Privacy gate for `lastWordsPreview` (design.md §8.7):
+///   1. **Structural** — only the expanded `.center` region and the lock-screen
+///      banner's row 3 reference `state.lastWordsPreview`. Compact and minimal
+///      cannot leak it.
+///   2. **Runtime** — writer-side gate (in the streaming-writer, not the widget
+///      body): when the toggle is off, the writer skips its `Activity.update`
+///      call and `lastWordsPreview` stays `nil`. The widget renders nothing.
 struct JotLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DictationAttributes.self) { context in
-            // Lock-screen / banner presentation (iPhones without Dynamic Island,
-            // or when the phone is locked).
-            LockScreenPill(phase: context.state.phase)
+            // Lock-screen + banner presentation (§3.7: same view for both).
+            LockScreenBanner(state: context.state, isStale: context.isStale)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .activityBackgroundTint(.black.opacity(0.8))
+                .activityBackgroundTint(.black)
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ExpandedLeading(phase: context.state.phase)
+                    ExpandedLeading(state: context.state)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    ExpandedTrailing(phase: context.state.phase)
+                    ExpandedTrailing(state: context.state)
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    // Recording-state-only; toggle-gated via writer-side
+                    // suppression (writer doesn't push when toggle is off, so
+                    // `lastWordsPreview` stays `nil` and the region collapses).
+                    ExpandedCenter(state: context.state)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ExpandedBottom(phase: context.state.phase)
+                    ExpandedBottom(state: context.state)
                 }
             } compactLeading: {
-                CompactLeading(phase: context.state.phase)
+                CompactLeading(state: context.state)
             } compactTrailing: {
-                CompactTrailing(phase: context.state.phase)
+                CompactTrailing(state: context.state)
             } minimal: {
-                MinimalIndicator(phase: context.state.phase)
+                MinimalIndicator(state: context.state)
             }
-            // Amber (Ledger brand CRT-phosphor) rather than system red so
-            // the Dynamic Island trailing keyline *reads as Jot* instead
-            // of "generic iOS recording app." Crucially, we keep the
-            // recording dot itself red inside `StatusBadge` — that's the
-            // iOS-wide convention nobody should break. Amber is the paint
-            // around the glass, red is still the bulb behind it.
+            // Keyline tint is state-independent: amber for every phase. Per
+            // design.md §9.1, varying the keyline per state would be over-
+            // decorative motion; first-party Apple apps treat the keyline as
+            // brand chrome, not a state indicator. State is communicated by
+            // the dot/check inside the pill.
             .keylineTint(JotBrand.amber)
         }
     }
 }
 
-/// Brand tokens shared by widget surfaces. Mirrors the in-app Ledger
-/// palette so the Live Activity, the app icon, and the main surface all
-/// speak the same colour language. If these drift out of sync, the
-/// product stops feeling like one thing — so they're co-located here.
+/// Brand tokens shared by widget surfaces. The CRT-phosphor amber is the
+/// single Ledger accent; it appears on the keyline tint and nowhere else.
+/// (Compare design.md §6: red is system-red live capture; green is system-
+/// green completion; amber is brand chrome only, never replaces a system
+/// semantic.)
 enum JotBrand {
     /// Warm CRT phosphor amber — the single Ledger accent. Hex `#FFB81A`.
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.10)
 }
 
-// MARK: - Lock-screen presentation
+// MARK: - Lock-screen / banner presentation
+//
+// Per design.md §3.7, lock-screen and banner share a single SwiftUI view
+// (the first `ActivityConfiguration` closure). We do not fork copy for the
+// two presentations — runtime-discriminating between them is not a documented
+// capability.
 
-private struct LockScreenPill: View {
-    let phase: DictationAttributes.Phase
+private struct LockScreenBanner: View {
+    let state: DictationAttributes.ContentState
+    let isStale: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            StatusBadge(phase: phase)
-                .frame(width: 20, height: 20)
+        HStack(alignment: .top, spacing: 12) {
+            // Leading: the state badge (red dot / spinner / amber dot / green
+            // check). Sized small enough to read as a wordmark prefix.
+            StateBadge(phase: state.phase)
+                .frame(width: 18, height: 18)
 
             VStack(alignment: .leading, spacing: 2) {
+                // Row 1: Jot wordmark.
                 Text("Jot")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                PrimaryLabel(phase: phase)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
+
+                // Row 2: state name (lowercase per Voice-Memos parity).
+                Text(stateName(for: state.phase))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // Row 3 (recording-state-only, toggle-gated):
+                // `lastWordsPreview`. Single line on lock-screen vs two lines
+                // in expanded `.center` — banner has tighter vertical budget.
+                // Conditionally included so empty doesn't render an empty
+                // Text() row taking up vertical space (per §8.8).
+                if shouldRenderTranscriptRow,
+                   let preview = state.lastWordsPreview,
+                   !preview.isEmpty {
+                    Text(preview)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 8)
 
-            TrailingDetail(phase: phase)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            // Trailing: timer for recording; nothing for the other states
+            // (transcribing has no useful clock; done flash has no duration
+            // field on `ContentState` — see §3.5.4).
+            LockScreenTrailing(phase: state.phase)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white)
+        }
+        .opacity(isStale ? 0.55 : 1.0)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(stateName(for: state.phase)))
+        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+    }
+
+    private var shouldRenderTranscriptRow: Bool {
+        if case .recording = state.phase { return true }
+        return false
+    }
+
+    private func stateName(for phase: DictationAttributes.Phase) -> String {
+        switch phase {
+        case .recording:
+            return "Recording"
+        case .transcribing, .processing, .cleaning:
+            return "Transcribing"
+        case .followUp, .finished, .finishedCommand:
+            return "Saved"
+        }
+    }
+}
+
+/// Lock-screen trailing column: count-up timer for recording; empty for
+/// other states.
+private struct LockScreenTrailing: View {
+    let phase: DictationAttributes.Phase
+
+    var body: some View {
+        switch phase {
+        case .recording(let startedAt):
+            Text(
+                timerInterval: startedAt...Date.distantFuture,
+                pauseTime: nil,
+                countsDown: false,
+                showsHours: false
+            )
+        case .transcribing, .processing, .cleaning,
+             .followUp, .finished, .finishedCommand:
+            EmptyView()
         }
     }
 }
 
 // MARK: - Dynamic Island expanded regions
 
+/// Leading region: state badge + state-name label.
 private struct ExpandedLeading: View {
-    let phase: DictationAttributes.Phase
+    let state: DictationAttributes.ContentState
 
     var body: some View {
         HStack(spacing: 8) {
-            StatusBadge(phase: phase)
-                .frame(width: 22, height: 22)
-            Text("Jot")
-                .font(.headline)
+            StateBadge(phase: state.phase)
+                .frame(width: 14, height: 14)
+            Text(stateName(for: state.phase))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(stateName(for: state.phase)))
+    }
+
+    private func stateName(for phase: DictationAttributes.Phase) -> String {
+        switch phase {
+        case .recording:
+            return "Recording"
+        case .transcribing, .processing, .cleaning:
+            return "Transcribing"
+        case .followUp, .finished, .finishedCommand:
+            return "Saved & copied"
         }
     }
 }
 
+/// Trailing region: count-up timer for recording; empty for transcribing
+/// and done flash (per §3.3.3 / §3.5.3).
 private struct ExpandedTrailing: View {
-    let phase: DictationAttributes.Phase
+    let state: DictationAttributes.ContentState
 
     var body: some View {
-        TrailingDetail(phase: phase)
-            .font(.subheadline.monospacedDigit())
+        switch state.phase {
+        case .recording(let startedAt):
+            Text(
+                timerInterval: startedAt...Date.distantFuture,
+                pauseTime: nil,
+                countsDown: false,
+                showsHours: false
+            )
+            .font(.title3.monospacedDigit().weight(.medium))
             .foregroundStyle(.white)
+        case .transcribing, .processing, .cleaning,
+             .followUp, .finished, .finishedCommand:
+            EmptyView()
+        }
     }
 }
 
-private struct ExpandedBottom: View {
-    let phase: DictationAttributes.Phase
+/// Center region: the live partial-transcript preview.
+///
+/// Per design.md §3.2.3 + §8.1: renders only when `state.phase == .recording`
+/// AND `lastWordsPreview` is non-nil-non-empty. The toggle-off case lands
+/// here as `lastWordsPreview == nil` (writer-side suppression) and the
+/// region renders `EmptyView()`, so the expanded layout collapses to the
+/// no-transcript shape (leading + trailing + bottom).
+private struct ExpandedCenter: View {
+    let state: DictationAttributes.ContentState
 
     var body: some View {
-        switch phase {
+        if case .recording = state.phase,
+           let preview = state.lastWordsPreview,
+           !preview.isEmpty {
+            Text(preview)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            EmptyView()
+        }
+    }
+}
+
+/// Bottom region: state-dependent action / disclosure surface.
+///
+/// - Recording → full-width destructive Stop button.
+/// - Transcribing → static "Working on it…" copy.
+/// - Done flash → empty (the green check + "Saved & copied" leading carries
+///   the meaning; the optional "Open in Jot" link was downgraded to
+///   enhancement and depends on `jot://` URL scheme registration which we
+///   already have, but per §3.5.3 a single tap on the DI/banner foregrounds
+///   Jot at its default scene — which is the safe fallback).
+private struct ExpandedBottom: View {
+    let state: DictationAttributes.ContentState
+
+    var body: some View {
+        switch state.phase {
         case .recording:
-            // Interactive stop button. Wired to `StopDictationIntent` — a
-            // `LiveActivityIntent` that iOS 18+ promotes into the main-app
-            // process to drive the exact same stop→transcribe→clipboard
-            // pipeline that a second Action Button press runs. This is
-            // what gives the user a direct stop affordance from the pill
-            // itself (finger on the Dynamic Island) instead of having to
-            // reach back up to the Action Button, which is especially
-            // useful when the app is not open and the Action Button is
-            // already bound to something else.
+            // Single full-width destructive button. No Cancel, no More — the
+            // expanded view is glanceable and committed (design.md §3.2.3).
             Button(intent: StopDictationIntent()) {
                 Label("Stop", systemImage: "stop.fill")
             }
+            .buttonStyle(.bordered)
             .tint(.red)
-            .buttonStyle(.bordered)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .transcribing:
-            PrimaryLabel(phase: phase)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .processing:
-            Button(intent: CancelPostProcessingIntent()) {
-                Label("Cancel", systemImage: "xmark")
-            }
-            .tint(JotBrand.amber)
-            .buttonStyle(.bordered)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .cleaning:
-            Button(intent: CancelPostProcessingIntent()) {
-                Label("Cancel", systemImage: "xmark")
-            }
-            .tint(JotBrand.amber)
-            .buttonStyle(.bordered)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .followUp:
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Follow-up window")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text("Say a command or record again")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+            .controlSize(.large)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("Stop recording")
 
-                Button(intent: DismissFollowUpIntent()) {
-                    Label("Close", systemImage: "xmark")
-                }
-                .tint(JotBrand.amber)
-                .buttonStyle(.bordered)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .warmHold(let expiresAt):
-            // Cut C P7 expanded bottom (per
-            // `tmp/research-dynamic-island-design.md` §2.3 P7): prominent
-            // remaining-warm countdown, "Record again" →
-            // `RecordAgainFromWarmIntent` (idle → start path; if warm-held,
-            // `RecordingService.start()` resumes the paused engine in
-            // ~10–50ms instead of paying cold-init), "Stop holding" →
-            // `EndWarmHoldIntent` (full teardown, indicator off).
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mic warm — tap to record again")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(timerInterval: Date.now...expiresAt, countsDown: true)
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+        case .transcribing, .processing, .cleaning:
+            // Static line; no shimmer (would risk the same Q1 cadence
+            // problem as the rejected amplitude meter — see §3.3.3).
+            Text("Working on it…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-                HStack(spacing: 8) {
-                    Button(intent: RecordAgainFromWarmIntent()) {
-                        Label("Record again", systemImage: "mic.fill")
-                    }
-                    .tint(JotBrand.amber)
-                    .buttonStyle(.borderedProminent)
-
-                    Button(intent: EndWarmHoldIntent()) {
-                        Label("Stop holding", systemImage: "stop.circle")
-                    }
-                    .tint(.secondary)
-                    .buttonStyle(.bordered)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .finished, .finishedCommand:
+        case .followUp, .finished, .finishedCommand:
+            // Done flash expanded: the leading "Saved & copied" + green check
+            // is the entire content. Trailing returns EmptyView (§3.5.3 — no
+            // duration field on ContentState, and we refuse to fabricate one
+            // from `Date.now - startedAt` at widget render time).
+            //
+            // The optional "Open in Jot" deep-link button is enhancement, not
+            // core (§3.5.3 + reviewer Round-1 Issue 18). v1 omits it — the
+            // user can tap the DI/banner to foreground Jot at its default
+            // scene. A v1.x can add the explicit Link() button once
+            // `jot://history/latest` lands.
             EmptyView()
         }
     }
@@ -217,163 +314,94 @@ private struct ExpandedBottom: View {
 
 // MARK: - Dynamic Island compact / minimal
 
+/// Compact leading slot: a single small badge (~8 pt dot or 16 pt check).
 private struct CompactLeading: View {
-    let phase: DictationAttributes.Phase
+    let state: DictationAttributes.ContentState
 
     var body: some View {
-        StatusBadge(phase: phase)
-            .frame(width: 18, height: 18)
+        StateBadge(phase: state.phase)
+            .frame(width: 8, height: 8)
+            .padding(.leading, 4)
     }
 }
 
+/// Compact trailing slot: timer for recording, static `…` for transcribing,
+/// empty for done flash.
 private struct CompactTrailing: View {
-    let phase: DictationAttributes.Phase
+    let state: DictationAttributes.ContentState
 
     var body: some View {
-        TrailingDetail(phase: phase)
-            .font(.caption2.monospacedDigit().weight(.medium))
+        switch state.phase {
+        case .recording(let startedAt):
+            Text(
+                timerInterval: startedAt...Date.distantFuture,
+                pauseTime: nil,
+                countsDown: false,
+                showsHours: false
+            )
+            .font(.caption2.monospacedDigit().weight(.semibold))
             .foregroundStyle(.white)
+        case .transcribing, .processing, .cleaning:
+            // Static ellipsis; no timeline-driven cycle (Q1 cadence risk).
+            // The leading spinner already signals motion.
+            Text("\u{2026}")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.55))
+        case .followUp, .finished, .finishedCommand:
+            EmptyView()
+        }
     }
 }
 
+/// Minimal slot: shown when another Live Activity holds the leading. A
+/// single 18 pt static glyph (per §3.2.2 / §3.3.2 / §3.4.2 / §3.5.2).
 private struct MinimalIndicator: View {
-    let phase: DictationAttributes.Phase
+    let state: DictationAttributes.ContentState
 
     var body: some View {
-        StatusBadge(phase: phase)
+        StateBadge(phase: state.phase)
+            .frame(width: 18, height: 18)
     }
 }
 
 // MARK: - Shared sub-views
 
-private struct StatusBadge: View {
+/// State-dependent badge glyph used in compact leading, minimal, expanded
+/// leading, and lock-screen leading. Static — no pulse, no breathing, no
+/// amplitude bar (per design.md §3.2.1: "do not add a pulse without the Q1
+/// spike landing first.").
+///
+/// Color crossfade between phases is handled by SwiftUI's automatic Color
+/// interpolation when the `.fill` value changes between renders. We do not
+/// compose a `ZStack` of opaque circles or wrap in `withAnimation`.
+private struct StateBadge: View {
     let phase: DictationAttributes.Phase
 
     var body: some View {
         switch phase {
         case .recording:
             Circle()
-                .fill(Color.red)
-                .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+                .fill(Color(.systemRed))
+                .overlay(
+                    Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
+                )
         case .transcribing, .processing, .cleaning:
+            // System circular spinner. The system manages its animation
+            // cadence — we do not need a `TimelineView` wrapper, sidestepping
+            // the Q1 cadence question that killed the amplitude meter.
             ProgressView()
                 .progressViewStyle(.circular)
                 .tint(.white)
-        case .followUp:
-            Circle()
-                .fill(JotBrand.amber)
-                .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
-        case .warmHold:
-            // Amber matches the orange iOS recording indicator the user is
-            // seeing in the system status area — same color family ties the
-            // two disclosures together so the user reads them as one
-            // "the mic system is on standby" affordance, not two parallel
-            // signals. A pulsing animation would add motion noise; the
-            // status-bar indicator is already pulsing at the system level,
-            // so the in-Activity badge stays static for a calmer composition.
-            Circle()
-                .fill(JotBrand.amber)
-                .overlay(Circle().stroke(Color.white.opacity(0.4), lineWidth: 1))
-        case .finished:
+                .controlSize(.mini)
+        case .followUp, .finished, .finishedCommand:
+            // Two-color SF Symbol: white check on green fill — the iOS-wide
+            // "completed" semantic. `.symbolRenderingMode(.palette)` is what
+            // lets `.foregroundStyle(.white, Color(.systemGreen))` apply two
+            // distinct colors to the layered symbol.
             Image(systemName: "checkmark.circle.fill")
                 .resizable()
-                .foregroundStyle(.green)
-        case .finishedCommand:
-            // Same green-check terminal badge for the command outcome — the
-            // user got their text on the clipboard; the distinction between
-            // "fresh dictation" and "command applied" lives in the text
-            // labels (`PrimaryLabel` / `ExpandedBottom`), not the status
-            // badge. Using a different glyph here would add visual noise
-            // without earning its cognitive cost.
-            Image(systemName: "checkmark.circle.fill")
-                .resizable()
-                .foregroundStyle(.green)
-        }
-    }
-}
-
-private struct PrimaryLabel: View {
-    let phase: DictationAttributes.Phase
-
-    var body: some View {
-        switch phase {
-        case .recording:
-            Text("Recording…")
-        case .transcribing:
-            Text("Transcribing…")
-        case .processing:
-            Text("Processing…")
-        case .cleaning:
-            Text("Polishing…")
-        case .followUp:
-            Text("Follow-up")
-        case .warmHold:
-            Text("Mic warm")
-        case .finished(let preview):
-            Text(previewLabel(for: preview))
-        case .finishedCommand(let instruction, let preview):
-            Text(commandLabel(instruction: instruction, preview: preview))
-        }
-    }
-
-    private func previewLabel(for preview: String) -> String {
-        let snippet = String(preview.prefix(40))
-        return snippet.isEmpty
-            ? "Copied to clipboard"
-            : "Copied to clipboard · \(snippet)"
-    }
-
-    private func commandLabel(instruction: String, preview: String) -> String {
-        // Tighter budget than `previewLabel` because the instruction can
-        // itself be long. Truncate the instruction to 28 and the preview
-        // snippet to 22 so the total stays comparable to the fresh
-        // dictation pill; iOS ellipsizes automatically if the composed
-        // string still overflows.
-        let trimmedInstruction = String(instruction.prefix(28))
-        let trimmedPreview = String(preview.prefix(22))
-        if trimmedPreview.isEmpty {
-            return "Command: \(trimmedInstruction)"
-        }
-        return "Command: \(trimmedInstruction) · \(trimmedPreview)"
-    }
-}
-
-/// Trailing cell: a live elapsed-time counter while recording, a static hint
-/// otherwise. Using `Text(timerInterval:)` means the system drives the
-/// per-second update without us pushing activity updates, which is the
-/// recommended pattern per the ActivityKit docs.
-private struct TrailingDetail: View {
-    let phase: DictationAttributes.Phase
-
-    var body: some View {
-        switch phase {
-        case .recording(let startedAt):
-            Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
-        case .transcribing:
-            Text("…")
-        case .processing:
-            Text("…")
-        case .cleaning:
-            Text("…")
-        case .followUp(let expiresAt):
-            Text(timerInterval: Date.now...expiresAt, countsDown: true)
-        case .warmHold(let expiresAt):
-            // Same `Text(timerInterval:)` pattern as `.followUp`: the system
-            // drives the per-second update without the activity needing to
-            // push updates from the app process. This is the
-            // documented-recommended pattern in the ActivityKit docs.
-            Text(timerInterval: Date.now...expiresAt, countsDown: true)
-        case .finished:
-            Text("Done")
-        case .finishedCommand:
-            // Same "Done" trailing for the command outcome — the
-            // fresh-vs-command distinction is communicated in the primary
-            // label column, not the trailing. Splitting the trailing text
-            // ("Edited" vs "Done") was considered and rejected: it'd force
-            // the user to read two columns to understand what happened,
-            // whereas the primary label already says it in one ("Command:
-            // <instruction> · <preview>").
-            Text("Done")
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, Color(.systemGreen))
         }
     }
 }

@@ -63,6 +63,15 @@ struct StopDictationIntent: AppIntent, LiveActivityIntent {
     /// us main-app-process execution without needing `openAppWhenRun = true`.
     static let openAppWhenRun: Bool = false
 
+    /// Stop must fire on a locked phone without a Face ID prompt — stopping a
+    /// recording you started is a no-confidentiality action and the
+    /// expanded-DI Stop button is the user's escape hatch from the orange
+    /// status-bar mic indicator. The default `requiresAuthentication` would
+    /// silently break Stop-from-locked. See design.md §3.2.3 + §5.5 for the
+    /// launch-blocker rationale; case spelling verified against iOS 26
+    /// `IntentAuthenticationPolicy` at implementation time.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+
     /// Belt-and-suspenders: advertise to every system surface. Interactive
     /// Live Activity buttons work regardless of discoverability, but pinning
     /// `true` keeps Shortcuts/Siri surfaces consistent with the other Jot

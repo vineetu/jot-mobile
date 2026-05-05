@@ -50,20 +50,6 @@ public struct DictationAttributes: ActivityAttributes {
         /// against the just-finished transcript.
         case followUp(expiresAt: Date)
 
-        /// Warm-hold (Cut C): post-stop window where `RecordingService` keeps
-        /// the audio engine paused (not torn down) and the audio session
-        /// active so the next `start()` can resume in ~10–50ms instead of
-        /// paying the ~200–400ms cold setup cost. The orange iOS recording
-        /// indicator stays on for the duration of this phase — that is the
-        /// 2.5.14 disclosure surface, not a bug.
-        ///
-        /// `expiresAt` is the wall-clock instant the warm timer fires
-        /// `endWarmHold()` if no new recording has been requested.
-        /// `Text(timerInterval: now ... expiresAt, countsDown: true)` lets
-        /// the widget render the countdown without per-second activity
-        /// updates.
-        case warmHold(expiresAt: Date)
-
         /// Legacy terminal state for a plain dictation.
         ///
         /// Retained so older live-activity payloads still decode after app
@@ -99,8 +85,29 @@ public struct DictationAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable, Sendable {
         public var phase: Phase
 
-        public init(phase: Phase) {
+        /// Live partial-transcript preview shown in the expanded `.center`
+        /// region and on the lock-screen banner's third row while
+        /// `phase == .recording`. Populated by the streaming-writer at
+        /// ≤1.3 Hz, gated by the `liveActivityTranscriptEnabled` settings
+        /// toggle (see design.md §8). Compact and minimal closures do not
+        /// reference this field — privacy is structural.
+        ///
+        /// Wire shape: the last 12 words of cumulative `streamingText`,
+        /// word-aligned, capped at 60 chars total (truncate the leading edge
+        /// if the 12-word tail exceeds 60 chars). `nil` or `""` when the
+        /// toggle is off, when the user has not yet spoken, or when the
+        /// phase is anything other than `.recording`. Renderer treats `nil`
+        /// and `""` identically — empty is empty, no placeholder.
+        ///
+        /// Defaulted to `nil` in the initializer so in-flight ContentStates
+        /// from prior app builds (encoded without this key) continue to
+        /// decode cleanly. `Optional<String>` Codable handles missing-key
+        /// decoding by yielding `nil` — no custom Decoder needed.
+        public var lastWordsPreview: String?
+
+        public init(phase: Phase, lastWordsPreview: String? = nil) {
             self.phase = phase
+            self.lastWordsPreview = lastWordsPreview
         }
     }
 

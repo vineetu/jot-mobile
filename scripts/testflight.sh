@@ -135,7 +135,7 @@ archive() {
     -derivedDataPath "$derived_data_path" \
     -archivePath "$archive_path" \
     -allowProvisioningUpdates \
-    "${xcode_auth_args[@]}" \
+    ${xcode_auth_args[@]+"${xcode_auth_args[@]}"} \
     DEVELOPMENT_TEAM="$team_id" \
     MARKETING_VERSION="$marketing_version" \
     CURRENT_PROJECT_VERSION="$build_number" \
@@ -189,7 +189,7 @@ export_ipa() {
     -exportPath "$export_dir" \
     -exportOptionsPlist "$export_options_plist" \
     -allowProvisioningUpdates \
-    "${xcode_auth_args[@]}"
+    ${xcode_auth_args[@]+"${xcode_auth_args[@]}"}
 }
 
 upload_ipa() {
@@ -210,7 +210,7 @@ upload_ipa() {
   xcrun altool \
     --upload-app \
     -f "$ipa_path" \
-    "${altool_auth_args[@]}" \
+    ${altool_auth_args[@]+"${altool_auth_args[@]}"} \
     --output-format json
 }
 

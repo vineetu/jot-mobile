@@ -76,9 +76,6 @@ struct ContentView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
-                        .onLongPressGesture(minimumDuration: 0.4) {
-                            copy(transcript)
-                        }
                     }
                 }
             }

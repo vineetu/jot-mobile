@@ -2,6 +2,9 @@ import ActivityKit
 import AppIntents
 import Foundation
 import Observation
+import os
+
+private let liveActivityLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "live-activity")
 
 /// The Action Button / Shortcuts entry point for Jot.
 ///
@@ -539,7 +542,17 @@ final class DictationActivityCoordinator {
     func start(startedAt: Date) async {
         recordingStartedAt = startedAt
         clearFollowUpState()
-        clearWarmHoldState()
+
+        // Preflight: if the user has Live Activities globally disabled, or has
+        // toggled them off for Jot specifically (Settings → Jot → Live
+        // Activities), `Activity.request(...)` will throw
+        // `ActivityAuthorizationError.denied` and the DI pill silently fails
+        // to come up. Recording still works — we just won't have the pill.
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            liveActivityLog.warning("Skipping Activity.request: Live Activities are disabled (system or per-app toggle off).")
+            handle = nil
+            return
+        }
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -563,6 +576,7 @@ final class DictationActivityCoordinator {
             // won't have the pill. The App layer's toast system is responsible
             // for surfacing this; the intent shouldn't fail the dictation
             // because the UI chrome couldn't come up.
+            liveActivityLog.error("Activity.request failed: \(String(describing: type(of: error))) — \(error.localizedDescription, privacy: .public)")
             handle = nil
         }
     }
@@ -574,7 +588,6 @@ final class DictationActivityCoordinator {
 
         recordingStartedAt = startedAt
         clearFollowUpState()
-        clearWarmHoldState()
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -616,7 +629,6 @@ final class DictationActivityCoordinator {
     func cancelPendingRecordingStart() async {
         recordingStartedAt = nil
         clearFollowUpState()
-        clearWarmHoldState()
 
         guard let handle else { return }
 
@@ -630,11 +642,6 @@ final class DictationActivityCoordinator {
 
     func update(phase: DictationAttributes.Phase) async {
         clearFollowUpState()
-        // Warm-hold has its own dedicated `transitionToWarmHold(expiresAt:)`
-        // entry — anyone reaching `update(phase:)` is moving into a phase
-        // that is NOT warmHold (e.g. `.transcribing`, `.processing`,
-        // `.cleaning`), so clear any stale warm-hold tracking.
-        clearWarmHoldState()
         guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(phase: phase),
@@ -712,77 +719,6 @@ final class DictationActivityCoordinator {
             await handle.end(content, dismissAt: Date())
             self.handle = nil
         }
-    }
-
-    // MARK: - Warm-hold (Cut C) — coordinator side
-    //
-    // The activity transitions into `.warmHold(expiresAt:)` either (a) at the
-    // tail of `scheduleFollowUpExpiry`'s task, when followUp has expired but
-    // RecordingService is still warm-paused; or (b) explicitly via
-    // `transitionToWarmHold(expiresAt:)` from a caller that wants to skip the
-    // followUp window. The exit path is `dismissWarmHold()`, called from
-    // `RecordingService.endWarmHold(reason:)` (warm timer expiry, "Stop
-    // holding" intent, toggle disable mid-warm, interruption, route change,
-    // engine reconfig, scene-disconnect forceStop).
-
-    /// Whether the activity is currently rendering `.warmHold(expiresAt:)`.
-    /// Set by `transitionToWarmHold` and the followUp expiry task's warm-
-    /// continuation branch. Cleared by `dismissWarmHold()`. Used by the
-    /// dismiss path to no-op when not currently warm.
-    private(set) var isWarmHoldActive = false
-    private(set) var warmHoldExpiresAt: Date?
-
-    /// Explicit transition into `.warmHold(expiresAt:)`. Most pipeline tails
-    /// reach warmHold via the followUp-expiry continuation (above), but a
-    /// caller that wants to skip followUp entirely can use this. Idempotent
-    /// over the current activity content.
-    func transitionToWarmHold(expiresAt: Date) async {
-        clearFollowUpState()
-        recordingStartedAt = nil
-        isWarmHoldActive = true
-        warmHoldExpiresAt = expiresAt
-
-        guard let handle else { return }
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(
-                phase: .warmHold(expiresAt: expiresAt)
-            ),
-            staleDate: expiresAt
-        )
-        await handle.update(content)
-    }
-
-    /// End the activity if it's currently rendering `.warmHold(expiresAt:)`.
-    /// Called from `RecordingService.endWarmHold(reason:)` for every warm
-    /// teardown path. No-op when not currently warm so callers can fire-and-
-    /// forget without re-checking activity state.
-    func dismissWarmHold() async {
-        guard isWarmHoldActive else { return }
-        let expiresAt = warmHoldExpiresAt ?? Date()
-        isWarmHoldActive = false
-        warmHoldExpiresAt = nil
-
-        guard let handle else { return }
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(
-                phase: .warmHold(expiresAt: expiresAt)
-            ),
-            staleDate: Date()
-        )
-        await handle.end(content, dismissAt: Date())
-        self.handle = nil
-    }
-
-    /// Clear warm-hold tracking flags WITHOUT ending the activity. Called from
-    /// `start(startedAt:)` and `update(phase:)` so a new recording or a
-    /// non-warm phase transition doesn't leave a stale `isWarmHoldActive`
-    /// pointing at content that has already been overwritten with a different
-    /// phase. (`dismissWarmHold` would then no-op via its `isWarmHoldActive`
-    /// check, but we'd lose the cross-process invariant that "isWarmHoldActive
-    /// matches the current activity content".)
-    private func clearWarmHoldState() {
-        isWarmHoldActive = false
-        warmHoldExpiresAt = nil
     }
 
     private func clearFollowUpState() {

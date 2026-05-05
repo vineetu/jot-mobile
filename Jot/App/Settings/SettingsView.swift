@@ -4,12 +4,13 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
     @State private var showRedownloadConfirmation = false
-    /// Mirror of `AppGroup.holdMicWarmAfterStop`. SwiftUI's `Toggle` needs a
-    /// `Binding`; we read the AppGroup value into local `@State` on appear
-    /// and write back through the binding's set side. Default `true` matches
-    /// the AppGroup accessor's missing-key default — first-launch flips to
-    /// `true` without any explicit write, so the toggle reads ON immediately.
-    @State private var holdMicWarmAfterStop: Bool = AppGroup.holdMicWarmAfterStop
+    /// Mirror of `AppGroup.liveActivityTranscriptEnabled`. SwiftUI's `Toggle`
+    /// needs a `Binding`; we read the AppGroup value into local `@State` on
+    /// appear and write back via the binding's set side. Default `true`
+    /// matches the AppGroup accessor's missing-key default so first-launch
+    /// flips to `true` without an explicit write and the toggle reads ON
+    /// immediately.
+    @State private var liveActivityTranscriptEnabled: Bool = AppGroup.liveActivityTranscriptEnabled
 
     var body: some View {
         NavigationStack {
@@ -41,21 +42,16 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle(isOn: $holdMicWarmAfterStop) {
-                        Label("Hold mic warm after stop", systemImage: "mic.circle")
+                    Toggle(isOn: $liveActivityTranscriptEnabled) {
+                        Label("Show live transcript in Dynamic Island", systemImage: "captions.bubble")
                     }
-                    .onChange(of: holdMicWarmAfterStop) { _, newValue in
-                        AppGroup.holdMicWarmAfterStop = newValue
-                        // If the user just turned this OFF while a warm
-                        // window is active, drop the indicator now — leaving
-                        // the engine paused for another 60s would defy the
-                        // setting they just toggled.
-                        RecordingService.shared.applyWarmHoldToggleChange()
+                    .onChange(of: liveActivityTranscriptEnabled) { _, newValue in
+                        AppGroup.liveActivityTranscriptEnabled = newValue
                     }
                 } header: {
-                    Text("Recording")
+                    Text("Live Activity")
                 } footer: {
-                    Text("Keeps the mic ready for ~60s so you can record again from anywhere. Orange recording indicator stays on; you can disable here.")
+                    Text("When off, the Dynamic Island and lock-screen banner show only the recording state, not the words you're speaking.")
                 }
 
                 Section {

@@ -14,7 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CURRENT_PROJECT_VERSION: "1"
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "0.1"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -64,6 +64,10 @@ targets:
         # rejected the request for widget(containingProcess: com.vineetu.jot.mobile.Jot).
         # See: https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities
         NSSupportsLiveActivities: YES
+        # Allows ActivityKit to coalesce frequent Activity.update() calls
+        # for the streaming partial-transcript text. Without this key iOS
+        # throttles updates to ~1Hz, which feels stuttery on the live caption.
+        NSSupportsLiveActivitiesFrequentUpdates: YES
         UIBackgroundModes:
           - audio
           - processing
