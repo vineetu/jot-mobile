@@ -4,61 +4,13 @@ import UIKit
 import os.log
 
 private let contentLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "content")
-private let cleanupTimeoutNanoseconds: UInt64 = 8_000_000_000
-
-private enum CleanupTimeoutError: LocalizedError {
-    case timedOut
-
-    var errorDescription: String? {
-        "Cleanup timed out after 8 seconds."
-    }
-}
-
-private actor CleanupResultBridge {
-    private var continuation: CheckedContinuation<String, Error>?
-    private var result: Result<String, Error>?
-
-    func wait(cancelling cleanupTask: Task<String, Error>) async throws -> String {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                if let result {
-                    continuation.resume(with: result)
-                } else {
-                    self.continuation = continuation
-                }
-            }
-        } onCancel: {
-            cleanupTask.cancel()
-            Task {
-                await self.fail(CancellationError())
-            }
-        }
-    }
-
-    func succeed(_ value: String) {
-        complete(.success(value))
-    }
-
-    func fail(_ error: Error) {
-        complete(.failure(error))
-    }
-
-    private func complete(_ result: Result<String, Error>) {
-        guard self.result == nil else { return }
-        self.result = result
-
-        if let continuation {
-            continuation.resume(with: result)
-            self.continuation = nil
-        }
-    }
-}
 
 struct ContentView: View {
     @Environment(RecordingService.self) private var recordingService
     @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(CleanupService.self) private var cleanupService
+    @Environment(StreamingPartial.self) private var streamingPartial
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Query(sort: \Transcript.createdAt, order: .reverse)
     private var transcripts: [Transcript]
@@ -140,16 +92,19 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                RecorderBar(
-                    phase: phase,
-                    elapsed: elapsed,
-                    vuBars: vuBars,
-                    caption: recorderCaption,
-                    action: toggleRecording
-                )
-                .padding(.horizontal, 24)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                VStack(spacing: 0) {
+                    streamingPreviewView
+                    RecorderBar(
+                        phase: phase,
+                        elapsed: elapsed,
+                        vuBars: vuBars,
+                        caption: recorderCaption,
+                        action: toggleRecording
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+                }
                 .background(.bar)
             }
         }
@@ -220,6 +175,47 @@ struct ContentView: View {
         }
     }
 
+    /// Live partial-transcript preview (dual-model-streaming).
+    ///
+    /// Renders the FluidAudio EOU streaming model's cumulative partial only
+    /// while a recording is in flight (`.recording`) or its tail is in
+    /// transcribe mode (`.transcribing`). Volatile partials render with
+    /// `.secondary` foreground; once `engine.finish()` runs and the
+    /// presenter's `applyFinalSnapshot` flips `streamingIsVolatile = false`,
+    /// foreground promotes to `.primary` for the brief pre-batch tail
+    /// before the batch transcript blanks the field via
+    /// `streamingPartial.reset()`.
+    ///
+    /// - Hidden when `streamingText.isEmpty` so the spacer doesn't appear
+    ///   before the model's first emission.
+    /// - `.lineLimit(3)` caps growth; long recordings show only the most
+    ///   recent prefix the EOU model has surfaced.
+    /// - `.contentTransition(.numericText())` gives Apple-native polish on
+    ///   the volatile-to-primary swap (iOS 16+).
+    /// - Volatile state is hidden from VoiceOver to avoid re-reading every
+    ///   partial; finalized text becomes accessible.
+    /// - Animation honors `accessibilityReduceMotion` — falls through to
+    ///   instant when Reduce Motion is on.
+    @ViewBuilder
+    private var streamingPreviewView: some View {
+        if (phase == .recording || phase == .transcribing)
+            && !streamingPartial.streamingText.isEmpty {
+            Text(streamingPartial.streamingText)
+                .font(.body)
+                .foregroundStyle(streamingPartial.streamingIsVolatile ? .secondary : .primary)
+                .contentTransition(.numericText())
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
+                .accessibilityElement(children: streamingPartial.streamingIsVolatile ? .ignore : .combine)
+                .accessibilityLabel(streamingPartial.streamingIsVolatile ? "" : streamingPartial.streamingText)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: streamingPartial.streamingIsVolatile)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: streamingPartial.streamingText)
+        }
+    }
+
     private func toggleRecording() {
         errorMessage = nil
 
@@ -240,12 +236,35 @@ struct ContentView: View {
     private func startRecording() {
         activeTask?.cancel()
         activeTask = Task {
+            let startedAt = Date()
+
+            // 2.5.14 hardening (Cut A §6.3): the Live Activity / Dynamic
+            // Island chip is requested BEFORE `recording.start()` activates
+            // the audio session, so the system mic indicator and the chip
+            // come up paired. Activating the session first would briefly
+            // light the orange mic indicator before the chip is rendered;
+            // App Review can flag that no-chip window as a 2.5.14
+            // disclosure inconsistency. Even though this view is foreground,
+            // the user can swipe up / lock during recording — without the
+            // activity, the iOS mic indicator becomes the ONLY chrome-side
+            // disclosure outside the app.
+            //
+            // The team-lead brief specifies BEFORE-ordering despite the
+            // spec sketch showing AFTER. The brief's no-chip-window concern
+            // is the controlling reason; brief-vs-spec conflict resolves in
+            // favor of the brief.
+            //
+            // Trade-off: if `recording.start()` throws, the activity is
+            // orphaned. Caught by `cancelPendingRecordingStart()` below.
+            await DictationActivityCoordinator.shared.start(startedAt: startedAt)
+
             do {
                 try await recordingService.start()
                 await MainActor.run {
-                    beginRecordingUI(startedAt: Date())
+                    beginRecordingUI(startedAt: startedAt)
                 }
             } catch {
+                await DictationActivityCoordinator.shared.cancelPendingRecordingStart()
                 await MainActor.run {
                     contentLog.error("Recording start failed: \(error.localizedDescription, privacy: .public)")
                     errorMessage = "Could not start recording: \(error.localizedDescription)"
@@ -262,20 +281,33 @@ struct ContentView: View {
         recordingService.markStopInFlight()
         activeTask?.cancel()
         activeTask = Task {
+            // Route through the shared `DictationController` +
+            // `DictationPipeline.completeEndOfRecording` so the in-app Stop
+            // button reaches the same post-recording tail (publish →
+            // chained-follow-up classify → append → finish Live Activity)
+            // as the keyboard-initiated path. See lean-arch consolidation
+            // note on `DictationPipeline.completeEndOfRecording`.
+            let controller = DictationIntentBridge.shared.controller
             do {
-                let samples = try await recordingService.stop()
-                let duration = Date().timeIntervalSince(recordingStartedAt)
                 await MainActor.run {
                     stopHaptic.impactOccurred()
                     stopHaptic.prepare()
                     phase = .transcribing
                 }
 
-                let raw = try await transcriptionService.transcribe(samples: samples)
-                let cleaned = await cleanTranscript(raw)
+                let result = try await controller.stopAndTranscribe()
+                let outcome = try await DictationPipeline.completeEndOfRecording(
+                    transcript: result.transcript,
+                    startedAt: recordingStartedAt,
+                    stoppedAt: result.stoppedAt,
+                    controller: controller
+                )
 
-                try await MainActor.run {
-                    try finishTranscription(raw: raw, cleaned: cleaned, duration: duration)
+                await MainActor.run {
+                    successHaptic.notificationOccurred(.success)
+                    successHaptic.prepare()
+                    showCopiedConfirmation(for: outcome.transcriptID)
+                    resetRecorderUI()
                 }
             } catch {
                 await MainActor.run {
@@ -286,82 +318,6 @@ struct ContentView: View {
                 }
             }
         }
-    }
-
-    private func cleanTranscript(_ raw: String) async -> String? {
-        let settings = CleanupSettings.load()
-        guard settings.enabled else {
-            contentLog.info("Cleanup disabled; using raw transcript")
-            return nil
-        }
-
-        do {
-            let cleaned = try await cleanTranscriptWithTimeout(raw, instructions: settings.instructions)
-            let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                contentLog.notice("Cleanup returned empty output; using raw transcript")
-                return nil
-            }
-            return cleaned
-        } catch {
-            contentLog.notice("Cleanup failed or timed out; using raw transcript: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
-    private func cleanTranscriptWithTimeout(_ raw: String, instructions: String) async throws -> String {
-        let bridge = CleanupResultBridge()
-        let service = cleanupService
-        let cleanupTask = Task { @MainActor in
-            try await service.clean(transcript: raw, instructions: instructions)
-        }
-        let relayTask = Task {
-            do {
-                let cleaned = try await cleanupTask.value
-                await bridge.succeed(cleaned)
-            } catch {
-                await bridge.fail(error)
-            }
-        }
-
-        defer {
-            cleanupTask.cancel()
-            relayTask.cancel()
-        }
-
-        return try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask {
-                try await bridge.wait(cancelling: cleanupTask)
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: cleanupTimeoutNanoseconds)
-                throw CleanupTimeoutError.timedOut
-            }
-
-            guard let result = try await group.next() else {
-                throw CleanupTimeoutError.timedOut
-            }
-            group.cancelAll()
-            return result
-        }
-    }
-
-    private func finishTranscription(raw: String, cleaned: String?, duration: TimeInterval) throws {
-        let transcript = try TranscriptStore.append(raw: raw, cleaned: cleaned, duration: duration)
-        recordingService.markPipelineFinished()
-
-        if let transcript {
-            ClipboardHandoff.publish(
-                transcript: transcript.displayText,
-                autoCopiedTranscriptID: transcript.id
-            )
-            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
-            showCopiedConfirmation(for: transcript.id)
-        }
-
-        successHaptic.notificationOccurred(.success)
-        successHaptic.prepare()
-        resetRecorderUI()
     }
 
     private func syncRecordingState() {
@@ -390,6 +346,13 @@ struct ContentView: View {
         elapsed = 0
         vuBars = Array(repeating: 0.14, count: 16)
         stopVUTimer()
+        // Blank the streaming live preview now that the batch transcript
+        // has been published to the persistent history list. The presenter
+        // had been holding the post-`finish()` snapshot rendered in
+        // `.primary` for the brief pre-batch tail; clearing it prevents
+        // the swap from looking like a hover-and-fade duplicate of the
+        // freshly-appended row.
+        streamingPartial.reset()
     }
 
     private func startVUTimer() {
@@ -604,5 +567,6 @@ private struct AmplitudeBars: View {
     ContentView()
         .environment(RecordingService())
         .environment(TranscriptionService())
+        .environment(StreamingPartial())
         .modelContainer(for: Transcript.self, inMemory: true)
 }

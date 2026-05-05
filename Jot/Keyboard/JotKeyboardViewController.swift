@@ -54,6 +54,34 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private let recordingState = KeyboardRecordingState()
     private var recordingStateObserver: CrossProcessNotification.Observer?
     private var transcriptReadyObserver: CrossProcessNotification.Observer?
+    private var pipelinePhaseObserver: CrossProcessNotification.Observer?
+    private var streamingPartialObserver: CrossProcessNotification.Observer?
+
+    // MARK: - v7 auto-paste deadline tasks
+    //
+    // Two bounded one-shot Tasks (§4.0 #2 of the v7 design). Both are
+    // state-derived liveness/deadline checks, NOT periodic timers and NOT
+    // wall-clock guesses about transcription latency.
+    //
+    // `pipelineStaleDeadlineTask` — armed on observing a non-terminal phase,
+    // fires at `lastUpdatedAt + heartbeatStaleThreshold + 2s`, cancelled and
+    // re-armed on every `pipelinePhaseChanged`. Catches the dead-writer case:
+    // app crashed mid-pipeline, no further heartbeat, the projection's
+    // `read()` synthesizes `.failed` once age > 30s.
+    //
+    // `pendingLaunchDeadlineTask` — armed when pending is set, fires at
+    // `pendingSession.createdAt + launchDeadline (15s)`, cancelled the moment
+    // any projection with `sessionID == pending` is observed (proof of life).
+    // Catches the cold-launch failure case: keyboard sets pending → opens
+    // jot:// URL → app fails to launch / crashes before any phase write.
+    private var pipelineStaleDeadlineTask: Task<Void, Never>?
+    private var pendingLaunchDeadlineTask: Task<Void, Never>?
+
+    /// Bound on cold-launch / URL-delivery latency. iOS delivers a URL to a
+    /// foreground-target target in O(seconds), not O(minutes), so 15s is a
+    /// state question ("did the pipeline ever come up?"), not a workload-
+    /// latency guess. Per design §4.6.G.
+    private static let launchDeadline: TimeInterval = 15
 
     // MARK: - Jot affordance state
 
@@ -88,9 +116,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// presentation (e.g. orientation change → `viewWillAppear` re-entry).
     private var autoPasteAttempted = false
 
-    /// Best-effort guard against inserting into a different input trait than
-    /// the field active when the keyboard mic CTA started recording.
-    private var pendingAutoPasteKeyboardType: UIKeyboardType?
+    /// True from the moment the keyboard posts `stopRequested` until the next
+    /// `pipelinePhaseChanged` reflecting the app's view of the world. Prevents
+    /// a second tap from creating a NEW PendingPasteSession that overwrites the
+    /// one the app's stopTask is about to capture. Cleared in
+    /// `refreshPipelinePhase` once projection moves off `.recording`.
+    private var stopRequestPosted = false
 
     // MARK: - Haptic + audio feedback
 
@@ -113,9 +144,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Jot mic CTA is its own affordance; we do not provide a system dictation key.
+        hasDictationKey = false
         installKeyboardView()
         startObservingRecordingState()
         startObservingTranscriptReady()
+        startObservingPipelinePhase()
+        startObservingStreamingPartial()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -129,9 +164,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         feedback.prepare()
         startObservingRecordingState()
         startObservingTranscriptReady()
+        startObservingPipelinePhase()
+        startObservingStreamingPartial()
         refreshRecordingStateFromProjection()
+        refreshPipelinePhase()
+        refreshStreamingPartialFromProjection()
         refreshSelectionState()
+        // refreshPipelinePhase() already calls flushPendingAutoPasteIfPossible
+        // at the bottom; calling it explicitly here is redundant but harmless
+        // and preserved for symmetry with the existing call sequence.
         flushPendingAutoPasteIfPossible()
+        // If pending exists from a prior presentation and its launch deadline
+        // has already passed, re-arm — the deadline machinery will re-check
+        // immediately and clear if still no proof of life. Extension recycle
+        // does not strand pending.
+        rearmLaunchDeadlineIfPending()
         refreshPasteState()
         refreshHistory()
         renderRootView()
@@ -141,6 +188,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         super.viewWillDisappear(animated)
         recordingStateObserver = nil
         transcriptReadyObserver = nil
+        pipelinePhaseObserver = nil
+        streamingPartialObserver = nil
+        pipelineStaleDeadlineTask?.cancel()
+        pipelineStaleDeadlineTask = nil
+        pendingLaunchDeadlineTask?.cancel()
+        pendingLaunchDeadlineTask = nil
         cancelActiveRewrite()
         cancelBackspaceRepeat()
     }
@@ -236,9 +289,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         hasPasteboardContent = UIPasteboard.general.hasStrings
         let preview = ClipboardHandoff.pendingFreshTranscriptPreview()
         let autoPasteEnabled = AppGroup.defaults.bool(forKey: AppGroup.Keys.keyboardAutoPasteEnabled)
-        let pendingAutoPasteStartedAt = pendingAutoPasteCreatedAtIfValid()
+        let hasPending = (readPendingPasteSession() != nil)
 
-        if preview != nil, autoPasteEnabled, !autoPasteAttempted, pendingAutoPasteStartedAt == nil {
+        if preview != nil, autoPasteEnabled, !autoPasteAttempted, !hasPending {
             autoPasteAttempted = true
             insertFreshTranscript()
             return
@@ -301,79 +354,205 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
     }
 
-    private func markPendingAutoPaste() {
-        let now = Date()
-        AppGroup.defaults.set(true, forKey: AppGroup.Keys.pendingAutoPasteFlag)
-        AppGroup.defaults.set(now, forKey: AppGroup.Keys.pendingAutoPasteCreatedAt)
-        pendingAutoPasteKeyboardType = textDocumentProxy.keyboardType
+    /// Generates a fresh `PendingPasteSession`, writes it to the App Group,
+    /// and arms the launch-deadline task. The same-input-context guards
+    /// (`hostKeyboardTypeRaw`, `hostDocumentIdentifier`) are best-effort
+    /// snapshots taken at tap time. Returns the new session so call sites
+    /// can use the UUID immediately (e.g. for the `jot://dictate?session=`
+    /// URL).
+    @discardableResult
+    private func beginPendingPasteSession() -> PendingPasteSession {
+        let session = PendingPasteSession(
+            id: UUID(),
+            createdAt: Date(),
+            hostKeyboardTypeRaw: textDocumentProxy.keyboardType?.rawValue,
+            hostDocumentIdentifier: textDocumentProxy.documentIdentifier
+        )
+        if let data = try? JSONEncoder().encode(session) {
+            AppGroup.defaults.set(data, forKey: AppGroup.Keys.pendingPasteSession)
+        }
+        armLaunchDeadline(for: session)
+        return session
     }
 
-    private func clearPendingAutoPaste() {
-        ClipboardHandoff.clearPendingAutoPaste()
-        pendingAutoPasteKeyboardType = nil
+    private func clearPendingPasteSession() {
+        ClipboardHandoff.clearPendingPasteSession()
+        pendingLaunchDeadlineTask?.cancel()
+        pendingLaunchDeadlineTask = nil
     }
 
-    /// Maximum age for a pending auto-paste intent before we treat it as
-    /// orphaned (user tapped mic but never came back to the keyboard).
-    /// 10 minutes is generous enough for any real Parakeet + cleanup
-    /// pipeline; payload-side staleness is enforced separately by
-    /// `ClipboardHandoff.pendingFreshTranscriptText`'s 30s freshness gate
-    /// against `payload.timestamp` (which also rejects payloads older
-    /// than the pending intent via `minimumTimestamp`).
-    ///
-    /// Was previously `ClipboardHandoff.freshnessWindow` (30s), which
-    /// expired the flag mid-transcription on long recordings —
-    /// `T_publish - T_stop` is dominated by Parakeet inference (RTF
-    /// 0.3–0.5x) plus cleanup LLM time and routinely exceeds 30s.
-    /// Future work: replace age-based ceiling with a per-session UUID
-    /// paired with the publish payload.
-    private static let pendingAutoPasteMaxAge: TimeInterval = 600
-
-    private func pendingAutoPasteCreatedAtIfValid() -> Date? {
-        guard AppGroup.defaults.bool(forKey: AppGroup.Keys.pendingAutoPasteFlag) else {
-            return nil
-        }
-
-        guard let createdAt = AppGroup.defaults.object(
-            forKey: AppGroup.Keys.pendingAutoPasteCreatedAt
-        ) as? Date else {
-            clearPendingAutoPaste()
-            return nil
-        }
-
-        let age = Date().timeIntervalSince(createdAt)
-        guard age >= 0, age < Self.pendingAutoPasteMaxAge else {
-            keyboardLog.info("Cleared orphaned pending auto-paste flag age=\(age, privacy: .public)")
-            clearPendingAutoPaste()
-            return nil
-        }
-
-        return createdAt
+    private func readPendingPasteSession() -> PendingPasteSession? {
+        guard let data = AppGroup.defaults.data(
+            forKey: AppGroup.Keys.pendingPasteSession
+        ) else { return nil }
+        return try? JSONDecoder().decode(PendingPasteSession.self, from: data)
     }
 
-    private func flushPendingAutoPasteIfPossible() {
-        guard hasFullAccess else { return }
-        guard let createdAt = pendingAutoPasteCreatedAtIfValid() else { return }
+    /// Arms a bounded one-shot Task that fires `launchDeadline` (15s) after
+    /// `session.createdAt`. Cancelled by `cancelLaunchDeadlineIfProofOfLife`
+    /// the moment ANY projection with `sessionID == session.id` is observed
+    /// (proof of life — pipeline is up, dead-writer machinery covers further
+    /// recovery from there).
+    private func armLaunchDeadline(for session: PendingPasteSession) {
+        pendingLaunchDeadlineTask?.cancel()
+        let interval = max(
+            0,
+            session.createdAt
+                .addingTimeInterval(Self.launchDeadline)
+                .timeIntervalSinceNow
+        )
+        pendingLaunchDeadlineTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(interval))
+            } catch {
+                return
+            }
+            self?.handleLaunchDeadlineFired(forSessionID: session.id)
+        }
+    }
 
-        if let keyboardType = pendingAutoPasteKeyboardType,
-           textDocumentProxy.keyboardType != keyboardType {
-            keyboardLog.info("Skipped keyboard auto-paste because host input type changed")
-            clearPendingAutoPaste()
+    /// Cancels the launch deadline once we observe ANY projection for our
+    /// pending session. Subsequent recovery is handled by the stale-deadline
+    /// task and TerminalSessionLog cleanup.
+    private func cancelLaunchDeadlineIfProofOfLife(_ projection: PipelinePhaseProjection?) {
+        guard let projection,
+              let pending = readPendingPasteSession(),
+              projection.sessionID == pending.id
+        else { return }
+        pendingLaunchDeadlineTask?.cancel()
+        pendingLaunchDeadlineTask = nil
+    }
+
+    /// Fired only when ZERO observable pipeline activity has occurred for
+    /// our pending session within `launchDeadline`. Treats this as a
+    /// failed-to-launch and clears pending. Re-checks state once more before
+    /// clearing in case a projection or terminal-log entry landed in the
+    /// same wake window.
+    private func handleLaunchDeadlineFired(forSessionID sessionID: UUID) {
+        pendingLaunchDeadlineTask = nil
+        guard let pending = readPendingPasteSession(),
+              pending.id == sessionID
+        else { return }
+        let projection = PipelinePhaseProjection.read()
+        if let projection, projection.sessionID == sessionID {
             return
         }
-
-        guard let text = ClipboardHandoff.pendingFreshTranscriptText(
-            minimumTimestamp: createdAt
-        ) else {
+        if TerminalSessionLog.contains(sessionID: sessionID) {
+            flushPendingAutoPasteIfPossible()
             return
         }
-
-        textDocumentProxy.insertText(text)
-        ClipboardHandoff.markConsumed()
-        clearPendingAutoPaste()
-        freshPreview = nil
-        hasPasteboardContent = UIPasteboard.general.hasStrings
+        keyboardLog.info(
+            "Pending session \(sessionID) — no projection within \(Int(Self.launchDeadline))s; treating as failed-to-launch and clearing."
+        )
+        clearPendingPasteSession()
         renderRootView()
+    }
+
+    /// Re-arms the launch deadline if pending exists. Called from
+    /// `viewWillAppear` so an extension recycle doesn't strand pending past
+    /// its deadline.
+    ///
+    /// Skip the re-arm if a deadline task is ALREADY armed — typical paths:
+    ///   - The just-completed `refreshPipelinePhase()` saw proof-of-life
+    ///     for the pending session and cancelled the launch deadline. Re-
+    ///     arming here would create a fresh 15s task that fires after
+    ///     proof-of-life was already established, which is logically wrong
+    ///     even though `handleLaunchDeadlineFired` is defensive enough to
+    ///     no-op on a re-armed-then-fired deadline.
+    ///   - The launch task survived viewWillDisappear → viewWillAppear (it
+    ///     didn't, since `viewWillDisappear` cancels it). But the
+    ///     `pendingLaunchDeadlineTask != nil` guard is a cheap safety net.
+    /// If the task IS nil here AND pending exists, the extension was likely
+    /// recycled — re-arm so the launch deadline still fires.
+    private func rearmLaunchDeadlineIfPending() {
+        guard let session = readPendingPasteSession() else {
+            pendingLaunchDeadlineTask?.cancel()
+            pendingLaunchDeadlineTask = nil
+            return
+        }
+        guard pendingLaunchDeadlineTask == nil else { return }
+        armLaunchDeadline(for: session)
+    }
+
+    /// v7 flush logic. Match-fresh-payload happy-path FIRST (per design Q1
+    /// user-decision §4.6.A), then sad-path TerminalSessionLog cleanup, then
+    /// sad-path synthetic `.failed` cleanup. Running terminal cleanup before
+    /// the match check would race-clear pending and drop a valid paste —
+    /// `completeEndOfRecording` writes the terminal-log entry and the
+    /// publish payload in the same call, and they can land in the same wake
+    /// window.
+    private func flushPendingAutoPasteIfPossible() {
+        guard hasFullAccess,
+              let session = readPendingPasteSession()
+        else { return }
+
+        let payload = ClipboardHandoff.readFresh()
+        let projection = PipelinePhaseProjection.read()
+
+        // Happy path: payload session ID matches our pending session.
+        if let payload, payload.sessionID == session.id {
+            // Best-effort same-input-context guard. The actual API on
+            // UITextDocumentProxy is `documentIdentifier` (UUID-typed);
+            // `textInputContextIdentifier` is on UIResponder and isn't
+            // accessible via the proxy abstraction. Fall back to
+            // `keyboardType` rawValue when documentIdentifier is nil.
+            if let claimedDoc = session.hostDocumentIdentifier {
+                let nowDoc = textDocumentProxy.documentIdentifier
+                if nowDoc != claimedDoc {
+                    keyboardLog.info("Skipped auto-paste because document identifier changed since tap")
+                    clearPendingPasteSession()
+                    renderRootView()
+                    return
+                }
+            } else if let claimedKbRaw = session.hostKeyboardTypeRaw,
+                      let nowKb = textDocumentProxy.keyboardType?.rawValue,
+                      nowKb != claimedKbRaw {
+                keyboardLog.info("Skipped auto-paste because keyboard type changed since tap")
+                clearPendingPasteSession()
+                renderRootView()
+                return
+            }
+            textDocumentProxy.insertText(payload.text)
+            ClipboardHandoff.markConsumed()
+            clearPendingPasteSession()
+            freshPreview = nil
+            hasPasteboardContent = UIPasteboard.general.hasStrings
+            renderRootView()
+            return
+        }
+
+        // Sad path: no matching payload. Consult terminal state. The UUID
+        // state machine is the source of truth — terminal-without-payload
+        // means `.failed` / cancelled OR `.idle` observed after the 30s
+        // freshness window expired. Either way, nothing further is coming
+        // for our session.
+        //
+        // The `hadPublish` bit on TerminalSessionRecord is retained for
+        // diagnostic logging only — it does NOT gate cleanup (per design
+        // Q2). Gating on `!hadPublish` would leave pending stuck whenever
+        // `.idle` (hadPublish=true) was observed after freshness expired.
+        if TerminalSessionLog.contains(sessionID: session.id) {
+            keyboardLog.info("Pending session \(session.id) appears in terminal log; clearing.")
+            clearPendingPasteSession()
+            renderRootView()
+            return
+        }
+
+        // Synthetic `.failed` from stale heartbeat with sessionID matching
+        // ours. Catches the dead-writer case where the app crashed before
+        // writing to the terminal log.
+        if let projection,
+           projection.sessionID == session.id,
+           projection.phase == .failed {
+            keyboardLog.info("Pending session \(session.id) — projection synthesizes .failed (likely dead writer); clearing.")
+            clearPendingPasteSession()
+            renderRootView()
+            return
+        }
+
+        // Otherwise: session is still in flight; leave pending intact. Next
+        // wakeup (Darwin notification, presentation event, or stale-deadline
+        // task) will re-enter this function.
     }
 
     // MARK: - Recording state mirror
@@ -394,6 +573,86 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
 
         recordingState.apply(RecordingStateProjection.read())
+    }
+
+    // MARK: - Streaming partial mirror
+
+    private func startObservingStreamingPartial() {
+        guard streamingPartialObserver == nil else { return }
+        streamingPartialObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.streamingPartialChanged
+        ) { [weak self] in
+            self?.refreshStreamingPartialFromProjection()
+        }
+    }
+
+    private func refreshStreamingPartialFromProjection() {
+        guard hasFullAccess else {
+            recordingState.updateStreamingPartial("")
+            return
+        }
+        let text = AppGroup.defaults.string(forKey: AppGroup.Keys.streamingPartialText) ?? ""
+        recordingState.updateStreamingPartial(text)
+    }
+
+    // MARK: - Pipeline phase observer (v7 auto-paste design)
+
+    private func startObservingPipelinePhase() {
+        guard pipelinePhaseObserver == nil else { return }
+        pipelinePhaseObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.pipelinePhaseChanged
+        ) { [weak self] in
+            self?.refreshPipelinePhase()
+        }
+    }
+
+    /// Single source of truth for pipeline phase reads. Reads the projection,
+    /// applies it to the keyboard's `KeyboardRecordingState`, arms or cancels
+    /// the stale-deadline task, cancels the launch deadline if proof of life,
+    /// clears `stopRequestPosted` if projection moved off `.recording`, and
+    /// runs the flush. Per design §4.6 + §4.6.G.
+    private func refreshPipelinePhase() {
+        guard hasFullAccess else { return }
+        let projection = PipelinePhaseProjection.read()
+        recordingState.applyPipelineProjection(projection)
+        armOrCancelStaleDeadline(for: projection)
+        cancelLaunchDeadlineIfProofOfLife(projection)
+        if let phase = projection?.phase, phase != .recording {
+            stopRequestPosted = false
+        }
+        flushPendingAutoPasteIfPossible()
+    }
+
+    /// Schedules a single bounded `Task` that waits until the projection's
+    /// `lastUpdatedAt + heartbeatStaleThreshold (30s)` and then re-reads.
+    /// Cancelled and re-armed against the new lastUpdatedAt on every observed
+    /// phase change. Cancelled and dropped when phase transitions to a
+    /// terminal state (`.idle` / `.failed`). One outstanding task at a time.
+    ///
+    /// Per design §4.6: this catches the dead-writer case. App crashes mid-
+    /// transcription, no further heartbeat ever arrives, this task fires at
+    /// deadline +30s, re-reads the projection, sees the synthetic `.failed`
+    /// (read() age-gates non-idle projections), and triggers the terminal
+    /// cleanup branch in `flushPendingAutoPasteIfPossible`.
+    private func armOrCancelStaleDeadline(for projection: PipelinePhaseProjection?) {
+        pipelineStaleDeadlineTask?.cancel()
+        pipelineStaleDeadlineTask = nil
+        guard let projection,
+              projection.phase != .idle,
+              projection.phase != .failed
+        else { return }
+        let deadline = projection.lastUpdatedAt
+            .addingTimeInterval(PipelinePhaseProjection.heartbeatStaleThreshold)
+            .addingTimeInterval(2)
+        let interval = max(0, deadline.timeIntervalSinceNow)
+        pipelineStaleDeadlineTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(interval))
+            } catch {
+                return
+            }
+            self?.refreshPipelinePhase()
+        }
     }
 
     // MARK: - Selection / rewrite
@@ -657,19 +916,62 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             return
         }
 
+        // v7: refuse the tap if we're in any in-flight phase OR if we just
+        // posted a stop request that hasn't been acked yet. Per design §4.6.D,
+        // the mic CTA is `.disabled(...)` at the SwiftUI layer for these same
+        // states; this guard is defense-in-depth against optimistic-UI lag.
+        let phase = recordingState.phase
+        let inflightPhases: Set<PipelinePhaseProjection.Phase> = [
+            .transcribing, .processing, .cleaning, .publishing
+        ]
+        guard !stopRequestPosted, !inflightPhases.contains(phase) else {
+            keyboardLog.info(
+                "Mic tap ignored — stopRequestPosted=\(self.stopRequestPosted, privacy: .public) phase=\(phase.rawValue, privacy: .public)"
+            )
+            return
+        }
+
         // Tapping the mic CTA from the keyboard always expresses intent to land
         // the next transcript here — whether we're starting a fresh recording
         // or stopping one that began elsewhere (in-app record button, intent,
-        // Live Activity). Setting the pending flag in only the start branch
-        // meant "start in app, stop in keyboard" never auto-pasted.
-        markPendingAutoPaste()
+        // Live Activity). Setting pending only in the start branch would
+        // skip "start in app, stop in keyboard" auto-paste.
+        let session = beginPendingPasteSession()
 
         if recordingState.isRecording {
+            // Set stopRequestPosted BEFORE the post + before any further
+            // processing. Cleared inside refreshPipelinePhase when the
+            // projection reflects a non-recording phase.
+            stopRequestPosted = true
+            renderRootView()
             CrossProcessNotification.post(name: CrossProcessNotification.stopRequested)
-            recordingState.update(isRecording: false, startedAt: nil)
-            keyboardLog.info("Posted cross-process recording stop request")
+            // No optimistic UI flip on `recordingState.phase` per design §4.3
+            // — `stopRequestPosted` (just set above) does the visual work via
+            // the disabled-CTA path, and the inbound `pipelinePhaseChanged`
+            // will replace `.recording` with the in-flight phase shortly. A
+            // direct `recordingState.update(isRecording: false, ...)` here
+            // would create a brief inconsistency window where `isRecording`
+            // says false but `phase == .recording` until the projection
+            // arrives.
+            keyboardLog.info("Posted cross-process recording stop request session=\(session.id, privacy: .public)")
+
+            // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
+            // the case where the immediate `pipelinePhaseChanged` is dropped
+            // or arrives before our observer is wired.
+            Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .milliseconds(750))
+                } catch {
+                    return
+                }
+                self?.refreshPipelinePhase()
+            }
         } else {
-            launchJotAppForDictation()
+            // Stamp the session ID into the URL so the app's `onOpenURL`
+            // can `adoptSession(_:)` before recording-start.
+            let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
+                ?? Self.containingAppLaunchURL
+            openContainingApp(url)
         }
     }
 
@@ -698,7 +1000,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 keyboardLog.info("Opened containing app for url=\(url.absoluteString, privacy: .public)")
             } else {
                 keyboardLog.error("openURL completion=false for url=\(url.absoluteString, privacy: .public)")
-                ClipboardHandoff.clearPendingAutoPaste()
+                ClipboardHandoff.clearPendingPasteSession()
             }
         }
 
@@ -718,7 +1020,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
 
         keyboardLog.error("No UIApplication/UIWindowScene in responder chain for url=\(url.absoluteString, privacy: .public)")
-        ClipboardHandoff.clearPendingAutoPaste()
+        ClipboardHandoff.clearPendingPasteSession()
     }
 
     private func openHostSettings() {
@@ -770,6 +1072,25 @@ final class KeyboardRecordingState {
     private(set) var isRecording = false
     private(set) var startedAt: Date?
 
+    /// v7 pipeline phase, written by `applyPipelineProjection`. Drives the
+    /// `KeyboardView.micCTA` four-state UI (idle / recording / in-flight /
+    /// failed) and the auto-paste lifecycle. Backwards-compat with the legacy
+    /// `RecordingStateProjection.apply` path is preserved — that path leaves
+    /// `phase` untouched and only flips `isRecording` + `startedAt`.
+    private(set) var phase: PipelinePhaseProjection.Phase = .idle
+
+    /// True while the pipeline is mid-flight after recording stopped — i.e.
+    /// transcribing / processing / cleaning / publishing. Drives the mic
+    /// CTA's `.disabled` state at the SwiftUI layer (per design §4.6.D).
+    var isInflightPostRecording: Bool {
+        switch phase {
+        case .transcribing, .processing, .cleaning, .publishing:
+            return true
+        case .idle, .recording, .failed:
+            return false
+        }
+    }
+
     func apply(_ projection: RecordingStateProjection?) {
         guard let projection, projection.isRecording else {
             update(isRecording: false, startedAt: nil)
@@ -779,8 +1100,37 @@ final class KeyboardRecordingState {
         update(isRecording: true, startedAt: projection.startedAt)
     }
 
+    /// v7 pipeline phase application. The legacy `apply(_:)` keeps writing
+    /// `isRecording` + `startedAt` from the older `RecordingStateProjection`
+    /// for any consumers that haven't yet migrated; this method is the new
+    /// canonical surface and writes phase + derives the legacy fields too.
+    func applyPipelineProjection(_ projection: PipelinePhaseProjection?) {
+        guard let projection else {
+            phase = .idle
+            update(isRecording: false, startedAt: nil)
+            return
+        }
+        phase = projection.phase
+        switch projection.phase {
+        case .recording:
+            update(isRecording: true, startedAt: projection.recordingStartedAt)
+        case .idle, .transcribing, .processing, .cleaning, .publishing, .failed:
+            update(isRecording: false, startedAt: nil)
+        }
+    }
+
     func update(isRecording: Bool, startedAt: Date?) {
         self.isRecording = isRecording
         self.startedAt = isRecording ? startedAt : nil
+    }
+
+    /// Latest live partial-transcript text mirrored from the main app via the
+    /// App Group `streamingPartialText` projection. Drives the keyboard's
+    /// live caption strip while `isRecording == true`. Empty string while
+    /// idle or before the EOU model has emitted its first partial.
+    private(set) var streamingPartialText: String = ""
+
+    func updateStreamingPartial(_ text: String) {
+        streamingPartialText = text
     }
 }

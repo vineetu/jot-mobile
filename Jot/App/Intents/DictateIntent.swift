@@ -229,6 +229,30 @@ protocol DictationController: AnyObject {
     /// Stop capture and return the raw transcript plus the mic-off timestamp.
     func stopAndTranscribe() async throws -> DictationStopResult
 
+    /// Transcribe samples that were drained externally (typically by
+    /// `RecordingService.internalStop` after an audio-session interruption
+    /// tore down the engine before the user could call `stopAndTranscribe`).
+    /// The caller has already drained the capture; this method ONLY drives the
+    /// controller's phase machine through `.transcribing` and runs inference.
+    /// Cycles `currentPhase: .recording → .transcribing → .idle` so a follow-up
+    /// press doesn't see a stale phase and route into the wrong toggle leg.
+    ///
+    /// Real protocol requirement (NOT a protocol-extension default) per
+    /// `tmp/research-warm-resume-design.md` §6.1.5 #1: the bridge stores
+    /// `let controller: any DictationController`, so a default impl in a
+    /// protocol extension would dispatch statically and silently bypass any
+    /// override on `DictationControllerImpl`. Forcing every conformer to
+    /// implement explicitly avoids that footgun.
+    func consumePreDrainedSamples(_ samples: [Float]) async throws -> DictationStopResult
+
+    /// Reset `currentPhase` back to `.idle` without going through the normal
+    /// `stopAndTranscribe` defer chain. Called by the interrupt-publish
+    /// dispatch path on the short-capture (<1s discard) early-return and on
+    /// transcription-failure catch paths so the toggle isn't stuck in
+    /// `.recording` after a recovery that didn't go through the standard
+    /// stop flow. Idempotent.
+    func abortToIdle()
+
     /// Run cleanup over the transcript using the provided settings.
     func cleanup(transcript: String, settings: CleanupSettings) async throws -> String
 
@@ -427,6 +451,37 @@ final class DictationControllerImpl: DictationController {
         }
     }
 
+    /// Phase-machine entry for samples that were drained externally by
+    /// `RecordingService.internalStop` after an audio-session interruption tore
+    /// the engine down before the user could call `stopAndTranscribe`. We do
+    /// NOT call `recording.stop()` here — the engine is already gone.
+    ///
+    /// **Flag ownership.** Unlike `stopAndTranscribe` (which owns the
+    /// `isPipelineInFlight` lifecycle because IT called `recording.stop()` to
+    /// set the flag), this method does NOT touch `isPipelineInFlight`. The
+    /// `RecordingPipelineDispatch.publishAfterInterruption` helper that drives
+    /// this method owns the flag end-to-end (per `tmp/research-warm-resume-design.md`
+    /// §6.1.5 #3). Adding `markPipelineFinished()` here would create dual
+    /// ownership and become a foot-gun for a future change that moves the
+    /// flag-set point. The defer below is the entire phase-machine contract
+    /// this method is responsible for: cycle `.transcribing → .idle` on both
+    /// success and re-thrown failure.
+    func consumePreDrainedSamples(_ samples: [Float]) async throws -> DictationStopResult {
+        currentPhase = .transcribing
+        defer { currentPhase = .idle }
+        let stoppedAt = Date()
+        let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
+        return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt)
+    }
+
+    /// Phase-only reset for the dispatch helper's short-capture (<1s discard)
+    /// early-return path. Idempotent. Does NOT clear any `RecordingService`
+    /// state (`isPipelineInFlight`, `currentSessionID`, etc.) — the dispatch
+    /// helper owns those side-effects on the abort paths.
+    func abortToIdle() {
+        currentPhase = .idle
+    }
+
     func cleanup(transcript: String, settings: CleanupSettings) async throws -> String {
         currentPhase = .cleaning
         defer { currentPhase = .idle }
@@ -484,6 +539,7 @@ final class DictationActivityCoordinator {
     func start(startedAt: Date) async {
         recordingStartedAt = startedAt
         clearFollowUpState()
+        clearWarmHoldState()
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -518,6 +574,7 @@ final class DictationActivityCoordinator {
 
         recordingStartedAt = startedAt
         clearFollowUpState()
+        clearWarmHoldState()
 
         let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
         let content = ActivityContent(state: initial, staleDate: nil)
@@ -559,6 +616,7 @@ final class DictationActivityCoordinator {
     func cancelPendingRecordingStart() async {
         recordingStartedAt = nil
         clearFollowUpState()
+        clearWarmHoldState()
 
         guard let handle else { return }
 
@@ -572,6 +630,11 @@ final class DictationActivityCoordinator {
 
     func update(phase: DictationAttributes.Phase) async {
         clearFollowUpState()
+        // Warm-hold has its own dedicated `transitionToWarmHold(expiresAt:)`
+        // entry — anyone reaching `update(phase:)` is moving into a phase
+        // that is NOT warmHold (e.g. `.transcribing`, `.processing`,
+        // `.cleaning`), so clear any stale warm-hold tracking.
+        clearWarmHoldState()
         guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(phase: phase),
@@ -649,6 +712,77 @@ final class DictationActivityCoordinator {
             await handle.end(content, dismissAt: Date())
             self.handle = nil
         }
+    }
+
+    // MARK: - Warm-hold (Cut C) — coordinator side
+    //
+    // The activity transitions into `.warmHold(expiresAt:)` either (a) at the
+    // tail of `scheduleFollowUpExpiry`'s task, when followUp has expired but
+    // RecordingService is still warm-paused; or (b) explicitly via
+    // `transitionToWarmHold(expiresAt:)` from a caller that wants to skip the
+    // followUp window. The exit path is `dismissWarmHold()`, called from
+    // `RecordingService.endWarmHold(reason:)` (warm timer expiry, "Stop
+    // holding" intent, toggle disable mid-warm, interruption, route change,
+    // engine reconfig, scene-disconnect forceStop).
+
+    /// Whether the activity is currently rendering `.warmHold(expiresAt:)`.
+    /// Set by `transitionToWarmHold` and the followUp expiry task's warm-
+    /// continuation branch. Cleared by `dismissWarmHold()`. Used by the
+    /// dismiss path to no-op when not currently warm.
+    private(set) var isWarmHoldActive = false
+    private(set) var warmHoldExpiresAt: Date?
+
+    /// Explicit transition into `.warmHold(expiresAt:)`. Most pipeline tails
+    /// reach warmHold via the followUp-expiry continuation (above), but a
+    /// caller that wants to skip followUp entirely can use this. Idempotent
+    /// over the current activity content.
+    func transitionToWarmHold(expiresAt: Date) async {
+        clearFollowUpState()
+        recordingStartedAt = nil
+        isWarmHoldActive = true
+        warmHoldExpiresAt = expiresAt
+
+        guard let handle else { return }
+        let content = ActivityContent(
+            state: DictationAttributes.ContentState(
+                phase: .warmHold(expiresAt: expiresAt)
+            ),
+            staleDate: expiresAt
+        )
+        await handle.update(content)
+    }
+
+    /// End the activity if it's currently rendering `.warmHold(expiresAt:)`.
+    /// Called from `RecordingService.endWarmHold(reason:)` for every warm
+    /// teardown path. No-op when not currently warm so callers can fire-and-
+    /// forget without re-checking activity state.
+    func dismissWarmHold() async {
+        guard isWarmHoldActive else { return }
+        let expiresAt = warmHoldExpiresAt ?? Date()
+        isWarmHoldActive = false
+        warmHoldExpiresAt = nil
+
+        guard let handle else { return }
+        let content = ActivityContent(
+            state: DictationAttributes.ContentState(
+                phase: .warmHold(expiresAt: expiresAt)
+            ),
+            staleDate: Date()
+        )
+        await handle.end(content, dismissAt: Date())
+        self.handle = nil
+    }
+
+    /// Clear warm-hold tracking flags WITHOUT ending the activity. Called from
+    /// `start(startedAt:)` and `update(phase:)` so a new recording or a
+    /// non-warm phase transition doesn't leave a stale `isWarmHoldActive`
+    /// pointing at content that has already been overwritten with a different
+    /// phase. (`dismissWarmHold` would then no-op via its `isWarmHoldActive`
+    /// check, but we'd lose the cross-process invariant that "isWarmHoldActive
+    /// matches the current activity content".)
+    private func clearWarmHoldState() {
+        isWarmHoldActive = false
+        warmHoldExpiresAt = nil
     }
 
     private func clearFollowUpState() {

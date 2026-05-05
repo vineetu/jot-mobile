@@ -6,12 +6,14 @@ import WidgetKit
 /// Live Activity presentation for an in-flight Jot dictation and its
 /// immediately-following command window.
 ///
-/// The activity renders six phases (see `DictationAttributes.Phase`):
+/// The activity renders seven phases (see `DictationAttributes.Phase`):
 ///   - `recording`    – pulsing red dot + monotonic elapsed-time counter
 ///   - `transcribing` – small spinner + "Transcribing…" label
 ///   - `processing`   – cancelable post-transcription command-resolution phase
 ///   - `cleaning`     – small spinner + "Polishing…" label
 ///   - `followUp`     – active 30-second follow-up window with countdown
+///   - `warmHold`     – Cut C post-stop warm window: amber chip with countdown,
+///     "Record again" + "Stop holding" buttons in the expanded view
 ///   - `finished*`    – legacy compatibility states retained for older
 ///     activity payloads; the current pipeline goes straight to `followUp`
 struct JotLiveActivity: Widget {
@@ -174,6 +176,39 @@ private struct ExpandedBottom: View {
                 .buttonStyle(.bordered)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        case .warmHold(let expiresAt):
+            // Cut C P7 expanded bottom (per
+            // `tmp/research-dynamic-island-design.md` §2.3 P7): prominent
+            // remaining-warm countdown, "Record again" →
+            // `RecordAgainFromWarmIntent` (idle → start path; if warm-held,
+            // `RecordingService.start()` resumes the paused engine in
+            // ~10–50ms instead of paying cold-init), "Stop holding" →
+            // `EndWarmHoldIntent` (full teardown, indicator off).
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mic warm — tap to record again")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(timerInterval: Date.now...expiresAt, countsDown: true)
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Button(intent: RecordAgainFromWarmIntent()) {
+                        Label("Record again", systemImage: "mic.fill")
+                    }
+                    .tint(JotBrand.amber)
+                    .buttonStyle(.borderedProminent)
+
+                    Button(intent: EndWarmHoldIntent()) {
+                        Label("Stop holding", systemImage: "stop.circle")
+                    }
+                    .tint(.secondary)
+                    .buttonStyle(.bordered)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .finished, .finishedCommand:
             EmptyView()
         }
@@ -228,6 +263,17 @@ private struct StatusBadge: View {
             Circle()
                 .fill(JotBrand.amber)
                 .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+        case .warmHold:
+            // Amber matches the orange iOS recording indicator the user is
+            // seeing in the system status area — same color family ties the
+            // two disclosures together so the user reads them as one
+            // "the mic system is on standby" affordance, not two parallel
+            // signals. A pulsing animation would add motion noise; the
+            // status-bar indicator is already pulsing at the system level,
+            // so the in-Activity badge stays static for a calmer composition.
+            Circle()
+                .fill(JotBrand.amber)
+                .overlay(Circle().stroke(Color.white.opacity(0.4), lineWidth: 1))
         case .finished:
             Image(systemName: "checkmark.circle.fill")
                 .resizable()
@@ -261,6 +307,8 @@ private struct PrimaryLabel: View {
             Text("Polishing…")
         case .followUp:
             Text("Follow-up")
+        case .warmHold:
+            Text("Mic warm")
         case .finished(let preview):
             Text(previewLabel(for: preview))
         case .finishedCommand(let instruction, let preview):
@@ -308,6 +356,12 @@ private struct TrailingDetail: View {
         case .cleaning:
             Text("…")
         case .followUp(let expiresAt):
+            Text(timerInterval: Date.now...expiresAt, countsDown: true)
+        case .warmHold(let expiresAt):
+            // Same `Text(timerInterval:)` pattern as `.followUp`: the system
+            // drives the per-second update without the activity needing to
+            // push updates from the app process. This is the
+            // documented-recommended pattern in the ActivityKit docs.
             Text(timerInterval: Date.now...expiresAt, countsDown: true)
         case .finished:
             Text("Done")

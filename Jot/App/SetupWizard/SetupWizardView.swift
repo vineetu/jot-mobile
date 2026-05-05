@@ -4,6 +4,7 @@ import UIKit
 
 struct SetupWizardView: View {
     @Environment(TranscriptionService.self) private var transcriptionService
+    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(\.openURL) private var openURL
 
     let onComplete: () -> Void
@@ -11,6 +12,7 @@ struct SetupWizardView: View {
     @State private var step: SetupStep = .welcome
     @State private var microphonePermission = AVAudioApplication.shared.recordPermission
     @State private var isRequestingMicrophone = false
+    @State private var downloadGate = ModelDownloadGate()
 
     var body: some View {
         NavigationStack {
@@ -36,14 +38,10 @@ struct SetupWizardView: View {
                     case .model:
                         ModelDownloadStep(
                             modelState: transcriptionService.modelState,
+                            gate: downloadGate,
                             startDownload: startModelDownload,
                             continueAction: { advance(to: .done) }
                         )
-                        .task {
-                            if transcriptionService.modelState == .notLoaded {
-                                startModelDownload()
-                            }
-                        }
                     case .done:
                         DoneStep {
                             SetupCompletion.markCompleted()
@@ -62,6 +60,7 @@ struct SetupWizardView: View {
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 refreshMicrophonePermission()
+                downloadGate.start()
             }
         }
     }
@@ -108,7 +107,19 @@ struct SetupWizardView: View {
     }
 
     private func startModelDownload() {
+        // Both downloads kick off under the single explicit-tap consent —
+        // the gate's ~948 MB size copy already accounts for the bundle
+        // (Parakeet ~500 MB + EOU 320ms ~448 MB per STATE.md:31). Per
+        // team-lead Q2: EOU is required and bundled. No separate consent.
+        //
+        // `transcriptionService.warmUp()` downloads + loads Parakeet into
+        // ANE. `streamingService.warmUp()` is download-only (per
+        // cleanup-on-every-stop policy: streaming weights live on disk
+        // between sessions, ANE load happens lazily in `beginSession`).
+        // Both calls are idempotent + coalescing so re-taps during
+        // download progress are safe.
         transcriptionService.warmUp()
+        streamingService.warmUp()
     }
 }
 
@@ -231,6 +242,7 @@ private struct MicrophoneStep: View {
 
 private struct ModelDownloadStep: View {
     let modelState: TranscriptionService.ModelState
+    @Bindable var gate: ModelDownloadGate
     let startDownload: () -> Void
     let continueAction: () -> Void
 
@@ -242,8 +254,6 @@ private struct ModelDownloadStep: View {
             primaryTitle: primaryTitle,
             primaryAction: primaryAction,
             primaryDisabled: primaryDisabled,
-            secondaryTitle: secondaryTitle,
-            secondaryAction: secondaryAction,
             accessory: {
                 accessory
             }
@@ -262,8 +272,68 @@ private struct ModelDownloadStep: View {
             }
         case .loading:
             ProgressView()
-        default:
+        case .notLoaded, .failed:
+            consentDetails
+        case .ready:
             EmptyView()
+        }
+    }
+
+    private var consentDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: networkIcon)
+                    .foregroundStyle(.secondary)
+                Text("Currently on \(gate.networkType.displayName)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("~948 MB")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+
+            Toggle(isOn: $gate.allowCellular) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use cellular")
+                        .font(.subheadline)
+                    Text("Off by default — Wi-Fi recommended for ~948 MB")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text("One-time download. Models persist across launches.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !gate.canStartDownload {
+                Text(gateBlockedReason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var networkIcon: String {
+        switch gate.networkType {
+        case .wifi: return "wifi"
+        case .cellular: return "antenna.radiowaves.left.and.right"
+        case .wired: return "cable.connector"
+        case .other: return "network"
+        case .unavailable: return "wifi.slash"
+        }
+    }
+
+    private var gateBlockedReason: String {
+        switch gate.networkType {
+        case .cellular:
+            return "Turn on \"Use cellular\" to download over cellular."
+        case .unavailable:
+            return "Connect to the internet to download."
+        case .wifi, .wired, .other:
+            return ""
         }
     }
 
@@ -282,7 +352,7 @@ private struct ModelDownloadStep: View {
         case .failed: return "Download Failed"
         case .loading: return "Preparing Speech Model"
         case .downloading: return "Downloading Parakeet"
-        case .notLoaded: return "Download Parakeet"
+        case .notLoaded: return "Download Speech Models"
         }
     }
 
@@ -295,17 +365,17 @@ private struct ModelDownloadStep: View {
         case .loading:
             return "Loading the on-device speech model."
         case .downloading:
-            return "About 1.25 GB. Keep Jot open until the first download finishes."
+            return "Keep Jot open until the first download finishes."
         case .notLoaded:
-            return "Jot needs the on-device Parakeet model for private English transcription."
+            return "Jot transcribes entirely on this iPhone. The on-device Parakeet model is ~948 MB."
         }
     }
 
     private var primaryTitle: String {
         switch modelState {
         case .ready: return "Continue"
-        case .failed: return "Retry Download"
-        case .notLoaded: return "Download Parakeet"
+        case .failed: return "Retry Download (~948 MB)"
+        case .notLoaded: return "Download Speech Models (~948 MB)"
         case .downloading: return "Downloading..."
         case .loading: return "Preparing..."
         }
@@ -322,16 +392,9 @@ private struct ModelDownloadStep: View {
     private var primaryDisabled: Bool {
         switch modelState {
         case .downloading, .loading: return true
-        case .notLoaded, .failed, .ready: return false
+        case .ready: return false
+        case .notLoaded, .failed: return !gate.canStartDownload
         }
-    }
-
-    private var secondaryTitle: String? {
-        nil
-    }
-
-    private var secondaryAction: (() -> Void)? {
-        nil
     }
 }
 
@@ -434,4 +497,5 @@ private extension WizardCard where Accessory == EmptyView {
 #Preview {
     SetupWizardView {}
         .environment(TranscriptionService())
+        .environment(StreamingTranscriptionService())
 }

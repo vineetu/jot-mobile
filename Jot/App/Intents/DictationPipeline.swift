@@ -77,6 +77,29 @@ import OSLog
 /// concerns (cold-launch bridge waits, different `openAppWhenRun` contracts,
 /// Live Activity coordinator start-on-begin) while still covering the
 /// branchy downstream tail where divergence is actually costly.
+/// Outcome of a successful `DictationPipeline.completeEndOfRecording` run.
+///
+/// Returned so call sites with their own UI side-effects (e.g. the in-app
+/// `ContentView` "Copied" toast) can hook off the published transcript
+/// without inventing a separate `@Observable` "last-published-id" property.
+/// Intent call sites discard this value (the helper is `@discardableResult`)
+/// because their UI feedback already runs through the Live Activity.
+///
+/// `finalText` is the text placed on the clipboard — cleaned text on the
+/// fresh-dictation branch when cleanup was enabled and did not throw, the
+/// classifier-transformed text on the command branch, or the raw transcript
+/// otherwise. `branch` distinguishes the two resolution outcomes.
+struct PublishedTranscriptOutcome: Sendable {
+    enum Branch: Sendable {
+        case fresh
+        case command
+    }
+
+    let transcriptID: UUID
+    let finalText: String
+    let branch: Branch
+}
+
 @MainActor
 enum DictationPipeline {
     private static let logger = Logger(
@@ -104,22 +127,68 @@ enum DictationPipeline {
     /// The helper owns the post-recording activity transition on both
     /// branches (via `finish` or `finishCommand`) — the caller must not call
     /// either itself.
+    ///
+    /// Merged in lean-arch consolidation (per `tmp/research-app-architecture.md`
+    /// §2.3 + §8 Phase 2): previously the in-app `ContentView.finishTranscription`
+    /// ran a parallel post-recording tail (publish → append → toast) that
+    /// skipped the chained-follow-up classifier and wrapped cleanup in an
+    /// 8-second wall-clock timeout. The in-app path now routes here too,
+    /// so it gains chained-follow-up classification (D1) and drops the
+    /// outer wall-clock timeout (D2). The return type is non-`Void` (D3)
+    /// so the in-app caller's "Copied" toast can hook off the published
+    /// transcript ID without a separate `@Observable` property. Intent
+    /// call sites discard the return via `@discardableResult`.
+    @discardableResult
     static func completeEndOfRecording(
         transcript: String,
+        sessionID: UUID? = nil,
         startedAt: Date,
         stoppedAt: Date,
         controller: any DictationController
-    ) async throws {
+    ) async throws -> PublishedTranscriptOutcome {
         let duration = max(0, stoppedAt.timeIntervalSince(startedAt))
         let cleanup = CleanupSettings.load()
         let postProcessing = DictationPostProcessingCoordinator.shared
+        let recording = RecordingService.shared
+
+        // v7 auto-paste design: every published payload carries a session ID
+        // so the keyboard can match it against its `PendingPasteSession.id`.
+        // Callers in scope of the v7 wave pass the session ID explicitly;
+        // out-of-scope callers (kept untouched in this implementation step)
+        // fall back to the RecordingService's current session, or generate
+        // a fresh one. A fresh ID never matches any keyboard pending session,
+        // so the keyboard correctly ignores in-app dictations.
+        let resolvedSessionID = sessionID
+            ?? recording.currentSessionID
+            ?? UUID()
+        if recording.currentSessionID == nil {
+            recording.adoptSession(resolvedSessionID)
+        }
 
         controller.beginPostProcessing()
         postProcessing.begin()
+
+        // Session-token-guarded defer. If we unwind before this method's body
+        // reaches its terminal `publishPipelinePhase(.idle)`, AND the pipeline
+        // is still owned by OUR session (no newer session has taken over),
+        // publish `.failed` so the keyboard's terminal cleanup can clear its
+        // pending state. The token guard means a defer firing AFTER a NEW
+        // session has started a fresh pipeline does NOT clobber the new
+        // session's phase.
+        var publishedTerminal = false
         defer {
             postProcessing.finish()
             controller.endPostProcessing()
-            RecordingService.shared.markPipelineFinished()
+            recording.markPipelineFinished()
+            if !publishedTerminal,
+               recording.currentSessionID == resolvedSessionID,
+               recording.currentPipelinePhase != .idle,
+               recording.currentPipelinePhase != .failed {
+                recording.publishPipelinePhase(
+                    .failed,
+                    failureReason: "pipeline-unwound-before-publish"
+                )
+            }
         }
 
         // Pull the most recent prior transcript that falls inside the
@@ -146,6 +215,7 @@ enum DictationPipeline {
         )
 
         await DictationActivityCoordinator.shared.update(phase: .processing)
+        recording.publishPipelinePhase(.processing)
 
         let resolution: CommandResolution
         do {
@@ -185,10 +255,16 @@ enum DictationPipeline {
             // independent thoughts). Behave exactly as the v6 flat path
             // through clipboard + ledger, then expose the fresh follow-up
             // window instead of a terminal outcome pill.
+            //
+            // v7 publish-first ordering: derive final text → publish FIRST →
+            // append (best-effort, errors logged but don't skip publish) →
+            // activity finish → `.idle`. Cleanup throws degrade to raw, so
+            // we never silently drop the user's transcript.
             let finalText: String
             let cleanedText: String?
             if cleanup.enabled && !postProcessing.isCancellationRequested {
                 await DictationActivityCoordinator.shared.update(phase: .cleaning)
+                recording.publishPipelinePhase(.cleaning)
                 do {
                     let cleaned = try await postProcessing.clean(
                         transcript: transcript,
@@ -202,7 +278,12 @@ enum DictationPipeline {
                         finalText = cleaned
                         cleanedText = cleaned
                     }
-                } catch is CancellationError {
+                } catch {
+                    // ANY throw — cancellation, model-unavailable, generation-
+                    // failure. Degrade to raw. Do not skip publish.
+                    logger.error(
+                        "cleanup degraded to raw: \(error.localizedDescription, privacy: .public)"
+                    )
                     finalText = transcript
                     cleanedText = nil
                 }
@@ -213,52 +294,98 @@ enum DictationPipeline {
 
             let transcriptID = UUID()
 
-            try TranscriptStore.append(
-                id: transcriptID,
-                raw: transcript,
-                cleaned: cleanedText,
-                duration: duration
+            // Step A: publish FIRST. The keyboard's auto-paste cares about
+            // the publish; the ledger row is a separate concern that must
+            // not gate it.
+            recording.publishPipelinePhase(.publishing)
+            ClipboardHandoff.publish(
+                transcript: finalText,
+                sessionID: resolvedSessionID,
+                autoCopiedTranscriptID: transcriptID
             )
+            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
             updateFollowUpDiscoveryState(
                 wasFollowUpUtterance: uiFollowUpActive,
                 resolvedAsCommand: false
             )
 
-            ClipboardHandoff.publish(
-                transcript: finalText,
-                autoCopiedTranscriptID: transcriptID
-            )
-            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
-
-            let preview = String(finalText.prefix(60))
-            await DictationActivityCoordinator.shared.finish(preview: preview)
-
-        case .command(let instruction, let result):
-            guard !postProcessing.isCancellationRequested else {
-                let transcriptID = UUID()
-
+            // Step B: append to ledger. If THIS throws, log and continue —
+            // the publish has already happened and the user's auto-paste
+            // will land. Ledger inconsistency is a less-bad failure than
+            // silent paste loss. The only user-visible consequence is that
+            // the just-pasted dictation won't appear as a chained-follow-up
+            // parent on the very next utterance.
+            do {
                 try TranscriptStore.append(
                     id: transcriptID,
                     raw: transcript,
-                    cleaned: nil,
+                    cleaned: cleanedText,
                     duration: duration
                 )
+            } catch {
+                logger.error(
+                    "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+
+            let preview = String(finalText.prefix(60))
+            await Self.transitionPostPublish(preview: preview)
+
+            recording.publishPipelinePhase(.idle)
+            publishedTerminal = true
+
+            return PublishedTranscriptOutcome(
+                transcriptID: transcriptID,
+                finalText: finalText,
+                branch: .fresh
+            )
+
+        case .command(let instruction, let result):
+            guard !postProcessing.isCancellationRequested else {
+                // Cancellation: publish raw and go `.idle`. Per design §4.6.B
+                // `.cancelled` is NOT a phase value — keyboard sees this as
+                // a normal completion (CancelPostProcessingIntent's documented
+                // contract: "publish the raw transcript as fresh dictation").
+                let transcriptID = UUID()
+
+                recording.publishPipelinePhase(.publishing)
+                ClipboardHandoff.publish(
+                    transcript: transcript,
+                    sessionID: resolvedSessionID,
+                    autoCopiedTranscriptID: transcriptID
+                )
+                CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
                 updateFollowUpDiscoveryState(
                     wasFollowUpUtterance: uiFollowUpActive,
                     resolvedAsCommand: false
                 )
 
-                ClipboardHandoff.publish(
-                    transcript: transcript,
-                    autoCopiedTranscriptID: transcriptID
-                )
-                CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
+                do {
+                    try TranscriptStore.append(
+                        id: transcriptID,
+                        raw: transcript,
+                        cleaned: nil,
+                        duration: duration
+                    )
+                } catch {
+                    logger.error(
+                        "ledger append failed on command-cancelled path; publish already succeeded: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
 
                 let preview = String(transcript.prefix(60))
-                await DictationActivityCoordinator.shared.finish(preview: preview)
-                return
+                await Self.transitionPostPublish(preview: preview)
+
+                recording.publishPipelinePhase(.idle)
+                publishedTerminal = true
+
+                return PublishedTranscriptOutcome(
+                    transcriptID: transcriptID,
+                    finalText: transcript,
+                    branch: .fresh
+                )
             }
 
             // Classifier recognised the new utterance as a command against
@@ -289,37 +416,88 @@ enum DictationPipeline {
             // writer itself. Don't flip without one of those in place.
             // See `TranscriptHistoryMirror+SwiftData.swift` for the
             // equivalent note from the mirror side of the contract.
+            //
+            // v7 publish-first contract: if persistence (mark/append) throws,
+            // degrade to fresh-dictation raw publish so the user always gets
+            // their text. The orphaned-supersession concern (parent marked +
+            // child append failed) is the existing v6 risk; per design §4.6.A
+            // the fully-atomic fix lives in a new TranscriptStore helper that
+            // is out of scope for this teammate.
             let transcriptID = UUID()
 
-            if let priorID {
-                try TranscriptStore.markSuperseded(id: priorID)
+            do {
+                if let priorID {
+                    try TranscriptStore.markSuperseded(id: priorID)
+                }
+
+                try TranscriptStore.append(
+                    id: transcriptID,
+                    raw: transcript,
+                    cleaned: result,
+                    duration: duration,
+                    derivedFrom: priorID,
+                    instruction: instruction
+                )
+
+                updateFollowUpDiscoveryState(
+                    wasFollowUpUtterance: uiFollowUpActive,
+                    resolvedAsCommand: true
+                )
+
+                recording.publishPipelinePhase(.publishing)
+                ClipboardHandoff.publish(
+                    transcript: result,
+                    sessionID: resolvedSessionID,
+                    autoCopiedTranscriptID: transcriptID
+                )
+                CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
+
+                let preview = String(result.prefix(60))
+                await Self.transitionPostPublish(
+                    instruction: instruction,
+                    preview: preview
+                )
+
+                recording.publishPipelinePhase(.idle)
+                publishedTerminal = true
+
+                return PublishedTranscriptOutcome(
+                    transcriptID: transcriptID,
+                    finalText: result,
+                    branch: .command
+                )
+            } catch {
+                // Persistence failed. Roll forward as fresh-dictation: publish
+                // RAW so the user gets their text. Do not skip publish.
+                logger.error(
+                    "command branch persistence failed; degrading to raw fresh-dictation publish: \(error.localizedDescription, privacy: .public)"
+                )
+
+                recording.publishPipelinePhase(.publishing)
+                ClipboardHandoff.publish(
+                    transcript: transcript,
+                    sessionID: resolvedSessionID,
+                    autoCopiedTranscriptID: transcriptID
+                )
+                CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
+
+                updateFollowUpDiscoveryState(
+                    wasFollowUpUtterance: uiFollowUpActive,
+                    resolvedAsCommand: false
+                )
+
+                let preview = String(transcript.prefix(60))
+                await Self.transitionPostPublish(preview: preview)
+
+                recording.publishPipelinePhase(.idle)
+                publishedTerminal = true
+
+                return PublishedTranscriptOutcome(
+                    transcriptID: transcriptID,
+                    finalText: transcript,
+                    branch: .fresh
+                )
             }
-
-            try TranscriptStore.append(
-                id: transcriptID,
-                raw: transcript,
-                cleaned: result,
-                duration: duration,
-                derivedFrom: priorID,
-                instruction: instruction
-            )
-
-            updateFollowUpDiscoveryState(
-                wasFollowUpUtterance: uiFollowUpActive,
-                resolvedAsCommand: true
-            )
-
-            ClipboardHandoff.publish(
-                transcript: result,
-                autoCopiedTranscriptID: transcriptID
-            )
-            CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
-
-            let preview = String(result.prefix(60))
-            await DictationActivityCoordinator.shared.finishCommand(
-                instruction: instruction,
-                preview: preview
-            )
         }
     }
 
@@ -336,6 +514,53 @@ enum DictationPipeline {
             if wasFollowUpUtterance {
                 FollowUpDiscoveryStore.state = resolvedAsCommand ? .learned : .awaitingContextAck
             }
+        }
+    }
+
+    /// Cut C (warm-resume) post-publish Live Activity transition.
+    ///
+    /// Called from the four `completeEndOfRecording` tail sites where today's
+    /// pipeline transitions the activity into `.followUp` (the 30-second
+    /// chained-follow-up window). When `RecordingService.shared.isInWarmHold`
+    /// is true (warm-hold toggle ON, default), the activity instead enters
+    /// `.warmHold(expiresAt:)` for the full 60-second warm window — that's
+    /// the App Review 2.5.14 disclosure surface for the orange iOS recording
+    /// indicator that stays on while the engine is paused.
+    ///
+    /// The chained-follow-up classifier still operates from the same 30s
+    /// freshness window via `TranscriptStore.mostRecent(within:)` at the next
+    /// `completeEndOfRecording` invocation — the LA phase doesn't gate
+    /// classification, only the visible disclosure prompt.
+    ///
+    /// Fresh-dictation paths (the `.freshDictation`, cancellation, and
+    /// command-persistence-failure branches) call the no-instruction overload;
+    /// the command-success path calls the overload that carries the
+    /// instruction so that a non-warm fallback uses `finishCommand(...)` to
+    /// preserve the "Command: <instruction>" outcome rendering.
+    private static func transitionPostPublish(preview: String) async {
+        if RecordingService.shared.isInWarmHold,
+           let expiresAt = RecordingService.shared.currentWarmHoldExpiresAt,
+           expiresAt > Date() {
+            await DictationActivityCoordinator.shared.transitionToWarmHold(
+                expiresAt: expiresAt
+            )
+        } else {
+            await DictationActivityCoordinator.shared.finish(preview: preview)
+        }
+    }
+
+    private static func transitionPostPublish(instruction: String, preview: String) async {
+        if RecordingService.shared.isInWarmHold,
+           let expiresAt = RecordingService.shared.currentWarmHoldExpiresAt,
+           expiresAt > Date() {
+            await DictationActivityCoordinator.shared.transitionToWarmHold(
+                expiresAt: expiresAt
+            )
+        } else {
+            await DictationActivityCoordinator.shared.finishCommand(
+                instruction: instruction,
+                preview: preview
+            )
         }
     }
 }

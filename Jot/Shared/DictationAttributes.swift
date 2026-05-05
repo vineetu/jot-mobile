@@ -50,6 +50,20 @@ public struct DictationAttributes: ActivityAttributes {
         /// against the just-finished transcript.
         case followUp(expiresAt: Date)
 
+        /// Warm-hold (Cut C): post-stop window where `RecordingService` keeps
+        /// the audio engine paused (not torn down) and the audio session
+        /// active so the next `start()` can resume in ~10–50ms instead of
+        /// paying the ~200–400ms cold setup cost. The orange iOS recording
+        /// indicator stays on for the duration of this phase — that is the
+        /// 2.5.14 disclosure surface, not a bug.
+        ///
+        /// `expiresAt` is the wall-clock instant the warm timer fires
+        /// `endWarmHold()` if no new recording has been requested.
+        /// `Text(timerInterval: now ... expiresAt, countsDown: true)` lets
+        /// the widget render the countdown without per-second activity
+        /// updates.
+        case warmHold(expiresAt: Date)
+
         /// Legacy terminal state for a plain dictation.
         ///
         /// Retained so older live-activity payloads still decode after app

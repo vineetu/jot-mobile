@@ -1,4 +1,5 @@
 @preconcurrency import AVFAudio
+import FluidAudio
 import SwiftUI
 import SwiftData
 import os.log
@@ -13,12 +14,22 @@ struct JotApp: App {
     private let stopRequestObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
+    @State private var streamingService: StreamingTranscriptionService
+    @State private var streamingPartial: StreamingPartial
     @State private var cleanupService: CleanupService
     @State private var setupRerunTrigger: SettingsRerunTrigger
     @State private var showSetupWizard = false
     @State private var setupCompleted = SetupCompletion.isCompleted
     @State private var autoStartConsumed = false
     @State private var autoStartPendingModelReady = false
+
+    /// Stashed session UUID parsed off the most recent `jot://dictate?session=<uuid>`
+    /// URL. Consumed in `triggerAutoStart` immediately before `recording.start()`
+    /// so the upcoming pipeline writes carry the keyboard's session ID. Held on
+    /// the App (not consumed by the first `triggerAutoStart` turn) so model-not-
+    /// ready retries via `.onChange(of: modelState)` re-read this stash —
+    /// surviving the cold-launch race per design §4.2.
+    @State private var pendingKeyboardSessionID: UUID?
 
     init() {
         stopRequestObserver = CrossProcessNotification.addObserver(
@@ -44,10 +55,28 @@ struct JotApp: App {
         // in either caller amortizes the Parakeet cold load across both.
         // See `TranscriptionService.shared` doc for rationale.
         let transcription = TranscriptionService.shared
+        // Singleton owner of the FluidAudio EOU streaming model used to
+        // drive the live partial-transcript preview. Cleanup-on-every-stop
+        // policy: no manager retained between sessions; warmUp ensures
+        // weights are on disk only. See `StreamingTranscriptionService` doc.
+        let streamingService = StreamingTranscriptionService.shared
+        // Live preview presenter, observed by ContentView. Single instance
+        // for the app lifetime — RecordingService.setStreamingPresenter
+        // (called below) holds a strong ref and depends on this living for
+        // the recorder's full lifetime.
+        let streamingPartial = StreamingPartial()
+        // Inject the presenter into the recorder so its audio fan-out can
+        // drive the live preview. Headless callers (Shortcuts intent etc.)
+        // construct via `RecordingService.shared` without going through
+        // JotApp; they leave `streamingPresenter == nil` and gracefully
+        // skip the streaming pipeline.
+        recording.setStreamingPresenter(streamingPartial)
         let cleanup = CleanupService()
         let rerunTrigger = SettingsRerunTrigger.shared
         _recordingService = State(initialValue: recording)
         _transcriptionService = State(initialValue: transcription)
+        _streamingService = State(initialValue: streamingService)
+        _streamingPartial = State(initialValue: streamingPartial)
         _cleanupService = State(initialValue: cleanup)
         _setupRerunTrigger = State(initialValue: rerunTrigger)
         // One-shot sweep of any orphaned model-purge dirs from prior crashed
@@ -64,6 +93,11 @@ struct JotApp: App {
             startedAt: nil,
             lastUpdatedAt: Date()
         ))
+        // v7 auto-paste: clear any leftover non-terminal pipeline-phase
+        // projection from a crashed previous launch. Without this reset, the
+        // keyboard would observe a stale non-idle phase on first appearance
+        // and only recover via the 30s stale-deadline. Per design §4.2.
+        PipelinePhaseProjection.reset()
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
 
@@ -72,6 +106,8 @@ struct JotApp: App {
             ContentView()
                 .environment(recordingService)
                 .environment(transcriptionService)
+                .environment(streamingService)
+                .environment(streamingPartial)
                 .environment(cleanupService)
                 .fullScreenCover(isPresented: $showSetupWizard) {
                     SetupWizardView {
@@ -79,6 +115,7 @@ struct JotApp: App {
                         showSetupWizard = false
                     }
                     .environment(transcriptionService)
+                    .environment(streamingService)
                 }
                 .onAppear {
                     presentSetupIfNeeded()
@@ -87,6 +124,17 @@ struct JotApp: App {
                     guard url.scheme == "jot" else { return }
                     // Explicit user intent — bypass the once-per-session gate.
                     autoStartConsumed = false
+                    // v7 auto-paste: parse `?session=<uuid>` off the keyboard's
+                    // launch URL. Stashed onto App state (not consumed by the
+                    // first `triggerAutoStart` turn) so model-not-ready retries
+                    // via `.onChange(of: modelState)` re-read this stash and
+                    // the session ID survives the cold-launch race. Per design
+                    // §4.2.
+                    if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                       let sessionParam = comps.queryItems?.first(where: { $0.name == "session" })?.value,
+                       let sid = UUID(uuidString: sessionParam) {
+                        pendingKeyboardSessionID = sid
+                    }
                     triggerAutoStart(reason: "url open: \(url.absoluteString)")
                 }
                 .onChange(of: setupRerunTrigger.requestID) { _, _ in
@@ -118,12 +166,14 @@ struct JotApp: App {
                 // Eager Parakeet preload. `.task` fires on first scene
                 // activation — earliest post-init hook without blocking launch,
                 // and the ban on I/O inside `JotApp.init()` still holds.
-                // `warmUp()` is void/non-throwing/idempotent/fire-and-forget:
-                // it spawns its own background load, coalesces repeat calls,
-                // and surfaces failures later via `modelState` / the next
-                // `transcribe(...)`. Re-firing on scene foreground (e.g. after
-                // `didReceiveMemoryWarning` evicted the CoreML handle) is
-                // cheap defense-in-depth.
+                //
+                // `warmUp()` is gated on (a) the user having finished the
+                // setup wizard (which is where the explicit "Download speech
+                // models (~948 MB)" tap lives), AND (b) the models actually
+                // being on disk. Together these guarantee `warmUp()` cannot
+                // initiate a silent first-run download — required by App
+                // Review Guideline 4.2.3(ii). If models are missing, the
+                // wizard re-presents on next launch and re-prompts.
                 //
                 // Cold-launch mirror refresh: regenerates the App Group JSON
                 // projection the keyboard reads on `viewWillAppear`. Without
@@ -133,7 +183,24 @@ struct JotApp: App {
                 // Bootstrapping here makes history visible in the keyboard
                 // immediately after first launch of the main app.
                 .task {
-                    transcriptionService.warmUp()
+                    let modelsOnDisk = AsrModels.modelsExist(
+                        at: MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV2),
+                        version: .v2
+                    )
+                    if SetupCompletion.isCompleted && modelsOnDisk {
+                        transcriptionService.warmUp()
+                    }
+                    // Streaming weights live in a different on-disk location
+                    // (FluidAudio's `parakeet-eou-streaming/320ms/` cache);
+                    // gated independently. `warmUp()` here is "ensure
+                    // weights on disk" — does NOT load into ANE per the
+                    // service's cleanup-on-every-stop lifecycle. Same
+                    // 4.2.3(ii) gate (setup completed + models on disk):
+                    // a fresh install never auto-downloads.
+                    if SetupCompletion.isCompleted
+                        && StreamingTranscriptionService.modelsExistOnDisk() {
+                        streamingService.warmUp()
+                    }
                     TranscriptHistoryMirror.refresh(
                         from: ModelContext(JotModelContainer.shared)
                     )
@@ -192,8 +259,50 @@ struct JotApp: App {
             guard !recordingService.isPipelineInFlight else { return }
             do {
                 recordingService.forceStop()
-                try await recordingService.start()
-                lifecycleLog.info("Auto-started recording after \(reason, privacy: .public)")
+                // v7 auto-paste: adopt the keyboard's session UUID (stashed
+                // off the launch URL by the `onOpenURL` handler) BEFORE
+                // `start()` so the upcoming pipeline writes carry the
+                // keyboard's session ID. The published `FreshDictation.sessionID`
+                // then matches the keyboard's `PendingPasteSession.id` in
+                // `flushPendingAutoPasteIfPossible`. If no session was
+                // stashed (e.g., user manually opened jot://dictate from
+                // Shortcuts, or a non-keyboard entry point), generate a
+                // fresh UUID — degraded but functional: the keyboard's
+                // pending (if any) won't match this random UUID and will
+                // fall through to the §4.6.G launch-deadline cleanup.
+                let sid = pendingKeyboardSessionID ?? UUID()
+                pendingKeyboardSessionID = nil
+                recordingService.adoptSession(sid)
+                let startedAt = Date()
+
+                // 2.5.14 hardening (Cut A §6.3): the Live Activity / Dynamic
+                // Island chip is requested BEFORE `recording.start()` activates
+                // the audio session, so the system mic indicator and the chip
+                // come up paired. Activating the session first would briefly
+                // light the orange mic indicator before the chip is rendered;
+                // App Review can flag that no-chip window as a 2.5.14
+                // disclosure inconsistency.
+                //
+                // The team-lead brief is explicit on BEFORE-ordering despite
+                // the spec sketch (§6.3 line 753-755) showing AFTER. The
+                // brief's reasoning (no-chip window) is the controlling one
+                // because brief-vs-spec conflict resolves in favor of the brief.
+                //
+                // Trade-off: if `recording.start()` throws, the activity is
+                // orphaned. Caught by the catch block below via
+                // `cancelPendingRecordingStart()`, which ends the activity
+                // cleanly.
+                await DictationActivityCoordinator.shared.start(startedAt: startedAt)
+                do {
+                    try await recordingService.start()
+                    lifecycleLog.info("Auto-started recording after \(reason, privacy: .public) session=\(sid, privacy: .public)")
+                } catch {
+                    // Recording failed AFTER the LA was requested. Tear down
+                    // the orphaned activity so the user doesn't see a chip
+                    // with no recording behind it.
+                    await DictationActivityCoordinator.shared.cancelPendingRecordingStart()
+                    throw error
+                }
             } catch {
                 lifecycleLog.error("Auto-start recording failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -216,9 +325,28 @@ private final class CrossProcessRecordingStopCoordinator {
             return
         }
 
-        guard RecordingService.shared.isRecording else {
+        // v7 auto-paste (per design §4.2 round-2 BLOCKER #4 closure): widen
+        // the guard to `(isRecording || isPipelineInFlight)` so the duplicate-
+        // stop branch ALSO runs while transcription/cleaning is still in
+        // flight (after `stop()` drained samples but before
+        // `markPipelineFinished` has been called). With the v6 `isRecording`-
+        // only guard, a keyboard tap arriving during the in-flight tail
+        // would silently overwrite the App Group's `pendingPasteSession` and
+        // never get cleared — the keyboard's NEW pending would hang until
+        // the §4.6.G launch-deadline (15s) cleanup fires.
+        //
+        // The "no pipeline at all" branch must clear the keyboard's NEW
+        // pending: the user just wrote a fresh PendingPasteSession expecting
+        // a stop-and-paste, but there's no pipeline running for it to attach
+        // to and no incoming publish to match. Clearing here is decisive
+        // and avoids the 15s hang.
+        let recording = RecordingService.shared
+        let pipelineActive = recording.isRecording || recording.isPipelineInFlight
+
+        guard pipelineActive else {
+            ClipboardHandoff.clearPendingPasteSession()
             publishIdleProjection()
-            log.info("Cross-process stop request ignored because no recording is active.")
+            log.info("Cross-process stop request: no pipeline active; cleared keyboard pending session.")
             return
         }
 
@@ -238,31 +366,74 @@ private final class CrossProcessRecordingStopCoordinator {
     private func stopAndPublish() async throws {
         let projection = RecordingStateProjection.read()
         let controller = DictationIntentBridge.shared.controller
+        let recording = RecordingService.shared
         let startedAt = DictationActivityCoordinator.shared.recordingStartedAt
             ?? projection?.startedAt
             ?? Date()
 
+        // v7 auto-paste: peek the keyboard's pending paste session synchronously
+        // at task entry into a local. A subsequent keyboard tap that overwrites
+        // the App Group key cannot affect this in-flight stop. Adoption is
+        // gated to `.recording` / `.idle` only — when the pipeline is already
+        // mid-flight (`.transcribing` / `.processing` / `.cleaning`), we MUST
+        // NOT silently re-target the in-flight publish to the keyboard's NEW
+        // session ID; that's the cross-session race we're trying to close.
+        // Per design §4.2.
+        let keyboardPending = readPendingPasteSession()
+        let resolvedSessionID: UUID = keyboardPending?.id
+            ?? recording.currentSessionID
+            ?? UUID()
+
         switch controller.currentPhase {
         case .recording:
+            recording.adoptSession(resolvedSessionID)
             await DictationActivityCoordinator.shared.update(phase: .transcribing)
             let result = try await controller.stopAndTranscribe()
             try await DictationPipeline.completeEndOfRecording(
                 transcript: result.transcript,
+                sessionID: resolvedSessionID,
                 startedAt: startedAt,
                 stoppedAt: result.stoppedAt,
                 controller: controller
             )
 
         case .idle:
-            try await stopStandaloneRecording(startedAt: startedAt, controller: controller)
+            recording.adoptSession(resolvedSessionID)
+            try await stopStandaloneRecording(
+                startedAt: startedAt,
+                sessionID: resolvedSessionID,
+                controller: controller
+            )
 
         case .transcribing, .processing, .cleaning:
-            log.notice("Cross-process stop request ignored because dictation pipeline is already active.")
+            // v7 auto-paste (per design §4.2 round-2 BLOCKER #4 closure):
+            // pipeline is mid-flight from an OLDER session. We MUST NOT call
+            // `adoptSession` here — that would re-target the in-flight
+            // publish to the keyboard's NEW session ID and cause the very
+            // cross-session race v7 is closing. The keyboard's NEW pending
+            // can't attach to this in-flight pipeline (the OLDER publish
+            // carries its own session ID and won't match the NEW pending),
+            // so clear pending decisively. The user effectively sees: "tap
+            // was ignored; nothing pasted; finish in-flight pipeline first."
+            ClipboardHandoff.clearPendingPasteSession()
+            log.notice("Cross-process stop request mid-pipeline; keyboard pending session cleared.")
         }
+    }
+
+    /// Reads the keyboard's pending paste session record. Mirror of the
+    /// keyboard-side helper in `JotKeyboardViewController` so the App can
+    /// match by UUID without depending on a Codable shape that lives in the
+    /// other target.
+    private func readPendingPasteSession() -> PendingPasteSession? {
+        guard let data = AppGroup.defaults.data(
+            forKey: AppGroup.Keys.pendingPasteSession
+        ) else { return nil }
+        return try? JSONDecoder().decode(PendingPasteSession.self, from: data)
     }
 
     private func stopStandaloneRecording(
         startedAt: Date,
+        sessionID: UUID,
         controller: any DictationController
     ) async throws {
         let recording = RecordingService.shared
@@ -278,6 +449,7 @@ private final class CrossProcessRecordingStopCoordinator {
             let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
             try await DictationPipeline.completeEndOfRecording(
                 transcript: transcript,
+                sessionID: sessionID,
                 startedAt: startedAt,
                 stoppedAt: stoppedAt,
                 controller: controller

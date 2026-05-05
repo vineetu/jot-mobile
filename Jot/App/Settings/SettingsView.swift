@@ -4,6 +4,12 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
     @State private var showRedownloadConfirmation = false
+    /// Mirror of `AppGroup.holdMicWarmAfterStop`. SwiftUI's `Toggle` needs a
+    /// `Binding`; we read the AppGroup value into local `@State` on appear
+    /// and write back through the binding's set side. Default `true` matches
+    /// the AppGroup accessor's missing-key default — first-launch flips to
+    /// `true` without any explicit write, so the toggle reads ON immediately.
+    @State private var holdMicWarmAfterStop: Bool = AppGroup.holdMicWarmAfterStop
 
     var body: some View {
         NavigationStack {
@@ -32,6 +38,24 @@ struct SettingsView: View {
                     Text("Speech model")
                 } footer: {
                     Text("Runs entirely on this iPhone. About 1.25 GB on disk.")
+                }
+
+                Section {
+                    Toggle(isOn: $holdMicWarmAfterStop) {
+                        Label("Hold mic warm after stop", systemImage: "mic.circle")
+                    }
+                    .onChange(of: holdMicWarmAfterStop) { _, newValue in
+                        AppGroup.holdMicWarmAfterStop = newValue
+                        // If the user just turned this OFF while a warm
+                        // window is active, drop the indicator now — leaving
+                        // the engine paused for another 60s would defy the
+                        // setting they just toggled.
+                        RecordingService.shared.applyWarmHoldToggleChange()
+                    }
+                } header: {
+                    Text("Recording")
+                } footer: {
+                    Text("Keeps the mic ready for ~60s so you can record again from anywhere. Orange recording indicator stays on; you can disable here.")
                 }
 
                 Section {

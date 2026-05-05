@@ -49,6 +49,7 @@ struct KeyboardView: View {
             let metrics = KeyboardMetrics(availableWidth: proxy.size.width)
             ZStack(alignment: .bottom) {
                 VStack(spacing: metrics.rowSpacing) {
+                    streamingPreviewStrip
                     actionChipRow
                     micCTA
                     punctuationRow(metrics: metrics)
@@ -103,6 +104,36 @@ struct KeyboardView: View {
     }
 
     // MARK: - Rows
+
+    /// Live partial-transcript caption rendered above the action chip row
+    /// while a recording is in flight. Mirrored from the main app via the
+    /// `streamingPartialText` App Group projection (see
+    /// `JotKeyboardViewController.refreshStreamingPartialFromProjection`).
+    ///
+    /// Reserves a fixed 3-line slot via `lineLimit(3, reservesSpace: true)`
+    /// so the strip's height is consistent regardless of how much text the
+    /// EOU model has emitted. `truncationMode(.head)` keeps the latest words
+    /// visible — for cumulative streaming text the newest content sits at
+    /// the END, so head-truncation drops oldest content first as the
+    /// transcript grows.
+    @ViewBuilder
+    private var streamingPreviewStrip: some View {
+        if recordingState.isRecording, !recordingState.streamingPartialText.isEmpty {
+            Text(recordingState.streamingPartialText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(3, reservesSpace: true)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(.systemGray6))
+                )
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: recordingState.streamingPartialText)
+        }
+    }
 
     private var actionChipRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {

@@ -21,6 +21,14 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.transcript-ready"
     )
 
+    static let pipelinePhaseChanged = Name(
+        rawValue: "com.vineetu.jot.mobile.pipeline-phase-changed"
+    )
+
+    static let streamingPartialChanged = Name(
+        rawValue: "com.vineetu.jot.mobile.streaming-partial-changed"
+    )
+
     static func post(name: Name) {
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),

@@ -21,6 +21,14 @@ enum ClipboardHandoff {
     /// `UIPasteboard.general` (which lags behind cross-process publishes and
     /// caused stale-paste bugs).
     struct FreshDictation: Codable, Sendable {
+        /// Per-session UUID stamped at every publish call site (v7 auto-paste
+        /// design). The keyboard matches this against its `PendingPasteSession.id`
+        /// to disambiguate which in-flight pipeline's transcript belongs to its
+        /// tap, replacing the v6 `pendingAutoPasteMaxAge: 600s` wall-clock
+        /// ceiling. Optional in the schema only because old App Group payloads
+        /// (written by v6 binaries) lacked the field — at runtime, every new
+        /// `publish` stamps it.
+        let sessionID: UUID?
         let timestamp: Date
         let preview: String
         let text: String
@@ -34,10 +42,18 @@ enum ClipboardHandoff {
 
     /// Called by the main app after a successful dictation.
     /// Writes the transcript to the system clipboard and stamps App Group state.
-    static func publish(transcript: String, autoCopiedTranscriptID: UUID? = nil) {
+    /// `sessionID` plumbs the per-session UUID through to the keyboard so it
+    /// can match this published payload against its `PendingPasteSession.id`
+    /// (v7 auto-paste design — replaces the v6 wall-clock ceiling).
+    static func publish(
+        transcript: String,
+        sessionID: UUID? = nil,
+        autoCopiedTranscriptID: UUID? = nil
+    ) {
         UIPasteboard.general.string = transcript
         let now = Date()
         let payload = FreshDictation(
+            sessionID: sessionID,
             timestamp: now,
             preview: String(transcript.prefix(80)),
             text: transcript
@@ -72,6 +88,22 @@ enum ClipboardHandoff {
         return payload.preview
     }
 
+    /// Returns the full fresh-dictation payload (text + session ID + timestamp)
+    /// when the App Group handoff is inside the freshness window, else `nil`.
+    /// Used by the v7 keyboard to match a published session ID against its
+    /// pending paste session — the existing string-returning helpers don't
+    /// surface the session ID.
+    static func readFresh() -> FreshDictation? {
+        guard
+            let data = AppGroup.defaults.data(forKey: AppGroup.Keys.lastDictation),
+            let payload = try? JSONDecoder().decode(FreshDictation.self, from: data)
+        else { return nil }
+        let age = Date().timeIntervalSince(payload.timestamp)
+        guard age >= 0, age < freshnessWindow else { return nil }
+        guard !payload.text.isEmpty else { return nil }
+        return payload
+    }
+
     /// Returns the full transcript text from the pasteboard only when the
     /// App Group handoff metadata is fresh and, if supplied, newer than the
     /// caller's start timestamp. The metadata is the freshness gate; the
@@ -103,9 +135,11 @@ enum ClipboardHandoff {
         AppGroup.defaults.removeObject(forKey: AppGroup.Keys.lastDictation)
     }
 
-    static func clearPendingAutoPaste() {
-        AppGroup.defaults.removeObject(forKey: AppGroup.Keys.pendingAutoPasteFlag)
-        AppGroup.defaults.removeObject(forKey: AppGroup.Keys.pendingAutoPasteCreatedAt)
+    /// Clears the keyboard's pending paste session record. Replaces the v6
+    /// pair-of-keys clear; the per-session UUID + best-effort
+    /// same-input-context fields now live in `PendingPasteSession`.
+    static func clearPendingPasteSession() {
+        AppGroup.defaults.removeObject(forKey: AppGroup.Keys.pendingPasteSession)
     }
 
     static func pendingAutoCopyConfirmation() -> AutoCopyConfirmation? {

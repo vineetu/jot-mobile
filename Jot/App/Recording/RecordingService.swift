@@ -67,6 +67,34 @@ final class RecordingService {
     private(set) var isStopInFlight: Bool = false
     private(set) var isPipelineInFlight: Bool = false
 
+    /// Single source of truth for cross-process pipeline phase. Reads as
+    /// `.idle` when no pipeline activity is in flight; transitions through
+    /// `.recording → .transcribing → .processing → .cleaning → .publishing`
+    /// → `.idle` on success, or → `.failed` on irrecoverable pre-publish
+    /// failure. `.failed` is reserved for cases where NO publish is possible
+    /// (e.g. `RecordingService.stop` itself throws, or `TranscriptionService`
+    /// throws); user cancellation publishes raw and goes to `.idle` (see
+    /// `tmp/research-auto-paste-best-design.md` §4.6.B).
+    ///
+    /// Mutated only via `publishPipelinePhase(_:)` so the App Group projection,
+    /// the Darwin notification, and the heartbeat task lifecycle stay in lock-
+    /// step with the in-process value.
+    private(set) var currentPipelinePhase: PipelinePhaseProjection.Phase = .idle
+
+    /// UUID identifying the current dictation session. Set on transition
+    /// AWAY from `.idle` (typically by `adoptSession(_:)` from the URL handler
+    /// or recording-start coordinator). Cleared on transition TO `.idle` /
+    /// `.failed`. The keyboard matches its `PendingPasteSession.id` against
+    /// the published `FreshDictation.sessionID` to disambiguate which in-flight
+    /// pipeline's transcript belongs to its tap.
+    private(set) var currentSessionID: UUID?
+
+    /// Snapshot of the recording's start time. Carried into the published
+    /// `PipelinePhaseProjection.recordingStartedAt` so the keyboard's
+    /// elapsed-time UI can render off the projection without depending on
+    /// the legacy `RecordingStateProjection`.
+    private(set) var currentRecordingStartedAt: Date?
+
     /// Normalized RMS amplitude (0.0 – 1.0) updated at ~30 Hz while a recording
     /// is active; `nil` when idle. This is the contract the status-pill
     /// waveform reads via `@Environment(RecordingService.self)` so the viz
@@ -91,11 +119,306 @@ final class RecordingService {
     private var priorMode: AVAudioSession.Mode?
     private var priorOptions: AVAudioSession.CategoryOptions?
 
+    // MARK: - Warm-hold state (Cut C)
+    //
+    // When `AppGroup.holdMicWarmAfterStop` is true, `stop()` calls
+    // `engine.pause()` instead of full teardown and parks the engine + audio
+    // session in a "warm" state for ~60 seconds. The next `start()` resumes
+    // from the paused engine in ~10–50ms instead of paying the ~200–400ms
+    // cold-setup cost (configureSession + AVAudioEngine alloc + converter
+    // alloc + prepare + session activation).
+    //
+    // Trade-off accepted by the user (see `tmp/research-warm-resume-design.md`
+    // §4 Cut C and the round-5 USER DECISION at line 8): the orange iOS
+    // recording indicator stays on for the warm window, other apps' audio is
+    // muted, and the Live Activity / Dynamic Island chip remains. That
+    // visibility IS the App Review 2.5.14 disclosure — see the Settings
+    // toggle copy in `App/Settings/SettingsView.swift`.
+    //
+    // Invariant: when `isWarmHeld == true`, all of the following hold:
+    //   - `isRecording == false` (no active capture)
+    //   - `engine != nil` and engine is paused (NOT stopped)
+    //   - `capture == nil` (samples were drained at stop())
+    //   - `observers` retained (so an interruption while warm fires
+    //     `endWarmHold()`)
+    //   - audio session remains active (no `restoreSession()` was called)
+    //   - `warmHardwareFormat` and `warmConverter` are stored so a resume
+    //     install can re-create the tap + CaptureContext without rebuilding
+    //     the engine
+    //   - `warmHoldExpiresAt` is set, `warmHoldTask` is alive
+    private var isWarmHeld: Bool = false
+    private var warmHoldExpiresAt: Date?
+    private var warmHoldTask: Task<Void, Never>?
+    private var warmHardwareFormat: AVAudioFormat?
+    private var warmConverter: AVAudioConverter?
+
+    /// Bounded warm window. Per the design doc this is ~60s; the exact value
+    /// is the user-visible promise rendered in the Settings toggle copy and
+    /// the Live Activity countdown. Don't tune this without updating both.
+    static let warmHoldDuration: TimeInterval = 60
+
+    // MARK: - Streaming preview (dual-model-streaming)
+    //
+    // Per-recording streaming engine + queue + drain task for the live
+    // partial-transcript preview (FluidAudio `StreamingEouAsrManager`,
+    // Parakeet EOU 120M @ 320ms). Allocated in `start()` via
+    // `kickOffStreamingSession()`; torn down in `stop()`/`internalStop()`/
+    // `forceStop()` via `tearDownStreamingSession()`.
+    //
+    // Cleanup-on-every-stop is binding policy (spec §2.1, team-lead Rule 3):
+    // `endSession(engine:)` calls `engine.cleanup()` which fully releases
+    // the FluidAudio CoreML weights. Next `start()` re-instantiates a fresh
+    // manager via `StreamingTranscriptionService.beginSession`.
+    //
+    // Mirrors prototype `DualRecorder.swift:43-69`.
+    private var streamingEngine: StreamingTranscriptionEngine?
+    private var streamingQueue: StreamingBufferQueue?
+    private var streamingDrainTask: Task<Void, Never>?
+
+    /// Live partial-transcript presenter, injected by `JotApp` at app
+    /// construction via `setStreamingPresenter(_:)`. Headless paths
+    /// (Shortcuts intent, AppIntent surfaces) leave this nil — streaming
+    /// preview is in-app only; failing it gracefully degrades to batch-only
+    /// per spec §3.6 ("streaming is a UX nicety; failing it must not
+    /// interrupt the user's dictation flow").
+    private var streamingPresenter: StreamingPartial?
+
+    /// Inject the live-preview presenter.
+    ///
+    /// **Lifetime contract:** caller (`JotApp`) MUST own the supplied
+    /// `StreamingPartial` for the recorder's lifetime. The setter stores
+    /// a strong reference; the presenter is `@MainActor @Observable final
+    /// class`, which is reference-typed, so this is a shared-ref hold.
+    /// Don't pass a per-scene presenter that can be deallocated under us
+    /// — the recorder will dangle.
+    ///
+    /// **Idempotency:** intended to be called exactly once at app
+    /// construction. Subsequent calls overwrite (rare; SwiftUI `#Preview`
+    /// rebuilds may re-fire). A debug-only `assertionFailure` flags the
+    /// double-call so we catch unexpected lifecycle changes during dev
+    /// without crashing release builds.
+    func setStreamingPresenter(_ presenter: StreamingPartial) {
+        if streamingPresenter != nil {
+            assertionFailure("setStreamingPresenter called more than once — verify JotApp lifecycle ownership")
+        }
+        self.streamingPresenter = presenter
+    }
+
     init() {}
 
-    func start() async throws {
-        guard !isRecording, !isPipelineInFlight else { throw RecordingError.alreadyRunning }
+    // MARK: - Streaming session lifecycle (dual-model-streaming)
+    //
+    // Two helpers, both `private async` and called from `start()`/`stop()`/
+    // teardown paths. The streaming session is bookended exactly once per
+    // recording. Mirrors prototype `DualRecorder.swift:151-167` (kickoff)
+    // and `:271-291` (teardown).
 
+    /// Asks `StreamingTranscriptionService` to vend a fresh engine wrapping
+    /// the caller-supplied queue, registers the engine, spawns the drain
+    /// task. Best-effort — returns silently if the model isn't on disk, the
+    /// caller has no presenter (headless paths), or the load fails. The
+    /// recorder's batch path is unaffected.
+    ///
+    /// Caller MUST allocate `streamingQueue` BEFORE `installTap` so the
+    /// tap closure has a queue to push into; this method consumes that
+    /// pre-allocated queue.
+    private func kickOffStreamingSession() async {
+        guard let presenter = streamingPresenter else {
+            log.notice("kickOffStreamingSession skipped — no streaming presenter (headless caller)")
+            return
+        }
+        guard let queue = streamingQueue else {
+            log.notice("kickOffStreamingSession skipped — queue not pre-allocated")
+            return
+        }
+        guard let engine = await StreamingTranscriptionService.shared.beginSession(
+            presenter: presenter,
+            queue: queue
+        ) else {
+            log.notice("kickOffStreamingSession skipped — service returned nil (model not ready)")
+            return
+        }
+        self.streamingEngine = engine
+        // Drain task captures `engine` (a local actor reference) by value;
+        // it deliberately does NOT capture `self`. RecordingService's
+        // lifetime is process-scoped (singleton), and the engine actor's
+        // lifetime is owned by the service via `streamingEngine` field —
+        // `tearDownStreamingSession()` clears the field AFTER awaiting the
+        // drain task, so the actor stays alive until drain returns. No
+        // retain cycle, no premature deallocation.
+        let capturedEngine = engine
+        self.streamingDrainTask = Task.detached(priority: .userInitiated) {
+            await capturedEngine.drain()
+        }
+        log.info("Streaming session kicked off")
+    }
+
+    /// Tears down the streaming session per the prototype's stop ordering
+    /// (`DualRecorder.swift:271-291`). Idempotent — no-op if no session is
+    /// active or kickoff failed (queue + tap dropped silently).
+    ///
+    /// Order matters:
+    /// 1. Push end-of-stream into the queue (signals drain to exit).
+    /// 2. Await drain task — guarantees in-flight `appendAudio` /
+    ///    `processBufferedAudio` calls complete before `finish()`.
+    /// 3. Clear the streaming session UUID on the presenter + service —
+    ///    BEFORE `finish()` per prototype rounds-3-4: a late callback
+    ///    dispatched between drain exit and `finish()` would otherwise flip
+    ///    `streamingIsVolatile` back to `true` after we've promoted to
+    ///    `.primary`.
+    /// 4. `engine.finish()` — applies the final snapshot via
+    ///    `presenter.applyFinalSnapshot(_:)`, bypassing the cleared session
+    ///    guard for the explicit promote-to-final write.
+    /// 5. `service.endSession(engine:)` — calls `engine.cleanup()` for
+    ///    full CoreML eviction.
+    /// 6. Drop local refs.
+    ///
+    /// Always nils `streamingQueue` last so a no-engine, queue-only state
+    /// (kickoff failed mid-recording) still cleans up properly.
+    private func tearDownStreamingSession() async {
+        // Always signal the queue (covers the kickoff-failed orphan case
+        // where `streamingEngine == nil` but `streamingQueue != nil` —
+        // tap closures may have pushed samples that nothing consumes).
+        streamingQueue?.endOfStream()
+
+        if let engine = streamingEngine {
+            await streamingDrainTask?.value
+            streamingDrainTask = nil
+
+            if let presenter = streamingPresenter {
+                StreamingTranscriptionService.shared
+                    .clearSessionTokenBeforeFinish(presenter: presenter)
+            }
+
+            await engine.finish()
+            await StreamingTranscriptionService.shared.endSession(engine: engine)
+        } else {
+            // Kickoff never completed — drop the orphan drain task if any
+            // (defensive; shouldn't exist without an engine).
+            streamingDrainTask?.cancel()
+            streamingDrainTask = nil
+        }
+
+        self.streamingEngine = nil
+        self.streamingQueue = nil
+    }
+
+    func start() async throws {
+        guard !isRecording else { throw RecordingError.alreadyRunning }
+
+        // The `isPipelineInFlight` guard is RELAXED for the warm-resume fast
+        // path. The original guard's purpose is to prevent a fresh capture
+        // from interleaving with an in-flight transcription's drain — but
+        // the warm-resume path uses a fresh `CaptureContext` (allocated
+        // below) and a fresh tap install on the SAME paused engine. The
+        // prior pipeline's transcription is operating on samples that were
+        // ALREADY drained at warm-stop (`capture` was nil'd immediately
+        // after `capture.drain()` in stop()'s warm branch), so there is no
+        // shared mutable storage between the two recordings. Letting
+        // warm-resume proceed during pipeline-in-flight is what makes the
+        // user-promised "instant restart" reachable in practical sessions:
+        // the prior pipeline takes 3-10s, the warm window is 60s — without
+        // this relaxation, the keyboard / Action Button / "Record again"
+        // paths within the first 10s would throw `.alreadyRunning`.
+        //
+        // The prior pipeline's `markPipelineFinished()` flips
+        // `isPipelineInFlight = false` whenever it completes — that's safe
+        // for the new recording, which never re-reads the flag after
+        // entering this method.
+        let canWarmResume = isWarmHeld
+            && engine != nil
+            && warmHardwareFormat != nil
+            && warmConverter != nil
+        if !canWarmResume {
+            guard !isPipelineInFlight else { throw RecordingError.alreadyRunning }
+        }
+
+        // ===== Warm-resume fast path (Cut C) =====
+        //
+        // If we're currently in warm-hold, the engine is paused with the
+        // audio session still active. Skip `configureSession()`, skip the
+        // engine alloc, skip `engine.prepare()`. Reuse the cached converter
+        // + hardware format to install a fresh tap on a new CaptureContext
+        // (the previous capture was drained and nil'd at stop()-time). Cancel
+        // the warm-expiration task so it doesn't fire `endWarmHold()` on top
+        // of an active recording.
+        //
+        // The system observers remain attached from the prior `start()` —
+        // we deliberately did NOT unsubscribe them at warm-stop because we
+        // want interruptions during the warm window to land in the same
+        // handlers (which now fire `endWarmHold()` if currently warm).
+        //
+        // Resume path latency target: ~10–50ms (engine.start() on an already-
+        // prepared paused graph). Cold path remains ~200–400ms.
+        if isWarmHeld,
+           let warmEngine = engine,
+           let hardwareFormat = warmHardwareFormat,
+           let converter = warmConverter {
+            cancelWarmHoldTask()
+            isWarmHeld = false
+            warmHoldExpiresAt = nil
+
+            let capture = CaptureContext(
+                converter: converter,
+                inputFormat: hardwareFormat,
+                target: Self.target,
+                log: log
+            )
+
+            // Pre-allocate the streaming queue BEFORE installTap so the tap's
+            // first callback already has a queue to push into. The engine +
+            // drain task are kicked off async post-engine.start() so the
+            // ~200-500ms loadModels cold path doesn't block start() return.
+            // Tap pushes pile up in the queue until the drain task spawns;
+            // this is bounded by the ~50-200ms typical kickoff latency.
+            let streamingQueue = StreamingBufferQueue()
+            self.streamingQueue = streamingQueue
+
+            installTap(on: warmEngine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
+
+            do {
+                try warmEngine.start()
+            } catch {
+                // Engine refused to resume. Tear down completely so subsequent
+                // start()s take the cold path. We've already cleared
+                // `isWarmHeld`, so calling `endWarmHold()` here would no-op —
+                // do the full-teardown work inline. Same shape as `endWarmHold`
+                // minus the `isWarmHeld` guard.
+                warmEngine.inputNode.removeTap(onBus: 0)
+                warmEngine.stop()
+                unsubscribeSystemObservers()
+                self.engine = nil
+                self.capture = nil
+                self.warmHardwareFormat = nil
+                self.warmConverter = nil
+                self.streamingQueue = nil
+                restoreSession()
+                publishRecordingState(isRecording: false, startedAt: nil)
+                log.error(
+                    "warm resume engine.start() failed: \(error.localizedDescription, privacy: .public) — fell back to full teardown"
+                )
+                throw RecordingError.engineStart(error)
+            }
+
+            self.capture = capture
+            let startedAt = Date()
+            isRecording = true
+            publishRecordingState(isRecording: true, startedAt: startedAt)
+            setCurrentRecordingStartedAt(startedAt)
+            publishPipelinePhase(.recording)
+            log.info("Recording resumed from warm hold (no cold setup paid)")
+
+            // Fire-and-forget streaming kickoff. Cleanup-on-every-stop
+            // policy means we instantiate + load a fresh manager per
+            // recording; the ~200-500ms ANE load runs off MainActor and
+            // doesn't block this method's return.
+            Task { [weak self] in
+                await self?.kickOffStreamingSession()
+            }
+            return
+        }
+
+        // ===== Cold-start path (no warm hold available) =====
         try configureSession()
 
         let engine = AVAudioEngine()
@@ -108,70 +431,98 @@ final class RecordingService {
         }
 
         let capture = CaptureContext(converter: converter, inputFormat: hardwareFormat, target: Self.target, log: log)
+        // Stash these on the service so a later warm-resume can re-use them
+        // without reconstructing. Cleared by `endWarmHold()` (full teardown).
+        self.warmHardwareFormat = hardwareFormat
+        self.warmConverter = converter
 
-        // Per best-practices §1.2 + §1.3: the tap fires on AVAudioEngine's
-        // audio-render thread, not on any actor. `CaptureContext` owns the
-        // converter + lock-protected sample buffer (see invariant note on
-        // that type at the bottom of this file), so the audio thread stays
-        // entirely off-actor and no `MainActor.assumeIsolated` appears in
-        // the hot path.
-        //
-        // **The `@Sendable` annotation below is load-bearing, not cosmetic.**
-        //
-        // Swift 6 isolation inference: a closure passed to a non-`@Sendable`
-        // parameter inherits the enclosing actor's isolation. `start()` is
-        // `@MainActor`, and `AVAudioNodeTapBlock` is not `@Sendable` — so by
-        // default this closure is silently `@MainActor`-isolated. `@preconcurrency
-        // import AVFoundation` suppresses the *diagnostic* about sending a
-        // non-Sendable closure into Apple code; it does NOT change the
-        // closure's inferred isolation. When the audio-render thread later
-        // invokes the closure, Swift 6's runtime runs
-        // `swift_task_checkIsolated(MainActor.shared)` at closure entry, which
-        // lowers to `dispatch_assert_queue(main_queue)` and traps with
-        // "BLOCK was expected to execute on queue" — a crash reproduced on
-        // iPhone 17 / iOS 26.2 immediately after `phase → recording`.
-        //
-        // Marking the closure `@Sendable` breaks isolation inheritance so it's
-        // nonisolated at invocation time — which is the contract the audio
-        // tap actually needs. The sole captured reference (`capture`) is
-        // `@unchecked Sendable` with the invariant documented on `CaptureContext`.
-        //
-        // The `log.debug` below is a one-shot diagnostic (gated by `tapOnce`)
-        // so the next device-console capture records the real queue identity.
-        // Expected: an audio-render thread (e.g. `com.apple.coreaudio.AURemoteIO`
-        // / `com.apple.audio.IOThread.client`) and NOT the main queue.
-        // Deliberately NOT `print`: stdio acquires an internal lock and is not
-        // real-time-safe, whereas `os_log` (backing `Logger`) was explicitly
-        // designed to be callable from audio callbacks. One-shot so we don't
-        // add any per-buffer overhead (buffers fire ~12×/sec at 4096@48kHz).
-        // Remove the `TapOnceGate` + the `log.debug` line once verified on-device.
+        // Pre-allocate the streaming queue BEFORE installTap. See the
+        // warm-resume path above for rationale. Tap closures capture this
+        // by value (lock-protected `@unchecked Sendable` queue) so post-
+        // alloc kickoff just constructs the engine + drain task against it.
+        let streamingQueue = StreamingBufferQueue()
+        self.streamingQueue = streamingQueue
+
+        installTap(on: engine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
+
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            restoreSession()
+            self.warmHardwareFormat = nil
+            self.warmConverter = nil
+            self.streamingQueue = nil
+            throw RecordingError.engineStart(error)
+        }
+
+        self.engine = engine
+        self.capture = capture
+        subscribeSystemObservers(engine: engine)
+        let startedAt = Date()
+        isRecording = true
+        publishRecordingState(isRecording: true, startedAt: startedAt)
+        setCurrentRecordingStartedAt(startedAt)
+        publishPipelinePhase(.recording)
+        log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
+
+        // Fire-and-forget streaming kickoff. The engine + drain task spin
+        // up against the pre-allocated queue captured by the tap closure;
+        // initial samples queued before the drain is alive get consumed
+        // when the drain spawns. No-op when the model isn't on disk or the
+        // caller is headless (no presenter injected).
+        Task { [weak self] in
+            await self?.kickOffStreamingSession()
+        }
+    }
+
+    /// Installs the audio tap on `engine.inputNode` with the canonical Jot
+    /// tap block (RMS amplitude → ~30Hz MainActor publication + 100ms
+    /// AppGroup amplitude projection + first-buffer diagnostic log gated by
+    /// `TapOnceGate`).
+    ///
+    /// Factored from the original inline `start()` body so the warm-resume
+    /// path can reinstall a tap on the same paused engine using a fresh
+    /// `CaptureContext` (the previous capture was drained at warm-stop and
+    /// nil'd; reusing it would re-emit the prior recording's storage on the
+    /// new tap's first ingest call). The cold-start path also routes through
+    /// here so the two paths stay observably identical from the audio
+    /// thread's perspective.
+    ///
+    /// The `@Sendable` annotation on `tapBlock` is load-bearing — see the
+    /// pre-factor history of this file at HEAD~ for the full diagnostic
+    /// rationale (Swift 6 isolation inference, audio-render thread, the
+    /// `swift_task_checkIsolated(MainActor.shared)` trap on iPhone 17 /
+    /// iOS 26.2). Do not rewrite without preserving the `@Sendable`.
+    private func installTap(
+        on engine: AVAudioEngine,
+        hardwareFormat: AVAudioFormat,
+        capture: CaptureContext,
+        streamingQueue: StreamingBufferQueue?
+    ) {
+        let input = engine.inputNode
         let tapOnce = TapOnceGate()
-        // ~30 Hz refresh: one MainActor hop every ~33 ms. The tap itself fires
-        // at hardware buffer cadence (~12 Hz at 4096@48kHz but can exceed 100 Hz
-        // at smaller buffers), so gating here avoids flooding the run loop
-        // with amplitude updates that Observation would dirty-track redundantly.
         let amplitudeGate = AmplitudeGate(intervalMS: 33)
         let appGroupAmplitudeGate = AmplitudeGate(intervalMS: 100)
-        let tapLog = log  // local Sendable copy; avoids capturing MainActor `self`
-        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [capture, tapOnce, amplitudeGate, appGroupAmplitudeGate, tapLog, weak self] pcm, _ in
+        let tapLog = log
+        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [capture, tapOnce, amplitudeGate, appGroupAmplitudeGate, tapLog, streamingQueue, weak self] pcm, _ in
             if tapOnce.fireOnce() {
                 tapLog.debug("[recording] first tap callback on \(Thread.current.description, privacy: .public)")
             }
-            capture.ingest(pcm)
+            // Single converter pass: `CaptureContext.ingest` does the
+            // conversion + storage append for the batch path AND returns
+            // the converted samples. The streaming fan-out pushes the same
+            // `[Float]` into the FIFO queue for the off-MainActor drain
+            // task to feed FluidAudio. nil return (drain-in-progress, format
+            // mismatch, conversion error) skips the streaming push — exactly
+            // the semantics we want during teardown.
+            let convertedSamples = capture.ingest(pcm)
+            if let convertedSamples, let streamingQueue {
+                streamingQueue.push(convertedSamples)
+            }
 
-            // Amplitude publication: compute RMS on the raw hardware buffer
-            // (cheap — one sum-of-squares pass over frameLength floats), gate
-            // to ~30 Hz, then hop to MainActor to write the @Observable
-            // property. `Task { @MainActor in … }` is the sanctioned pattern
-            // for audio-thread → MainActor publication (see best-practices §1.3).
-            // We capture `self` weakly so the service can deallocate normally;
-            // `self` is MainActor-isolated and therefore Sendable, which makes
-            // the weak capture legal inside this @Sendable closure.
             if amplitudeGate.shouldFire(), let amp = normalizedAmplitude(pcm) {
-                // `self` here is the outer closure's already-weak capture,
-                // so it's an `Optional<RecordingService>`. The Task reads it
-                // by value; if the service has deallocated by the time the
-                // MainActor turn runs, the guard returns harmlessly.
                 Task { @MainActor in
                     guard let self, self.isRecording else { return }
                     self.currentAmplitude = amp
@@ -182,23 +533,6 @@ final class RecordingService {
             }
         }
         input.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat, block: tapBlock)
-
-        do {
-            engine.prepare()
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            restoreSession()
-            throw RecordingError.engineStart(error)
-        }
-
-        self.engine = engine
-        self.capture = capture
-        subscribeSystemObservers(engine: engine)
-        let startedAt = Date()
-        isRecording = true
-        publishRecordingState(isRecording: true, startedAt: startedAt)
-        log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
     }
 
     func stop() async throws -> [Float] {
@@ -212,6 +546,85 @@ final class RecordingService {
             // we have no capture at all — there was nothing to stop.
             guard let capture else { throw RecordingError.notRunning }
 
+            // Decide warm vs cold teardown ONCE here so the rest of the
+            // method body has a single branch to read. The toggle read MUST
+            // happen at stop()-time, not at start()-time — the user could
+            // have flipped the toggle in Settings between start and stop.
+            //
+            // Also gate on engine being non-nil: if the engine was torn down
+            // by an interruption observer (`internalStop`), there's nothing
+            // to pause, so we must take the cold-teardown path regardless.
+            let warmEnabled = AppGroup.holdMicWarmAfterStop
+            let canEnterWarm = warmEnabled
+                && engine != nil
+                && warmHardwareFormat != nil
+                && warmConverter != nil
+
+            if canEnterWarm, let engine {
+                // ===== Warm-stop path (Cut C) =====
+                //
+                // MainActor-atomic block — DO NOT introduce `await` between
+                // `engine.pause()` and `isWarmHeld = true`. The no-interleaving
+                // invariant is correctness-load-bearing for `handleInterruption`
+                // / `handleRouteChange` / `handleEngineConfigChange`: those
+                // observers dispatch into `Task { @MainActor }`, and the
+                // queued task body cannot run while this synchronous block
+                // holds MainActor. Once the warm-set sequence finishes, those
+                // tasks see `isWarmHeld == true` and route to
+                // `endWarmHold(reason:)` instead of `internalStop`. An
+                // intervening await would break that ordering and let an
+                // interrupt fire before warm flags are set.
+                //
+                // Order matters here. Remove tap FIRST so post-pause buffers
+                // can't still dispatch into a CaptureContext we're about to
+                // nil. Drain the capture for the in-flight transcription
+                // pipeline. THEN engine.pause() — the AVAudioEngine docs say
+                // pause() is the documented "preserve graph state, suspend
+                // I/O" primitive; the AURemoteIO unit stays warm and the
+                // audio session stays active. We deliberately do NOT call
+                // `restoreSession()`, do NOT `unsubscribeSystemObservers()`,
+                // do NOT clear `warmHardwareFormat` / `warmConverter`.
+                //
+                // Schedule a 60s timer that fires `endWarmHold()` if no
+                // start() arrives. The timer is held in `warmHoldTask` so a
+                // resume can cancel it (see start()'s warm-resume branch).
+                engine.inputNode.removeTap(onBus: 0)
+                engine.pause()
+
+                let samples = capture.drain()
+                self.capture = nil
+
+                isRecording = false
+                currentAmplitude = nil
+                AmplitudeProjection.clear()
+                publishRecordingState(isRecording: false, startedAt: nil)
+
+                isWarmHeld = true
+                let expiresAt = Date().addingTimeInterval(Self.warmHoldDuration)
+                warmHoldExpiresAt = expiresAt
+                scheduleWarmHoldExpiration()
+
+                // Streaming teardown happens OUTSIDE the MainActor-atomic
+                // block above (which spans removeTap through
+                // scheduleWarmHoldExpiration). Per the in-block comment,
+                // an `await` between `engine.pause()` and `isWarmHeld = true`
+                // would let an interrupt observer reach internalStop instead
+                // of endWarmHold. Tearing down streaming after the atomic
+                // block preserves that invariant. Cleanup-on-every-stop
+                // policy applies to warm-stop too — even though the audio
+                // engine stays warm for ~60s, the streaming model is
+                // released to free its ~66 MB ANE working memory.
+                await tearDownStreamingSession()
+
+                let seconds = Double(samples.count) / Self.sampleRate
+                log.info(
+                    "Recording stopped (warm) — \(samples.count) samples (~\(seconds, privacy: .public)s); engine paused, warm window \(Self.warmHoldDuration, privacy: .public)s"
+                )
+                isStopInFlight = false
+                return samples
+            }
+
+            // ===== Cold-stop path (warm disabled or unavailable) =====
             if let engine {
                 engine.inputNode.removeTap(onBus: 0)
                 engine.stop()
@@ -219,9 +632,21 @@ final class RecordingService {
 
             let samples = capture.drain()
 
+            // Streaming teardown — mirrors prototype `DualRecorder.swift:271-291`.
+            // After engine.stop() the audio thread is dead; tap callbacks
+            // can no longer push into the streaming queue. tearDown signals
+            // EOS, awaits the drain task (bounded by in-flight chunk
+            // inference, ~50-200ms typical), promotes the streaming preview
+            // to its final snapshot via engine.finish(), then releases the
+            // FluidAudio manager via engine.cleanup() (cleanup-on-every-stop
+            // policy per spec §2.1).
+            await tearDownStreamingSession()
+
             unsubscribeSystemObservers()
             self.engine = nil
             self.capture = nil
+            self.warmHardwareFormat = nil
+            self.warmConverter = nil
             restoreSession()
             isRecording = false
             currentAmplitude = nil
@@ -336,6 +761,18 @@ final class RecordingService {
             return
         }
 
+        // Warm-hold cleanup must run on the same path. `endWarmHold()` is
+        // idempotent and a no-op when not warm, so we route through it
+        // unconditionally. After it returns, fall through to the existing
+        // teardown shape — for the warm path that's all no-ops (engine,
+        // capture, observers already cleared). For the active-recording
+        // path it's the original behavior.
+        if isWarmHeld {
+            cancelWarmHoldTask()
+            isWarmHeld = false
+            warmHoldExpiresAt = nil
+        }
+
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -343,6 +780,45 @@ final class RecordingService {
         unsubscribeSystemObservers()
         self.engine = nil
         self.capture = nil
+        self.warmHardwareFormat = nil
+        self.warmConverter = nil
+        // Streaming teardown is async but `forceStop` is synchronous (called
+        // from background-handler closures with limited wallclock). Hand off
+        // to a detached Task — the queue is signaled EOS, the drain task
+        // exits on its own, the engine is cleaned up post-return. The
+        // streaming-preview UX ends abruptly on scene-disconnect; batch
+        // path is unaffected. Local refs nil'd here so a subsequent
+        // `start()` doesn't observe stale streaming state.
+        //
+        // Capture-list discipline: the detached Task explicitly captures
+        // ONLY the snapshotted local refs (NOT `self`). This avoids extending
+        // the singleton's lifetime past app shutdown and avoids racing with
+        // a follow-up `start()` that might mutate the streaming fields
+        // while the dispatched teardown is mid-flight. `self` mutation has
+        // already happened above; the Task is operating on its own snapshots.
+        let streamingEngineRef = self.streamingEngine
+        let streamingQueueRef = self.streamingQueue
+        let streamingDrainTaskRef = self.streamingDrainTask
+        let streamingPresenterRef = self.streamingPresenter
+        self.streamingEngine = nil
+        self.streamingQueue = nil
+        self.streamingDrainTask = nil
+        if streamingEngineRef != nil || streamingQueueRef != nil {
+            Task.detached { [streamingEngineRef, streamingQueueRef, streamingDrainTaskRef, streamingPresenterRef] in
+                streamingQueueRef?.endOfStream()
+                if let engine = streamingEngineRef {
+                    await streamingDrainTaskRef?.value
+                    if let presenter = streamingPresenterRef {
+                        await StreamingTranscriptionService.shared
+                            .clearSessionTokenBeforeFinish(presenter: presenter)
+                    }
+                    await engine.finish()
+                    await StreamingTranscriptionService.shared.endSession(engine: engine)
+                } else {
+                    streamingDrainTaskRef?.cancel()
+                }
+            }
+        }
         restoreSession()
         isRecording = false
         currentAmplitude = nil
@@ -363,6 +839,277 @@ final class RecordingService {
 
     func markPipelineFinished() {
         isPipelineInFlight = false
+    }
+
+    /// Set `isPipelineInFlight = true` from a non-`stop()` entry point.
+    ///
+    /// Sole legitimate caller today: `RecordingPipelineDispatch.publishAfterInterruption`
+    /// (in `Shared/RecordingPipelineDispatch.swift`). The interrupt-publish
+    /// path drains samples via `internalStop` and runs the post-recording
+    /// pipeline asynchronously WITHOUT going through `stop()` — so `stop()`'s
+    /// own `isPipelineInFlight = true` setter never fires for that path. The
+    /// dispatch helper takes ownership of the flag explicitly via this
+    /// method, then clears it via `markPipelineFinished()` on every exit.
+    ///
+    /// Symmetric with `markPipelineFinished()` above. Do NOT call from any
+    /// other site — `stop()` already sets the flag, and any other caller
+    /// would step on the existing pipeline-in-flight invariant.
+    func markPipelineInFlight() {
+        isPipelineInFlight = true
+    }
+
+    // MARK: - Warm-hold (Cut C)
+    //
+    // Two transitions out of warm-hold exist:
+    //   1. `start()` resumes the paused engine — see start()'s warm-resume
+    //      branch. That path cancels `warmHoldTask` and clears warm state
+    //      itself; it does NOT call `endWarmHold()`.
+    //   2. `endWarmHold()` performs full teardown: `engine.stop()` ,
+    //      `unsubscribeSystemObservers()`, `restoreSession()`. Called by
+    //      timer expiration, the user flipping the Settings toggle off
+    //      mid-warm, an interruption arriving during the warm window, the
+    //      `EndWarmHoldIntent` "Stop holding" Live Activity button, and
+    //      `forceStop()` (scene-disconnect path).
+
+    /// Returns whether the service is currently sitting in the warm-hold
+    /// post-stop window. Surfaced for the keyboard extension's mic CTA
+    /// (so it can render a warm affordance instead of the cold "tap to
+    /// start" affordance) and the Live Activity update path.
+    var isInWarmHold: Bool { isWarmHeld }
+
+    /// Wall-clock instant the current warm window ends, or `nil` if not
+    /// currently warm. Renders the Live Activity countdown via
+    /// `Text(timerInterval: now ... expiresAt, countsDown: true)` without
+    /// activity update churn.
+    var currentWarmHoldExpiresAt: Date? { warmHoldExpiresAt }
+
+    /// Full teardown of a warm-paused engine. Called by the warm timer when
+    /// no resume arrived in time, by the user flipping the Settings toggle
+    /// off mid-warm, by interruption / route / engine-config observers
+    /// firing during warm, and by the "Stop holding" Live Activity intent.
+    /// Idempotent: a no-op if not currently warm.
+    func endWarmHold(reason: String) {
+        guard isWarmHeld else { return }
+        log.info("Ending warm hold (\(reason, privacy: .public))")
+
+        cancelWarmHoldTask()
+        isWarmHeld = false
+        warmHoldExpiresAt = nil
+
+        if let engine {
+            // Tap was already removed at the warm-stop. Pause-then-stop is
+            // legal per AVAudioEngine docs.
+            engine.stop()
+        }
+        unsubscribeSystemObservers()
+        self.engine = nil
+        self.capture = nil
+        self.warmHardwareFormat = nil
+        self.warmConverter = nil
+        restoreSession()
+
+        // Defensive: a fresh recording would publish its own true state,
+        // but during warm the keyboard extension may have been showing
+        // a "warm" CTA — give it a clear `false` to settle on.
+        publishRecordingState(isRecording: false, startedAt: nil)
+
+        // End the Live Activity if it's currently rendering `.warmHold`.
+        // Fire-and-forget: this method is called from synchronous contexts
+        // (interrupt observer, Settings toggle onChange, forceStop) AND from
+        // async contexts (warm-timer Task body, EndWarmHoldIntent). The
+        // dispatch is a Task hop because the coordinator's dismiss method is
+        // async; engine teardown semantics don't depend on the activity
+        // ending, so the Task hop is non-blocking. `dismissWarmHold()` is
+        // idempotent — no-ops when the activity isn't in `.warmHold` (e.g.
+        // when warm ended before the followUp expiry handed off).
+        Task { @MainActor in
+            await DictationActivityCoordinator.shared.dismissWarmHold()
+        }
+    }
+
+    /// Settings flips the warm-hold toggle. If the user just turned it OFF
+    /// while a warm window is active, end the warm hold immediately so the
+    /// orange indicator drops at the same time the user expects it to.
+    /// Called from `SettingsView` after the toggle write.
+    func applyWarmHoldToggleChange() {
+        let nowEnabled = AppGroup.holdMicWarmAfterStop
+        if !nowEnabled, isWarmHeld {
+            endWarmHold(reason: "Settings toggle disabled mid-warm")
+        }
+    }
+
+    private func scheduleWarmHoldExpiration() {
+        cancelWarmHoldTask()
+        warmHoldTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.warmHoldDuration))
+            } catch {
+                // Cancellation: a `start()` resume path or an early
+                // `endWarmHold()` cancelled us. Either way, exit.
+                return
+            }
+            guard let self, self.isWarmHeld else { return }
+            self.endWarmHold(reason: "warm timer expired")
+        }
+    }
+
+    private func cancelWarmHoldTask() {
+        warmHoldTask?.cancel()
+        warmHoldTask = nil
+    }
+
+    // MARK: - Pipeline phase + heartbeat (v7 auto-paste design)
+    //
+    // Per `tmp/research-auto-paste-best-design.md` §4.0 + §4.2: pipeline
+    // phase is a single-source-of-truth on the RecordingService singleton,
+    // projected to the App Group so the keyboard extension can read it
+    // without a polling loop. Every phase transition writes the projection +
+    // posts a Darwin notification (`pipelinePhaseChanged`) so the keyboard
+    // wakes and re-reads. While non-terminal, a 10s heartbeat re-writes the
+    // projection's `lastUpdatedAt` so the keyboard can detect a dead writer
+    // (the synthetic-`.failed` view inside `PipelinePhaseProjection.read()`).
+    //
+    // Terminal phases (`.idle` / `.failed`) additionally append to
+    // `TerminalSessionLog` so the keyboard's sad-path cleanup can confirm
+    // "session finished, nothing further coming" without depending on a
+    // single overwriteable field on the projection.
+
+    /// Adopts a session UUID — the URL-scheme handler in `JotApp.swift`
+    /// stashes the keyboard's session ID off the `?session=...` query and
+    /// calls this before `start()`, so the upcoming projection writes carry
+    /// the keyboard's ID. Safe to call from any phase; if a different session
+    /// is in flight, the caller is responsible for deciding whether to adopt
+    /// (see `handleStopRequested` in `JotApp.swift`).
+    func adoptSession(_ id: UUID) {
+        currentSessionID = id
+    }
+
+    /// Records the recording's start time so it can be carried into the
+    /// pipeline-phase projection. Called by the start coordinator alongside
+    /// the `.recording` phase transition.
+    func setCurrentRecordingStartedAt(_ date: Date?) {
+        currentRecordingStartedAt = date
+    }
+
+    /// Single helper for every pipeline phase transition. Updates the in-
+    /// process `currentPipelinePhase`, writes the App Group projection, posts
+    /// `pipelinePhaseChanged`, and manages the heartbeat task lifecycle.
+    /// Terminal transitions (`.idle` / `.failed`) also append to
+    /// `TerminalSessionLog` so the keyboard's sad-path cleanup can clear
+    /// pending state even when the published payload's freshness window has
+    /// expired.
+    func publishPipelinePhase(
+        _ phase: PipelinePhaseProjection.Phase,
+        failureReason: String? = nil
+    ) {
+        let priorPhase = currentPipelinePhase
+        let priorSessionID = currentSessionID
+        currentPipelinePhase = phase
+
+        let isTerminal = (phase == .idle || phase == .failed)
+        let projection: PipelinePhaseProjection
+
+        if isTerminal {
+            // Append to TerminalSessionLog BEFORE the projection write so a
+            // keyboard that wakes on `pipelinePhaseChanged` and reads the
+            // projection can ALSO read the up-to-date log without a second
+            // post race.
+            //
+            // Only append a record if we actually owned a non-idle session —
+            // otherwise we'd write spurious records on idle→idle no-ops.
+            if priorPhase != .idle, let priorOwner = priorSessionID {
+                // `.idle` is reached only via successful publish; `.failed`
+                // is pre-publish failure. The `hadPublish` bit is retained
+                // for diagnostic logging only — the keyboard's sad-path
+                // cleanup uses UUID match alone (per design Q2).
+                let hadPublish = (phase == .idle)
+                TerminalSessionLog.append(
+                    TerminalSessionRecord(
+                        sessionID: priorOwner,
+                        finishedAt: Date(),
+                        hadPublish: hadPublish
+                    )
+                )
+            }
+            projection = PipelinePhaseProjection(
+                phase: phase,
+                sessionID: nil,
+                recordingStartedAt: nil,
+                lastUpdatedAt: Date(),
+                failureReason: failureReason
+            )
+            currentSessionID = nil
+            currentRecordingStartedAt = nil
+        } else {
+            projection = PipelinePhaseProjection(
+                phase: phase,
+                sessionID: currentSessionID,
+                recordingStartedAt: currentRecordingStartedAt,
+                lastUpdatedAt: Date(),
+                failureReason: nil
+            )
+        }
+
+        PipelinePhaseProjection.write(projection)
+        CrossProcessNotification.post(name: CrossProcessNotification.pipelinePhaseChanged)
+
+        if isTerminal {
+            stopHeartbeat()
+        } else {
+            startHeartbeatIfNeeded()
+        }
+    }
+
+    private var heartbeatTask: Task<Void, Never>?
+
+    private func startHeartbeatIfNeeded() {
+        guard heartbeatTask == nil else { return }
+        heartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(
+                        for: .seconds(PipelinePhaseProjection.heartbeatInterval)
+                    )
+                } catch {
+                    // Cancellation. Explicit return so we don't accidentally
+                    // swallow other errors — `Task.sleep` only throws
+                    // `CancellationError`.
+                    return
+                }
+                guard let self else { return }
+                if self.currentPipelinePhase == .idle
+                    || self.currentPipelinePhase == .failed {
+                    return
+                }
+                self.republishHeartbeat()
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+    }
+
+    /// Re-writes the projection with the same phase + sessionID + a fresh
+    /// `lastUpdatedAt`, then posts `pipelinePhaseChanged`. The Darwin post is
+    /// load-bearing: the keyboard's bounded stale-deadline task arms off the
+    /// projection's `lastUpdatedAt`; without a wakeup it never re-arms,
+    /// defeating the dead-writer recovery design.
+    private func republishHeartbeat() {
+        guard currentPipelinePhase != .idle, currentPipelinePhase != .failed else {
+            return
+        }
+        PipelinePhaseProjection.write(
+            PipelinePhaseProjection(
+                phase: currentPipelinePhase,
+                sessionID: currentSessionID,
+                recordingStartedAt: currentRecordingStartedAt,
+                lastUpdatedAt: Date(),
+                failureReason: nil
+            )
+        )
+        CrossProcessNotification.post(name: CrossProcessNotification.pipelinePhaseChanged)
     }
 
     // MARK: - System observers (best-practices §2.3, §2.4, §2.5)
@@ -427,8 +1174,18 @@ final class RecordingService {
         guard let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            log.notice("Audio session interrupted — stopping recording")
-            internalStop(reason: "interruption")
+            if isWarmHeld {
+                // The warm-hold engine was paused but the session was still
+                // active — iOS interrupting us means the warm window's
+                // implicit promise (resumable in <50ms) is broken. Tear down
+                // immediately rather than try to resume into an interrupted
+                // session.
+                log.notice("Audio session interrupted during warm hold — ending warm")
+                endWarmHold(reason: "interruption during warm")
+            } else {
+                log.notice("Audio session interrupted — stopping recording")
+                internalStop(reason: "interruption")
+            }
         case .ended:
             // Per spec: do not auto-resume. User re-presses Record.
             // `.shouldResume` only advises us; we still defer to the user.
@@ -441,8 +1198,13 @@ final class RecordingService {
     private func handleRouteChange(reasonRaw: UInt) {
         guard let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
         if reason == .oldDeviceUnavailable {
-            log.notice("Audio route device went away — stopping recording")
-            internalStop(reason: "route change")
+            if isWarmHeld {
+                log.notice("Audio route device went away during warm hold — ending warm")
+                endWarmHold(reason: "route change during warm")
+            } else {
+                log.notice("Audio route device went away — stopping recording")
+                internalStop(reason: "route change")
+            }
         }
         // `.newDeviceAvailable` and friends are ignored: iOS already did the
         // right routing, and interrupting capture on every AirPod reconnect
@@ -450,25 +1212,132 @@ final class RecordingService {
     }
 
     private func handleEngineConfigChange() {
+        if isWarmHeld {
+            // Engine reconfig while the engine is paused means the cached
+            // hardware format is stale. The warm path's promise (instant
+            // resume on the same graph) doesn't survive reconfig — fall
+            // through to full teardown.
+            log.notice("Engine configuration changed during warm hold — ending warm")
+            endWarmHold(reason: "engine config change during warm")
+            return
+        }
         log.notice("Engine configuration changed — stopping recording")
         internalStop(reason: "engine config change")
     }
 
-    /// Tear down the engine and session without draining samples. The
-    /// samples remain in `capture` so a subsequent `stop()` call from the
-    /// UI can still return whatever we captured before the interruption.
+    /// Tear down the engine and session AND auto-drain captured samples
+    /// through the post-recording pipeline. Per `tmp/research-warm-resume-design.md`
+    /// §6.1 (Cut A bug-fix bundle): the prior shape "retained samples for
+    /// drain" so a later in-app `stop()` could pick them up — but the
+    /// keyboard / intent surfaces had already given up on the recording by
+    /// then, so partial captures were effectively dropped. The new shape
+    /// runs the post-recording tail (transcribe → publish → ledger) asynchronously
+    /// via `RecordingPipelineDispatch.publishAfterInterruption` so EVERY entry
+    /// path recovers from a mid-recording interrupt.
+    ///
+    /// **Behavior change vs prior shape:** the in-app "stop button works
+    /// after interruption" recovery path is REPLACED by automatic dispatch.
+    /// Acknowledged in design doc §6.1: "samples are retained for in-app drain
+    /// but lost for keyboard / intent paths" today; with this change every
+    /// path benefits, but a user looking at the in-app UI when the
+    /// interruption fires no longer gets the manual stop-and-publish flow —
+    /// the publish has already happened automatically by the time they tap.
     private func internalStop(reason: String) {
         guard isRecording, let engine else { return }
+
+        // ===== Snapshot phase =====
+        //
+        // Capture every piece of state the dispatch helper needs BEFORE any
+        // mutation. Defense-in-depth: today none of the mutations below
+        // clears `currentSessionID` / `currentRecordingStartedAt` (those are
+        // cleared inside `publishPipelinePhase`'s terminal branch, which
+        // internalStop does not call), but a future refactor that adds a
+        // `publishPipelinePhase(.failed)` here would silently break the
+        // session-ID hand-off without this snapshot. Per cut-A-reviewer's
+        // BLOCKER #4 confirmation.
+        let snapshotSessionID = currentSessionID
+        let snapshotStartedAt = currentRecordingStartedAt ?? Date()
+        let snapshotCapture = self.capture
+
+        // ===== Teardown phase =====
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         unsubscribeSystemObservers()
         self.engine = nil
+        // Hand the capture ref to the dispatch task; nil ours so the next
+        // start() builds a fresh CaptureContext rather than reusing this one.
+        self.capture = nil
+        // Clear the warm cache too — a future stop() with the toggle on
+        // can't enter warm hold without an engine, so leaving the cached
+        // format/converter behind would be misleading.
+        self.warmHardwareFormat = nil
+        self.warmConverter = nil
+
+        // Streaming teardown — same fire-and-forget shape as `forceStop`.
+        // `internalStop` is synchronous (interrupt-observer path) so we
+        // can't `await tearDownStreamingSession()` inline. Hand off to a
+        // detached Task that signals EOS, awaits drain, releases the
+        // engine. Capture-list discipline: the detached Task captures ONLY
+        // the snapshotted local refs (NOT `self`). Same rationale as
+        // `forceStop`'s identical block above. Streaming-preview UX ends
+        // abruptly on interruption;
+        // batch path is unaffected (the dispatch phase below still runs
+        // through `RecordingPipelineDispatch`).
+        let streamingEngineRef = self.streamingEngine
+        let streamingQueueRef = self.streamingQueue
+        let streamingDrainTaskRef = self.streamingDrainTask
+        let streamingPresenterRef = self.streamingPresenter
+        self.streamingEngine = nil
+        self.streamingQueue = nil
+        self.streamingDrainTask = nil
+        if streamingEngineRef != nil || streamingQueueRef != nil {
+            Task.detached { [streamingEngineRef, streamingQueueRef, streamingDrainTaskRef, streamingPresenterRef] in
+                streamingQueueRef?.endOfStream()
+                if let engine = streamingEngineRef {
+                    await streamingDrainTaskRef?.value
+                    if let presenter = streamingPresenterRef {
+                        await StreamingTranscriptionService.shared
+                            .clearSessionTokenBeforeFinish(presenter: presenter)
+                    }
+                    await engine.finish()
+                    await StreamingTranscriptionService.shared.endSession(engine: engine)
+                } else {
+                    streamingDrainTaskRef?.cancel()
+                }
+            }
+        }
+
         restoreSession()
         isRecording = false
         currentAmplitude = nil
         AmplitudeProjection.clear()
         publishRecordingState(isRecording: false, startedAt: nil)
-        log.info("Internal stop (\(reason, privacy: .public)) — samples retained for drain")
+
+        // ===== Dispatch phase =====
+        //
+        // Fire-and-forget. Safe to dispatch after internalStop returns because
+        // `TranscriptionService` runs inference on a `[Float]` in memory and
+        // does NOT re-grab `AVAudioSession` (verified by grep across
+        // `App/Transcription/` — 0 `AVAudioSession` references). So the
+        // dispatched Task cannot race iOS's interruption-handshake teardown.
+        //
+        // The drain runs OFF MainActor via `drainAsync()` so the audio-thread
+        // bounded wait (up to 250ms catastrophic-only backstop) doesn't block
+        // the MainActor. The dispatch helper then hops back to MainActor for
+        // controller / pipeline calls.
+        guard let snapshotCapture else {
+            log.info("Internal stop (\(reason, privacy: .public)) — no capture to drain; skipping dispatch")
+            return
+        }
+        log.info("Internal stop (\(reason, privacy: .public)) — dispatching partial publish")
+        Task { @MainActor in
+            let samples = await snapshotCapture.drainAsync()
+            await RecordingPipelineDispatch.publishAfterInterruption(
+                samples: samples,
+                sessionID: snapshotSessionID,
+                startedAt: snapshotStartedAt
+            )
+        }
     }
 
     private func publishRecordingState(isRecording: Bool, startedAt: Date?) {
@@ -601,37 +1470,158 @@ private func normalizedAmplitude(_ pcm: AVAudioPCMBuffer) -> Float? {
 /// Owns the per-capture converter and sample buffer. Lives off the MainActor
 /// so the audio tap can convert + append without hopping.
 ///
-/// `@unchecked Sendable` invariant (per best-practices §1.7): only two
-/// callers exist — the audio tap (running on an audio-priority thread) and
-/// `RecordingService.stop()` / `internalStop` on the MainActor. The tap is
-/// removed before `drain()` is called, so converter/storage access never
-/// overlaps across threads. Mutable `storage` is additionally guarded by a
-/// lock as defense-in-depth. Do not add callers.
+/// ## `@unchecked Sendable` invariant
+///
+/// `os_unfair_lock` is allocated at a stable heap address (must NEVER be
+/// value-copied — copying the lock is documented undefined behavior; copying
+/// the pointer is fine). All mutable state (`storage`, `inflightCallbacks`,
+/// `drainSignal`) is guarded by that one lock. The class is `@unchecked Sendable`
+/// because every mutation goes through the lock, but Swift's region-based
+/// isolation can't prove that without the explicit annotation.
+///
+/// ## Race fix (Cut A §6.2)
+///
+/// The previous implementation used `NSLock` and a single `drain()` that
+/// swapped storage. The race: a tap callback could enter `ingest`, run
+/// `convertSync(pcm)` for ~hundreds of µs, then commit to storage — but if
+/// `drain()` was called between callback entry and the storage commit, the
+/// converted samples would be missed. (This is NOT a buffer-lifetime issue
+/// — Apple's `AVAudioPCMBuffer` is materialized into a Swift `[Float]` value
+/// inside `ingest` BEFORE the storage-append, so the underlying buffer can
+/// be reused freely. The bug is purely a serialization-with-drain issue.)
+///
+/// The fix: a 2-phase serialized drain.
+///   1. Tap callback enters under lock; if a drain is in progress (signaled
+///      by `drainSignal != nil`), bail without incrementing the counter or
+///      converting. Otherwise increment `inflightCallbacks` and release the
+///      lock for conversion work.
+///   2. After conversion (which is lock-free), the success path takes the
+///      lock once and atomically: appends samples, decrements the counter,
+///      and signals the drain semaphore if the counter reached zero. Each
+///      early-return path likewise decrements + signals (but does NOT
+///      append) under the same lock.
+///   3. `drainSync()` installs `drainSignal` under lock, then either takes
+///      storage immediately (if `inflightCallbacks == 0`) or waits up to
+///      250ms for the last in-flight callback to finish. The 250ms is a
+///      catastrophic-only backstop (kernel-audio-thread wedge); steady-state
+///      cost is microseconds — `inflightCallbacks` is 0 or 1, and a tap
+///      callback's conversion runs sub-millisecond on A-series silicon.
+///
+/// ## Drain API
+///
+/// Two flavors are exposed:
+///   - `drain()` is the synchronous wrapper preserved for the existing
+///     in-scope callers (`stop()`'s cold + warm branches, `forceStop`). Safe
+///     to call from MainActor in steady state because the wait is bounded
+///     by one buffer cadence (~1ms typical, 250ms catastrophic backstop).
+///   - `drainAsync()` runs `drainSync()` on a detached Task so the wait
+///     never blocks MainActor. Used by `internalStop`'s interrupt-publish
+///     dispatch, where audio-thread state is unusual at drain time and the
+///     wait is more likely to be non-trivial.
 private final class CaptureContext: @unchecked Sendable {
-    private let lock = NSLock()
+    /// Heap-allocated `os_unfair_lock` at a stable address. NEVER copy the
+    /// lock value — only ever address it through this pointer. Apple's docs
+    /// are explicit that lock-value copies produce undefined behavior. The
+    /// pointer itself can be copied freely; Swift's `let` ensures we never
+    /// reassign the pointer.
+    private let lock: os_unfair_lock_t
+
     private let converter: AVAudioConverter
     private let inputFormat: AVAudioFormat
     private let target: AVAudioFormat
     private let log: Logger
+
+    /// All three guarded by `lock`.
     private var storage: [Float] = []
+    private var inflightCallbacks: Int = 0
+    private var drainSignal: DispatchSemaphore?
+
+    /// Catastrophic-only backstop. In steady state `inflightCallbacks` is 0
+    /// or 1 and the in-flight callback's conversion completes sub-millisecond.
+    /// 250ms is twice the longest plausible hardware buffer period — only
+    /// fires on a kernel-audio-thread wedge, where the user has bigger
+    /// problems than UI jank.
+    private static let drainBackstopMS: Int = 250
 
     init(converter: AVAudioConverter, inputFormat: AVAudioFormat, target: AVAudioFormat, log: Logger) {
+        self.lock = os_unfair_lock_t.allocate(capacity: 1)
+        self.lock.initialize(to: os_unfair_lock())
         self.converter = converter
         self.inputFormat = inputFormat
         self.target = target
         self.log = log
     }
 
-    func ingest(_ pcm: AVAudioPCMBuffer) {
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+
+    /// Convert a hardware-format PCM buffer to 16 kHz mono Float32 samples,
+    /// append them to the per-recording storage, and ALSO return them to the
+    /// caller for live-preview fan-out (dual-model-streaming).
+    ///
+    /// Returns `nil` on every early-return / failure path (drain-in-progress,
+    /// format mismatch, allocation failure, conversion error, missing channel
+    /// data) so the caller can distinguish "no samples this callback" from
+    /// "empty array of samples." `@discardableResult` because the historical
+    /// batch path (the `installTap` tap closure) ignores the return value;
+    /// only the live-preview fan-out actually consumes it.
+    ///
+    /// **Co-owned with the dual-model-streaming wave.** Cut A owns the §6.2
+    /// race-fix invariants on `storage` / `inflightCallbacks` / `drainSignal`;
+    /// dual-model-streaming owns the live-preview consumer of the return value
+    /// (wired from `start()`'s `installTap` block). Changes to Phase 3
+    /// ordering, the lock invariants, or the early-return semantics must be
+    /// re-verified against both waves' contracts.
+    @discardableResult
+    func ingest(_ pcm: AVAudioPCMBuffer) -> [Float]? {
+        // ===== Phase 1: gate + counter increment under lock =====
+        os_unfair_lock_lock(lock)
+        if drainSignal != nil {
+            // A drain is in progress and has installed its signal. By
+            // definition we're in the post-removeTap window where late
+            // callbacks may still arrive (Apple's tap contract: removeTap
+            // does not synchronously block in-flight callbacks). Refuse
+            // this callback's samples — the drainer has already committed
+            // to "no further samples will join storage." Returning `nil`
+            // also tells live-preview fan-out callers to skip this callback;
+            // the drain has already taken the recording.
+            os_unfair_lock_unlock(lock)
+            return nil
+        }
+        inflightCallbacks += 1
+        os_unfair_lock_unlock(lock)
+
+        // ===== Phase 2: conversion (lock-free) =====
+        //
+        // Multiple early-return paths possible. Each MUST decrement the
+        // inflight counter and signal the drain semaphore if the counter
+        // reaches zero. Localized in this closure so we never duplicate the
+        // lock/unlock pattern (which is exactly the kind of foot-gun a
+        // future maintainer would forget).
+        let decrementAndSignal: () -> Void = { [self] in
+            os_unfair_lock_lock(lock)
+            inflightCallbacks -= 1
+            if inflightCallbacks == 0, let signal = drainSignal {
+                signal.signal()
+            }
+            os_unfair_lock_unlock(lock)
+        }
+
         // Drop buffers whose format disagrees with the converter — a route
         // change mid-recording would trigger this, and the engine-config
         // observer on the service will tear down the tap shortly.
-        guard pcm.format == inputFormat else { return }
+        guard pcm.format == inputFormat else {
+            decrementAndSignal()
+            return nil
+        }
 
         let ratio = target.sampleRate / pcm.format.sampleRate
         let estimatedFrames = AVAudioFrameCount(Double(pcm.frameLength) * ratio + 1024)
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: estimatedFrames) else {
-            return
+            decrementAndSignal()
+            return nil
         }
 
         let supplied = Mutex<Bool>(false)
@@ -653,26 +1643,90 @@ private final class CaptureContext: @unchecked Sendable {
         switch status {
         case .error:
             log.error("Conversion error: \(err?.localizedDescription ?? "unknown", privacy: .public)")
-            return
+            decrementAndSignal()
+            return nil
         case .haveData, .inputRanDry, .endOfStream:
             break
         @unknown default:
-            break
+            decrementAndSignal()
+            return nil
         }
 
-        guard let channelData = outBuffer.floatChannelData else { return }
+        guard let channelData = outBuffer.floatChannelData else {
+            decrementAndSignal()
+            return nil
+        }
         let samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(outBuffer.frameLength)))
 
-        lock.lock()
+        // ===== Phase 3: success path — append + decrement + signal atomically =====
+        //
+        // Single critical section preserves the invariant: by the time
+        // `inflightCallbacks` reaches 0 (which signals the drain semaphore),
+        // all converted samples for this callback are already in storage.
+        // A drainSync call that wakes from the semaphore wait will see
+        // every sample.
+        os_unfair_lock_lock(lock)
         storage.append(contentsOf: samples)
-        lock.unlock()
+        inflightCallbacks -= 1
+        if inflightCallbacks == 0, let signal = drainSignal {
+            signal.signal()
+        }
+        os_unfair_lock_unlock(lock)
+
+        // Return the converted samples so live-preview fan-out callers
+        // (dual-model-streaming) can consume them without paying a second
+        // `AVAudioConverter.convert` pass on the audio thread. Pure value-
+        // type return; no shared state with `storage` (storage holds a
+        // separate copy via `append(contentsOf:)`).
+        return samples
     }
 
+    /// Synchronous drain. Safe to call from MainActor in steady-state /
+    /// happy-path stop() flows: `inflightCallbacks` is 0 or ~1, and a tap
+    /// callback's conversion runs sub-millisecond on A-series silicon.
+    /// Bounded at 250ms on pathological audio-thread wedge; ~µs in steady
+    /// state. Use `drainAsync()` from interrupt paths where the audio-thread
+    /// state is unusual at drain time.
     func drain() -> [Float] {
-        lock.lock()
+        drainSync()
+    }
+
+    /// Off-MainActor drain. Used by `RecordingService.internalStop`'s
+    /// interrupt-publish dispatch, where audio-thread state at drain time
+    /// is more likely to be unusual (an interruption just fired) and we
+    /// don't want even a 1-ms wait on MainActor.
+    func drainAsync() async -> [Float] {
+        await Task.detached { [self] in self.drainSync() }.value
+    }
+
+    private func drainSync() -> [Float] {
+        // Install the drain signal under lock. Any tap callback that hasn't
+        // yet entered Phase 1 will see `drainSignal != nil` and bail.
+        // Callbacks that ARE in flight (Phase 2 conversion) have already
+        // incremented `inflightCallbacks`; we wait on the semaphore for
+        // them to reach Phase 3 and decrement back to zero.
+        let signal = DispatchSemaphore(value: 0)
+        os_unfair_lock_lock(lock)
+        let needsWait = inflightCallbacks > 0
+        drainSignal = signal
+        os_unfair_lock_unlock(lock)
+
+        if needsWait {
+            // Catastrophic-only backstop. If a tap callback truly wedged,
+            // we'd rather lose its samples than deadlock the user's stop
+            // path. semaphore.wait returns `.success` on signal,
+            // `.timedOut` on the deadline; we ignore the result either way
+            // and read whatever's in storage.
+            _ = signal.wait(timeout: .now() + .milliseconds(Self.drainBackstopMS))
+        }
+
+        os_unfair_lock_lock(lock)
         let out = storage
         storage = []
-        lock.unlock()
+        // Don't clear drainSignal — once drained, this CaptureContext is
+        // done. RecordingService nils its `capture` reference after drain
+        // so a fresh CaptureContext is created for the next recording.
+        os_unfair_lock_unlock(lock)
         return out
     }
 }
