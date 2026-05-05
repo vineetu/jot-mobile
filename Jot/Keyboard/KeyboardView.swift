@@ -29,8 +29,8 @@ struct KeyboardView: View {
 
     let feedback: KeyboardFeedback
 
-    @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @State private var displayedAmplitude: Float = 0
 
@@ -50,8 +50,7 @@ struct KeyboardView: View {
             ZStack(alignment: .bottom) {
                 VStack(spacing: metrics.rowSpacing) {
                     streamingPreviewStrip
-                    actionChipRow
-                    micCTA
+                    actionAndMicRow
                     punctuationRow(metrics: metrics)
                     bottomRow(metrics: metrics)
                 }
@@ -94,8 +93,16 @@ struct KeyboardView: View {
             while !Task.isCancelled && recordingState.isRecording {
                 let amp = AmplitudeProjection.read()?.amplitude ?? 0
                 await MainActor.run {
-                    withAnimation(.easeOut(duration: 0.067)) {
+                    // Skip the per-tick animation when the user has reduce
+                    // motion on — the halo / icon scale visuals already
+                    // short-circuit, so the animation wrapper is a pure
+                    // no-op cost otherwise.
+                    if reduceMotion {
                         displayedAmplitude = amp
+                    } else {
+                        withAnimation(.easeOut(duration: 0.067)) {
+                            displayedAmplitude = amp
+                        }
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(67))
@@ -105,34 +112,85 @@ struct KeyboardView: View {
 
     // MARK: - Rows
 
-    /// Live partial-transcript caption rendered above the action chip row
+    /// Live partial-transcript caption rendered above the action+mic row
     /// while a recording is in flight. Mirrored from the main app via the
     /// `streamingPartialText` App Group projection (see
     /// `JotKeyboardViewController.refreshStreamingPartialFromProjection`).
     ///
-    /// Reserves a fixed 3-line slot via `lineLimit(3, reservesSpace: true)`
-    /// so the strip's height is consistent regardless of how much text the
-    /// EOU model has emitted. `truncationMode(.head)` keeps the latest words
-    /// visible — for cumulative streaming text the newest content sits at
-    /// the END, so head-truncation drops oldest content first as the
-    /// transcript grows.
+    /// Real `ScrollView` with a fixed-height frame so the strip never
+    /// collapses when the text is short and never grows when the text gets
+    /// long. Auto-scrolls to the trailing tail on every text change so the
+    /// latest words stay visible.
     @ViewBuilder
     private var streamingPreviewStrip: some View {
-        if recordingState.isRecording, !recordingState.streamingPartialText.isEmpty {
-            Text(recordingState.streamingPartialText)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(3, reservesSpace: true)
-                .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+        // Landscape iPhone keyboards live in a ~162-216pt vertical envelope.
+        // Including the 64pt strip plus spacing pushes the stack over the
+        // budget and clips the bottom row (return/globe/space). Landscape
+        // dictation is rare and the user can read partials in the in-app
+        // live preview or by switching to portrait, so we hide the strip
+        // entirely in compact-height layouts (cleanest of the two options
+        // considered — see kb-fixer round 2 / Issue 3).
+        if verticalSizeClass == .compact {
+            EmptyView()
+        } else if recordingState.isRecording, !recordingState.streamingPartialText.isEmpty {
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    Text(recordingState.streamingPartialText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .id("streamingTail")
+                        // Cap the VoiceOver label to the last ~200 chars so a
+                        // multi-minute dictation doesn't make VO read the
+                        // entire buffer when focus lands. Matches what the
+                        // visual scroll-to-tail already shows
+                        // (kb-fixer round 3 / Issue B).
+                        .accessibilityLabel("Live transcript: \(String(recordingState.streamingPartialText.suffix(200)))")
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+                .frame(height: 64)
                 .background(
+                    // `Color(.systemGray6)` is intentionally low-contrast in
+                    // dark mode — matches Apple's Messages composer
+                    // reference for a soft, recessed caption strip. Don't
+                    // bump the contrast without revisiting that comparison
+                    // (kb-fixer round 2 / Issue 8 verdict).
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(.systemGray6))
                 )
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: recordingState.streamingPartialText)
+                .onAppear {
+                    // First appearance can already have many words — `onChange`
+                    // won't fire if the projection arrived before the view
+                    // mounted. Snap to the tail without animation so the
+                    // initial frame doesn't show the start of a long buffer.
+                    proxy.scrollTo("streamingTail", anchor: .bottom)
+                }
+                .onChange(of: recordingState.streamingPartialText) { _, _ in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                        proxy.scrollTo("streamingTail", anchor: .bottom)
+                    }
+                }
+            }
         }
+    }
+
+    /// Combined chip-row-plus-compact-mic row.
+    ///
+    /// Replaces the previous full-width 64pt mic CTA + separate 44pt chip
+    /// row (≈118pt of stack). The compact mic sits right of the
+    /// horizontally-scrollable chip row, both at 44pt — a ~30% height
+    /// reduction that returns enough vertical budget to the bottom row so
+    /// `return` / globe / space stay visible after the streaming preview
+    /// strip is added on top.
+    private var actionAndMicRow: some View {
+        HStack(spacing: 8) {
+            actionChipRow
+                .frame(maxWidth: .infinity)
+            compactMicCTA
+        }
+        .frame(height: 44)
     }
 
     private var actionChipRow: some View {
@@ -169,7 +227,19 @@ struct KeyboardView: View {
         .frame(height: 44)
     }
 
-    private var micCTA: some View {
+    /// Compact mic CTA pinned to the right of the action chip row.
+    ///
+    /// Replaces the previous full-width 64pt-tall pill. Same tap targets
+    /// (Full Access prompt fallthrough; tap-to-stop while recording),
+    /// same accessibility surface — just packed into a 120×44 rectangle so
+    /// the keyboard reclaims ~74pt of vertical real estate for the streaming
+    /// preview strip + bottom row.
+    ///
+    /// Width set to 120pt (up from 108pt) for localization headroom — the
+    /// label text scales to "Aufnehmen" / "Enregistrer" in DE/FR without
+    /// truncation. Costs ~12pt of chip-row horizontal budget which still
+    /// leaves enough scroll room at 393pt iPhone width.
+    private var compactMicCTA: some View {
         Button {
             feedback.longPressImpact()
             if hasFullAccess {
@@ -182,31 +252,48 @@ struct KeyboardView: View {
                 if hasFullAccess, recordingState.isRecording {
                     let startedAt = recordingState.startedAt ?? Date()
                     TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
-                        micLabel(
-                            systemImage: "stop.fill",
-                            title: "Recording · \(elapsedText(now: context.date))",
-                            subtitle: "tap to stop"
-                        )
+                        HStack(spacing: 6) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text(elapsedText(now: context.date))
+                                .font(.system(size: 13, weight: .semibold))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
                     }
                     .scaleEffect(iconScale)
                 } else {
-                    micLabel(
-                        systemImage: hasFullAccess ? "mic.fill" : "lock.shield",
-                        title: hasFullAccess ? "Tap to speak" : "Enable Full Access",
-                        subtitle: nil
-                    )
+                    HStack(spacing: 6) {
+                        Image(systemName: hasFullAccess ? "mic.fill" : "lock.shield")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text(hasFullAccess ? "Speak" : "Unlock")
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
             }
             .foregroundStyle(hasFullAccess ? .white : Color(uiColor: .label))
-            .frame(maxWidth: .infinity, minHeight: 64)
-            .background(micBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay { micHalo }
-            .shadow(color: Color.black.opacity(scheme == .dark ? 0 : 0.16), radius: 0, x: 0, y: 1)
+            .padding(.horizontal, 12)
+            .frame(width: 120, height: 44)
+            .background(micBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay { compactMicHalo }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(micAccessibilityLabel)
         .accessibilityHint(micAccessibilityHint)
-        .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder
+    private var compactMicHalo: some View {
+        if hasFullAccess, recordingState.isRecording, !reduceMotion {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    Color.white.opacity(0.15 + Double(displayedAmplitude) * 0.5),
+                    lineWidth: 1 + CGFloat(displayedAmplitude) * 2
+                )
+        }
     }
 
     private func punctuationRow(metrics: KeyboardMetrics) -> some View {
@@ -292,31 +379,6 @@ struct KeyboardView: View {
 
     // MARK: - Components
 
-    private func micLabel(systemImage: String, title: String, subtitle: String?) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 21, weight: .semibold))
-                .frame(width: 24)
-
-            VStack(spacing: 2) {
-                Text(title)
-                    .font(.system(size: 20, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .monospacedDigit()
-
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .opacity(0.88)
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-    }
-
     private func chip(
         title: String,
         systemImage: String,
@@ -344,13 +406,12 @@ struct KeyboardView: View {
                     .minimumScaleFactor(0.76)
             }
             .padding(.horizontal, 12)
-            .frame(minWidth: 76, minHeight: 40)
+            .frame(minWidth: 76, minHeight: 44)
         }
         .buttonStyle(ChipButtonStyle(enabled: enabled, isLoading: isLoading))
         .disabled(!enabled || isLoading)
         .opacity((enabled || isLoading) ? 1 : 0.38)
         .accessibilityLabel(title)
-        .accessibilityAddTraits(.isButton)
     }
 
     private func keyButton<Content: View>(
@@ -405,19 +466,6 @@ struct KeyboardView: View {
             return 1.0
         }
         return 1.0 + CGFloat(displayedAmplitude) * 0.08
-    }
-
-    /// Outer glow ring driven by amplitude. Lives inside `.overlay` so it
-    /// does not affect the pill's layout.
-    @ViewBuilder
-    private var micHalo: some View {
-        if hasFullAccess, recordingState.isRecording, !reduceMotion {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    Color.white.opacity(0.15 + Double(displayedAmplitude) * 0.5),
-                    lineWidth: 1 + CGFloat(displayedAmplitude) * 2
-                )
-        }
     }
 
     private var micAccessibilityLabel: String {

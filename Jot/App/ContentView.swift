@@ -52,10 +52,14 @@ struct ContentView: View {
                     .listRowBackground(Color.clear)
                 } else {
                     ForEach(filteredTranscripts) { transcript in
-                        TranscriptRow(
-                            transcript: transcript,
-                            isCopied: copiedTranscriptID == transcript.id
-                        )
+                        NavigationLink {
+                            TranscriptDetailView(transcript: transcript)
+                        } label: {
+                            TranscriptRow(
+                                transcript: transcript,
+                                isCopied: copiedTranscriptID == transcript.id
+                            )
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             // Copy listed first → revealed first on a small swipe.
                             // Delete is the destructive secondary action behind it.

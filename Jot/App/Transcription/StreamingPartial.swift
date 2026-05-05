@@ -60,6 +60,12 @@ final class StreamingPartial {
         currentSessionID = id
         streamingText = ""
         streamingIsVolatile = false
+        // Publish an empty projection immediately so a fast re-record never
+        // shows the previous session's final text in the keyboard's
+        // streaming strip during the brief gap before the first partial
+        // arrives. Bypasses the throttle in `publishProjection` since this
+        // is a session-start terminal event.
+        Self.publishProjection("", force: true)
         return id
     }
 
@@ -80,7 +86,9 @@ final class StreamingPartial {
         }
         streamingText = text
         streamingIsVolatile = !isFinal
-        Self.publishProjection(text)
+        // Force-publish on `isFinal` so the keyboard's volatile→primary
+        // visual handoff isn't dropped by the throttle.
+        Self.publishProjection(text, force: isFinal)
     }
 
     /// Clears the session token without touching displayed text. Called BEFORE
@@ -109,7 +117,9 @@ final class StreamingPartial {
     func applyFinalSnapshot(_ text: String) {
         streamingText = text
         streamingIsVolatile = false
-        Self.publishProjection(text)
+        // Terminal event — bypass the throttle so the final-snapshot text
+        // always reaches the keyboard.
+        Self.publishProjection(text, force: true)
     }
 
     /// Full reset of UI state. Called by the recording flow once the batch
@@ -118,15 +128,47 @@ final class StreamingPartial {
         currentSessionID = nil
         streamingText = ""
         streamingIsVolatile = false
-        Self.publishProjection("")
+        // Terminal event — bypass throttle so the keyboard always sees the
+        // clear-strip transition.
+        Self.publishProjection("", force: true)
     }
+
+    /// Tracks the wall-clock time of the last projection publish so the
+    /// per-callback rate (FluidAudio fires at 5-10 Hz) gets coalesced down
+    /// to ~5 Hz of cross-process IPC. Terminal events (`force: true`)
+    /// bypass the throttle so volatile→final UI handoffs and session
+    /// boundaries always land.
+    ///
+    /// Explicitly `@MainActor`: `static` members on a `@MainActor` type are
+    /// nonisolated by default in Swift. All current call sites are MainActor
+    /// instance methods, but the explicit annotation removes the footgun if
+    /// a future refactor reaches for this from an actor-isolated context.
+    @MainActor private static var lastPublishedAt: Date?
+
+    /// Throttle window between non-terminal projection publishes. Picked
+    /// to land at ~5 Hz — fast enough for a smooth scrolling strip, slow
+    /// enough to halve the IPC volume vs. the per-callback FluidAudio rate.
+    private static let publishThrottle: TimeInterval = 0.2
 
     /// Mirrors the partial text into the App Group so the keyboard extension
     /// can render a live caption strip while recording. Empty string clears
     /// the strip on session end / reset. The keyboard observes this via the
     /// `streamingPartialChanged` Darwin notification — exact same shape as
     /// `recordingStateChanged` / `pipelinePhaseChanged`.
-    private static func publishProjection(_ text: String) {
+    ///
+    /// Non-terminal callers (i.e. `update(...)` with `isFinal: false`) are
+    /// throttled to one publish per `publishThrottle` window. The Darwin
+    /// notification stays the keyboard's wakeup mechanism; this only
+    /// coalesces the wakeup rate so the keyboard isn't woken 5-10 times
+    /// per second.
+    @MainActor
+    private static func publishProjection(_ text: String, force: Bool = false) {
+        let now = Date()
+        if !force, let last = lastPublishedAt,
+           now.timeIntervalSince(last) < publishThrottle {
+            return
+        }
+        lastPublishedAt = now
         AppGroup.defaults.set(text, forKey: AppGroup.Keys.streamingPartialText)
         CrossProcessNotification.post(name: CrossProcessNotification.streamingPartialChanged)
     }
