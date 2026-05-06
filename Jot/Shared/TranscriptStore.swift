@@ -73,7 +73,7 @@ enum JotModelContainer {
                 "JotTranscripts",
                 schema: schema,
                 // Cross-process-reachable SQLite location. See class doc for
-                // why this lives in the App Group rather than the main app's
+                // why this lives in3 the App Group rather than the main app's
                 // sandbox — short version: future widget/share-extension
                 // readers shouldn't need a second migration to find it.
                 groupContainer: .identifier(AppGroup.identifier),

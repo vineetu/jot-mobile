@@ -55,6 +55,17 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        AIRewriteSettingsView()
+                    } label: {
+                        Label("AI Rewrite", systemImage: "wand.and.stars")
+                    }
+                    .accessibilityHint("Configure the on-device language model and saved rewrite prompts")
+                } header: {
+                    Text("Rewrite")
+                }
+
+                Section {
                     Button {
                         SettingsRerunTrigger.shared.requestRerun()
                         dismiss()

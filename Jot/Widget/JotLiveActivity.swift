@@ -156,6 +156,8 @@ private struct LockScreenBanner: View {
             return "Recording"
         case .transcribing, .processing, .cleaning:
             return "Transcribing"
+        case .rewriting:
+            return "Rewriting"
         case .followUp, .finished, .finishedCommand:
             return "Saved"
         }
@@ -176,7 +178,7 @@ private struct LockScreenTrailing: View {
                 countsDown: false,
                 showsHours: false
             )
-        case .transcribing, .processing, .cleaning,
+        case .transcribing, .processing, .cleaning, .rewriting,
              .followUp, .finished, .finishedCommand:
             EmptyView()
         }
@@ -208,6 +210,8 @@ private struct ExpandedLeading: View {
             return "Recording"
         case .transcribing, .processing, .cleaning:
             return "Transcribing"
+        case .rewriting:
+            return "Rewriting"
         case .followUp, .finished, .finishedCommand:
             return "Saved & copied"
         }
@@ -230,7 +234,7 @@ private struct ExpandedTrailing: View {
             )
             .font(.title3.monospacedDigit().weight(.medium))
             .foregroundStyle(.white)
-        case .transcribing, .processing, .cleaning,
+        case .transcribing, .processing, .cleaning, .rewriting,
              .followUp, .finished, .finishedCommand:
             EmptyView()
         }
@@ -296,6 +300,16 @@ private struct ExpandedBottom: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
 
+        case .rewriting(let promptName):
+            // v0.4: same shape as the .transcribing branch but tells the
+            // user which mode is running so the rewrite isn't surprising.
+            Text("Rewriting with \(promptName)…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .center)
+
         case .followUp, .finished, .finishedCommand:
             // Done flash expanded: the leading "Saved & copied" + green check
             // is the entire content. Trailing returns EmptyView (§3.5.3 — no
@@ -341,7 +355,7 @@ private struct CompactTrailing: View {
             )
             .font(.caption2.monospacedDigit().weight(.semibold))
             .foregroundStyle(.white)
-        case .transcribing, .processing, .cleaning:
+        case .transcribing, .processing, .cleaning, .rewriting:
             // Static ellipsis; no timeline-driven cycle (Q1 cadence risk).
             // The leading spinner already signals motion.
             Text("\u{2026}")
@@ -385,7 +399,7 @@ private struct StateBadge: View {
                 .overlay(
                     Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
                 )
-        case .transcribing, .processing, .cleaning:
+        case .transcribing, .processing, .cleaning, .rewriting:
             // System circular spinner. The system manages its animation
             // cadence — we do not need a `TimelineView` wrapper, sidestepping
             // the Q1 cadence question that killed the amplitude meter.

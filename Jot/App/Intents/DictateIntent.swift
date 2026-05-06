@@ -518,6 +518,17 @@ final class DictationControllerImpl: DictationController {
 final class DictationActivityCoordinator {
     static let shared = DictationActivityCoordinator()
 
+    /// Master switch for the Dynamic Island / Live Activity pill. When
+    /// `false`, every public method on this coordinator is a no-op aside
+    /// from bookkeeping that the in-app pipeline depends on (e.g.
+    /// `recordingStartedAt`, `isFollowUpActive`). The widget target and
+    /// `DictationAttributes` are intentionally NOT removed — flipping this
+    /// flag back to `true` re-enables the pill without any other code
+    /// changes. The keyboard reads from App Group projections, never from
+    /// Live Activity content state, so disabling the pill does not affect
+    /// keyboard sync.
+    private let liveActivityEnabled = false
+
     private var handle: ActivityHandle?
     private var followUpExpiryTask: Task<Void, Never>?
     private(set) var followUpExpiresAt: Date?
@@ -542,6 +553,15 @@ final class DictationActivityCoordinator {
     func start(startedAt: Date) async {
         recordingStartedAt = startedAt
         clearFollowUpState()
+
+        // Live Activity master switch — see `liveActivityEnabled`. We keep
+        // the `recordingStartedAt` write above because the end-of-recording
+        // pipeline reads it for duration accounting; only the
+        // `Activity.request` portion is skipped.
+        guard liveActivityEnabled else {
+            handle = nil
+            return
+        }
 
         // Preflight: if the user has Live Activities globally disabled, or has
         // toggled them off for Jot specifically (Settings → Jot → Live
@@ -582,6 +602,22 @@ final class DictationActivityCoordinator {
     }
 
     func startForAudioRecordingIntent(startedAt: Date) async throws {
+        // Live Activity master switch — see `liveActivityEnabled`. With the
+        // pill disabled this method becomes a near no-op: it still records
+        // `recordingStartedAt` (the in-app pipeline depends on it) but
+        // does not request a Live Activity, does not throw the
+        // `liveActivitiesDisabled` preflight error, and does not wait for
+        // the activity to be observed. The Action Button entry path is
+        // unaffected because iOS's `AudioRecordingIntent` foreground-audio
+        // entitlement is granted by the system based on the intent
+        // declaration, not by the existence of a Live Activity.
+        guard liveActivityEnabled else {
+            recordingStartedAt = startedAt
+            clearFollowUpState()
+            handle = nil
+            return
+        }
+
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw AudioRecordingIntentPreflightError.liveActivitiesDisabled
         }
@@ -630,6 +666,11 @@ final class DictationActivityCoordinator {
         recordingStartedAt = nil
         clearFollowUpState()
 
+        guard liveActivityEnabled else {
+            handle = nil
+            return
+        }
+
         guard let handle else { return }
 
         let content = ActivityContent(
@@ -642,6 +683,7 @@ final class DictationActivityCoordinator {
 
     func update(phase: DictationAttributes.Phase) async {
         clearFollowUpState()
+        guard liveActivityEnabled else { return }
         guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(phase: phase),
@@ -674,6 +716,11 @@ final class DictationActivityCoordinator {
         isFollowUpActive = true
         scheduleFollowUpExpiry(at: expiresAt)
 
+        // In-app follow-up bookkeeping (above) is preserved unconditionally
+        // because `DictationPipeline` reads `isFollowUpActive` to gate
+        // chained-command classification. Only the Live Activity update is
+        // gated by the master switch.
+        guard liveActivityEnabled else { return }
         guard let handle else { return }
         let content = ActivityContent(
             state: DictationAttributes.ContentState(
@@ -687,6 +734,11 @@ final class DictationActivityCoordinator {
     func dismissFollowUpWindow() async {
         let expiresAt = followUpExpiresAt ?? Date()
         clearFollowUpState()
+
+        guard liveActivityEnabled else {
+            handle = nil
+            return
+        }
 
         guard let handle else { return }
 

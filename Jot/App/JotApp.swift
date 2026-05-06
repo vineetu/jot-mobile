@@ -122,6 +122,17 @@ struct JotApp: App {
                 }
                 .onOpenURL { url in
                     guard url.scheme == "jot" else { return }
+                    // Branch on host: `jot://rewrite` is the keyboard's
+                    // saved-prompt rewrite handoff (URL-scheme replacement
+                    // for the broken `RewriteWithPromptIntent.perform()`
+                    // direct call from the keyboard). Everything else
+                    // (`jot://dictate`, plain `jot://`) falls through to the
+                    // existing dictation auto-start path.
+                    if url.host == "rewrite" {
+                        handleRewriteURL(url)
+                        return
+                    }
+
                     // Explicit user intent — bypass the once-per-session gate.
                     autoStartConsumed = false
                     // v7 auto-paste: parse `?session=<uuid>` off the keyboard's
@@ -219,6 +230,28 @@ struct JotApp: App {
     private func presentSetupIfNeeded() {
         setupCompleted = SetupCompletion.isCompleted
         showSetupWizard = !setupCompleted
+    }
+
+    /// Handles `jot://rewrite?session=<uuid>` — the keyboard's URL-scheme
+    /// handoff for the saved-prompt rewrite path. Parses the session ID,
+    /// hands it to `RewriteRequestDispatcher`, which reads the App Group
+    /// stash, dispatches the LLM rewrite, and posts the Darwin completion
+    /// notification the keyboard observes.
+    ///
+    /// This is the URL-scheme replacement for the previous (broken) direct
+    /// `RewriteWithPromptIntent.perform()` call from the keyboard process.
+    /// See `RewriteRequestDispatcher` for rationale.
+    private func handleRewriteURL(_ url: URL) {
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let sessionParam = comps.queryItems?.first(where: { $0.name == "session" })?.value,
+              let sessionID = UUID(uuidString: sessionParam)
+        else {
+            lifecycleLog.error("rewrite URL missing/invalid session param url=\(url.absoluteString, privacy: .public)")
+            return
+        }
+        // `RewriteRequestDispatcher` is `@available(iOS 26.0, *)` — same as
+        // the project's deployment floor. No runtime guard needed.
+        RewriteRequestDispatcher.dispatch(sessionID: sessionID)
     }
 
     private func handleSceneActive() {

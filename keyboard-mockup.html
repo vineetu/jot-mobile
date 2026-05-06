@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jot Keyboard UX Mockup</title>
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro', system-ui, sans-serif;
+    margin: 0;
+    padding: 32px 16px 48px;
+    background: linear-gradient(180deg, #0a0a0a 0%, #1a1a1a 100%);
+    color: #fff;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.4px;
+  }
+  h1 .subtle { color: #8e8e93; font-weight: 400; }
+
+  .state-picker {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 520px;
+  }
+  .state-picker button {
+    padding: 8px 14px;
+    background: #2c2c2e;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .state-picker button:hover { background: #3a3a3c; }
+  .state-picker button.active {
+    background: #0a84ff;
+  }
+
+  /* iPhone frame */
+  .phone {
+    width: 390px;
+    height: 800px;
+    background: #000;
+    border-radius: 50px;
+    border: 8px solid #2c2c2e;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+
+  .notch {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 110px;
+    height: 30px;
+    background: #000;
+    border-radius: 18px;
+    z-index: 30;
+  }
+
+  .status-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 32px 0;
+    font-size: 15px;
+    font-weight: 600;
+    z-index: 20;
+    color: #fff;
+  }
+
+  /* Host app */
+  .host-app {
+    background: #000;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding-top: 48px;
+  }
+  .host-header {
+    padding: 6px 16px 10px;
+    border-bottom: 0.5px solid #2c2c2e;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .back-arrow { color: #0a84ff; font-size: 22px; line-height: 1; }
+  .avatar {
+    width: 28px; height: 28px; border-radius: 14px;
+    background: linear-gradient(135deg, #ff9500, #ff453a);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600;
+  }
+  .host-title {
+    font-size: 16px; font-weight: 600;
+  }
+
+  .host-content {
+    flex: 1;
+    padding: 12px 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .bubble {
+    max-width: 75%;
+    padding: 8px 14px;
+    border-radius: 18px;
+    font-size: 16px;
+    line-height: 1.3;
+    word-wrap: break-word;
+  }
+  .bubble.received { background: #2c2c2e; align-self: flex-start; }
+  .bubble.sent { background: #0a84ff; align-self: flex-end; }
+
+  /* Text input area */
+  .compose-row {
+    padding: 6px 16px 8px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .text-field {
+    flex: 1;
+    min-height: 36px;
+    padding: 8px 14px;
+    background: #1c1c1e;
+    border: 0.5px solid #3a3a3c;
+    border-radius: 18px;
+    font-size: 16px;
+    line-height: 1.25;
+    color: #fff;
+  }
+  .text-field .placeholder { color: #6e6e73; }
+  .text-field .selected { background: rgba(10, 132, 255, 0.45); border-radius: 2px; padding: 1px 0; }
+  .send-arrow {
+    width: 28px; height: 28px; border-radius: 14px;
+    background: #2c2c2e; color: #6e6e73;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0;
+  }
+
+  /* Jot keyboard */
+  .keyboard {
+    background: #1c1c1e;
+    padding: 10px 14px 24px;
+    border-top: 0.5px solid #2c2c2e;
+    position: relative;
+  }
+
+  .caption-strip {
+    height: 32px;
+    border-radius: 16px;
+    background: #2c2c2e;
+    border: 0.5px solid #3a3a3c;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    color: #6e6e73;
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .caption-strip.active {
+    color: #fff;
+    background: #2c2c2e;
+  }
+  .caption-strip::before, .caption-strip::after {
+    content: '';
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 16px;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .caption-strip::before { left: 0; background: linear-gradient(90deg, #2c2c2e, transparent); }
+  .caption-strip::after { right: 0; background: linear-gradient(-90deg, #2c2c2e, transparent); }
+  .cursor {
+    display: inline-block;
+    width: 1.5px;
+    height: 14px;
+    background: #0a84ff;
+    margin-left: 2px;
+    vertical-align: middle;
+    animation: blink 1s infinite;
+  }
+  @keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+  .caption-strip .followup-hint {
+    margin-left: auto;
+    font-size: 11px;
+    color: #0a84ff;
+    font-weight: 600;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 2;
+  }
+
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0;
+  }
+
+  .secondary-button {
+    height: 52px;
+    padding: 0 16px;
+    border-radius: 14px;
+    background: #2c2c2e;
+    border: none;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.12s;
+    position: relative;
+    flex-shrink: 0;
+    font-size: 15px;
+    font-weight: 500;
+    font-family: inherit;
+    letter-spacing: -0.1px;
+  }
+  .secondary-button:active { transform: scale(0.96); }
+  .secondary-button.disabled { opacity: 0.32; }
+  .secondary-button.lit {
+    background: rgba(10, 132, 255, 0.18);
+    color: #0a84ff;
+  }
+  .secondary-button svg { width: 18px; height: 18px; fill: currentColor; }
+  .secondary-button .longpress-hint {
+    position: absolute;
+    bottom: 5px; left: 50%;
+    transform: translateX(-50%);
+    width: 14px; height: 2px;
+    border-radius: 1px;
+    background: rgba(255,255,255,0.25);
+  }
+  .secondary-button.lit .longpress-hint { background: rgba(10, 132, 255, 0.5); }
+
+  .mic-button {
+    flex: 1;
+    height: 52px;
+    border-radius: 14px;
+    background: #0a84ff;
+    border: none;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.12s;
+    font-size: 17px;
+    font-weight: 600;
+    font-family: inherit;
+    box-shadow: 0 2px 8px rgba(10, 132, 255, 0.25);
+  }
+  .mic-button:active { transform: scale(0.98); }
+  .mic-button.recording {
+    background: #ff3b30;
+    box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3);
+  }
+  .mic-button.recording .mic-label::after {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 3px;
+    background: #fff;
+    margin-left: 6px;
+    animation: blink 1s infinite;
+    vertical-align: middle;
+  }
+  .mic-button svg { width: 20px; height: 20px; fill: #fff; }
+
+  /* Context menu popover */
+  .menu-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(2px);
+    z-index: 25;
+    display: none;
+    animation: fadeIn 0.18s ease-out;
+  }
+  .menu-overlay.show { display: block; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .menu {
+    position: absolute;
+    background: rgba(58, 58, 60, 0.92);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border-radius: 14px;
+    overflow: hidden;
+    min-width: 240px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.1);
+    animation: menuIn 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+    transform-origin: bottom center;
+  }
+  @keyframes menuIn {
+    from { opacity: 0; transform: scale(0.85) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  .menu.transform-menu { bottom: 92px; left: 14px; }
+  .menu.actions-menu { bottom: 92px; right: 14px; }
+  .menu-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 16px;
+    color: #fff;
+    font-size: 16px;
+    cursor: pointer;
+    border-bottom: 0.33px solid rgba(255,255,255,0.08);
+    transition: background 0.1s;
+  }
+  .menu-row:last-child { border-bottom: none; }
+  .menu-row:hover { background: rgba(255,255,255,0.06); }
+  .menu-row.disabled { color: #6e6e73; cursor: not-allowed; }
+  .menu-row .row-icon {
+    width: 18px; height: 18px;
+    color: rgba(255,255,255,0.6);
+    fill: currentColor;
+  }
+  .menu-row.disabled .row-icon { color: #6e6e73; }
+  .menu-row.default-marker::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: #0a84ff;
+  }
+  .menu-row { position: relative; }
+
+  /* Footer notes */
+  .notes {
+    max-width: 520px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #8e8e93;
+    padding: 16px 20px;
+    background: #1c1c1e;
+    border-radius: 12px;
+    border: 0.5px solid #2c2c2e;
+  }
+  .notes h3 {
+    font-size: 14px;
+    color: #fff;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  .notes ul { padding-left: 18px; margin: 8px 0 0; }
+  .notes li { margin-bottom: 4px; }
+  .notes code {
+    background: #2c2c2e;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #ff9500;
+  }
+</style>
+</head>
+<body>
+
+<h1>Jot Keyboard <span class="subtle">— UX Mockup</span></h1>
+
+<div class="state-picker">
+  <button onclick="setState('idle')" id="btn-idle" class="active">Idle</button>
+  <button onclick="setState('recording')" id="btn-recording">Recording</button>
+  <button onclick="setState('followup')" id="btn-followup">After dictation</button>
+  <button onclick="setState('transform-menu')" id="btn-transform-menu">Magic menu</button>
+  <button onclick="setState('actions-paste')" id="btn-actions-paste">Actions (no selection)</button>
+  <button onclick="setState('actions-copy')" id="btn-actions-copy">Actions (with selection)</button>
+</div>
+
+<div class="phone">
+  <div class="notch"></div>
+  <div class="status-bar">
+    <span>10:46</span>
+    <span style="font-size: 13px;">●●●● 5G  99</span>
+  </div>
+
+  <div class="host-app">
+    <div class="host-header">
+      <span class="back-arrow">‹</span>
+      <div class="avatar">S</div>
+      <span class="host-title">Sarah</span>
+    </div>
+
+    <div class="host-content">
+      <div class="bubble received">Are you on your way?</div>
+      <div class="bubble received">Need to confirm with the team</div>
+    </div>
+
+    <div class="compose-row">
+      <div class="text-field" id="text-field">
+        <span class="placeholder" id="text-content">iMessage</span>
+      </div>
+      <div class="send-arrow">↑</div>
+    </div>
+
+    <div class="keyboard">
+      <div class="caption-strip" id="caption-strip">
+        <span id="caption-text" style="position: relative; z-index: 0;">Speak to dictate</span>
+      </div>
+      <div class="controls-row">
+        <button class="secondary-button disabled" id="transform-btn" title="Magic — long-press for prompt list">
+          <svg viewBox="0 0 24 24"><path d="M14 7l1.5 4 4 1.5-4 1.5L14 18l-1.5-4L8.5 12.5 12.5 11zM6 4l.7 2L8.7 6.7 6.8 7.4 6 9.5 5.2 7.4 3.3 6.7 5.3 6zM18 17l.5 1.5 1.5.5-1.5.5L18 21l-.5-1.5L16 19l1.5-.5z"/></svg>
+          <span>Magic</span>
+          <span class="longpress-hint"></span>
+        </button>
+        <button class="mic-button" id="mic-btn" title="Dictate">
+          <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V22h2v-4.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+          <span class="mic-label" id="mic-label">Speak</span>
+        </button>
+        <button class="secondary-button" id="actions-btn" title="Actions — long-press for utilities">
+          <svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18" cy="12" r="2"/></svg>
+          <span>Actions</span>
+          <span class="longpress-hint"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transform menu -->
+  <div class="menu-overlay" id="overlay-transform" onclick="setState('followup')">
+    <div class="menu transform-menu">
+      <div class="menu-row default-marker">
+        <span><strong>Rewrite</strong> <span style="color:#8e8e93; font-size: 13px;">· default</span></span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M5 2l1.5 4.5L11 8l-4.5 1.5L5 14l-1.5-4.5L-1 8l4.5-1.5zm12 6l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Make formal</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Shorten</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Translate to Spanish</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions menu (no selection) -->
+  <div class="menu-overlay" id="overlay-actions-paste" onclick="setState('idle')">
+    <div class="menu actions-menu">
+      <div class="menu-row default-marker">
+        <span><strong>Paste</strong> <span style="color:#8e8e93; font-size: 13px;">· default</span></span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z"/></svg>
+      </div>
+      <div class="menu-row disabled">
+        <span>Copy <span style="font-size: 13px;">· no selection</span></span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Undo last insertion</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+      </div>
+      <div class="menu-row disabled">
+        <span>Redo</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions menu (with selection) -->
+  <div class="menu-overlay" id="overlay-actions-copy" onclick="setState('selection')">
+    <div class="menu actions-menu">
+      <div class="menu-row default-marker">
+        <span><strong>Copy</strong> <span style="color:#8e8e93; font-size: 13px;">· default</span></span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Paste</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z"/></svg>
+      </div>
+      <div class="menu-row">
+        <span>Undo last insertion</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+      </div>
+      <div class="menu-row disabled">
+        <span>Redo</span>
+        <svg class="row-icon" viewBox="0 0 24 24"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <h3>Design notes</h3>
+  <ul>
+    <li>Three labelled buttons in one row: <strong>Magic</strong> (✦, left) → <strong>Speak</strong> (🎙, center, primary) → <strong>Actions</strong> (⋯, right). Speak stays the visual anchor (blue, fills the middle).</li>
+    <li><strong>Tap</strong> = default action (Magic → "Rewrite" prompt; Actions → Copy if selection, else Paste).</li>
+    <li><strong>Long-press</strong> opens an iOS-native context menu (<code>.contextMenu</code>) — system-styled, blurred, animated.</li>
+    <li>Magic stays <strong>disabled</strong> until there's a recent transcript in the <code>.followUp</code> window after dictation; then it lights blue.</li>
+    <li>Subtle horizontal dash beneath Magic / Actions = long-press affordance ("there's more here").</li>
+    <li>Disabled rows in menus stay visible with a hint ("· no selection") instead of disappearing — preserves spatial memory.</li>
+    <li>The default row in each menu is marked with a left blue rail + bold weight, so users learn what the tap shortcut does.</li>
+  </ul>
+</div>
+
+<script>
+  function setState(state) {
+    // Reset
+    document.querySelectorAll('.state-picker button').forEach(b => b.classList.remove('active'));
+    document.getElementById('overlay-transform').classList.remove('show');
+    document.getElementById('overlay-actions-paste').classList.remove('show');
+    document.getElementById('overlay-actions-copy').classList.remove('show');
+    const micBtn = document.getElementById('mic-btn');
+    const micLabel = document.getElementById('mic-label');
+    micBtn.classList.remove('recording');
+    micLabel.textContent = 'Speak';
+    const transformBtn = document.getElementById('transform-btn');
+    transformBtn.classList.remove('lit');
+    transformBtn.classList.add('disabled');
+    document.getElementById('caption-strip').classList.remove('active');
+    document.getElementById('text-field').innerHTML = '<span class="placeholder">iMessage</span>';
+    const captionText = document.getElementById('caption-text');
+
+    switch(state) {
+      case 'idle':
+        document.getElementById('btn-idle').classList.add('active');
+        captionText.innerHTML = 'Speak to dictate';
+        break;
+      case 'recording':
+        document.getElementById('btn-recording').classList.add('active');
+        micBtn.classList.add('recording');
+        micLabel.textContent = '0:08';
+        document.getElementById('caption-strip').classList.add('active');
+        captionText.innerHTML = 'Hey, just landed at SFO, on my way to the<span class="cursor"></span>';
+        break;
+      case 'followup':
+        document.getElementById('btn-followup').classList.add('active');
+        transformBtn.classList.remove('disabled');
+        transformBtn.classList.add('lit');
+        document.getElementById('text-field').innerHTML = "Hey, just landed at SFO, on my way to the meeting now.";
+        captionText.innerHTML = 'Tap to dictate again<span class="followup-hint">✦ Transform ready</span>';
+        break;
+      case 'transform-menu':
+        document.getElementById('btn-transform-menu').classList.add('active');
+        transformBtn.classList.remove('disabled');
+        transformBtn.classList.add('lit');
+        document.getElementById('text-field').innerHTML = "Hey, just landed at SFO, on my way to the meeting now.";
+        document.getElementById('overlay-transform').classList.add('show');
+        captionText.innerHTML = 'Choose a rewrite';
+        break;
+      case 'actions-paste':
+        document.getElementById('btn-actions-paste').classList.add('active');
+        document.getElementById('overlay-actions-paste').classList.add('show');
+        captionText.innerHTML = 'Speak to dictate';
+        break;
+      case 'actions-copy':
+        document.getElementById('btn-actions-copy').classList.add('active');
+        document.getElementById('overlay-actions-copy').classList.add('show');
+        document.getElementById('text-field').innerHTML = 'Hey, <span class="selected">just landed at SFO</span>, on my way to the meeting now.';
+        captionText.innerHTML = 'Speak to dictate';
+        break;
+    }
+  }
+</script>
+
+</body>
+</html>

@@ -91,13 +91,20 @@ Swift 6 · SwiftUI + UIKit interop · SwiftData · [FluidAudio](https://github.c
 Jot is reproducible from [XcodeGen](https://github.com/yonaskolb/XcodeGen) specs so the Xcode project stays out of git.
 
 ```bash
+# Fresh checkout: pull the vendored submodule (xgrammar C++ tree) before generating the project.
+git submodule update --init --recursive
+cd Vendor/mlx-swift-structured && git submodule update --init --recursive && cd -
+
 brew install xcodegen
-cd Jot/
-xcodegen              # regenerate the Xcode project from project.yml
-open Jot.xcodeproj
+./build.sh            # regenerate the Xcode project from Jot/project.yml
+open Jot/Jot.xcodeproj
 ```
 
 Then pick a real device (the Simulator doesn't have the Neural Engine, so Parakeet won't run), sign with your Apple ID team, and build.
+
+### Vendored dependencies
+
+`Vendor/mlx-swift-structured/` is a vendored fork of [`mlx-swift-structured`](https://github.com/ml-explore/mlx-swift-structured) with 3.x dep pin bumps and a `tokenizerSource` 2→3 API patch. It pulls in [xgrammar](https://github.com/mlc-ai/xgrammar) as a nested git submodule under `Sources/CMLXStructured/xgrammar`. Fresh checkouts MUST run `git submodule update --init --recursive` inside `Vendor/mlx-swift-structured/` or the build will fail with missing C++ headers.
 
 ## Related
 

@@ -67,6 +67,27 @@ enum AppGroup {
         /// and "explicit false" into the same value, which would silently
         /// flip the user-facing default to OFF on first launch.
         static let liveActivityTranscriptEnabled = "jot.liveActivity.transcriptEnabled"
+
+        /// Selected AI rewrite backend. String value matches an
+        /// `LLMProvider` raw value (`"phi4"` or `"appleIntelligence"`).
+        /// Read by the LLM factory in the main app to pick which `LLMClient`
+        /// implementation to instantiate. Default (key missing) is
+        /// `"appleIntelligence"`; Phi-4 remains a switchable alternate.
+        static let aiRewriteProvider = "jot.ai.rewriteProvider"
+
+        /// User-facing master toggle for the AI Rewrite feature. When `false`
+        /// (default), the keyboard's Magic CTA stays hidden and no LLM weights
+        /// are warmed. Flipping this ON in Settings is the single user gesture
+        /// that opts the device in to the on-device LLM path.
+        static let aiRewriteEnabled = "jot.ai.rewriteEnabled"
+
+        /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
+        /// page (add/edit/delete/reorder) and read by the keyboard's Magic
+        /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`
+        /// for the encoded shape and `Shared/SavedPromptStore.swift` for the
+        /// access pattern. Default (key missing) is treated as "empty list"
+        /// by the store, which seeds the bundled `defaultRewrite` entry.
+        static let savedPrompts = "jot.ai.savedPrompts"
     }
 
     /// Whether streaming partial-transcript text is rendered in the Dynamic
@@ -90,4 +111,36 @@ enum AppGroup {
             defaults.set(newValue, forKey: Keys.liveActivityTranscriptEnabled)
         }
     }
+
+    /// User-facing master toggle for AI Rewrite. Default `false` (feature
+    /// off) so first-launch behavior matches the locked product default —
+    /// users explicitly opt in via the AI Rewrite settings page.
+    ///
+    /// Uses `bool(forKey:)` because the missing-key default is `false`,
+    /// which `UserDefaults.bool(forKey:)` returns naturally — no need for
+    /// the `object(forKey:)`-cast dance the live-activity toggle uses.
+    static var aiRewriteEnabled: Bool {
+        get { defaults.bool(forKey: Keys.aiRewriteEnabled) }
+        set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
+    }
+
+    /// Selected AI rewrite backend. Values are the raw string identifiers
+    /// `"phi4"` (switchable alternate) and `"appleIntelligence"` (primary),
+    /// matching `LLMProvider` raw values in `Jot/App/LLM/LLMClientFactory.swift`.
+    /// Default (key missing) is `"appleIntelligence"` — Apple Intelligence is now the
+    /// primary backend; Phi-4 remains user-switchable in Settings.
+    static var aiRewriteProvider: String {
+        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "appleIntelligence" }
+        set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
+    }
+
+    /// Raw JSON `Data` blob backing the saved-prompts list. Prefer the
+    /// `SavedPromptStore` API (encodes/decodes and seeds the default entry)
+    /// over reading this accessor directly. Returns `nil` when no list has
+    /// ever been written.
+    static var savedPromptsJSON: Data? {
+        get { defaults.data(forKey: Keys.savedPrompts) }
+        set { defaults.set(newValue, forKey: Keys.savedPrompts) }
+    }
+
 }

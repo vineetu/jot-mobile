@@ -407,6 +407,15 @@ final class RecordingService {
             currentAmplitude = nil
             AmplitudeProjection.clear()
             publishRecordingState(isRecording: false, startedAt: nil)
+            // Atomically advance the pipeline phase off `.recording` so the
+            // keyboard never observes the inconsistent `(isRecording=false,
+            // phase=.recording)` window between this method and
+            // `DictationPipeline.completeEndOfRecording`'s first phase write
+            // (`.processing`, fired only AFTER Parakeet finalize, typically
+            // 0.2-3s later). `.transcribing` is the natural next phase after
+            // a clean user-stop; the pipeline overwrites it with `.processing`
+            // when transcription completes, so this is purely a gap closure.
+            publishPipelinePhase(.transcribing)
 
             let seconds = Double(samples.count) / Self.sampleRate
             log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
@@ -565,6 +574,14 @@ final class RecordingService {
         currentAmplitude = nil
         AmplitudeProjection.clear()
         publishRecordingState(isRecording: false, startedAt: nil)
+        // Force-stop discards captured samples — there's no transcription
+        // tail to follow, so the pipeline phase has to move directly to a
+        // terminal state. `.failed` is correct: this is an emergency stop
+        // (scene-disconnect / hard interruption), not a clean user stop.
+        // Without this, the keyboard would observe `(isRecording=false,
+        // phase=.recording)` until the heartbeat-stale path synthesizes
+        // `.failed` — up to 30s later.
+        publishPipelinePhase(.failed, failureReason: "force-stop")
         log.info("Force-stop complete (scene-disconnect / hard interruption path).")
     }
 

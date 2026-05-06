@@ -1,0 +1,17 @@
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: Unable to deliver request ({
+	    "developer_dir" = "/Applications/Xcode.app/Contents/Developer";
+	    request = "set_developer_dir";
+	}) because we are not connected to CoreSimulatorService.
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Warning>: Unable to discover any Simulator runtimes. Developer Directory is /Applications/Xcode.app/Contents/Developer.
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: simdiskimaged returned error (invalid), marking disconnected.
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: Could not kickstart simdiskimaged; SimDiskImageManager services will not be available: Error Domain=NSPOSIXErrorDomain Code=53 "Software caused connection abort" UserInfo={NSLocalizedDescription=Error returned in reply from CoreSimulatorService: Connection invalid}
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: Unable to deliver request ({
+	    request = "notification_subscription";
+	    "set_path" = "/Users/vsriram/Library/Developer/CoreSimulator/Devices";
+	}) because we are not connected to CoreSimulatorService.
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: simdiskimaged returned error (invalid), marking disconnected.
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: Could not get list of trusted mount directories: Error Domain=com.apple.CoreSimulator.SimError Code=410 "The service used to manage runtime disk images (simdiskimaged) crashed or is not responding" UserInfo={NSLocalizedDescription=The service used to manage runtime disk images (simdiskimaged) crashed or is not responding}
+May  5 11:53:30 us6c7e67bbcbd1 com.apple.dt.xcodebuild[70580] <Error>: Unable to deliver request ({
+	    request = "notification_subscription";
+	    "set_path" = "/Users/vsriram/Library/Developer/CoreSimulator/Devices";
+	}) because we are not connected to CoreSimulatorService.

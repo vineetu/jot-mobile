@@ -22,16 +22,21 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///   are shown with a clear "Cleaned" / "Original" eyebrow split. Otherwise just
 ///   the single body block, no chrome.
 /// - **Metadata**: relative date + word count.
-/// - **Toolbar**: Copy + Delete in `.bottomBar`, matching Mail's destructive-action
+/// - **Toolbar**: Magic (sparkles) trailing in nav bar to open the AI rewrite
+///   menu. Copy + Delete in `.bottomBar`, matching Mail's destructive-action
 ///   placement. Delete confirmation dialog mirrors the in-list pattern in
 ///   `ContentView`.
 ///
-/// ## Lifecycle on delete
+/// ## AI rewrite UX (in-process)
 ///
-/// After a successful `modelContext.delete` we `dismiss()` back to the list — the
-/// `@Query` in `ContentView` reactively drops the row. We refresh the
-/// `TranscriptHistoryMirror` to keep the keyboard-extension snapshot in sync,
-/// matching the behavior in `ContentView.delete(_:)`.
+/// Tapping the Magic affordance opens a `Menu` of `SavedPromptStore.all()`
+/// rows. Selecting a row kicks off `LLMClientFactory.shared.client().rewrite`
+/// in-process — no IPC, no URL bounce, no extension handoff. While the task
+/// is in flight we show a proposed-result panel under the original with a
+/// progress indicator + Cancel; on completion the user explicitly Applies
+/// or Discards. Apply writes the rewrite to `cleanedText` (preserving the
+/// raw `text`), Discard drops the proposal entirely. Cancel is silent.
+/// Errors render inline below the proposal panel.
 struct TranscriptDetailView: View {
     let transcript: Transcript
 
@@ -43,6 +48,37 @@ struct TranscriptDetailView: View {
     @State private var copyResetTask: Task<Void, Never>?
     @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var errorMessage: String?
+
+    // MARK: - AI rewrite state
+    //
+    // `rewriteState` is the single source of truth for the rewrite UI. The
+    // detail view drives in-process: no AppGroup slots, no Darwin
+    // notifications, no URL bounce. Cancellation propagates by holding the
+    // `Task` and calling `.cancel()` — `Phi4Client.rewrite` honors
+    // `Task.checkCancellation()` and `withTaskCancellationHandler`, so the
+    // catch branch sees `CancellationError` and silently resets state.
+
+    enum RewriteState: Equatable {
+        case idle
+        case running
+        case proposing(String)        // result text, awaiting Apply / Discard
+        case error(String)            // error message; user dismisses to clear
+    }
+
+    @State private var rewriteState: RewriteState = .idle
+    @State private var activeRewriteTask: Task<Void, Never>?
+
+    /// Saved prompts list, populated on appear. We poll on appearance only —
+    /// settings can mutate the list, but the user is most likely to land here
+    /// freshly each time, so re-reading on `.task` covers the common case
+    /// without a 1Hz tick.
+    @State private var savedPrompts: [SavedPrompt] = []
+
+    /// Mirrors `LLMClientFactory.shared.client().status == .ready`. Refreshed
+    /// on appear and again when the user taps the Magic menu (cheap to read).
+    /// Drives the disabled-state of the Magic button alongside
+    /// `AppGroup.aiRewriteEnabled`.
+    @State private var isLLMReady = false
 
     var body: some View {
         ScrollView {
@@ -56,6 +92,8 @@ struct TranscriptDetailView: View {
                 }
 
                 bodyContent
+
+                rewriteSection
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 16)
@@ -64,6 +102,10 @@ struct TranscriptDetailView: View {
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                magicMenu
+            }
+
             ToolbarItem(placement: .bottomBar) {
                 Button {
                     copy()
@@ -100,9 +142,22 @@ struct TranscriptDetailView: View {
         }
         .onAppear {
             copyHaptic.prepare()
+            refreshRewriteAvailability()
         }
         .onDisappear {
             copyResetTask?.cancel()
+            // Cancel any in-flight rewrite when the user navigates away. The
+            // result would have nowhere to land — the bound `transcript`
+            // reference may still be valid (no delete), but the user
+            // signalled they're done with this surface, so the silent
+            // cancel is the right call.
+            activeRewriteTask?.cancel()
+            activeRewriteTask = nil
+        }
+        .task {
+            // `.task` re-runs after every navigation appearance and is a
+            // natural fit for "load the prompts list + probe model status".
+            refreshRewriteAvailability()
         }
     }
 
@@ -153,6 +208,164 @@ struct TranscriptDetailView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Magic affordance in the nav bar trailing slot. Two visual states:
+    /// `Menu` of saved prompts (idle) and a Cancel button (running). The
+    /// menu disables itself when AI rewrite is off, the model isn't ready,
+    /// or there are no saved prompts to pick from.
+    @ViewBuilder
+    private var magicMenu: some View {
+        switch rewriteState {
+        case .running:
+            Button(role: .cancel) {
+                cancelActiveRewrite()
+            } label: {
+                Label("Cancel", systemImage: "xmark")
+            }
+            .accessibilityLabel("Cancel rewrite")
+
+        case .idle, .proposing, .error:
+            Menu {
+                ForEach(savedPrompts) { prompt in
+                    Button {
+                        startRewrite(with: prompt)
+                    } label: {
+                        Label(prompt.name, systemImage: "sparkles")
+                    }
+                }
+            } label: {
+                Image(systemName: "sparkles")
+            }
+            .menuOrder(.fixed)
+            .disabled(!isMagicEnabled)
+            .accessibilityLabel(magicAccessibilityLabel)
+            .accessibilityHint(isMagicEnabled ? "Opens AI rewrite menu" : "")
+        }
+    }
+
+    /// Proposed-rewrite panel. Renders below the transcript body when a
+    /// rewrite is in flight or when a result is awaiting accept/reject.
+    /// Idle state is `EmptyView` so the surface stays uncluttered at rest.
+    @ViewBuilder
+    private var rewriteSection: some View {
+        switch rewriteState {
+        case .idle:
+            EmptyView()
+
+        case .running:
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Rewriting…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") {
+                        cancelActiveRewrite()
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .accessibilityLabel("Cancel rewrite")
+                }
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .accessibilityElement(children: .combine)
+
+        case .proposing(let result):
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Rewrite")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .accessibilityAddTraits(.isHeader)
+
+                Text(result)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 12) {
+                    Button(role: .cancel) {
+                        discardProposal()
+                    } label: {
+                        Label("Discard", systemImage: "xmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        applyProposal(result: result)
+                    } label: {
+                        Label("Apply", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+
+        case .error(let message):
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    rewriteState = .idle
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss error")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .systemOrange).opacity(0.12))
+            )
+        }
+    }
+
+    // MARK: - Magic gate
+
+    private var isMagicEnabled: Bool {
+        AppGroup.aiRewriteEnabled
+            && isLLMReady
+            && !savedPrompts.isEmpty
+    }
+
+    private var magicAccessibilityLabel: String {
+        if isMagicEnabled { return "AI rewrite" }
+        if !AppGroup.aiRewriteEnabled {
+            return "AI rewrite, disabled — turn on AI rewrite in Settings"
+        }
+        if !isLLMReady {
+            return "AI rewrite, unavailable — model is not ready"
+        }
+        if savedPrompts.isEmpty {
+            return "AI rewrite, disabled — no saved prompts"
+        }
+        return "AI rewrite"
     }
 
     // MARK: - Derived strings
@@ -215,6 +428,12 @@ struct TranscriptDetailView: View {
         // SwiftData detail-view pattern. The `Task` defers the actual
         // delete to the next MainActor turn, after the pop animation has
         // taken this view's body out of the render tree.
+        // Cancel any in-flight rewrite first — the bound managed object is
+        // about to be tombstoned, and we don't want the result handler to
+        // touch `transcript.cleanedText` on a deleted row.
+        activeRewriteTask?.cancel()
+        activeRewriteTask = nil
+
         dismiss()
         Task { @MainActor in
             modelContext.delete(transcript)
@@ -225,6 +444,114 @@ struct TranscriptDetailView: View {
                 modelContext.rollback()
                 detailLog.error("Transcript delete save failed: \(error.localizedDescription, privacy: .public)")
             }
+        }
+    }
+
+    // MARK: - Rewrite lifecycle
+
+    /// Pulls the latest prompts list and probes the LLM client status.
+    /// Called on appear and on each `.task` re-run. Cheap — both reads are
+    /// in-process, no IO blocking.
+    private func refreshRewriteAvailability() {
+        savedPrompts = SavedPromptStore.all()
+        // Probe client status. `LLMClientFactory.shared.client().status` is
+        // `async` because backends like Phi-4 use actor isolation; we kick a
+        // tiny Task to read it and update `isLLMReady`. The Magic affordance
+        // appears disabled until the probe completes — the first frame's
+        // `isLLMReady = false` is the safest default.
+        let aiOn = AppGroup.aiRewriteEnabled
+        guard aiOn else {
+            isLLMReady = false
+            return
+        }
+        Task { @MainActor in
+            let status = await LLMClientFactory.shared.client().status
+            isLLMReady = (status == .ready)
+        }
+    }
+
+    /// Kicks off an in-process rewrite for the given prompt. Holds the Task
+    /// in `activeRewriteTask` so the Cancel affordance can call `.cancel()`.
+    /// The Task body is `MainActor`-isolated because the LLM clients hop to
+    /// their internal actors / `@MainActor` discipline; the rewrite runs on
+    /// background queues per the client's own setup.
+    private func startRewrite(with prompt: SavedPrompt) {
+        let source = transcript.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            rewriteState = .error("Transcript is empty.")
+            return
+        }
+        guard isMagicEnabled else { return }
+
+        // Cancel any prior in-flight task before starting a new one.
+        activeRewriteTask?.cancel()
+        rewriteState = .running
+
+        let promptText = prompt.systemPrompt
+        let task = Task { @MainActor in
+            do {
+                let result = try await LLMClientFactory.shared.client().rewrite(
+                    text: source,
+                    systemPrompt: promptText
+                )
+                try Task.checkCancellation()
+                let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    rewriteState = .error("Rewrite returned no text.")
+                    return
+                }
+                rewriteState = .proposing(trimmed)
+                detailLog.info(
+                    "Transcript rewrite SUCCESS prompt=\(prompt.id, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
+                )
+            } catch is CancellationError {
+                // User-initiated cancel — silent reset.
+                rewriteState = .idle
+                detailLog.info("Transcript rewrite cancelled prompt=\(prompt.id, privacy: .public)")
+            } catch {
+                rewriteState = .error(error.localizedDescription)
+                detailLog.error(
+                    "Transcript rewrite FAILED prompt=\(prompt.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        activeRewriteTask = task
+    }
+
+    private func cancelActiveRewrite() {
+        activeRewriteTask?.cancel()
+        activeRewriteTask = nil
+        // The Task's `catch is CancellationError` branch flips state back to
+        // `.idle`; setting it here too keeps the UI snappy if the catch
+        // branch hasn't run yet.
+        if case .running = rewriteState {
+            rewriteState = .idle
+        }
+    }
+
+    private func discardProposal() {
+        rewriteState = .idle
+    }
+
+    /// Persists the rewrite to `cleanedText`, preserving the raw `text`.
+    /// `displayText` already prefers `cleanedText`, so the body switches to
+    /// the rewritten version with no further wiring. The `cleanedText`
+    /// surface is the existing "post-cleanup output" slot — overloading it
+    /// for AI rewrites here is consistent with the model's intent ("LLM-
+    /// rewritten variant"; see `Transcript.swift`).
+    private func applyProposal(result: String) {
+        transcript.cleanedText = result
+        do {
+            try modelContext.save()
+            TranscriptHistoryMirror.refresh(from: modelContext)
+            rewriteState = .idle
+            detailLog.info("Transcript rewrite applied — cleanedText updated")
+        } catch {
+            modelContext.rollback()
+            rewriteState = .error("Couldn't save: \(error.localizedDescription)")
+            detailLog.error(
+                "Transcript rewrite save failed: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 }

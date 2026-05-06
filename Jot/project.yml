@@ -14,7 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CURRENT_PROJECT_VERSION: "1"
-    MARKETING_VERSION: "0.1"
+    MARKETING_VERSION: "0.4"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -23,6 +23,27 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     exactVersion: "0.13.6"
+  # MLX backend stack for the on-device Phi-4-mini rewrite path. Declared at
+  # the project level so xcodegen emits the package refs, but only the `Jot`
+  # target depends on the products — JotKeyboard and JotWidget MUST NOT pull
+  # in MLX (60MB extension ceiling for the keyboard).
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    exactVersion: "3.31.3"
+  SwiftHuggingFace:
+    url: https://github.com/huggingface/swift-huggingface
+    minVersion: "0.9.0"
+    maxVersion: "1.0.0"
+  SwiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    minVersion: "1.3.0"
+    maxVersion: "2.0.0"
+  # Vendored fork of mlx-swift-structured with 3.x dep pin bumps and the
+  # `tokenizerSource` 2→3 API patch. Path is relative to `Jot/project.yml`,
+  # so `..` is the repo root and `../Vendor/mlx-swift-structured` is the
+  # top-level Vendor dir promoted from the prototype.
+  MLXSwiftStructured:
+    path: ../Vendor/mlx-swift-structured
 
 targets:
   Jot:
@@ -85,6 +106,19 @@ targets:
     dependencies:
       - package: FluidAudio
         product: FluidAudio
+      # MLX stack for Phi-4. Main-app-only — extensions stay MLX-free.
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: SwiftHuggingFace
+        product: HuggingFace
+      - package: SwiftTransformers
+        product: Tokenizers
+      - package: MLXSwiftStructured
+        product: MLXStructured
       - sdk: AppIntents.framework
       - sdk: BackgroundTasks.framework
       - target: JotKeyboard
@@ -139,6 +173,13 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.vineetu.jot.mobile.shared
+    dependencies:
+      # FoundationModels (Apple Intelligence) is available to keyboard
+      # extensions on iOS 26+. The keyboard calls it directly for
+      # rewrite-during-paste — moving rewrite OUT of the suspended main app
+      # process and INTO the live keyboard process. Main app still keeps its
+      # own LLMClient stack for the in-app transcript pane rewrite UI.
+      - sdk: FoundationModels.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Keyboard

@@ -20,6 +20,11 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         case transcribing
         case processing
         case cleaning
+        /// Chained LLM rewrite running between Parakeet finalize and the
+        /// final clipboard publish. Treated by the keyboard exactly like
+        /// `.transcribing / .processing / .cleaning` (in-flight, mic CTA
+        /// disabled, streaming preview placeholder reads "Working on it…").
+        case rewriting
         case publishing
         case failed
     }
@@ -56,7 +61,7 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         switch projection.phase {
         case .idle, .failed:
             return projection
-        case .recording, .transcribing, .processing, .cleaning, .publishing:
+        case .recording, .transcribing, .processing, .cleaning, .rewriting, .publishing:
             let age = Date().timeIntervalSince(projection.lastUpdatedAt)
             if age > heartbeatStaleThreshold {
                 return PipelinePhaseProjection(

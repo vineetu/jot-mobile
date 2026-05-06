@@ -45,6 +45,18 @@ public struct DictationAttributes: ActivityAttributes {
         /// The raw transcript is running through Foundation Models cleanup.
         case cleaning
 
+        /// The dictation pipeline is chaining an LLM rewrite (v0.4) using a
+        /// keyboard-mode-picker-selected saved prompt. UI mirrors the
+        /// `.transcribing / .processing / .cleaning` shape (spinner +
+        /// "Working on it…") plus a small "Rewriting with <promptName>…"
+        /// caption so the user can see which mode is running and disambiguate
+        /// from the v0.3 cleanup pass.
+        ///
+        /// `promptName` is the user-supplied name from `SavedPrompt`. Cap
+        /// length at the call site if the name is unusually long — the
+        /// widget renders single-line.
+        case rewriting(promptName: String)
+
         /// The 30-second chained-follow-up window is active. The user can
         /// dictate again and have the next utterance resolved as a command
         /// against the just-finished transcript.

@@ -151,6 +151,12 @@ enum DictationPipeline {
         let postProcessing = DictationPostProcessingCoordinator.shared
         let recording = RecordingService.shared
 
+        // v0.4: clear any stale rewrite status banner from a prior dictation
+        // so the keyboard doesn't render an outdated message on this
+        // dictation's `transcriptReady`. The new branch will write a fresh
+        // string (or leave nil on success / Just-Transcribe) before publish.
+        AppGroup.lastDictationStatusMessage = nil
+
         // v7 auto-paste design: every published payload carries a session ID
         // so the keyboard can match it against its `PendingPasteSession.id`.
         // Callers in scope of the v7 wave pass the session ID explicitly;
@@ -292,6 +298,8 @@ enum DictationPipeline {
                 cleanedText = nil
             }
 
+            let publishedText = finalText
+
             let transcriptID = UUID()
 
             // Step A: publish FIRST. The keyboard's auto-paste cares about
@@ -299,7 +307,7 @@ enum DictationPipeline {
             // not gate it.
             recording.publishPipelinePhase(.publishing)
             ClipboardHandoff.publish(
-                transcript: finalText,
+                transcript: publishedText,
                 sessionID: resolvedSessionID,
                 autoCopiedTranscriptID: transcriptID
             )
@@ -329,7 +337,7 @@ enum DictationPipeline {
                 )
             }
 
-            let preview = String(finalText.prefix(60))
+            let preview = String(publishedText.prefix(60))
             await Self.transitionPostPublish(preview: preview)
 
             recording.publishPipelinePhase(.idle)
@@ -337,7 +345,7 @@ enum DictationPipeline {
 
             return PublishedTranscriptOutcome(
                 transcriptID: transcriptID,
-                finalText: finalText,
+                finalText: publishedText,
                 branch: .fresh
             )
 
@@ -533,4 +541,5 @@ enum DictationPipeline {
             preview: preview
         )
     }
+
 }
