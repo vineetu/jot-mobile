@@ -177,19 +177,6 @@ final class StreamingTranscriptionService {
         warmUp()
     }
 
-    /// Cancel any in-flight warm-up. Counterpart to
-    /// `TranscriptionService.cancelBackgroundWarm()`.
-    func cancelBackgroundWarm() {
-        guard self.modelState != .ready else { return }
-        log.notice(
-            "Streaming warm cancellation requested — modelState=\(Self.describe(self.modelState), privacy: .public)"
-        )
-        prepareTask?.cancel()
-        prepareTask = nil
-        prepareGeneration += 1
-        modelState = .notLoaded
-    }
-
     // MARK: - Per-session API for RecordingService
 
     /// Mint a fresh streaming session: instantiate a NEW

@@ -1,16 +1,13 @@
 @preconcurrency import AVFAudio
-import FluidAudio
 import SwiftUI
 import SwiftData
 import os.log
-import UIKit
 
 private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "app-lifecycle")
 
 @main
 struct JotApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @UIApplicationDelegateAdaptor(JotAppDelegate.self) private var appDelegate
     private let stopRequestObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
@@ -83,20 +80,14 @@ struct JotApp: App {
         // purges. Detached + best-effort, does not block launch.
         TranscriptionService.sweepOrphanedPurgingDirs()
 
-        // Reset any stale recording-state projection. If the app is launching
-        // here, by definition no recording is in flight in this process — so
-        // any leftover `isRecording=true` from a previous crashed/killed
-        // session must be cleared, otherwise the keyboard mic CTA will route
-        // every tap to "stop" instead of opening the app.
-        RecordingStateProjection.write(state: RecordingStateProjection(
-            isRecording: false,
-            startedAt: nil,
-            lastUpdatedAt: Date()
-        ))
-        // v7 auto-paste: clear any leftover non-terminal pipeline-phase
-        // projection from a crashed previous launch. Without this reset, the
-        // keyboard would observe a stale non-idle phase on first appearance
-        // and only recover via the 30s stale-deadline. Per design §4.2.
+        // Reset any leftover non-terminal pipeline-phase projection from a
+        // crashed previous launch. Without this reset, the keyboard would
+        // observe a stale non-idle phase on first appearance and only recover
+        // via the 30s stale-deadline. The pipeline phase is now the SINGLE
+        // source of truth for cross-process recording state — `.idle` (or
+        // unset) means "no recording in flight"; the keyboard derives
+        // `isRecording` from `phase == .recording` rather than reading a
+        // separate projection. Per design §4.2.
         PipelinePhaseProjection.reset()
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
@@ -194,10 +185,7 @@ struct JotApp: App {
                 // Bootstrapping here makes history visible in the keyboard
                 // immediately after first launch of the main app.
                 .task {
-                    let modelsOnDisk = AsrModels.modelsExist(
-                        at: MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV2),
-                        version: .v2
-                    )
+                    let modelsOnDisk = TranscriptionService.modelsExistOnDiskForSelectedVariant()
                     if SetupCompletion.isCompleted && modelsOnDisk {
                         transcriptionService.warmUp()
                     }
@@ -397,11 +385,11 @@ private final class CrossProcessRecordingStopCoordinator {
     }
 
     private func stopAndPublish() async throws {
-        let projection = RecordingStateProjection.read()
+        let projection = PipelinePhaseProjection.read()
         let controller = DictationIntentBridge.shared.controller
         let recording = RecordingService.shared
         let startedAt = DictationActivityCoordinator.shared.recordingStartedAt
-            ?? projection?.startedAt
+            ?? projection?.recordingStartedAt
             ?? Date()
 
         // v7 auto-paste: peek the keyboard's pending paste session synchronously
@@ -494,13 +482,10 @@ private final class CrossProcessRecordingStopCoordinator {
     }
 
     private func publishIdleProjection() {
-        RecordingStateProjection.write(
-            state: RecordingStateProjection(
-                isRecording: false,
-                startedAt: nil,
-                lastUpdatedAt: Date()
-            )
-        )
-        CrossProcessNotification.post(name: CrossProcessNotification.recordingStateChanged)
+        // Single source of truth: pipeline phase. Routing through the
+        // `RecordingService` helper keeps the in-process `currentPipelinePhase`,
+        // the App Group projection, the heartbeat task lifecycle, and the
+        // Darwin notification post in lock-step.
+        RecordingService.shared.publishPipelinePhase(.idle)
     }
 }

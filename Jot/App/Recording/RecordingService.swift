@@ -91,8 +91,8 @@ final class RecordingService {
 
     /// Snapshot of the recording's start time. Carried into the published
     /// `PipelinePhaseProjection.recordingStartedAt` so the keyboard's
-    /// elapsed-time UI can render off the projection without depending on
-    /// the legacy `RecordingStateProjection`.
+    /// elapsed-time UI can render off the single phase projection — the
+    /// keyboard's `isRecording` is derived from `phase == .recording`.
     private(set) var currentRecordingStartedAt: Date?
 
     /// Normalized RMS amplitude (0.0 – 1.0) updated at ~30 Hz while a recording
@@ -306,7 +306,11 @@ final class RecordingService {
         subscribeSystemObservers(engine: engine)
         let startedAt = Date()
         isRecording = true
-        publishRecordingState(isRecording: true, startedAt: startedAt)
+        // `setCurrentRecordingStartedAt` MUST precede `publishPipelinePhase(.recording)`
+        // — the helper reads `currentRecordingStartedAt` when assembling the
+        // projection, and the keyboard's elapsed-time clock renders off that
+        // field. No separate `publishRecordingState` call: pipeline phase is
+        // the single source of truth for cross-process recording state.
         setCurrentRecordingStartedAt(startedAt)
         publishPipelinePhase(.recording)
         log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
@@ -406,15 +410,13 @@ final class RecordingService {
             isRecording = false
             currentAmplitude = nil
             AmplitudeProjection.clear()
-            publishRecordingState(isRecording: false, startedAt: nil)
-            // Atomically advance the pipeline phase off `.recording` so the
-            // keyboard never observes the inconsistent `(isRecording=false,
-            // phase=.recording)` window between this method and
-            // `DictationPipeline.completeEndOfRecording`'s first phase write
-            // (`.processing`, fired only AFTER Parakeet finalize, typically
-            // 0.2-3s later). `.transcribing` is the natural next phase after
-            // a clean user-stop; the pipeline overwrites it with `.processing`
-            // when transcription completes, so this is purely a gap closure.
+            // Advance the pipeline phase off `.recording`. With pipeline phase
+            // as the single source of truth, the keyboard derives
+            // `isRecording` from `phase == .recording`, so the moment we
+            // publish `.transcribing` here the keyboard's mic CTA flips to
+            // its in-flight state. `.transcribing` is the natural next phase
+            // after a clean user-stop; the pipeline overwrites it with
+            // `.processing` when transcription completes.
             publishPipelinePhase(.transcribing)
 
             let seconds = Double(samples.count) / Self.sampleRate
@@ -424,6 +426,13 @@ final class RecordingService {
         } catch {
             isStopInFlight = false
             isPipelineInFlight = false
+            // `stop()` itself threw — there's no transcription tail to follow
+            // and no publish coming, so the keyboard would otherwise observe
+            // `phase == .recording` until the 30s heartbeat-stale path fires.
+            // Publish `.failed` decisively so the keyboard's mic CTA can flip
+            // off `.recording` immediately and the pending-paste cleanup
+            // branch runs.
+            publishPipelinePhase(.failed, failureReason: "stop-throw")
             throw error
         }
     }
@@ -573,14 +582,12 @@ final class RecordingService {
         isRecording = false
         currentAmplitude = nil
         AmplitudeProjection.clear()
-        publishRecordingState(isRecording: false, startedAt: nil)
         // Force-stop discards captured samples — there's no transcription
         // tail to follow, so the pipeline phase has to move directly to a
         // terminal state. `.failed` is correct: this is an emergency stop
         // (scene-disconnect / hard interruption), not a clean user stop.
-        // Without this, the keyboard would observe `(isRecording=false,
-        // phase=.recording)` until the heartbeat-stale path synthesizes
-        // `.failed` — up to 30s later.
+        // With pipeline phase as the single source of truth, this terminal
+        // write is what flips the keyboard's mic CTA off `.recording`.
         publishPipelinePhase(.failed, failureReason: "force-stop")
         log.info("Force-stop complete (scene-disconnect / hard interruption path).")
     }
@@ -882,13 +889,12 @@ final class RecordingService {
         // ===== Snapshot phase =====
         //
         // Capture every piece of state the dispatch helper needs BEFORE any
-        // mutation. Defense-in-depth: today none of the mutations below
-        // clears `currentSessionID` / `currentRecordingStartedAt` (those are
-        // cleared inside `publishPipelinePhase`'s terminal branch, which
-        // internalStop does not call), but a future refactor that adds a
-        // `publishPipelinePhase(.failed)` here would silently break the
-        // session-ID hand-off without this snapshot. Per cut-A-reviewer's
-        // BLOCKER #4 confirmation.
+        // mutation. The terminal `publishPipelinePhase(.failed, ...)` below
+        // clears `currentSessionID` / `currentRecordingStartedAt` (terminal
+        // branch of the helper), so this snapshot is load-bearing — without
+        // it the dispatch helper would lose the session-ID hand-off the
+        // keyboard's `PendingPasteSession.id` matches against. Per
+        // cut-A-reviewer's BLOCKER #4 closure.
         let snapshotSessionID = currentSessionID
         let snapshotStartedAt = currentRecordingStartedAt ?? Date()
         let snapshotCapture = self.capture
@@ -940,7 +946,21 @@ final class RecordingService {
         isRecording = false
         currentAmplitude = nil
         AmplitudeProjection.clear()
-        publishRecordingState(isRecording: false, startedAt: nil)
+        // Publish a terminal `.failed` so the keyboard's mic CTA flips off
+        // `.recording` immediately. With pipeline phase as the single source
+        // of truth, omitting this leaves the keyboard observing
+        // `phase == .recording` until the 30s heartbeat-stale path fires —
+        // a multi-second window where every mic tap routes to "stop" instead
+        // of opening the app for a fresh recording. The dispatch helper
+        // below re-arms the pipeline by calling `adoptSession(_:)` on the
+        // SNAPSHOT session ID and then publishing `.processing → ... →
+        // .idle`, so the keyboard re-observes proof of life on the same
+        // session UUID. The trade-off acknowledged here: under interruption
+        // the keyboard's pending-paste may be cleaned by the terminal-log
+        // entry that this `.failed` write inserts; auto-paste-after-
+        // interruption becomes best-effort, but the keyboard's mic state
+        // stays correct.
+        publishPipelinePhase(.failed, failureReason: "interruption")
 
         // ===== Dispatch phase =====
         //
@@ -967,17 +987,6 @@ final class RecordingService {
                 startedAt: snapshotStartedAt
             )
         }
-    }
-
-    private func publishRecordingState(isRecording: Bool, startedAt: Date?) {
-        RecordingStateProjection.write(
-            state: RecordingStateProjection(
-                isRecording: isRecording,
-                startedAt: startedAt,
-                lastUpdatedAt: Date()
-            )
-        )
-        CrossProcessNotification.post(name: CrossProcessNotification.recordingStateChanged)
     }
 
     // MARK: - Target format

@@ -1,4 +1,3 @@
-import ActivityKit
 import AppIntents
 import Foundation
 
@@ -100,7 +99,7 @@ import Foundation
 /// can't yet predict would lock in a shape that blocks those local changes.
 /// If the two paths stay lock-step after binding + runtime verification,
 /// consolidation is a clean follow-up.
-struct RecordAndTranscribeIntent: AppIntent, AudioRecordingIntent, LiveActivityIntent {
+struct RecordAndTranscribeIntent: AppIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Start Jot Dictation"
 
     static let description = IntentDescription(
@@ -160,9 +159,7 @@ struct RecordAndTranscribeIntent: AppIntent, AudioRecordingIntent, LiveActivityI
     @MainActor
     private func beginDictation(using controller: any DictationController) async throws {
         let startedAt = Date()
-        try await DictationActivityCoordinator.shared.startForAudioRecordingIntent(
-            startedAt: startedAt
-        )
+        await DictationActivityCoordinator.shared.start(startedAt: startedAt)
 
         do {
             try await controller.startRecording(startedAt: startedAt)

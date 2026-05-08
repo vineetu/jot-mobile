@@ -9,10 +9,6 @@ enum CrossProcessNotification {
         }
     }
 
-    static let recordingStateChanged = Name(
-        rawValue: "com.vineetu.jot.mobile.recording-state-changed"
-    )
-
     static let stopRequested = Name(
         rawValue: "com.vineetu.jot.mobile.recording-stop-requested"
     )

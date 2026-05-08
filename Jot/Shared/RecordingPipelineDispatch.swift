@@ -105,6 +105,13 @@ enum RecordingPipelineDispatch {
                 "Partial publish skipped — \(samples.count, privacy: .public) samples (<1s)"
             )
             controller.abortToIdle()
+            // Publishing `.failed` is the single-source-of-truth way to land
+            // the pipeline in a terminal phase: it clears the in-flight flag
+            // on the next `markPipelineFinished()` cycle through the pipeline,
+            // writes the terminal projection so the keyboard's mic CTA flips
+            // off `.recording`, and appends a TerminalSessionLog entry that
+            // lets the keyboard's pending-paste cleanup branch run.
+            recording.publishPipelinePhase(.failed, failureReason: "short-capture")
             recording.markPipelineFinished()
             return
         }
@@ -120,6 +127,12 @@ enum RecordingPipelineDispatch {
             logger.error(
                 "Partial publish transcription failed: \(error.localizedDescription, privacy: .public)"
             )
+            // Same reasoning as the short-capture branch: publish `.failed`
+            // so the keyboard observes a terminal phase rather than stale
+            // `.recording` / `.transcribing`. The dispatch helper's prior
+            // shape relied on `markPipelineFinished()` alone, which only
+            // clears the in-process flag and never moves the projection.
+            recording.publishPipelinePhase(.failed, failureReason: "transcription")
             recording.markPipelineFinished()
             return
         }

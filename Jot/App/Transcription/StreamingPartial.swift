@@ -155,7 +155,7 @@ final class StreamingPartial {
     /// can render a live caption strip while recording. Empty string clears
     /// the strip on session end / reset. The keyboard observes this via the
     /// `streamingPartialChanged` Darwin notification — exact same shape as
-    /// `recordingStateChanged` / `pipelinePhaseChanged`.
+    /// `pipelinePhaseChanged`.
     ///
     /// Non-terminal callers (i.e. `update(...)` with `isFinal: false`) are
     /// throttled to one publish per `publishThrottle` window. The Darwin

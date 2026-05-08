@@ -22,10 +22,12 @@ struct AmplitudeProjection: Codable, Sendable, Equatable {
 
     private static let key = AppGroup.Keys.recordingAmplitude
 
-    /// Tighter than RecordingStateProjection's 5 min: a frozen
-    /// amplitude pill is a UX bug (it suggests speech volume that
-    /// isn't there). With ~10 Hz writes, 1 s = ~10 missed updates,
-    /// which is the right "writer probably died" threshold.
+    /// 1 s — a frozen amplitude pill is a UX bug (it suggests speech
+    /// volume that isn't there). With ~10 Hz writes, 1 s = ~10 missed
+    /// updates, which is the right "writer probably died" threshold.
+    /// (For comparison, the pipeline-phase projection's heartbeat-stale
+    /// threshold is 30 s — that one is sized for transcription latency,
+    /// not amplitude UX.)
     static let staleThreshold: TimeInterval = 1.0
 
     static func write(amplitude: Float) {

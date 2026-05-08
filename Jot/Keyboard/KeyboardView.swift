@@ -18,6 +18,14 @@ struct KeyboardView: View {
     let canUndoLastInsertion: Bool
     let canRedoInsertion: Bool
 
+    /// True from the moment the keyboard's controller posted `stopRequested`
+    /// until the next `pipelinePhaseChanged` confirming a non-`.recording`
+    /// phase. Used to disable the speak button so iOS suppresses taps while
+    /// the stop is in flight (closes the duplicate-rapid-tap race that the
+    /// controller-level `inflightPhases` guard caught only after the tap
+    /// already cost a button-press).
+    let isStopRequestPending: Bool
+
     /// True when the user's selected rewrite provider is Apple Intelligence
     /// AND the system reports it as unavailable (device ineligible, AI not
     /// enabled in Settings, or model not ready). Retained for the next
@@ -434,6 +442,17 @@ struct KeyboardView: View {
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // `.disabled(...)` is the SwiftUI-level visual source of truth: iOS
+        // suppresses taps and routes hit-testing past the button while we're
+        // mid-flight or have a stop request pending. The controller still
+        // runs an `inflightPhases` guard inside `handleMicCTATap` as
+        // defense-in-depth against optimistic-UI lag (per design §4.6.D),
+        // but the visual is what closes the duplicate-rapid-tap race.
+        // `hasFullAccess` stays interactive: tapping while locked opens the
+        // host settings page so the user can flip "Allow Full Access".
+        .disabled(hasFullAccess
+                  && (recordingState.isInflightPostRecording
+                      || isStopRequestPending))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
                    value: recordingState.isRecording)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),

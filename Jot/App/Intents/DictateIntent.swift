@@ -1,10 +1,7 @@
-import ActivityKit
 import AppIntents
 import Foundation
 import Observation
 import os
-
-private let liveActivityLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "live-activity")
 
 /// The Action Button / Shortcuts entry point for Jot.
 ///
@@ -283,23 +280,6 @@ enum DictationRuntimePhase: Sendable {
     case cleaning
 }
 
-enum AudioRecordingIntentPreflightError: LocalizedError, Sendable {
-    case liveActivitiesDisabled
-    case liveActivityRequestFailed(String)
-    case liveActivityNotObserved
-
-    var errorDescription: String? {
-        switch self {
-        case .liveActivitiesDisabled:
-            return "Live Activities are turned off for Jot. Turn them on, then try the Action Button again."
-        case .liveActivityRequestFailed(let detail):
-            return "Jot could not start the recording Live Activity: \(detail)"
-        case .liveActivityNotObserved:
-            return "Jot could not confirm the recording Live Activity started. Try again."
-        }
-    }
-}
-
 /// Process-wide owner of the `DictationController` the intents drive.
 ///
 /// ## Why this is now a lazy singleton instead of a register/await bridge
@@ -504,48 +484,47 @@ final class DictationControllerImpl: DictationController {
     }
 }
 
-// MARK: - Live Activity coordinator
-
-/// Thin wrapper over `ActivityKit` so the intent's `perform()` reads as a
-/// phase machine instead of a procession of `Activity.request`/`update`/`end`
-/// calls.
-///
-/// Scoped `internal` because only the intent drives the pill today. If the
-/// recording layer later wants to update the activity directly (e.g. to show
-/// a live waveform) we'll promote this to a top-level type.
+// MARK: - Dictation lifecycle coordinator
+//
+// Originally a thin wrapper over ActivityKit, this type now ONLY owns the
+// in-app bookkeeping the dictation pipeline needs: `recordingStartedAt`
+// (consumed by `TranscriptStore.append` for duration), `isFollowUpActive` /
+// `followUpExpiresAt` (consumed by `DictationPipeline` to gate
+// chained-command classification), and the follow-up expiry task that
+// flips `isFollowUpActive` back to `false` after the freshness window
+// elapses.
+//
+// All ActivityKit calls (`Activity.request` / `update` / `end`) and the
+// `ActivityHandle` `@unchecked Sendable` wrapper around them have been
+// removed. The system Dynamic Island pill / Live Activity is no longer
+// requested from this app — the keyboard reads from App Group projections
+// (PipelinePhaseProjection, FreshDictation) and
+// never observed Live Activity content state. The `JotWidget` extension
+// target and `DictationAttributes` codable shape are intentionally kept on
+// disk so a future Live Activity revival can be re-wired in this
+// coordinator without ripping into the Widget target.
+//
+// `AudioRecordingIntentPreflightError` and the `startForAudioRecordingIntent`
+// preflight method are gone with `RecordAndTranscribeIntent`'s
+// `AudioRecordingIntent` conformance — the keyboard's Speak button uses a
+// `jot://dictate` URL scheme to foreground the main app, and no shipping
+// surface (Action Button, Live Activity Button) needs the
+// stay-in-host-app guarantees `AudioRecordingIntent` provides. The system
+// Dynamic Island pill that conformance summons is the side-effect we
+// wanted to eliminate.
 @MainActor
 @Observable
 final class DictationActivityCoordinator {
     static let shared = DictationActivityCoordinator()
 
-    /// Master switch for the Dynamic Island / Live Activity pill. When
-    /// `false`, every public method on this coordinator is a no-op aside
-    /// from bookkeeping that the in-app pipeline depends on (e.g.
-    /// `recordingStartedAt`, `isFollowUpActive`). The widget target and
-    /// `DictationAttributes` are intentionally NOT removed — flipping this
-    /// flag back to `true` re-enables the pill without any other code
-    /// changes. The keyboard reads from App Group projections, never from
-    /// Live Activity content state, so disabling the pill does not affect
-    /// keyboard sync.
-    private let liveActivityEnabled = false
-
-    private var handle: ActivityHandle?
     private var followUpExpiryTask: Task<Void, Never>?
     private(set) var followUpExpiresAt: Date?
     private(set) var isFollowUpActive = false
 
     /// Recording-start timestamp, captured on `start(startedAt:)` and cleared
-    /// when the activity transitions into the post-dictation follow-up window.
-    /// Exposed so the end-of-recording pipeline can
-    /// compute a duration for `TranscriptStore.append(...)` without having to
-    /// re-derive it from the Live Activity state (which would force us to
-    /// pattern-match the `.recording(startedAt:)` associated value and which
-    /// has already been replaced with `.transcribing` by the time we need
-    /// the duration).
-    ///
-    /// Unconditionally set/cleared — not gated on the Live Activity handle
-    /// actually coming up — so a user on a device where Live Activities are
-    /// disabled still gets a recorded duration in the transcript history.
+    /// when the dictation transitions into the post-dictation follow-up
+    /// window. Read by the end-of-recording pipeline to compute a duration
+    /// for `TranscriptStore.append(...)`.
     private(set) var recordingStartedAt: Date?
 
     private init() {}
@@ -553,158 +532,29 @@ final class DictationActivityCoordinator {
     func start(startedAt: Date) async {
         recordingStartedAt = startedAt
         clearFollowUpState()
-
-        // Live Activity master switch — see `liveActivityEnabled`. We keep
-        // the `recordingStartedAt` write above because the end-of-recording
-        // pipeline reads it for duration accounting; only the
-        // `Activity.request` portion is skipped.
-        guard liveActivityEnabled else {
-            handle = nil
-            return
-        }
-
-        // Preflight: if the user has Live Activities globally disabled, or has
-        // toggled them off for Jot specifically (Settings → Jot → Live
-        // Activities), `Activity.request(...)` will throw
-        // `ActivityAuthorizationError.denied` and the DI pill silently fails
-        // to come up. Recording still works — we just won't have the pill.
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            liveActivityLog.warning("Skipping Activity.request: Live Activities are disabled (system or per-app toggle off).")
-            handle = nil
-            return
-        }
-
-        let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
-        let content = ActivityContent(state: initial, staleDate: nil)
-
-        if let handle {
-            await handle.update(content)
-            return
-        }
-
-        do {
-            let requested = try Activity.request(
-                attributes: DictationAttributes(),
-                content: content,
-                pushType: nil
-            )
-            handle = ActivityHandle(activity: requested)
-        } catch {
-            // `ActivityAuthorizationError.denied` (user disabled Live
-            // Activities) or `.unsupported` (iPhone without Dynamic Island on
-            // a build that requires it). Recording still works — we just
-            // won't have the pill. The App layer's toast system is responsible
-            // for surfacing this; the intent shouldn't fail the dictation
-            // because the UI chrome couldn't come up.
-            liveActivityLog.error("Activity.request failed: \(String(describing: type(of: error))) — \(error.localizedDescription, privacy: .public)")
-            handle = nil
-        }
-    }
-
-    func startForAudioRecordingIntent(startedAt: Date) async throws {
-        // Live Activity master switch — see `liveActivityEnabled`. With the
-        // pill disabled this method becomes a near no-op: it still records
-        // `recordingStartedAt` (the in-app pipeline depends on it) but
-        // does not request a Live Activity, does not throw the
-        // `liveActivitiesDisabled` preflight error, and does not wait for
-        // the activity to be observed. The Action Button entry path is
-        // unaffected because iOS's `AudioRecordingIntent` foreground-audio
-        // entitlement is granted by the system based on the intent
-        // declaration, not by the existence of a Live Activity.
-        guard liveActivityEnabled else {
-            recordingStartedAt = startedAt
-            clearFollowUpState()
-            handle = nil
-            return
-        }
-
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            throw AudioRecordingIntentPreflightError.liveActivitiesDisabled
-        }
-
-        recordingStartedAt = startedAt
-        clearFollowUpState()
-
-        let initial = DictationAttributes.ContentState(phase: .recording(startedAt: startedAt))
-        let content = ActivityContent(state: initial, staleDate: nil)
-
-        if let handle {
-            await handle.update(content)
-            guard await Self.waitForActivity(id: handle.activity.id) else {
-                self.handle = nil
-                recordingStartedAt = nil
-                throw AudioRecordingIntentPreflightError.liveActivityNotObserved
-            }
-            return
-        }
-
-        let requested: Activity<DictationAttributes>
-        do {
-            requested = try Activity.request(
-                attributes: DictationAttributes(),
-                content: content,
-                pushType: nil
-            )
-        } catch {
-            recordingStartedAt = nil
-            throw AudioRecordingIntentPreflightError.liveActivityRequestFailed(
-                error.localizedDescription
-            )
-        }
-
-        handle = ActivityHandle(activity: requested)
-
-        guard await Self.waitForActivity(id: requested.id) else {
-            await requested.end(content, dismissalPolicy: .immediate)
-            handle = nil
-            recordingStartedAt = nil
-            throw AudioRecordingIntentPreflightError.liveActivityNotObserved
-        }
     }
 
     func cancelPendingRecordingStart() async {
         recordingStartedAt = nil
         clearFollowUpState()
-
-        guard liveActivityEnabled else {
-            handle = nil
-            return
-        }
-
-        guard let handle else { return }
-
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(phase: .followUp(expiresAt: Date())),
-            staleDate: Date()
-        )
-        await handle.end(content, dismissAt: Date())
-        self.handle = nil
     }
 
-    func update(phase: DictationAttributes.Phase) async {
+    func update(phase _: DictationAttributes.Phase) async {
         clearFollowUpState()
-        guard liveActivityEnabled else { return }
-        guard let handle else { return }
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(phase: phase),
-            staleDate: nil
-        )
-        await handle.update(content)
     }
 
-    /// Transition the activity into the shared follow-up window after a fresh
-    /// dictation lands on the clipboard and in the ledger.
+    /// Transition into the shared follow-up window after a fresh dictation
+    /// lands on the clipboard and in the ledger.
     func finish(preview _: String) async {
         recordingStartedAt = nil
         await showFollowUpWindow()
     }
 
-    /// Transition the activity into the shared follow-up window after a
-    /// chained command result lands.
+    /// Transition into the shared follow-up window after a chained command
+    /// result lands.
     ///
     /// Kept as a separate method (rather than a bool flag on `finish`) so the
-    /// pipeline still reads as distinct fresh-vs-command outcomes even though
-    /// both outcomes now converge on the same visible `.followUp` state.
+    /// pipeline still reads as distinct fresh-vs-command outcomes.
     func finishCommand(instruction _: String, preview _: String) async {
         recordingStartedAt = nil
         await showFollowUpWindow()
@@ -715,39 +565,10 @@ final class DictationActivityCoordinator {
         followUpExpiresAt = expiresAt
         isFollowUpActive = true
         scheduleFollowUpExpiry(at: expiresAt)
-
-        // In-app follow-up bookkeeping (above) is preserved unconditionally
-        // because `DictationPipeline` reads `isFollowUpActive` to gate
-        // chained-command classification. Only the Live Activity update is
-        // gated by the master switch.
-        guard liveActivityEnabled else { return }
-        guard let handle else { return }
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(
-                phase: .followUp(expiresAt: expiresAt)
-            ),
-            staleDate: expiresAt
-        )
-        await handle.update(content)
     }
 
     func dismissFollowUpWindow() async {
-        let expiresAt = followUpExpiresAt ?? Date()
         clearFollowUpState()
-
-        guard liveActivityEnabled else {
-            handle = nil
-            return
-        }
-
-        guard let handle else { return }
-
-        let content = ActivityContent(
-            state: DictationAttributes.ContentState(phase: .followUp(expiresAt: expiresAt)),
-            staleDate: Date()
-        )
-        await handle.end(content, dismissAt: Date())
-        self.handle = nil
     }
 
     private func scheduleFollowUpExpiry(at deadline: Date) {
@@ -760,16 +581,9 @@ final class DictationActivityCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            let content = ActivityContent(
-                state: DictationAttributes.ContentState(phase: .followUp(expiresAt: deadline)),
-                staleDate: deadline
-            )
             self.followUpExpiresAt = nil
             self.isFollowUpActive = false
             self.followUpExpiryTask = nil
-            guard let handle else { return }
-            await handle.end(content, dismissAt: Date())
-            self.handle = nil
         }
     }
 
@@ -778,78 +592,5 @@ final class DictationActivityCoordinator {
         followUpExpiryTask = nil
         followUpExpiresAt = nil
         isFollowUpActive = false
-    }
-
-    private static func waitForActivity(id: String) async -> Bool {
-        for _ in 0..<10 {
-            if Activity<DictationAttributes>.activities.contains(where: { $0.id == id }) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 25_000_000)
-        }
-        return false
-    }
-}
-
-/// `@unchecked Sendable` wrapper around `Activity<DictationAttributes>`.
-///
-/// ## Why this exists
-///
-/// `Activity<Attributes>` is a non-`Sendable` reference type. Every attempt to
-/// `await activity.update(...)` from a `@MainActor`-isolated property trips
-/// Swift 6's region-based isolation checker with *"sending 'activity' risks
-/// causing data races"* — once directly, and a second time when we tried to
-/// `sending`-return the handle out of storage so a nonisolated helper could
-/// take it.
-///
-/// ## Why the assertion is sound
-///
-/// ActivityKit's `update(_:)` and `end(_:dismissalPolicy:)` are documented
-/// as callable from any actor: both methods marshal their payload to the
-/// ActivityKit daemon out-of-process and own no caller-visible state. There
-/// is nothing to race on the Swift side. The type simply isn't *annotated*
-/// `Sendable` — so we annotate a box around it, narrowly, with a clear
-/// justification.
-private struct ActivityHandle: @unchecked Sendable {
-    let activity: Activity<DictationAttributes>
-
-    func update(_ content: ActivityContent<DictationAttributes.ContentState>) async {
-        await activity.update(content)
-    }
-
-    func end(
-        _ content: ActivityContent<DictationAttributes.ContentState>,
-        dismissAt: Date
-    ) async {
-        await activity.end(content, dismissalPolicy: .after(dismissAt))
-    }
-}
-
-extension AudioRecordingIntentPreflightError: CustomNSError {
-    static var errorDomain: String { "Jot.AudioRecordingIntentPreflightError" }
-
-    var errorCode: Int {
-        switch self {
-        case .liveActivitiesDisabled: return 0
-        case .liveActivityRequestFailed: return 1
-        case .liveActivityNotObserved: return 2
-        }
-    }
-
-    var errorUserInfo: [String: Any] {
-        [NSLocalizedDescriptionKey: errorDescription ?? "Live Activity preflight failed."]
-    }
-}
-
-extension AudioRecordingIntentPreflightError: CustomLocalizedStringResourceConvertible {
-    var localizedStringResource: LocalizedStringResource {
-        switch self {
-        case .liveActivitiesDisabled:
-            return "Turn on Live Activities for Jot to record from the Action Button."
-        case .liveActivityRequestFailed:
-            return "Jot could not start its recording indicator. Try the Action Button again."
-        case .liveActivityNotObserved:
-            return "Jot could not confirm the recording indicator started. Try again."
-        }
     }
 }

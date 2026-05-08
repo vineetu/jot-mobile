@@ -92,15 +92,35 @@ final class TranscriptionService {
     @MainActor static let shared = TranscriptionService()
 
     private(set) var modelState: ModelState = .notLoaded
-    var speechModelIdentifier: String { Self.speechModelIdentifier }
+    var speechModelIdentifier: String { Self.selectedRepo.rawValue }
 
     private let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
-    private let backgroundWarmLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "background-warm")
     private let signposter = OSSignposter(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
 
-    private static let speechModelIdentifier = Repo.parakeetV2.rawValue
+    /// Resolves the user-selected speech-model variant from the App Group
+    /// `speechModelVariant` accessor. Read at every `ensurePreparing()`
+    /// boundary — flipping the variant in Settings only takes effect on
+    /// the next dictation start, never mid-session. Unknown / legacy
+    /// values fall back to `.v2` (Parakeet 0.6B v2) so a malformed
+    /// AppGroup write doesn't brick transcription.
+    private static var selectedVersion: AsrModelVersion {
+        switch AppGroup.speechModelVariant {
+        case "tdtCtc110m": return .tdtCtc110m
+        case "parakeetV2": return .v2
+        default: return .v2
+        }
+    }
 
-    private let version: AsrModelVersion = .v2
+    /// FluidAudio `Repo` paired with `selectedVersion`. Used for
+    /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
+    /// the user-facing speech-model identifier in Settings.
+    private static var selectedRepo: Repo {
+        switch selectedVersion {
+        case .tdtCtc110m: return .parakeetTdtCtc110m
+        default: return .parakeetV2
+        }
+    }
+
     private let standIn: (any TranscriptionStandIn)?
     private var manager: AsrManager?
     private var prepareTask: Task<Void, Error>?
@@ -185,57 +205,6 @@ final class TranscriptionService {
         _ = ensurePreparing()
     }
 
-    func warmUpInBackground() async -> Bool {
-        if standIn != nil {
-            self.modelState = .ready
-            self.backgroundWarmLog.info("BG warm satisfied by simulator transcription stand-in")
-            return true
-        }
-
-        if self.modelState == .ready {
-            self.backgroundWarmLog.info("BG warm no-op — model already ready")
-            return true
-        }
-
-        let directory = Self.modelDirectory()
-        let modelsOnDisk = AsrModels.modelsExist(at: directory, version: self.version)
-        guard modelsOnDisk else {
-            self.backgroundWarmLog.info(
-                "BG warm skipped — models missing directory=\(directory.path, privacy: .public)"
-            )
-            return false
-        }
-
-        let startedAt = Date()
-        self.backgroundWarmLog.info(
-            "BG warm prepare begin — startedAt=\(Self.timestamp(startedAt), privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public) directory=\(directory.path, privacy: .public)"
-        )
-
-        do {
-            try await self.ensurePreparing().value
-            let endedAt = Date()
-            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
-            self.backgroundWarmLog.info(
-                "BG warm prepare end — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
-            )
-            return true
-        } catch is CancellationError {
-            let endedAt = Date()
-            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
-            self.backgroundWarmLog.notice(
-                "BG warm prepare cancelled — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public)"
-            )
-            return false
-        } catch {
-            let endedAt = Date()
-            let elapsedMS = Self.elapsedMilliseconds(from: startedAt, to: endedAt)
-            self.backgroundWarmLog.error(
-                "BG warm prepare failed — startedAt=\(Self.timestamp(startedAt), privacy: .public) endedAt=\(Self.timestamp(endedAt), privacy: .public) elapsedMS=\(elapsedMS, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-            return false
-        }
-    }
-
     func purgeAndReload() async {
         // Reclaim any orphaned .purging-* dirs from prior crashed purges before
         // we create another one.
@@ -269,19 +238,6 @@ final class TranscriptionService {
 
         modelState = .notLoaded
         warmUp()
-    }
-
-    func cancelBackgroundWarm() {
-        guard self.modelState != .ready else { return }
-        self.backgroundWarmLog.notice(
-            "BG warm cancellation requested — modelState=\(Self.describe(self.modelState), privacy: .public)"
-        )
-        self.prepareTask?.cancel()
-        self.prepareTask = nil
-        self.prepareGeneration += 1
-        if self.manager == nil {
-            self.modelState = .notLoaded
-        }
     }
 
     // MARK: - Sample-based inference (in-app record flow)
@@ -469,7 +425,7 @@ final class TranscriptionService {
     /// the user retry once the main-app download finishes.
     private func ensureModelIsDownloadedOrThrow() throws {
         let directory = Self.modelDirectory()
-        let exists = AsrModels.modelsExist(at: directory, version: version)
+        let exists = AsrModels.modelsExist(at: directory, version: Self.selectedVersion)
         log.info("ensureModelIsDownloadedOrThrow — directory=\(directory.path, privacy: .public) modelsExist=\(exists, privacy: .public)")
         if !exists {
             throw TranscriptionError.loadFailed(
@@ -565,6 +521,14 @@ final class TranscriptionService {
         }
 
         try checkPrepareGeneration(generation)
+        // Snapshot the variant once at the top of `loadOrFail` so the
+        // download / load / cache-existence calls below all agree on a
+        // single `AsrModelVersion`. A user flip in Settings between the
+        // existence check and the load would otherwise route the load
+        // against weights for a different version. Per the design comment
+        // on the Settings picker, variant changes only take effect on the
+        // next dictation start — this snapshot enforces that contract.
+        let version = Self.selectedVersion
         let directory = Self.modelDirectory()
         let modelsOnDisk = AsrModels.modelsExist(at: directory, version: version)
         let prepareStartedAt = Date()
@@ -745,7 +709,17 @@ final class TranscriptionService {
     }
 
     private static func modelDirectory() -> URL {
-        MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV2)
+        MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
+    }
+
+    /// Whether the user-selected speech-model variant has its weights
+    /// already cached on disk. Used by the eager warm-up path
+    /// (`JotApp.task`) and the setup wizard's "models on disk" gate to
+    /// avoid silent first-run downloads (Guideline 4.2.3(ii)). Resolves
+    /// the variant from `AppGroup.speechModelVariant` so flipping the
+    /// picker in Settings re-points the disk check at the right repo.
+    static func modelsExistOnDiskForSelectedVariant() -> Bool {
+        AsrModels.modelsExist(at: modelDirectory(), version: selectedVersion)
     }
 
     /// Sweep stale `<modelDir>.purging-*` siblings left behind by interrupted

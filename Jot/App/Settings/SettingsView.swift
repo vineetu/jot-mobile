@@ -12,10 +12,37 @@ struct SettingsView: View {
     /// immediately.
     @State private var liveActivityTranscriptEnabled: Bool = AppGroup.liveActivityTranscriptEnabled
 
+    /// Mirror of `AppGroup.speechModelVariant`. Picker tags are the FluidAudio
+    /// `Repo` raw values resolved by `TranscriptionService.selectedVersion`
+    /// at every `ensurePreparing()` boundary. A user flip here only takes
+    /// effect on the NEXT dictation start — never mid-session — because the
+    /// service snapshots the variant once at the top of `loadOrFail`. The
+    /// in-flight pipeline (whose model handle is already loaded into ANE)
+    /// continues running against the previous variant until the next stop.
+    @State private var speechModelVariant: String = AppGroup.speechModelVariant
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
+                    Picker(selection: $speechModelVariant) {
+                        Text("Parakeet 600M (more accurate)")
+                            .tag("parakeetV2")
+                        Text("Parakeet 110M (lighter, custom words coming)")
+                            .tag("tdtCtc110m")
+                    } label: {
+                        Label("Variant", systemImage: "waveform.badge.magnifyingglass")
+                    }
+                    .onChange(of: speechModelVariant) { _, newValue in
+                        // The new selection only takes effect on the NEXT
+                        // dictation start. `TranscriptionService` re-resolves
+                        // `selectedVersion` on each `ensurePreparing()` and
+                        // snapshots once at the top of `loadOrFail` — so an
+                        // in-flight session keeps running against whatever
+                        // model it cold-loaded with.
+                        AppGroup.speechModelVariant = newValue
+                    }
+
                     LabeledContent("Name", value: transcriptionService.speechModelIdentifier)
 
                     LabeledContent {

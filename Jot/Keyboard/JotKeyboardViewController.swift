@@ -63,7 +63,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private var hostingController: UIHostingController<AnyView>?
     private let recordingState = KeyboardRecordingState()
-    private var recordingStateObserver: CrossProcessNotification.Observer?
     private var transcriptReadyObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
@@ -160,9 +159,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var rewriteInFlight: Bool = false
 
     /// True from the moment the keyboard posts `stopRequested` until the next
-    /// `pipelinePhaseChanged` reflecting the app's view of the world. Prevents
-    /// a second tap from creating a NEW PendingPasteSession that overwrites the
-    /// one the app's stopTask is about to capture. Cleared in
+    /// `pipelinePhaseChanged` reflecting the app's view of the world. Drives
+    /// the speak button's `.disabled` modifier (so iOS suppresses taps while
+    /// the stop is in flight) and the controller-level `decideMicTap`
+    /// noop branch (defense-in-depth against optimistic-UI lag). Cleared in
     /// `refreshPipelinePhase` once projection moves off `.recording`.
     private var stopRequestPosted = false
 
@@ -196,7 +196,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // before the user opens Settings.
         SavedPromptStore.seedIfNeeded()
         installKeyboardView()
-        startObservingRecordingState()
         startObservingTranscriptReady()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
@@ -211,11 +210,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // keypress feels as crisp as the hundredth (HIG → Playing Haptics).
         feedback.fullAccess = hasFullAccess
         feedback.prepare()
-        startObservingRecordingState()
         startObservingTranscriptReady()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
-        refreshRecordingStateFromProjection()
         refreshPipelinePhase()
         refreshStreamingPartialFromProjection()
         refreshSelectionState()
@@ -238,7 +235,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        recordingStateObserver = nil
         transcriptReadyObserver = nil
         pipelinePhaseObserver = nil
         streamingPartialObserver = nil
@@ -314,6 +310,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             showHistory: showHistory,
             canUndoLastInsertion: canUndoLastInsertion,
             canRedoInsertion: canRedoInsertion,
+            isStopRequestPending: stopRequestPosted,
             aiUnavailable: aiUnavailable,
             statusBanner: statusBanner,
             onCopy: { [weak self] in self?.handleCopyMenuSelection() },
@@ -744,26 +741,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // task) will re-enter this function.
     }
 
-    // MARK: - Recording state mirror
-
-    private func startObservingRecordingState() {
-        guard recordingStateObserver == nil else { return }
-        recordingStateObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.recordingStateChanged
-        ) { [weak self] in
-            self?.refreshRecordingStateFromProjection()
-        }
-    }
-
-    private func refreshRecordingStateFromProjection() {
-        guard hasFullAccess else {
-            recordingState.update(isRecording: false, startedAt: nil)
-            return
-        }
-
-        recordingState.apply(RecordingStateProjection.read())
-    }
-
     // MARK: - Streaming partial mirror
 
     private func startObservingStreamingPartial() {
@@ -806,8 +783,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         recordingState.applyPipelineProjection(projection)
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
-        if let phase = projection?.phase, phase != .recording {
+        // Clearing `stopRequestPosted` flips the speak button's `.disabled`
+        // back off, so we re-render the hosted view to pick up the change.
+        // Without the explicit re-render the SwiftUI tree would only refresh
+        // on the next state-derived path (next paint, next action), and the
+        // user could see a stale "disabled" appearance after the projection
+        // already moved off `.recording`.
+        if let phase = projection?.phase, phase != .recording, stopRequestPosted {
             stopRequestPosted = false
+            renderRootView()
         }
         flushPendingAutoPasteIfPossible()
     }
@@ -988,35 +972,66 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         openContainingApp(Self.containingAppLaunchURL)
     }
 
+    /// Outcome of a mic CTA tap, decided up-front from the current keyboard
+    /// state. Building the decision in ONE read closes the "duplicate rapid
+    /// tap overwrites pending" race: by the time we branch on the decision,
+    /// the only side-effect a noop has produced is a log line.
+    private enum MicTapDecision {
+        case start
+        case stop
+        case noop(reason: String)
+    }
+
+    private func decideMicTap() -> MicTapDecision {
+        guard hasFullAccess else { return .noop(reason: "no-full-access") }
+        if stopRequestPosted { return .noop(reason: "stop-pending") }
+        if recordingState.isInflightPostRecording { return .noop(reason: "in-flight") }
+        if recordingState.isRecording { return .stop }
+        return .start
+    }
+
     private func handleMicCTATap() {
-        guard hasFullAccess else {
-            openHostSettings()
+        let decision = decideMicTap()
+        switch decision {
+        case .noop(let reason):
+            // The mic CTA is also `.disabled(...)` at the SwiftUI layer for
+            // these states — this guard is defense-in-depth against
+            // optimistic-UI lag (per design §4.6.D). On `no-full-access` the
+            // SwiftUI layer routes the tap to "Unlock", so this branch is
+            // expected only for `stop-pending` / `in-flight`.
+            if reason == "no-full-access" {
+                openHostSettings()
+            } else {
+                keyboardLog.info("mic tap noop: \(reason, privacy: .public)")
+            }
             return
-        }
 
-        // v7: refuse the tap if we're in any in-flight phase OR if we just
-        // posted a stop request that hasn't been acked yet. Per design §4.6.D,
-        // the mic CTA is `.disabled(...)` at the SwiftUI layer for these same
-        // states; this guard is defense-in-depth against optimistic-UI lag.
-        let phase = recordingState.phase
-        let inflightPhases: Set<PipelinePhaseProjection.Phase> = [
-            .transcribing, .processing, .cleaning, .publishing
-        ]
-        guard !stopRequestPosted, !inflightPhases.contains(phase) else {
-            keyboardLog.info(
-                "Mic tap ignored — stopRequestPosted=\(self.stopRequestPosted, privacy: .public) phase=\(phase.rawValue, privacy: .public)"
-            )
-            return
-        }
+        case .start:
+            // Write the App Group pending-paste session ONLY in the start
+            // branch. Moving the write inside the decision switch (vs.
+            // calling it before the branch as the prior shape did) closes
+            // the rapid-double-tap race where a tap arriving while a stop
+            // was in flight would silently overwrite the pending session
+            // the app is about to capture.
+            //
+            // Stamp the session ID into the URL so the app's `onOpenURL`
+            // can `adoptSession(_:)` before recording-start.
+            let session = beginPendingPasteSession()
+            let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
+                ?? Self.containingAppLaunchURL
+            openContainingApp(url)
 
-        // Tapping the mic CTA from the keyboard always expresses intent to land
-        // the next transcript here — whether we're starting a fresh recording
-        // or stopping one that began elsewhere (in-app record button, intent,
-        // Live Activity). Setting pending only in the start branch would
-        // skip "start in app, stop in keyboard" auto-paste.
-        let session = beginPendingPasteSession()
-
-        if recordingState.isRecording {
+        case .stop:
+            // Arm the App Group pending-paste session BEFORE posting the
+            // stop request so the upcoming publish can match on it. The
+            // session UUID itself doesn't need to be passed anywhere — the
+            // publish path matches on the freshly-written pending session.
+            // This restores auto-paste on the normal flow (Speak → dictate
+            // → Stop → paste at cursor). The duplicate-rapid-tap race that
+            // motivated removing this call is still closed by the
+            // `.disabled` modifier on the speak button + `decideMicTap()`
+            // returning `.noop` for `stop-pending` / `in-flight` states.
+            let _ = beginPendingPasteSession()
             // Set stopRequestPosted BEFORE the post + before any further
             // processing. Cleared inside refreshPipelinePhase when the
             // projection reflects a non-recording phase.
@@ -1026,12 +1041,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // No optimistic UI flip on `recordingState.phase` per design §4.3
             // — `stopRequestPosted` (just set above) does the visual work via
             // the disabled-CTA path, and the inbound `pipelinePhaseChanged`
-            // will replace `.recording` with the in-flight phase shortly. A
-            // direct `recordingState.update(isRecording: false, ...)` here
-            // would create a brief inconsistency window where `isRecording`
-            // says false but `phase == .recording` until the projection
-            // arrives.
-            keyboardLog.info("Posted cross-process recording stop request session=\(session.id, privacy: .public)")
+            // will replace `.recording` with the in-flight phase shortly.
+            keyboardLog.info("Posted cross-process recording stop request")
 
             // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
             // the case where the immediate `pipelinePhaseChanged` is dropped
@@ -1044,12 +1055,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 }
                 self?.refreshPipelinePhase()
             }
-        } else {
-            // Stamp the session ID into the URL so the app's `onOpenURL`
-            // can `adoptSession(_:)` before recording-start.
-            let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
-                ?? Self.containingAppLaunchURL
-            openContainingApp(url)
         }
     }
 
@@ -1457,11 +1462,11 @@ final class KeyboardRecordingState {
     private(set) var isRecording = false
     private(set) var startedAt: Date?
 
-    /// v7 pipeline phase, written by `applyPipelineProjection`. Drives the
+    /// Pipeline phase, written by `applyPipelineProjection`. Drives the
     /// `KeyboardView.micCTA` four-state UI (idle / recording / in-flight /
-    /// failed) and the auto-paste lifecycle. Backwards-compat with the legacy
-    /// `RecordingStateProjection.apply` path is preserved — that path leaves
-    /// `phase` untouched and only flips `isRecording` + `startedAt`.
+    /// failed) and the auto-paste lifecycle. Single source of truth for
+    /// "is the keyboard observing a recording right now?" — `isRecording`
+    /// is derived from `phase == .recording` via `applyPipelineProjection`.
     private(set) var phase: PipelinePhaseProjection.Phase = .idle
 
     /// True while the pipeline is mid-flight after recording stopped — i.e.
@@ -1477,19 +1482,9 @@ final class KeyboardRecordingState {
         }
     }
 
-    func apply(_ projection: RecordingStateProjection?) {
-        guard let projection, projection.isRecording else {
-            update(isRecording: false, startedAt: nil)
-            return
-        }
-
-        update(isRecording: true, startedAt: projection.startedAt)
-    }
-
-    /// v7 pipeline phase application. The legacy `apply(_:)` keeps writing
-    /// `isRecording` + `startedAt` from the older `RecordingStateProjection`
-    /// for any consumers that haven't yet migrated; this method is the new
-    /// canonical surface and writes phase + derives the legacy fields too.
+    /// Single canonical surface: writes `phase` and derives `isRecording` /
+    /// `startedAt` from the same projection. Pipeline phase is the only
+    /// cross-process recording-state input this view-model accepts.
     func applyPipelineProjection(_ projection: PipelinePhaseProjection?) {
         guard let projection else {
             phase = .idle

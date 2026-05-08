@@ -88,6 +88,15 @@ enum AppGroup {
         /// access pattern. Default (key missing) is treated as "empty list"
         /// by the store, which seeds the bundled `defaultRewrite` entry.
         static let savedPrompts = "jot.ai.savedPrompts"
+
+        /// User-selected speech-model variant. Values are FluidAudio
+        /// `Repo` raw values: `"parakeetV2"` (Parakeet TDT 0.6B v2 — the
+        /// current accuracy default) or `"tdtCtc110m"` (the lighter 110M
+        /// hybrid TDT-CTC variant). Read by `TranscriptionService` on
+        /// every `ensurePreparing()` to resolve which model to download
+        /// + load. Default (key missing) is `"parakeetV2"` to preserve
+        /// existing-install behaviour.
+        static let speechModelVariant = "jot.speech.modelVariant"
     }
 
     /// Whether streaming partial-transcript text is rendered in the Dynamic
@@ -143,4 +152,16 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.savedPrompts) }
     }
 
+    /// User-selected speech-model variant (raw `String`). `"parakeetV2"`
+    /// is the current Parakeet 0.6B v2 default; `"tdtCtc110m"` is the
+    /// lighter 110M hybrid TDT-CTC alternative.
+    ///
+    /// `TranscriptionService` resolves this string to an `AsrModelVersion`
+    /// at every `ensurePreparing()` boundary — flipping the variant in
+    /// Settings only takes effect on the next dictation start, never
+    /// mid-session.
+    static var speechModelVariant: String {
+        get { defaults.string(forKey: Keys.speechModelVariant) ?? "parakeetV2" }
+        set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
+    }
 }
