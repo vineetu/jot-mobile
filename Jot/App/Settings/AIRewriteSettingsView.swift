@@ -4,49 +4,31 @@ import SwiftUI
 /// "AI Rewrite" navigation row. Composes three sections in order:
 ///
 /// 1. Master toggle (single row, OFF by default).
-/// 2. Engine picker + per-engine inline state (Phi-4 download/loading/ready,
-///    Apple Intelligence built-in caption).
+/// 2. Engine state rows for Phi-4 mini (download / loading / ready / error
+///    + delete-and-redownload). Single-provider — the prior engine picker
+///    between Phi-4, Apple Intelligence, and Qwen has been collapsed.
 /// 3. Saved prompts list with add/edit/delete/reorder.
 ///
-/// All cross-process state (the master toggle, picker, and prompts list)
-/// reads/writes through `AppGroup` accessors so the keyboard extension sees
-/// the same values the main app's settings UI writes.
+/// All cross-process state (the master toggle and prompts list) reads/writes
+/// through `AppGroup` accessors so the keyboard extension sees the same
+/// values the main app's settings UI writes.
 struct AIRewriteSettingsView: View {
 
-    /// Live `@Observable` Phi-4 client surfaced through the factory. We hold
-    /// it directly (not the `LLMClient` protocol) because the UI needs the
-    /// `observableStatus` synchronous getter and the `cancelDownload()` /
-    /// `evict()` lifecycle hooks — protocol-level `status` is `async` and
-    /// returns a snapshot, not a SwiftUI-observable surface.
+    /// Provider-agnostic UI adapter wrapping the currently-resolved
+    /// `LLMClient` (Phi-4 mini via MLX). The adapter surfaces a
+    /// synchronous, SwiftUI-`@Observable` `observableStatus` mirror of
+    /// the protocol's `async` `status`, plus
+    /// `warm()` / `cancelDownload()` / `evict()` / `deleteModel()`
+    /// shortcuts that forward into the concrete client.
     ///
-    /// Resolved on `.onAppear` so the factory's provider-switch logic
-    /// (Settings → AppGroup → factory rebuild) runs before we capture the
-    /// reference. The Apple Intelligence branch doesn't render this row,
-    /// so a `nil` resolver during AI-rewrite-off / FM-selected states is
-    /// fine.
-    @State private var phi4Client: Phi4Client?
-
-    /// Track an in-flight warm Task so `cancelDownload()` UI hooks can
-    /// cancel it. The Phi4Client ALSO holds its own internal task for
-    /// the same purpose; we keep this here for SwiftUI-side lifecycle
-    /// (e.g. cancel-on-disappear future work). Today both paths converge
-    /// on `Phi4Client.cancelDownload()`.
-    @State private var warmTask: Task<Void, Error>?
+    /// Resolved on `.onAppear` so the factory's lazy build runs before
+    /// we capture the reference. `nil` during AI-rewrite-OFF / first
+    /// appear before `.onAppear`.
+    @State private var clientAdapter: LLMClientUIAdapter?
 
     /// Master toggle. Mirrors `AppGroup.aiRewriteEnabled` — read on appear,
     /// written back via `.onChange`.
     @State private var aiRewriteEnabled: Bool = AppGroup.aiRewriteEnabled
-
-    /// Selected provider. `"phi4"` or `"appleIntelligence"`. Written back
-    /// to AppGroup on `.onChange` so the keyboard observes the same
-    /// selection the user just made in the picker.
-    ///
-    /// NOTE: brief specifies `"fm"` for the alternate, but the parallel
-    /// `LLMClientFactory` lands `LLMProvider.appleIntelligence` with raw
-    /// value `"appleIntelligence"`. We align with the factory so the
-    /// AppGroup write round-trips through `LLMProvider(rawValue:)`. Flag
-    /// for orchestrator if the brief is the source of truth instead.
-    @State private var selectedProvider: String = AppGroup.aiRewriteProvider
 
     /// Saved-prompt list, kept in `@State` so SwiftUI diffs row-level changes
     /// without rebuilding the list on every settings appearance. Reloaded
@@ -144,47 +126,57 @@ struct AIRewriteSettingsView: View {
             // Re-sync from AppGroup in case the keyboard mutated something
             // while the sheet was off-screen.
             aiRewriteEnabled = AppGroup.aiRewriteEnabled
-            selectedProvider = AppGroup.aiRewriteProvider
             SavedPromptStore.seedIfNeeded()
             reloadPrompts()
-            // Resolve the live Phi-4 client through the factory. The factory
-            // rebuilds on provider change; capturing the reference here gives
-            // SwiftUI a stable `@Observable` to subscribe to. Cast is safe —
-            // when `currentProvider == .phi4`, the factory returns a
-            // `Phi4Client`. AI-rewrite OFF or FM-selected leaves
-            // `phi4Client == nil`.
-            if AppGroup.aiRewriteProvider == "phi4" {
-                phi4Client = LLMClientFactory.shared.client() as? Phi4Client
-            } else {
-                phi4Client = nil
-            }
-            // Auto-warm: if weights are on disk, status will quickly flip to .ready.
-            // If weights aren't on disk, the .downloading UI takes over and shows real
-            // download progress. Skip if status is already non-.notReady (already warmed
-            // or in progress) or if Apple Intelligence is the selected provider.
-            if AppGroup.aiRewriteProvider == "phi4",
-               let client = phi4Client,
-               case .notReady = client.observableStatus {
+            // Resolve the live client through the factory and wrap it in a
+            // provider-agnostic adapter. Capturing the adapter here gives
+            // SwiftUI a stable `@Observable` to subscribe to. AI-rewrite OFF
+            // still resolves the adapter so the engine row renders the
+            // correct state immediately on master-toggle ON — but we do NOT
+            // auto-trigger the download in that case (see opt-in gate below).
+            rebuildAdapter()
+            // Auto-warm gated on the master toggle. Without this gate, a
+            // user who opens AI Rewrite settings just to look around would
+            // accidentally start a 2.4 GB download on first appear. When
+            // the toggle is ON and the weights aren't on disk, this
+            // triggers the download and the `.downloading` UI takes over.
+            // When ON and the weights are already on disk, status quickly
+            // flips to `.ready`.
+            if aiRewriteEnabled,
+               let adapter = clientAdapter,
+               case .notReady = adapter.observableStatus {
                 triggerDownload()
             }
+        }
+        .onDisappear {
+            // Stop the adapter's polling task so we don't keep reading
+            // the underlying client's `status` after the screen goes
+            // off-window. Re-installed by the next `.onAppear` →
+            // `rebuildAdapter` → `start()`.
+            clientAdapter?.stop()
         }
         .onChange(of: aiRewriteEnabled) { _, newValue in
             AppGroup.aiRewriteEnabled = newValue
-        }
-        .onChange(of: selectedProvider) { _, newValue in
-            AppGroup.aiRewriteProvider = newValue
-            // Re-resolve the cached Phi-4 client when the user flips
-            // engines. The factory will rebuild on the next `client()`
-            // call (it caches by provider).
-            if newValue == "phi4" {
-                phi4Client = LLMClientFactory.shared.client() as? Phi4Client
+            if newValue {
+                // Master-toggle ON: kick off the download if weights aren't
+                // already on disk. The user just opted in — that's the
+                // explicit consent we were waiting for in `.onAppear`'s
+                // gated branch.
+                if let adapter = clientAdapter,
+                   case .notReady = adapter.observableStatus {
+                    triggerDownload()
+                }
             } else {
-                phi4Client = nil
-            }
-            if newValue == "phi4",
-               let client = phi4Client,
-               case .notReady = client.observableStatus {
-                triggerDownload()
+                // Master-toggle OFF mid-download: stop any in-flight
+                // download/warm immediately. Without this, the engine
+                // section greys out as soon as the toggle flips, but
+                // the underlying download keeps eating bandwidth and
+                // bytes-on-disk with no UI path to cancel it (the row's
+                // Cancel button lives inside the now-disabled section).
+                // Routes through the adapter's `cancelDownload()`,
+                // which calls `Phi4Client.cancelDownload()` — same
+                // path the explicit Cancel button uses.
+                cancelDownload()
             }
         }
     }
@@ -207,47 +199,59 @@ struct AIRewriteSettingsView: View {
     @ViewBuilder
     private var engineSection: some View {
         Section {
-            Picker("Engine", selection: $selectedProvider) {
-                Text("Apple Intelligence (recommended)").tag("appleIntelligence")
-                Text("Phi-4 Mini").tag("phi4")
+            // Single-provider section header row: identifies the engine
+            // without offering alternatives.
+            Label {
+                Text(Self.phi4Copy.name)
+                    .foregroundStyle(.primary)
+            } icon: {
+                Image(systemName: "cpu")
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.inline)
-            .labelsHidden()
-            .accessibilityLabel("Engine")
+            .accessibilityLabel("Engine: \(Self.phi4Copy.name)")
 
-            if selectedProvider != "appleIntelligence" {
-                phi4StateRows
-            } else {
-                Label {
-                    Text("Built-in (no download required)")
-                        .foregroundStyle(.secondary)
-                } icon: {
-                    Image(systemName: "apple.logo")
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityLabel("Apple Intelligence is built into iOS — no download required.")
-            }
+            phi4StateRows
         } header: {
-            Text("Engine")
+            Text("AI rewrite model")
+        } footer: {
+            Text("Runs on-device via MLX (Apple Silicon GPU). Requires a one-time download (~2.4 GB) over Wi-Fi.")
         }
     }
 
+    /// Display copy for the Phi-4 rewrite model row.
+    private static let phi4Copy = (name: "Phi-4 mini (Microsoft, MLX)", size: "Download (~2.4 GB)")
+
     @ViewBuilder
     private var phi4StateRows: some View {
-        // Default to `.notReady` when the Phi-4 client hasn't been resolved
-        // yet (AI rewrite OFF, or first appear before `.onAppear` fires).
-        // SwiftUI will diff and re-render once `phi4Client` is set.
-        let currentStatus: LLMClientStatus = phi4Client?.observableStatus ?? .notReady
+        statusRows(
+            displayName: Self.phi4Copy.name,
+            sizeCopy: Self.phi4Copy.size,
+            downloadButtonTitle: "Download Phi-4 mini (~2.4 GB)"
+        )
+    }
+
+    /// Shared status-row renderer. Driven entirely by
+    /// `clientAdapter.observableStatus`. Defaults to `.notReady` when the
+    /// adapter hasn't been resolved yet (AI-rewrite OFF, or first appear
+    /// before `.onAppear` fires). SwiftUI will diff and re-render once
+    /// the adapter is set.
+    @ViewBuilder
+    private func statusRows(
+        displayName: String,
+        sizeCopy: String,
+        downloadButtonTitle: String
+    ) -> some View {
+        let currentStatus: LLMClientStatus = clientAdapter?.observableStatus ?? .notReady
         switch currentStatus {
         case .notReady:
             Button {
                 triggerDownload()
             } label: {
-                Label("Download Phi-4 Mini", systemImage: "arrow.down.circle")
+                Label(downloadButtonTitle, systemImage: "arrow.down.circle")
             }
-            .accessibilityLabel("Download Phi-4 Mini")
+            .accessibilityLabel(downloadButtonTitle)
 
-            Text("Download (~2.4 GB)")
+            Text(sizeCopy)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -259,7 +263,7 @@ struct AIRewriteSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Downloading Phi-4 Mini, \(Int((fraction * 100).rounded())) percent")
+            .accessibilityLabel("Downloading \(displayName), \(Int((fraction * 100).rounded())) percent")
             Button(role: .destructive) {
                 cancelDownload()
             } label: {
@@ -274,7 +278,7 @@ struct AIRewriteSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Loading Phi-4 Mini")
+            .accessibilityLabel("Loading \(displayName)")
 
         case .ready:
             Label {
@@ -284,23 +288,35 @@ struct AIRewriteSettingsView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
-            .accessibilityLabel("Phi-4 Mini is ready")
+            .accessibilityLabel("\(displayName) is ready")
 
-            Button(role: .destructive) {
+            Button {
                 deleteModel()
             } label: {
-                Text("Delete model")
+                Text("Free memory")
             }
-            .accessibilityLabel("Delete Phi-4 Mini model")
+            .accessibilityLabel("Free \(displayName) memory")
 
         case .evicted:
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("Loading…")
+            // Evicted: in-memory weights have been dropped (manually via
+            // "Free memory" or automatically on memory pressure), but
+            // the HF cache on disk is intact — `warm()` reloads without
+            // re-downloading.
+            Label {
+                Text("Unloaded — reload to use")
+                    .foregroundStyle(.secondary)
+            } icon: {
+                Image(systemName: "moon.zzz.fill")
                     .foregroundStyle(.secondary)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Reloading Phi-4 Mini")
+            .accessibilityLabel("\(displayName) is unloaded")
+
+            Button {
+                triggerDownload()
+            } label: {
+                Label("Reload", systemImage: "arrow.clockwise")
+            }
+            .accessibilityLabel("Reload \(displayName)")
 
         case .error(let message):
             Label {
@@ -310,14 +326,14 @@ struct AIRewriteSettingsView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
             }
-            .accessibilityLabel("Phi-4 Mini error: \(message)")
+            .accessibilityLabel("\(displayName) error: \(message)")
 
             Button {
                 triggerDownload()
             } label: {
                 Label("Retry", systemImage: "arrow.clockwise")
             }
-            .accessibilityLabel("Retry Phi-4 Mini download")
+            .accessibilityLabel("Retry \(displayName) download")
         }
     }
 
@@ -388,41 +404,39 @@ struct AIRewriteSettingsView: View {
         prompts = SavedPromptStore.all()
     }
 
-    /// Kick off the Phi-4 download + load.
+    /// Resolve the factory's current `LLMClient` and wrap it in a fresh
+    /// `LLMClientUIAdapter`. Tears down the previous adapter's polling
+    /// task before the swap so we don't leak two pollers on the same
+    /// view.
+    private func rebuildAdapter() {
+        clientAdapter?.stop()
+        let client = LLMClientFactory.shared.client()
+        let adapter = LLMClientUIAdapter(client: client)
+        adapter.start()
+        clientAdapter = adapter
+    }
+
+    /// Kick off the current adapter's `warm()` lifecycle. This drives
+    /// download → load → ready for the Phi-4 weights via the MLX bridge.
     private func triggerDownload() {
-        // Lazy-resolve in case `.onAppear` hasn't fired yet (deep-link
-        // entry or re-entry after a provider flip).
-        if phi4Client == nil {
-            phi4Client = LLMClientFactory.shared.client() as? Phi4Client
+        if clientAdapter == nil {
+            rebuildAdapter()
         }
-        guard let client = phi4Client else { return }
-        warmTask?.cancel()
-        warmTask = Task {
-            try await client.warm()
-        }
+        clientAdapter?.warm()
     }
 
-    /// Cancel an in-flight download. Idempotent; the client itself is the
-    /// source of truth for the warm Task lifecycle.
+    /// Cancel an in-flight download / warm. Idempotent at the adapter
+    /// layer — the underlying client is the source of truth.
     private func cancelDownload() {
-        warmTask?.cancel()
-        warmTask = nil
-        phi4Client?.cancelDownload()
+        clientAdapter?.cancelDownload()
     }
 
-    /// Evict in-memory weights. On-disk HF cache purge is intentionally
-    /// NOT done here — the HF snapshot path under `LLMModelFactory`'s
-    /// `#hubDownloader()` cache root isn't a stable public API surface,
-    /// and a wrong-path purge would silently break the next download.
-    /// `evict()` is sufficient to free MLX RAM; the on-disk weights can
-    /// be reclaimed by the OS via the standard "Delete app and reinstall"
-    /// path. Tracked as TODO for a follow-up that exposes the snapshot
-    /// URL through the factory.
+    /// Drop in-memory weights. Phi-4 weights live in the HuggingFace
+    /// cache directory managed by the MLX bridge; this is effectively a
+    /// "free memory" affordance — the on-disk cache persists so the
+    /// next `warm()` doesn't re-download.
     private func deleteModel() {
-        guard let client = phi4Client else { return }
-        Task {
-            await client.evict()
-        }
+        clientAdapter?.deleteModel()
     }
 }
 

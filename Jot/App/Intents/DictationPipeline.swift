@@ -83,7 +83,8 @@ import OSLog
 /// `ContentView` "Copied" toast) can hook off the published transcript
 /// without inventing a separate `@Observable` "last-published-id" property.
 /// Intent call sites discard this value (the helper is `@discardableResult`)
-/// because their UI feedback already runs through the Live Activity.
+/// because their UI feedback already runs through App Group projections
+/// the keyboard reads from.
 ///
 /// `finalText` is the text placed on the clipboard — cleaned text on the
 /// fresh-dictation branch when cleanup was enabled and did not throw, the

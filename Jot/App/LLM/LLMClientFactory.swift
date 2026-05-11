@@ -4,21 +4,26 @@ import os.log
 /// User-selectable LLM backend for the AI rewrite path.
 ///
 /// Persisted in App Group defaults under `AppGroup.Keys.aiRewriteProvider` so
-/// the keyboard extension (later stage) can read the same value without a
-/// cross-process round-trip. String raw values are deliberately stable —
-/// changing them would silently flip every existing user back to the default.
+/// the keyboard extension can read the same value without a cross-process
+/// round-trip. The string raw value is deliberately stable — changing it
+/// would silently flip every existing user back to the default.
+///
+/// Currently a single case (`.phi4`). The structure is preserved so future
+/// provider work can slot back in without inverting the abstraction.
 enum LLMProvider: String, Sendable, CaseIterable {
+    /// Phi-4-mini-instruct-4bit via MLX (grammar-constrained JSON output) —
+    /// sole rewrite provider. Runs in the main app only; the keyboard
+    /// extension URL-bounces to the main app for rewrite calls.
     case phi4 = "phi4"
-    case appleIntelligence = "appleIntelligence"
 }
 
 /// Owns the singleton `LLMClient` for the main app process.
 ///
 /// We treat the factory as a process-wide registry: once a backend is built
 /// it stays alive for the lifetime of the app, and the same instance is
-/// reused across rewrites so model weights survive between calls. Switching
-/// the provider in Settings tears down the old client (calling `evict()` to
-/// free MLX memory) and lazily builds the new one on first use.
+/// reused across rewrites so model weights survive between calls. With a
+/// single provider the cache is effectively a one-shot — but the structure
+/// is preserved so future provider work can slot back in.
 ///
 /// The factory itself is `@MainActor` so settings UI and the rewrite call
 /// site can read the current provider without an extra actor hop.
@@ -37,8 +42,9 @@ final class LLMClientFactory {
 
     private init() {}
 
-    /// Currently-selected provider per App Group defaults. Falls back to
-    /// `.phi4` (the product default) when the key is missing or invalid.
+    /// Currently-selected provider per App Group defaults. With only `.phi4`
+    /// remaining as a valid case, any non-matching legacy value (`"qwen"`,
+    /// `"gemma"`, `"appleIntelligence"`, etc.) falls back to `.phi4`.
     var currentProvider: LLMProvider {
         if let raw = AppGroup.defaults.string(forKey: AppGroup.Keys.aiRewriteProvider),
            let provider = LLMProvider(rawValue: raw) {
@@ -54,11 +60,6 @@ final class LLMClientFactory {
         if let cached = cachedClient, cachedProvider == provider {
             return cached
         }
-        // Provider changed (or first call). Evict the old client off the
-        // MainActor since `evict()` is async; we deliberately don't await it
-        // here — the new caller wants the new client immediately. The old
-        // client's evict() runs in a detached task and frees MLX memory in
-        // the background.
         if let old = cachedClient {
             Task { await old.evict() }
         }
@@ -72,9 +73,10 @@ final class LLMClientFactory {
     private func build(provider: LLMProvider) -> any LLMClient {
         switch provider {
         case .phi4:
+            // Phi-4-mini-instruct-4bit via MLX. Once built, weights stay
+            // resident until the OS reclaims memory under pressure or the
+            // user purges via settings.
             return Phi4Client()
-        case .appleIntelligence:
-            return AppleIntelligenceClient()
         }
     }
 }

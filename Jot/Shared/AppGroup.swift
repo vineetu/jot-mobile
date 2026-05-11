@@ -52,27 +52,14 @@ enum AppGroup {
         /// no recording is active or no partial has emitted yet.
         static let streamingPartialText = "jot.streaming.partialText"
 
-        /// User-facing toggle for whether the Dynamic Island / lock-screen
-        /// banner show streaming partial-transcript text while recording.
-        /// Default `true` (transcript visible). When `false`, the writer
-        /// (`StreamingPartial.publishProjection`) skips its `Activity.update`
-        /// call entirely so `ContentState.lastWordsPreview` stays `nil` —
-        /// structural privacy via writer-side suppression. Satisfies the
-        /// App Review 2.5.14 "user can opt out of live transcript on lock
-        /// screen" disclosure requirement.
-        ///
-        /// **IMPORTANT: read via the
-        /// `AppGroup.liveActivityTranscriptEnabled` accessor, NOT via
-        /// `defaults.bool(forKey:)`.** `bool(forKey:)` collapses "never set"
-        /// and "explicit false" into the same value, which would silently
-        /// flip the user-facing default to OFF on first launch.
-        static let liveActivityTranscriptEnabled = "jot.liveActivity.transcriptEnabled"
-
         /// Selected AI rewrite backend. String value matches an
-        /// `LLMProvider` raw value (`"phi4"` or `"appleIntelligence"`).
-        /// Read by the LLM factory in the main app to pick which `LLMClient`
+        /// `LLMProvider` raw value. Currently the only valid value is
+        /// `"phi4"` (Phi-4-mini-instruct-4bit via MLX). Read by the LLM
+        /// factory in the main app to pick which `LLMClient`
         /// implementation to instantiate. Default (key missing) is
-        /// `"appleIntelligence"`; Phi-4 remains a switchable alternate.
+        /// `"phi4"`. Legacy values (`"qwen"`, `"gemma"`,
+        /// `"appleIntelligence"`) are recognized but treated as `"phi4"`
+        /// by the factory's fallback.
         static let aiRewriteProvider = "jot.ai.rewriteProvider"
 
         /// User-facing master toggle for the AI Rewrite feature. When `false`
@@ -99,47 +86,24 @@ enum AppGroup {
         static let speechModelVariant = "jot.speech.modelVariant"
     }
 
-    /// Whether streaming partial-transcript text is rendered in the Dynamic
-    /// Island expanded `.center` region and the lock-screen banner's
-    /// second-line subline while recording. Default `true` — the
-    /// missing-key case (fresh install, never-set) returns `true` so
-    /// first-run behavior matches the user-locked default. Settings UI
-    /// flips this; `StreamingPartial.publishProjection(_:)` reads it on
-    /// every callback to decide whether to call `Activity.update` at all.
-    ///
-    /// Uses `object(forKey:)` rather than `bool(forKey:)` to preserve the
-    /// default-on semantics across "never written" vs "explicit false."
-    static var liveActivityTranscriptEnabled: Bool {
-        get {
-            if let value = defaults.object(forKey: Keys.liveActivityTranscriptEnabled) as? Bool {
-                return value
-            }
-            return true
-        }
-        set {
-            defaults.set(newValue, forKey: Keys.liveActivityTranscriptEnabled)
-        }
-    }
-
     /// User-facing master toggle for AI Rewrite. Default `false` (feature
     /// off) so first-launch behavior matches the locked product default —
     /// users explicitly opt in via the AI Rewrite settings page.
     ///
     /// Uses `bool(forKey:)` because the missing-key default is `false`,
-    /// which `UserDefaults.bool(forKey:)` returns naturally — no need for
-    /// the `object(forKey:)`-cast dance the live-activity toggle uses.
+    /// which `UserDefaults.bool(forKey:)` returns naturally.
     static var aiRewriteEnabled: Bool {
         get { defaults.bool(forKey: Keys.aiRewriteEnabled) }
         set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
     }
 
-    /// Selected AI rewrite backend. Values are the raw string identifiers
-    /// `"phi4"` (switchable alternate) and `"appleIntelligence"` (primary),
-    /// matching `LLMProvider` raw values in `Jot/App/LLM/LLMClientFactory.swift`.
-    /// Default (key missing) is `"appleIntelligence"` — Apple Intelligence is now the
-    /// primary backend; Phi-4 remains user-switchable in Settings.
+    /// Selected AI rewrite backend. Currently the only valid value is
+    /// `"phi4"` (Phi-4-mini-instruct-4bit via MLX). Legacy values
+    /// (`"qwen"`, `"gemma"`, `"appleIntelligence"`) are recognized but
+    /// treated as `"phi4"` by the factory's fallback. Default (key
+    /// missing) is `"phi4"`.
     static var aiRewriteProvider: String {
-        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "appleIntelligence" }
+        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "phi4" }
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
     }
 

@@ -25,11 +25,9 @@ import os.log
 /// 3. Resolves the prompt via `SavedPromptStore`. Bad input → terminal
 ///    error write + completion notification.
 /// 4. Dispatches `LLMClientFactory.shared.client().rewrite(...)`.
-/// 5. On success: writes `rewriteResult`, clears `rewriteJobID`, ALSO
-///    writes the result to `UIPasteboard.general` and queues a
-///    `pendingPasteSession` so the existing keyboard auto-paste path
-///    delivers the result if the keyboard lost focus during the
-///    foreground bounce. Posts the rewrite-completion Darwin notification.
+/// 5. On success: writes `rewriteResult`, clears `rewriteJobID`, posts
+///    the rewrite-completion Darwin notification. Pasteboard handling is
+///    the keyboard's responsibility (only on auto-replace fallback).
 /// 6. On `CancellationError`: writes `rewriteError = cancelledSentinel`,
 ///    posts notification.
 /// 7. On other error: writes `rewriteError = error.localizedDescription`,
@@ -94,7 +92,7 @@ enum RewriteRequestDispatcher {
         guard let uuid = UUID(uuidString: request.promptID),
               let prompt = SavedPromptStore.all().first(where: { $0.id == uuid })
         else {
-            writeError("Prompt not found", forJobID: jobID)
+            writeError("Prompt not found", forJobID: jobID, sessionID: request.id)
             return
         }
 
@@ -113,42 +111,61 @@ enum RewriteRequestDispatcher {
                 return
             }
 
+            // Order matters (plan §5 Step 4b — pass-4 P3-3):
+            //   1. Write terminal value (rewriteResult / rewriteError)
+            //   2. Write rewriteResultSessionID = request.id (the URL
+            //      session UUID, NOT the dispatcher's internal jobID)
+            //   3. Clear rewriteJobID
+            //   4. Post the live notification
+            // The keyboard reads in the reverse order on the drain path,
+            // so the resultSessionID must land BEFORE jobID is cleared
+            // and BEFORE the notification fires — otherwise the keyboard
+            // would observe a "completed" notification with nothing to
+            // correlate against and discard the result.
             AppGroup.rewriteResult = result
             AppGroup.rewriteError = nil
+            AppGroup.rewriteResultSessionID = request.id
             AppGroup.rewriteJobID = nil
 
-            // Belt-and-suspenders auto-paste path: if the keyboard lost
-            // focus during the foreground bounce, the existing
-            // `pendingPasteSession` mechanism (the dictation auto-paste
-            // pipeline) can deliver the result on the next keyboard
-            // appearance. We deliberately DON'T queue a pending session
-            // here for now — the rewrite completion handler is the
-            // primary delivery path and queuing a paste-session would
-            // collide with the dictation auto-paste pipeline. The
-            // pasteboard write below gives the user a one-tap recovery.
-            UIPasteboard.general.string = result
+            // Pasteboard handling is the keyboard's responsibility — it
+            // writes to the pasteboard ONLY when the strict-equality
+            // auto-replace path fails (see
+            // `JotKeyboardViewController.applyDrainedRewriteResult`).
+            // Writing here unconditionally would clobber the user's
+            // clipboard on every successful rewrite, even when
+            // auto-replace would otherwise complete cleanly.
 
             RewriteNotifications.postCompleted()
             log.info(
-                "rewrite SUCCESS jobID=\(jobID, privacy: .public) outputChars=\(result.count)"
+                "rewrite SUCCESS jobID=\(jobID, privacy: .public) sessionID=\(request.id, privacy: .public) outputChars=\(result.count)"
             )
         } catch is CancellationError {
             guard AppGroup.rewriteJobID == jobID else { return }
-            writeError(RewriteNotifications.cancelledSentinel, forJobID: jobID)
-            log.info("rewrite CANCELLED jobID=\(jobID, privacy: .public)")
+            writeError(RewriteNotifications.cancelledSentinel, forJobID: jobID, sessionID: request.id)
+            log.info("rewrite CANCELLED jobID=\(jobID, privacy: .public) sessionID=\(request.id, privacy: .public)")
         } catch {
             guard AppGroup.rewriteJobID == jobID else { return }
-            writeError(error.localizedDescription, forJobID: jobID)
+            writeError(error.localizedDescription, forJobID: jobID, sessionID: request.id)
             log.error(
-                "rewrite FAILED jobID=\(jobID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                "rewrite FAILED jobID=\(jobID, privacy: .public) sessionID=\(request.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
         }
     }
 
-    private static func writeError(_ msg: String, forJobID jobID: UUID) {
+    /// Terminal-error write path. Order mirrors the success path:
+    ///   1. Write the error string
+    ///   2. Clear the result slot
+    ///   3. Write `rewriteResultSessionID = sessionID` (URL session UUID,
+    ///      from `PendingRewriteRequest.id`)
+    ///   4. Clear `rewriteJobID`
+    ///   5. Post completion notification
+    /// The session-ID slot is the keyboard's correlation anchor; it must
+    /// land before the job-ID clear and the live notification fire.
+    private static func writeError(_ msg: String, forJobID jobID: UUID, sessionID: UUID) {
         guard AppGroup.rewriteJobID == jobID else { return }
         AppGroup.rewriteError = msg
         AppGroup.rewriteResult = nil
+        AppGroup.rewriteResultSessionID = sessionID
         AppGroup.rewriteJobID = nil
         RewriteNotifications.postCompleted()
     }

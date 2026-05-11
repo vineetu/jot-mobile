@@ -4,13 +4,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
     @State private var showRedownloadConfirmation = false
-    /// Mirror of `AppGroup.liveActivityTranscriptEnabled`. SwiftUI's `Toggle`
-    /// needs a `Binding`; we read the AppGroup value into local `@State` on
-    /// appear and write back via the binding's set side. Default `true`
-    /// matches the AppGroup accessor's missing-key default so first-launch
-    /// flips to `true` without an explicit write and the toggle reads ON
-    /// immediately.
-    @State private var liveActivityTranscriptEnabled: Bool = AppGroup.liveActivityTranscriptEnabled
 
     /// Mirror of `AppGroup.speechModelVariant`. Picker tags are the FluidAudio
     /// `Repo` raw values resolved by `TranscriptionService.selectedVersion`
@@ -66,19 +59,6 @@ struct SettingsView: View {
                     Text("Speech model")
                 } footer: {
                     Text("Runs entirely on this iPhone. About 1.25 GB on disk.")
-                }
-
-                Section {
-                    Toggle(isOn: $liveActivityTranscriptEnabled) {
-                        Label("Show live transcript in Dynamic Island", systemImage: "captions.bubble")
-                    }
-                    .onChange(of: liveActivityTranscriptEnabled) { _, newValue in
-                        AppGroup.liveActivityTranscriptEnabled = newValue
-                    }
-                } header: {
-                    Text("Live Activity")
-                } footer: {
-                    Text("When off, the Dynamic Island and lock-screen banner show only the recording state, not the words you're speaking.")
                 }
 
                 Section {

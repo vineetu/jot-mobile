@@ -1,31 +1,33 @@
 import AppIntents
 import Foundation
 
-/// Live-Activity intent that performs an LLM rewrite of a selection using a
+/// AppIntent that performs an LLM rewrite of a selection using a
 /// saved prompt's system prompt.
 ///
 /// ## What this is
 ///
-/// A `LiveActivityIntent` invoked programmatically by the keyboard extension
-/// when the user taps a saved-prompt row inside the Magic menu. Conforming to
-/// `LiveActivityIntent` is what lets iOS 18+ promote `perform()` execution
-/// into the main-app process without foregrounding it — exactly the same
-/// promotion mechanism `StopDictationIntent` relies on. The keyboard fires
-/// the intent with `(promptID, selection)`; the body running in the main
-/// app does the prompt lookup, drives `LLMClientFactory.active.rewrite(...)`,
+/// An `AppIntent` invoked programmatically by the keyboard extension when
+/// the user taps a saved-prompt row inside the Magic menu. The keyboard
+/// fires the intent with `(promptID, selection)`; the body running in the
+/// main app does the prompt lookup, drives `LLMClientFactory.active.rewrite(...)`,
 /// and writes the terminal result back through the App Group + posts a
 /// Darwin notification so the keyboard can render the result.
 ///
+/// Today no caller fires this intent's `perform()` directly — the
+/// keyboard hands rewrite requests off via `jot://rewrite?session=<uuid>`
+/// URL bounce, which the main-app `onOpenURL` handler routes to
+/// `RewriteRequestDispatcher.dispatch(sessionID:)`. The intent body is
+/// preserved as dead code so a future Shortcuts step can wire up against it
+/// without re-writing the dispatch glue.
+///
 /// ## Why this lives in `Jot/Shared/Intents/`
 ///
-/// Same rationale as `StopDictationIntent`: the keyboard extension target
-/// must see this type to instantiate it (`RewriteWithPromptIntent(promptID:
-/// selection:)`). But the body needs to call into main-app-only code
-/// (`LLMClientFactory`, the Phi-4 client, etc.). The fix is the
-/// `JOT_APP_HOST` compile flag set on the main-app target only — the
-/// keyboard compiles the `#else` stub, the main-app process compiles the
-/// real `#if JOT_APP_HOST` body, and `LiveActivityIntent` promotion makes
-/// sure the running `perform()` is the main-app body.
+/// The keyboard extension target must see this type to instantiate it
+/// (`RewriteWithPromptIntent(promptID: selection:)`). But the body needs to
+/// call into main-app-only code (`LLMClientFactory`, `Phi4Client`, etc.).
+/// The fix is the `JOT_APP_HOST` compile flag set on the main-app target
+/// only — the keyboard compiles the `#else` stub, the main-app process
+/// compiles the real `#if JOT_APP_HOST` body.
 ///
 /// ## Job-ID guard
 ///
@@ -39,14 +41,13 @@ import Foundation
 /// ## Cancellation
 ///
 /// User-initiated cancel goes through `AppGroup.rewriteCancelRequested`,
-/// which the Phi-4 client's chunk loop polls between decoded chunks
-/// (Stage 1+2 owns that loop; the polling extension lives in
-/// `Phi4Client+CancelPolling.swift`). When the loop calls `Task.cancel()`,
-/// the intent's `do/catch` converts the resulting `CancellationError` into
-/// a `rewriteError = "Cancelled"` write. The keyboard reads that special
-/// string and suppresses the toast — a user-initiated cancel is not a
-/// failure to surface.
-struct RewriteWithPromptIntent: AppIntent, LiveActivityIntent {
+/// which the active `LLMClient`'s chunk loop polls between decoded chunks
+/// (the polling helper lives in `RewriteCancelPolling.swift`). When the
+/// loop calls `Task.cancel()`, the intent's `do/catch` converts the
+/// resulting `CancellationError` into a `rewriteError = "Cancelled"`
+/// write. The keyboard reads that special string and suppresses the
+/// toast — a user-initiated cancel is not a failure to surface.
+struct RewriteWithPromptIntent: AppIntent {
     static let title: LocalizedStringResource = "Rewrite Selection"
 
     static let description = IntentDescription(
@@ -57,18 +58,13 @@ struct RewriteWithPromptIntent: AppIntent, LiveActivityIntent {
         categoryName: "Rewrite"
     )
 
-    /// No foreground bounce. `LiveActivityIntent` promotion runs `perform()`
-    /// in the main-app process without flipping it to the foreground — the
-    /// user stays in the host app the entire time the rewrite runs.
     static let openAppWhenRun: Bool = false
 
-    /// Rewrite must fire on a locked phone the same way Stop fires on a
-    /// locked phone — there's no confidentiality boundary the intent itself
-    /// crosses (the user already typed the selection into the host app, and
-    /// the rewrite runs against an already-saved prompt). Default
-    /// `requiresAuthentication` would silently break the keyboard's tap-row
-    /// flow when the device is locked. See `StopDictationIntent` for the
-    /// same pattern + rationale.
+    /// Rewrite must fire on a locked phone — there's no confidentiality
+    /// boundary the intent itself crosses (the user already typed the
+    /// selection into the host app, and the rewrite runs against an
+    /// already-saved prompt). Default `requiresAuthentication` would
+    /// silently break the keyboard's tap-row flow when the device is locked.
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
     /// Not user-discoverable in Shortcuts/Siri — this is a programmatic
@@ -79,8 +75,7 @@ struct RewriteWithPromptIntent: AppIntent, LiveActivityIntent {
 
     /// Even non-discoverable intents declare a summary on iOS 26 — its
     /// absence surfaces a generic "Something went wrong" error during the
-    /// Shortcuts daemon's binding commit step. See the equivalent note on
-    /// `StopDictationIntent.parameterSummary`. Kept fixed-string (no
+    /// Shortcuts daemon's binding commit step. Kept fixed-string (no
     /// parameter interpolation) because exposing `selection`'s raw text
     /// in a Shortcuts preview row would leak host-app content.
     static var parameterSummary: some ParameterSummary {

@@ -57,15 +57,18 @@ import Foundation
 ///   this correct: iOS 18+ grants main-app-process execution and audio-session
 ///   activation for the marker protocol, so no foregrounding is needed.
 ///
-/// - **Conforms to `AppIntent, AudioRecordingIntent, LiveActivityIntent`.**
-///   Marker protocols per research doc §3.A:
-///   - `AudioRecordingIntent` → main-app-process execution + audio-session
-///     activation without foregrounding.
-///   - `LiveActivityIntent` → allows the Live Activity to host `Button(intent:)`
-///     entries that target this family of intents. Not consumed in v1 (stop
-///     is via Action Button re-press, same as `DictateIntent`) but the
-///     conformance is cheap and forward-compatible with a Live-Activity
-///     stop button in v1.1.
+/// - **Conforms to `AppIntent` only.** Live Activity scaffolding has been
+///   removed — see the Dynamic Island ghost-pill fix. We previously
+///   conformed to `LiveActivityIntent` to allow a Live Activity to host
+///   `Button(intent:)` entries targeting this family, but no shipping
+///   surface consumes that and the conformance was holding open the
+///   widgetkit scaffolding that produced stale ghost pills on devices
+///   that had ever installed a pre-v0.5 build.
+///
+///   The note about `AudioRecordingIntent` from earlier iterations is
+///   preserved historically: that conformance was tried for headless
+///   audio-session activation, then dropped because the Action Button
+///   binding UI filtered it out. Plain `AppIntent` is what binds today.
 ///
 /// - **Method-level `@MainActor` on `perform()`, NOT struct-level.**
 ///   `TranscribeAudioFileIntent`'s doc captures the research finding that
@@ -99,15 +102,13 @@ import Foundation
 /// can't yet predict would lock in a shape that blocks those local changes.
 /// If the two paths stay lock-step after binding + runtime verification,
 /// consolidation is a clean follow-up.
-struct RecordAndTranscribeIntent: AppIntent, LiveActivityIntent {
+struct RecordAndTranscribeIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Jot Dictation"
 
     static let description = IntentDescription(
         """
         Record with the microphone, transcribe on-device with Parakeet, \
-        and copy the transcript to the clipboard. Jot stays in the \
-        background — the Dynamic Island / Live Activity is the sole UI. \
-        Press again to stop.
+        and copy the transcript to the clipboard. Press again to stop.
         """,
         categoryName: "Dictation"
     )

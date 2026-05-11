@@ -42,6 +42,21 @@ extension AppGroup {
         static let rewriteJobID = "jot.rewrite.jobID"
         static let rewriteResult = "jot.rewrite.result"
         static let rewriteError = "jot.rewrite.error"
+        /// Session UUID of the rewrite whose result/error currently sits in
+        /// `rewriteResult` / `rewriteError`. Written by the dispatcher AFTER
+        /// the result/error and BEFORE clearing `rewriteJobID` and posting
+        /// the live notification, so the keyboard can verify the result it
+        /// drains belongs to its pending request. Holds
+        /// `PendingRewriteRequest.id` (the URL session UUID), NOT the
+        /// dispatcher's internal `jobID`. See plan §5 Step 4 (P3-3).
+        static let rewriteResultSessionID = "jot.rewrite.resultSessionID"
+        /// JSON-encoded `KeyboardPendingRewriteState` snapshot of the
+        /// keyboard's currently-pending rewrite. Written by the keyboard
+        /// before URL-bouncing to the main app so correlation state
+        /// survives keyboard extension recycle. Cleared by the keyboard
+        /// after draining the result or final timeout. See plan §5 Step 4
+        /// (P3-2).
+        static let keyboardPendingRewriteState = "jot.rewrite.keyboardPending"
         static let rewriteCancelRequested = "jot.rewrite.cancelRequested"
         /// UTF-16 code-unit length of the host's selection at the moment the
         /// keyboard fired the rewrite intent. Stashed by the keyboard so the
@@ -86,6 +101,50 @@ extension AppGroup {
                 defaults.set(value.uuidString, forKey: RewriteKeys.rewriteJobID)
             } else {
                 defaults.removeObject(forKey: RewriteKeys.rewriteJobID)
+            }
+        }
+    }
+
+    /// Session UUID of the rewrite whose result/error is currently in
+    /// `rewriteResult` / `rewriteError`. Set by the dispatcher AFTER writing
+    /// the terminal value and BEFORE clearing `rewriteJobID` so the keyboard
+    /// can correlate by `PendingRewriteRequest.id` (== URL session UUID).
+    /// **Holds the URL session UUID, NOT the dispatcher's internal `jobID`.**
+    /// `nil` means no result is currently waiting to be drained.
+    static var rewriteResultSessionID: UUID? {
+        get {
+            guard let raw = defaults.string(forKey: RewriteKeys.rewriteResultSessionID) else {
+                return nil
+            }
+            return UUID(uuidString: raw)
+        }
+        set {
+            if let value = newValue {
+                defaults.set(value.uuidString, forKey: RewriteKeys.rewriteResultSessionID)
+            } else {
+                defaults.removeObject(forKey: RewriteKeys.rewriteResultSessionID)
+            }
+        }
+    }
+
+    /// JSON-encoded snapshot of the keyboard's currently-pending rewrite.
+    /// Written before the keyboard URL-bounces into the main app so the
+    /// correlation state (sessionID + captured selection text) survives
+    /// keyboard extension recycle. The keyboard hydrates from this slot in
+    /// `viewWillAppear` if its in-memory mirror is gone, drains the result,
+    /// then clears this slot. `nil` means no rewrite is pending.
+    static var keyboardPendingRewriteState: KeyboardPendingRewriteState? {
+        get {
+            guard let data = defaults.data(forKey: RewriteKeys.keyboardPendingRewriteState) else {
+                return nil
+            }
+            return try? JSONDecoder().decode(KeyboardPendingRewriteState.self, from: data)
+        }
+        set {
+            if let value = newValue, let data = try? JSONEncoder().encode(value) {
+                defaults.set(data, forKey: RewriteKeys.keyboardPendingRewriteState)
+            } else {
+                defaults.removeObject(forKey: RewriteKeys.keyboardPendingRewriteState)
             }
         }
     }

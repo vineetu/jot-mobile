@@ -23,10 +23,11 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     exactVersion: "0.13.6"
-  # MLX backend stack for the on-device Phi-4-mini rewrite path. Declared at
-  # the project level so xcodegen emits the package refs, but only the `Jot`
-  # target depends on the products — JotKeyboard and JotWidget MUST NOT pull
-  # in MLX (60MB extension ceiling for the keyboard).
+  # MLX backend stack for the on-device Phi-4-mini rewrite path. Declared
+  # at the project level so xcodegen emits the package refs, but only the
+  # `Jot` target depends on the products — JotKeyboard MUST NOT pull in
+  # MLX (60MB extension ceiling; the keyboard URL-bounces to the main app
+  # for rewrite calls).
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     exactVersion: "3.31.3"
@@ -53,8 +54,8 @@ targets:
       - path: App
       - path: Shared
       # Main-app-only asset catalog (AppIcon + future brand tokens).
-      # Extensions (JotKeyboard, JotWidget) don't render custom icons on iOS,
-      # so they don't need their own xcassets — the app icon is the only
+      # The keyboard extension doesn't render custom icons on iOS, so it
+      # doesn't need its own xcassets — the app icon is the only
       # catalogued asset today.
       # `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` in the generated
       # pbxproj already expects a bundled AppIcon.appiconset; without this
@@ -78,17 +79,6 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSMicrophoneUsageDescription: "Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone."
-        # Required for ActivityKit. Without this key, Activity.request(...)
-        # fails with "Target does not include NSSupportsLiveActivities plist
-        # key" and AudioRecordingIntent cannot activate the audio session.
-        # Verified in Console.app syslog 2026-04-21 20:06:59 — liveactivitiesd
-        # rejected the request for widget(containingProcess: com.vineetu.jot.mobile.Jot).
-        # See: https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities
-        NSSupportsLiveActivities: YES
-        # Allows ActivityKit to coalesce frequent Activity.update() calls
-        # for the streaming partial-transcript text. Without this key iOS
-        # throttles updates to ~1Hz, which feels stuttery on the live caption.
-        NSSupportsLiveActivitiesFrequentUpdates: YES
         UIBackgroundModes:
           - audio
         CFBundleURLTypes:
@@ -103,6 +93,7 @@ targets:
     dependencies:
       - package: FluidAudio
         product: FluidAudio
+      - sdk: AppIntents.framework
       # MLX stack for Phi-4. Main-app-only — extensions stay MLX-free.
       - package: MLXSwiftLM
         product: MLXLLM
@@ -116,9 +107,12 @@ targets:
         product: Tokenizers
       - package: MLXSwiftStructured
         product: MLXStructured
-      - sdk: AppIntents.framework
+      # Apple Foundation Models is linked into the main-app target
+      # because `CleanupService` uses `SystemLanguageModel` for non-rewrite
+      # transcript cleanup. It is NOT a rewrite provider — Phi-4-mini on
+      # MLX is the sole rewrite backend.
+      - sdk: FoundationModels.framework
       - target: JotKeyboard
-      - target: JotWidget
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot
@@ -130,12 +124,12 @@ targets:
         # one-handed dictation UX. MVP target is iPhone 15 Pro+, so iPhone-only.
         TARGETED_DEVICE_FAMILY: "1"
       # `JOT_APP_HOST` gates main-app-only bodies inside files that live in
-      # `Shared/` and are therefore also compiled into widget + keyboard
-      # extensions. Used by `StopDictationIntent` so its `perform()` body can
-      # reference `DictationIntentBridge` (main-app-only) without breaking
-      # extension compilation — the `LiveActivityIntent` protocol promotes
-      # execution into the main-app process at runtime, so only the main-app
-      # body ever needs to actually do the stop work.
+      # `Shared/` and are therefore also compiled into the keyboard extension.
+      # Used by `RewriteWithPromptIntent` so its `perform()` body can reference
+      # main-app-only code (`LLMClientFactory`, `SavedPromptStore`) without
+      # breaking extension compilation. The keyboard fires the intent via a
+      # `jot://rewrite?session=<uuid>` URL bounce; only the main-app body ever
+      # runs.
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG JOT_APP_HOST
@@ -169,13 +163,17 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.vineetu.jot.mobile.shared
-    dependencies:
-      # FoundationModels (Apple Intelligence) is available to keyboard
-      # extensions on iOS 26+. The keyboard calls it directly for
-      # rewrite-during-paste — moving rewrite OUT of the suspended main app
-      # process and INTO the live keyboard process. Main app still keeps its
-      # own LLMClient stack for the in-app transcript pane rewrite UI.
-      - sdk: FoundationModels.framework
+    # No `dependencies:` block. The keyboard no longer runs Apple
+    # Intelligence rewrite in-process — keyboard rewrite URL-bounces
+    # into the main app, where Phi-4 on MLX handles the call. The
+    # keyboard target therefore needs zero framework or package
+    # dependencies beyond what UIKit / SwiftUI / AppIntents pull in
+    # transitively for the `Shared/` sources, and those are linked
+    # automatically by xcodebuild without an explicit entry. The MLX
+    # stack is NOT linked into the keyboard — it lives in the main-app
+    # target only (the keyboard's 60 MB ceiling can't host the ~2.4 GB
+    # Phi-4 weights anyway). Apple FM remains linked into the main-app
+    # target only (for `CleanupService`).
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Keyboard
@@ -184,44 +182,6 @@ targets:
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
-
-  JotWidget:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: Widget
-      - path: Shared
-      - path: Resources/PrivacyInfo.xcprivacy
-    info:
-      path: Resources/Widget-Info.plist
-      properties:
-        CFBundleDisplayName: Jot Live Activity
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        ITSAppUsesNonExemptEncryption: false
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    entitlements:
-      path: Resources/Widget.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.vineetu.jot.mobile.shared
-    dependencies:
-      - sdk: WidgetKit.framework
-      - sdk: SwiftUI.framework
-      - sdk: ActivityKit.framework
-      # Required so the Live Activity can declare
-      # `Button(intent: StopDictationIntent())`. The intent type itself lives
-      # in `Shared/` so both the widget (for `Button(intent:)` construction)
-      # and the main app (for `perform()` execution under LiveActivityIntent
-      # promotion) can see it; both targets therefore need `AppIntents` on
-      # the link line.
-      - sdk: AppIntents.framework
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Widget
-        GENERATE_INFOPLIST_FILE: NO
-        SKIP_INSTALL: YES
 
   JotTests:
     type: bundle.unit-test
@@ -258,14 +218,6 @@ schemes:
     build:
       targets:
         JotKeyboard: all
-    run:
-      config: Debug
-    archive:
-      config: Release
-  JotWidget:
-    build:
-      targets:
-        JotWidget: all
     run:
       config: Debug
     archive:

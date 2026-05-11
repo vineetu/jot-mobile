@@ -29,11 +29,10 @@ import os
 /// Jot anyway, plain `AppIntent` is both sufficient and bindable.²
 ///
 /// The pragmatic consequence for Experiment 4: the user *will* see Jot's app
-/// come forward for a moment. The Live Activity (see `JotLiveActivity`) keeps
-/// the UI quiet — we don't route the user into any Jot screen; the app just
-/// hosts the audio session behind the pill. After stop, the recording layer
-/// is expected to hand back to the previous app (or rely on the user's own
-/// back-swipe). That policy lives in the App layer, not here.
+/// come forward for a moment. We don't route the user into any Jot screen;
+/// the app just hosts the audio session quietly. After stop, the recording
+/// layer is expected to hand back to the previous app (or rely on the user's
+/// own back-swipe). That policy lives in the App layer, not here.
 ///
 /// ## Swift 6 / metadata-extractor note
 ///
@@ -268,10 +267,8 @@ struct DictationStopResult: Sendable {
     let stoppedAt: Date
 }
 
-/// The intent's view of runtime state. Separate from
-/// `DictationAttributes.Phase` because that's a codable, presentation-layer
-/// description — this is a lightweight `idle | in-flight` signal the intent
-/// uses solely to decide which toggle leg to run.
+/// The intent's view of runtime state. Lightweight `idle | in-flight`
+/// signal the intent uses solely to decide which toggle leg to run.
 enum DictationRuntimePhase: Sendable {
     case idle
     case recording
@@ -486,32 +483,22 @@ final class DictationControllerImpl: DictationController {
 
 // MARK: - Dictation lifecycle coordinator
 //
-// Originally a thin wrapper over ActivityKit, this type now ONLY owns the
-// in-app bookkeeping the dictation pipeline needs: `recordingStartedAt`
-// (consumed by `TranscriptStore.append` for duration), `isFollowUpActive` /
-// `followUpExpiresAt` (consumed by `DictationPipeline` to gate
-// chained-command classification), and the follow-up expiry task that
-// flips `isFollowUpActive` back to `false` after the freshness window
+// Owns the in-app bookkeeping the dictation pipeline needs:
+// `recordingStartedAt` (consumed by `TranscriptStore.append` for duration),
+// `isFollowUpActive` / `followUpExpiresAt` (consumed by `DictationPipeline`
+// to gate chained-command classification), and the follow-up expiry task
+// that flips `isFollowUpActive` back to `false` after the freshness window
 // elapses.
 //
-// All ActivityKit calls (`Activity.request` / `update` / `end`) and the
-// `ActivityHandle` `@unchecked Sendable` wrapper around them have been
-// removed. The system Dynamic Island pill / Live Activity is no longer
-// requested from this app — the keyboard reads from App Group projections
-// (PipelinePhaseProjection, FreshDictation) and
-// never observed Live Activity content state. The `JotWidget` extension
-// target and `DictationAttributes` codable shape are intentionally kept on
-// disk so a future Live Activity revival can be re-wired in this
-// coordinator without ripping into the Widget target.
-//
-// `AudioRecordingIntentPreflightError` and the `startForAudioRecordingIntent`
-// preflight method are gone with `RecordAndTranscribeIntent`'s
-// `AudioRecordingIntent` conformance — the keyboard's Speak button uses a
-// `jot://dictate` URL scheme to foreground the main app, and no shipping
-// surface (Action Button, Live Activity Button) needs the
-// stay-in-host-app guarantees `AudioRecordingIntent` provides. The system
-// Dynamic Island pill that conformance summons is the side-effect we
-// wanted to eliminate.
+// As of the Dynamic Island ghost-pill fix the entire Live Activity path
+// (ActivityKit, the JotWidget extension, the DictationAttributes codable
+// shape, the StopDictationIntent / DismissFollowUpIntent /
+// CancelPostProcessingIntent surfaces, and the `NSSupportsLiveActivities`
+// plist key) has been removed. The keyboard reads dictation state from App
+// Group projections (PipelinePhaseProjection, FreshDictation) — those
+// projections never observed Live Activity content state, so the only
+// thing this coordinator needs to keep tracking is the recording-start
+// timestamp + follow-up window state above.
 @MainActor
 @Observable
 final class DictationActivityCoordinator {
@@ -539,7 +526,7 @@ final class DictationActivityCoordinator {
         clearFollowUpState()
     }
 
-    func update(phase _: DictationAttributes.Phase) async {
+    func update(phase _: DictationRuntimePhase) async {
         clearFollowUpState()
     }
 

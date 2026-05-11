@@ -36,3 +36,6 @@ build-logs/
 
 # Derived / build scratch (don't track)
 tmp/
+
+# Local safety-net stash from the Gemma-experimentation revert.
+.revert-stash/

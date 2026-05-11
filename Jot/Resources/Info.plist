@@ -35,10 +35,6 @@
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
-	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

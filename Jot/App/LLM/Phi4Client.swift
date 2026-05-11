@@ -327,7 +327,7 @@ final class Phi4Client: LLMClient {
         // additionally forwards an outer cancel (e.g. structured-concurrency
         // parent cancel) into the inner task so both cancellation paths
         // converge on the same `try Task.checkCancellation()` site.
-        let pollingToken = Phi4CancelPolling.observe(parent: rewriteTask)
+        let pollingToken = RewriteCancelPolling.observe(parent: rewriteTask)
         return try await withTaskCancellationHandler {
             defer { pollingToken.cancel() }
             return try await rewriteTask.value

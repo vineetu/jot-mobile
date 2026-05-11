@@ -203,6 +203,11 @@ struct JotApp: App {
                     TranscriptHistoryMirror.refresh(
                         from: ModelContext(JotModelContainer.shared)
                     )
+                    // Phi-4 weights are warmed lazily on first rewrite call
+                    // (Phi4Client.rewrite() auto-calls warm() internally).
+                    // No scene-activation pre-warm here — that would impose
+                    // a ~2.4 GB HF cache touch on every app launch even
+                    // when the user isn't about to rewrite.
                 }
         }
         // Bind the process-wide SwiftData container into the scene so

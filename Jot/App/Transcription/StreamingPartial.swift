@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import ActivityKit
 import FluidAudio
 import Foundation
 import os.log
@@ -162,12 +161,6 @@ final class StreamingPartial {
     /// notification stays the keyboard's wakeup mechanism; this only
     /// coalesces the wakeup rate so the keyboard isn't woken 5-10 times
     /// per second.
-    ///
-    /// The same throttle gate also drives the Dynamic Island / lock-screen
-    /// `Activity.update(_:)` push for the streaming partial — see
-    /// `pushLiveActivityPreview(_:)` below. Sharing the gate means the
-    /// keyboard caption strip and the DI center region update on a single
-    /// ~5 Hz cadence rather than diverging.
     @MainActor
     private static func publishProjection(_ text: String, force: Bool = false) {
         let now = Date()
@@ -178,93 +171,6 @@ final class StreamingPartial {
         lastPublishedAt = now
         AppGroup.defaults.set(text, forKey: AppGroup.Keys.streamingPartialText)
         CrossProcessNotification.post(name: CrossProcessNotification.streamingPartialChanged)
-        pushLiveActivityPreview(text)
-    }
-
-    /// Pushes the streaming partial text into the running Dynamic Island /
-    /// lock-screen Live Activity as `ContentState.lastWordsPreview`. Driven
-    /// from `publishProjection` so the throttle and the writer-side
-    /// settings gate apply uniformly.
-    ///
-    /// Per the dynamic-island redesign §8 (partial-transcript display
-    /// strategy v1):
-    ///
-    /// - **§8.2 Settings toggle / writer-side gate.** If
-    ///   `AppGroup.liveActivityTranscriptEnabled` is `false`, return
-    ///   without calling `Activity.update(_:)`. Structural privacy: the
-    ///   text never reaches the widget process so a stale render can't
-    ///   briefly leak it. The keyboard caption strip is intentionally on
-    ///   a separate code path (App Group write above) and is unaffected.
-    /// - **§8.5 Wire protocol.** Take cumulative `streamingText`, split by
-    ///   whitespace, take the **last 12 words**, join with spaces, then
-    ///   `String.suffix(60)` to right-edge cap at 60 chars. Render side
-    ///   does no further truncation.
-    /// - **§8.6 Source-of-truth contract.** Live Activity widget bodies do
-    ///   NOT re-render on App Group writes, so the widget can't read the
-    ///   existing `streamingPartialText` key. Push via `Activity.update`
-    ///   with a fresh `ContentState` carrying the existing phase.
-    /// - **§8.8 Empty-state contract.** When `text` is empty, push `nil`
-    ///   (not `""`) so the widget's `.center` collapses to `EmptyView()`
-    ///   rather than rendering an empty placeholder line.
-    /// - **Phase guard.** Streaming partials are recording-state-only
-    ///   (§8.1). If the activity's current phase is anything other than
-    ///   `.recording(...)`, skip the update — the new ContentState would
-    ///   otherwise clobber a `transcribing` / `followUp`
-    ///   phase that the pipeline transitioned into between this throttle
-    ///   tick and the late callback.
-    @MainActor
-    private static func pushLiveActivityPreview(_ text: String) {
-        guard AppGroup.liveActivityTranscriptEnabled else { return }
-
-        let preview = lastWordsPreview(of: text)
-
-        // Move the iteration INSIDE the spawned Task so `Activity` (which
-        // is not `Sendable` under Swift 6 strict concurrency) is never
-        // captured across actor boundaries. We only capture `preview`
-        // (a `Sendable` `String?`); the activity handles are created and
-        // consumed within the Task's own actor context. `Activity.update`
-        // is callable from any actor per Apple's docs.
-        Task {
-            for activity in Activity<DictationAttributes>.activities {
-                let currentState = activity.content.state
-                // Recording-state-only per §8.1. Don't clobber a
-                // non-recording phase if a partial-transcript callback
-                // lands during the brief window after
-                // `RecordingService.stop()` has flipped the activity to
-                // `.transcribing`.
-                guard case .recording = currentState.phase else { continue }
-                let nextState = DictationAttributes.ContentState(
-                    phase: currentState.phase,
-                    lastWordsPreview: preview
-                )
-                try? await activity.update(
-                    ActivityContent(state: nextState, staleDate: nil)
-                )
-            }
-        }
-    }
-
-    /// Computes the §8.5 wire-protocol value: last 12 words of cumulative
-    /// streaming text, joined with single spaces, then `String.suffix(60)`
-    /// to right-edge cap at 60 chars. Returns `nil` for empty / whitespace-
-    /// only input so the writer pushes `nil` (not `""`) into ContentState
-    /// per §8.8 empty-state contract.
-    ///
-    /// `split(omittingEmptySubsequences: true)` collapses runs of
-    /// whitespace, so a final word followed by a trailing space (FluidAudio
-    /// emits this shape sometimes between segments) doesn't get treated as
-    /// an empty 13th word and shift the 12-word window.
-    @MainActor
-    private static func lastWordsPreview(of text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let words = trimmed.split(
-            omittingEmptySubsequences: true,
-            whereSeparator: { $0.isWhitespace }
-        )
-        let tail = words.suffix(12).joined(separator: " ")
-        guard !tail.isEmpty else { return nil }
-        return String(tail.suffix(60))
     }
 }
 

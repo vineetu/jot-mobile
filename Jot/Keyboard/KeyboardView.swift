@@ -26,10 +26,10 @@ struct KeyboardView: View {
     /// already cost a button-press).
     let isStopRequestPending: Bool
 
-    /// True when the user's selected rewrite provider is Apple Intelligence
-    /// AND the system reports it as unavailable (device ineligible, AI not
-    /// enabled in Settings, or model not ready). Retained for the next
-    /// keyboard rewrite affordance.
+    /// True when the AI Rewrite master toggle is OFF in the main app's
+    /// settings. Drives the wand button's "AI off" state in the keyboard
+    /// accessory bar. Phi-4-specific readiness is opaque to the keyboard
+    /// extension; the master toggle is the single signal we surface here.
     let aiUnavailable: Bool
     /// Transient status banner text (e.g. "Rewrite timed out"). Renders a
     /// brief auto-fading banner above the streaming preview strip when set.
@@ -331,7 +331,7 @@ struct KeyboardView: View {
             .buttonStyle(.plain)
             .disabled(true)
             .opacity(0.45)
-            .accessibilityLabel("Apple Intelligence is not enabled")
+            .accessibilityLabel("AI Rewrite is turned off")
             .accessibilityAddTraits(.isButton)
         } else {
             // Single wand affordance for the AI-on case. Interactive when

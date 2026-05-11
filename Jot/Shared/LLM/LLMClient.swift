@@ -23,13 +23,13 @@ enum LLMClientStatus: Sendable, Equatable {
 
 /// Backend-agnostic contract for the on-device rewrite path.
 ///
-/// Implementations include the Phi-4 MLX backend (primary) and the Apple
-/// Foundation Models backend (alternate). Settings UI and the keyboard host
-/// pick a concrete client through the factory; callers only ever talk through
-/// this protocol so swap-in is friction-free.
+/// Currently the sole conformer is the Phi-4 mini MLX backend. The
+/// protocol is kept in place so the settings UI adapter, the
+/// dispatcher, and tests can substitute fakes without coupling to the
+/// concrete client.
 ///
 /// `AnyObject + Sendable`: clients hold non-`Sendable` model state (MLX
-/// containers, FM sessions) behind their own actor or `@MainActor` discipline.
+/// containers) behind their own actor or `@MainActor` discipline.
 /// Reference identity matters because the singleton wrapper holds `self`
 /// internally for lifecycle hooks.
 protocol LLMClient: AnyObject, Sendable {
@@ -46,7 +46,7 @@ protocol LLMClient: AnyObject, Sendable {
     func evict() async
 
     /// Run a constrained-decoding rewrite. Returns the rewritten text only,
-    /// with no preamble, quoting, or explanation — this is enforced by the
-    /// `Rewrite` schema for both backends.
+    /// with no preamble, quoting, or explanation — enforced by the
+    /// `Rewrite` JSON schema via grammar-constrained decoding.
     func rewrite(text: String, systemPrompt: String) async throws -> String
 }
