@@ -107,19 +107,27 @@ struct SetupWizardView: View {
     }
 
     private func startModelDownload() {
-        // Both downloads kick off under the single explicit-tap consent —
-        // the gate's ~948 MB size copy already accounts for the bundle
-        // (Parakeet ~500 MB + EOU 320ms ~448 MB per STATE.md:31). Per
-        // team-lead Q2: EOU is required and bundled. No separate consent.
+        // All three downloads kick off under the single explicit-tap
+        // consent — the gate's size copy accounts for the bundle:
+        //   • Parakeet (speech) ~500 MB
+        //   • EOU 320ms (live preview)   ~448 MB
+        //   • CTC 110M (vocab biasing) ~100 MB
+        //   ≈ 1.05 GB total
         //
         // `transcriptionService.warmUp()` downloads + loads Parakeet into
         // ANE. `streamingService.warmUp()` is download-only (per
         // cleanup-on-every-stop policy: streaming weights live on disk
         // between sessions, ANE load happens lazily in `beginSession`).
-        // Both calls are idempotent + coalescing so re-taps during
-        // download progress are safe.
+        // `CtcModelCache.shared.ensureLoaded()` is fire-and-forget: if it
+        // fails (network drop after speech model lands), the user can
+        // retry from the Vocabulary pane's Boost-model Download button.
+        // Boost-model failure does not block setup completion — the rest
+        // of Jot keeps working without it.
         transcriptionService.warmUp()
         streamingService.warmUp()
+        Task.detached {
+            _ = try? await CtcModelCache.shared.ensureLoaded()
+        }
     }
 }
 
@@ -288,7 +296,7 @@ private struct ModelDownloadStep: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Text("~948 MB")
+                Text("~1.05 GB")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
             }
@@ -297,7 +305,7 @@ private struct ModelDownloadStep: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use cellular")
                         .font(.subheadline)
-                    Text("Off by default — Wi-Fi recommended for ~948 MB")
+                    Text("Off by default — Wi-Fi recommended for ~1.05 GB")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -367,15 +375,15 @@ private struct ModelDownloadStep: View {
         case .downloading:
             return "Keep Jot open until the first download finishes."
         case .notLoaded:
-            return "Jot transcribes entirely on this iPhone. The on-device Parakeet model is ~948 MB."
+            return "Jot transcribes entirely on this iPhone. The on-device Parakeet model is ~1.05 GB."
         }
     }
 
     private var primaryTitle: String {
         switch modelState {
         case .ready: return "Continue"
-        case .failed: return "Retry Download (~948 MB)"
-        case .notLoaded: return "Download Speech Models (~948 MB)"
+        case .failed: return "Retry Download (~1.05 GB)"
+        case .notLoaded: return "Download Speech Models (~1.05 GB)"
         case .downloading: return "Downloading..."
         case .loading: return "Preparing..."
         }

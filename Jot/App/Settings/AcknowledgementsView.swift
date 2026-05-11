@@ -13,9 +13,16 @@ struct AcknowledgementsView: View {
                 AcknowledgementRow(
                     title: "Parakeet TDT 0.6B v2",
                     author: "NVIDIA",
-                    license: "Open Model License + cc-by-4.0",
+                    license: "cc-by-4.0",
                     url: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml",
                     description: "On-device speech recognition for the final transcript. Runs on the Apple Neural Engine."
+                )
+                AcknowledgementRow(
+                    title: "Parakeet TDT-CTC 110M",
+                    author: "NVIDIA",
+                    license: "cc-by-4.0",
+                    url: "https://huggingface.co/FluidInference/parakeet-tdt-ctc-110m-coreml",
+                    description: "Lightweight alternative for the final transcript. Selectable in Settings → Speech model. Runs on the Apple Neural Engine."
                 )
             } header: {
                 Text("Speech model")
@@ -25,7 +32,7 @@ struct AcknowledgementsView: View {
                 AcknowledgementRow(
                     title: "Parakeet EOU 120M",
                     author: "NVIDIA / FluidInference",
-                    license: "cc-by-4.0",
+                    license: "NVIDIA Open Model License",
                     url: "https://huggingface.co/FluidInference/parakeet-realtime-eou-120m-coreml",
                     description: "Lightweight streaming model for the live transcription preview while you speak."
                 )

@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
+    @Environment(StreamingTranscriptionService.self) private var streamingService
     @State private var showRedownloadConfirmation = false
 
     /// Mirror of `AppGroup.speechModelVariant`. Picker tags are the FluidAudio
@@ -21,19 +22,20 @@ struct SettingsView: View {
                     Picker(selection: $speechModelVariant) {
                         Text("Parakeet 600M (more accurate)")
                             .tag("parakeetV2")
-                        Text("Parakeet 110M (lighter, custom words coming)")
+                        Text("Parakeet 110M (lighter, faster)")
                             .tag("tdtCtc110m")
                     } label: {
                         Label("Variant", systemImage: "waveform.badge.magnifyingglass")
                     }
                     .onChange(of: speechModelVariant) { _, newValue in
-                        // The new selection only takes effect on the NEXT
-                        // dictation start. `TranscriptionService` re-resolves
-                        // `selectedVersion` on each `ensurePreparing()` and
-                        // snapshots once at the top of `loadOrFail` — so an
-                        // in-flight session keeps running against whatever
-                        // model it cold-loaded with.
+                        // Persist the new selection AND invalidate the
+                        // currently-loaded manager so the next dictation
+                        // rebuilds with the user-selected variant. Without
+                        // this invalidation the loaded `manager` reference
+                        // kept serving the OLD variant until app restart
+                        // (`ensurePreparing` returns early when `manager != nil`).
                         AppGroup.speechModelVariant = newValue
+                        transcriptionService.handleVariantChange()
                     }
 
                     LabeledContent("Name", value: transcriptionService.speechModelIdentifier)
@@ -58,7 +60,18 @@ struct SettingsView: View {
                 } header: {
                     Text("Speech model")
                 } footer: {
-                    Text("Runs entirely on this iPhone. About 1.25 GB on disk.")
+                    Text(sizeFooter)
+                }
+
+                Section {
+                    NavigationLink {
+                        VocabularySettingsView()
+                    } label: {
+                        Label("Vocabulary", systemImage: "text.book.closed")
+                    }
+                    .accessibilityHint("Custom terms Jot should prefer during transcription")
+                } header: {
+                    Text("Vocabulary")
                 }
 
                 Section {
@@ -106,13 +119,23 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .confirmationDialog(
-                "Re-download speech model?",
+                "Re-download all models?",
                 isPresented: $showRedownloadConfirmation,
                 titleVisibility: .visible
             ) {
                 Button("Re-download", role: .destructive) {
                     Task {
                         await transcriptionService.purgeAndReload()
+                        // Also ensure the streaming model is present after
+                        // re-download. `purgeAndReload` only purges/reloads
+                        // the batch model; EOU stays on disk. If the user
+                        // had nuked EOU separately or it never landed,
+                        // warmUp() is idempotent and picks it up.
+                        streamingService.warmUp()
+                        // Boost model — re-download bundled with the
+                        // speech-model re-download under Option A
+                        // (one tap covers everything). Idempotent.
+                        _ = try? await CtcModelCache.shared.ensureLoaded()
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -132,6 +155,20 @@ struct SettingsView: View {
             showRedownloadConfirmation = true
         } else {
             transcriptionService.warmUp()
+            // Also ensure the streaming model is downloaded. EOU 120M is
+            // bundled with the batch model under the same opt-in tap so
+            // the live-caption strip works after a fresh install or a
+            // post-purge re-download. Idempotent: a no-op if already on
+            // disk + warmed.
+            streamingService.warmUp()
+            // CTC 110M boost model for vocabulary biasing — bundled into
+            // the same explicit Download tap so the user doesn't see a
+            // second download prompt later. Fire-and-forget; if it
+            // fails, the Vocabulary pane's Boost-model Download button
+            // is the retry surface.
+            Task.detached {
+                _ = try? await CtcModelCache.shared.ensureLoaded()
+            }
         }
     }
 
@@ -177,13 +214,18 @@ struct SettingsView: View {
     }
 
     private var modelActionTitle: String {
+        // "All models" wording reflects the Option A bundle: this single
+        // tap pulls speech + EOU streaming + CTC boost. Setup wizard
+        // size copy (~1.05 GB) is the authoritative byte disclosure
+        // anchor; Settings-level re-download confirmation uses the same
+        // unified language.
         switch transcriptionService.modelState {
         case .ready:
-            return "Re-download model"
+            return "Re-download all models"
         case .failed:
             return "Retry download"
         case .notLoaded:
-            return "Download model"
+            return "Download all models"
         case .downloading:
             return "Downloading"
         case .loading:
@@ -197,6 +239,24 @@ struct SettingsView: View {
             return true
         case .notLoaded, .failed, .ready:
             return false
+        }
+    }
+
+    private var sizeFooter: String {
+        // Approximate on-disk sizes per variant — speech model only.
+        // The setup wizard's ~1.05 GB number is the bundle (speech +
+        // EOU + CTC boost); this Settings-footer figure is just the
+        // speech-model variant the user chose, since the EOU and
+        // boost models don't change when they flip the picker.
+        //
+        // TDT-CTC 110M total is ~330 MB on disk: ~220 MB primary repo
+        // (FluidInference/parakeet-tdt-ctc-110m-coreml) + ~106 MB
+        // auxiliary repo (FluidInference/parakeet-ctc-110m-coreml)
+        // that FluidAudio's `AsrModels.load(.tdtCtc110m)` fetches in
+        // the same call for the optional CTC head.
+        switch speechModelVariant {
+        case "tdtCtc110m": return "Runs entirely on this iPhone. About 330 MB on disk."
+        default:           return "Runs entirely on this iPhone. About 700 MB on disk."
         }
     }
 

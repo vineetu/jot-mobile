@@ -205,6 +205,43 @@ final class TranscriptionService {
         _ = ensurePreparing()
     }
 
+    /// Called when the user flips Settings → Speech model variant.
+    ///
+    /// Invalidates the currently-loaded manager so the next
+    /// `ensurePreparing()` rebuilds for the new variant. The previous
+    /// variant's weights stay on disk so flipping back is a fast reload.
+    ///
+    /// modelState reflects the NEW variant's actual disk state:
+    /// - On-disk → `.ready` (loads lazily on next call; UI shows Ready pill
+    ///   instead of misleading "Not downloaded").
+    /// - Not on-disk → `.notLoaded` (UI shows Download button; the explicit
+    ///   tap is the sanctioned 4.2.3(ii) consent trigger).
+    ///
+    /// NOTE: TDT-CTC 110M's `CtcHead.mlmodelc` is opportunistically fetched
+    /// during `AsrModels.load()` but custom-vocab biasing in this app is
+    /// powered by FluidAudio's separate `VocabularyRescorer` +
+    /// `CtcKeywordSpotter` stack (using its own `CtcModels.load`
+    /// pipeline), wired separately under `Jot/App/Vocabulary/`. The two
+    /// paths share the same on-disk CTC bundle but are otherwise
+    /// independent — the variant picker affects only the primary
+    /// transcribe model, not whether vocabulary biasing applies. See
+    /// the Jot desktop app's `Sources/Vocabulary/` for the reference
+    /// implementation we're tracking.
+    func handleVariantChange() {
+        prepareTask?.cancel()
+        prepareTask = nil
+        prepareGeneration += 1
+        manager = nil
+        if Self.modelsExistOnDiskForSelectedVariant() {
+            modelState = .ready
+        } else {
+            modelState = .notLoaded
+        }
+        log.info(
+            "Speech variant changed — variant=\(AppGroup.speechModelVariant, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
+        )
+    }
+
     func purgeAndReload() async {
         // Reclaim any orphaned .purging-* dirs from prior crashed purges before
         // we create another one.
@@ -429,7 +466,7 @@ final class TranscriptionService {
         log.info("ensureModelIsDownloadedOrThrow — directory=\(directory.path, privacy: .public) modelsExist=\(exists, privacy: .public)")
         if !exists {
             throw TranscriptionError.loadFailed(
-                "The Parakeet speech-recognition model (~1.25 GB) hasn't been downloaded yet. Open Jot once and press Record to finish the one-time download, then re-run your Shortcut."
+                "The selected speech-recognition model hasn't been downloaded yet. Open Jot, go to Settings → Speech model and tap Download, then re-run your Shortcut."
             )
         }
     }
@@ -446,6 +483,32 @@ final class TranscriptionService {
     /// Callers own the `isTranscribing` flag and the signpost interval — this
     /// helper is the minimal inference body so it stays testable in isolation.
     private func runInference(on samples: [Float], label: String, audioDurationSeconds: Double) async throws -> String {
+        // 4.2.3(ii) consent guard: do NOT silently download a model via
+        // the record-then-transcribe path. The Settings "Download" button
+        // is the only sanctioned download trigger. If the user flipped
+        // variants and hasn't tapped Download yet, surface a friendly
+        // error and exit. Simulator stand-in bypass: standIn is non-nil
+        // in simulator and the in-app record path already short-circuits
+        // earlier — we only reach this branch on real-device transcribe.
+        //
+        // Caveat — TDT-CTC 110M aux fetch: `AsrModels.load(.tdtCtc110m)`
+        // routes through `.parakeetCtc110m` on first load (FluidAudio
+        // AsrModels.swift:253). `DownloadUtils` then pulls that repo's
+        // required-set (MelSpectrogram + AudioEncoder, ~106 MB) IN
+        // ADDITION to the requested `CtcHead.mlmodelc`. The total CTC
+        // first-install download is therefore ~220 MB primary + ~106 MB
+        // aux = ~330 MB (matches the Settings footer copy). Both fetches
+        // happen on the same explicit Download tap that built up the
+        // primary repo, so the user is not surprised by a silent
+        // post-tap pull — the consent flow is intact. The unfortunate
+        // wrinkle is FluidAudio's "required-set" definition pulling
+        // files we don't need (only `CtcHead` is actually consumed),
+        // but disabling that requires forking FluidAudio.
+        if standIn == nil && !Self.modelsExistOnDiskForSelectedVariant() {
+            throw TranscriptionError.loadFailed(
+                "The selected speech model isn't downloaded yet. Open Settings → Speech model and tap Download."
+            )
+        }
         let inferenceStartedAt = Date()
         let prepareStartedAt = Date()
         try await ensurePreparing().value
@@ -472,7 +535,31 @@ final class TranscriptionService {
                 "Parakeet inference end — source=\(label, privacy: .public) startedAt=\(Self.timestamp(inferenceStartedAt), privacy: .public) endedAt=\(Self.timestamp(inferenceEndedAt), privacy: .public) wallClockMS=\(wallClockMS, privacy: .public) processingMS=\(result.processingTime * 1_000, privacy: .public) audioDurationS=\(result.duration, privacy: .public) wallClockRtf=\(wallClockRTF, privacy: .public) engineRtf=\(engineRTF, privacy: .public) chars=\(result.text.count, privacy: .public)"
             )
             signposter.endInterval("transcribe-inference", inferenceInterval)
-            return result.text
+
+            // Vocabulary boosting pass — best-effort. Any failure
+            // (rescorer not ready, CTC bundle missing, model throws)
+            // falls through to the raw TDT transcript so a broken
+            // rescorer can never regress the user-visible result.
+            // `tokenTimings` is required by the rescorer's public API;
+            // if FluidAudio ever returns nil here the rescore is
+            // skipped. Mirrors `jot/Sources/Transcription/Transcriber.swift:117`.
+            var transcriptText = result.text
+            if VocabularyStore.shared.isEnabled, let timings = result.tokenTimings {
+                do {
+                    if let rescored = try await VocabularyRescorerHolder.shared.rescore(
+                        transcript: result.text,
+                        tokenTimings: timings,
+                        audioSamples: samples
+                    ) {
+                        transcriptText = rescored
+                    }
+                } catch {
+                    log.error(
+                        "vocabulary rescore failed — falling back to raw: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            return transcriptText
         } catch {
             let inferenceEndedAt = Date()
             let wallClockMS = Self.elapsedMilliseconds(from: inferenceStartedAt, to: inferenceEndedAt)
@@ -558,11 +645,16 @@ final class TranscriptionService {
         if !modelsOnDisk {
             modelState = .downloading(0)
             downloadedThisCall = true
-            let progress: DownloadUtils.ProgressHandler = { [weak self] snapshot in
+            let progress: DownloadUtils.ProgressHandler = { [weak self, generation] snapshot in
                 let fraction = max(0.0, min(1.0, snapshot.fractionCompleted))
                 Task { @MainActor [weak self] in
-                    if case .downloading = self?.modelState {
-                        self?.modelState = .downloading(fraction)
+                    guard let self else { return }
+                    // Generation guard: a stale callback from a prior
+                    // variant's download must NOT update the new
+                    // variant's progress fraction after a rapid flip.
+                    guard self.prepareGeneration == generation else { return }
+                    if case .downloading = self.modelState {
+                        self.modelState = .downloading(fraction)
                     }
                 }
             }
