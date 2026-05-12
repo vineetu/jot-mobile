@@ -3,22 +3,23 @@ import SwiftUI
 /// Vocabulary settings pane — list of user-curated terms that the
 /// on-device CTC rescorer will prefer during transcription.
 ///
-/// iOS-native adaptation of `jot/Sources/Vocabulary/VocabularyPane.swift`:
-///   - SwiftUI `Form` + `List` instead of macOS-style grouped form.
-///   - Swipe-to-delete + EditButton instead of hover-to-reveal trash icon.
-///   - "Add Term" appears as a row at the bottom of the list.
-///   - The desktop pane's `Japanese-primary lockout` and `InfoPopoverButton`
-///     are skipped — the mobile app doesn't ship a JA model and uses
-///     section footers for context instead of popovers.
-///   - The "Boost model" download section is hidden in this milestone:
-///     the on-device rescorer wiring (download CTC 110M bundle + load
-///     `VocabularyRescorer` + integrate into `TranscriptionService`) is
-///     Phase B; today the list is persistence-only so the user can
-///     validate the shape and start curating their terms.
+/// Phase 5 reskin (mockup 16): editorial chrome on top of the same
+/// persistence + boost-model wiring that shipped in commit `197a5b4`.
+/// Sections render inside `GlassCard(.regular)` groups, the title bar
+/// stays the standard nav title, and a floating coral "+ Add term"
+/// FAB at the bottom presents `AddVocabularyTermSheet`.
+///
+/// Preserved exactly from the previous implementation:
+///   - `VocabularyStore.shared` is the persistence path (file-backed
+///     `Application Support/Vocabulary/vocabulary.txt`).
+///   - `BoostModelStatus` + `CtcModelCache.shared` integration.
+///   - `VocabularyRescorerHolder.shared.prepare(...)` on master-toggle ON
+///     and `unload()` on OFF.
+///   - Auto-prepare-rescorer race-closer in `.onAppear`.
+///   - Swipe-to-delete + drag-to-reorder via the existing `EditButton`.
+///
 /// Boost-model download state, surfaced to the pane so the user can
-/// see what's happening. Pre-installed state lives in
-/// `CtcModelCache.shared.isCached` — this enum captures the
-/// UI-visible transitions around it.
+/// see what's happening.
 enum BoostModelStatus: Equatable {
     case notDownloaded
     case downloading
@@ -29,13 +30,23 @@ enum BoostModelStatus: Equatable {
 struct VocabularySettingsView: View {
     @State private var store = VocabularyStore.shared
     @State private var boostModelStatus: BoostModelStatus = .notDownloaded
+    @State private var showAddSheet: Bool = false
     @FocusState private var focusedID: VocabTerm.ID?
 
     var body: some View {
-        Form {
-            masterToggleSection
-            boostModelSection
-            termsSection
+        ZStack(alignment: .bottom) {
+            Form {
+                masterToggleSection
+                boostModelSection
+                termsSection
+            }
+            // The floating Add-term FAB hovers over the bottom of the list;
+            // pad the Form so the last row + footer aren't tucked behind
+            // the button on a long list.
+            .safeAreaPadding(.bottom, 80)
+
+            addTermFAB
+                .padding(.bottom, 18)
         }
         .navigationTitle("Vocabulary")
         #if os(iOS)
@@ -48,21 +59,21 @@ struct VocabularySettingsView: View {
                 }
             }
         }
+        .sheet(isPresented: $showAddSheet) {
+            AddVocabularyTermSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .onAppear {
             // Re-load from disk in case the user edited the file externally
             // (Files app, iCloud Drive, etc.) since the last appearance.
             store.load()
             refreshBoostModelStatus()
-            // Late-arrival hook for the Option A flow: if the boost
-            // model finished downloading via the setup wizard or
-            // Settings tap WHILE the user was elsewhere, picking up
-            // the now-cached state on appear AND auto-preparing the
-            // rescorer (when the master toggle is on) closes the
-            // race where toggle-enable preceded boost-download
-            // completion. Without this, the pane would show "Ready"
-            // for the boost but the rescorer would silently not be
-            // prepared until the user toggled off/on or tapped
-            // Download in the boost section.
+            // Late-arrival hook for the Option A flow — see the original
+            // VocabularySettingsView for the full race-closer rationale.
+            // If the boost model finished downloading while the user was
+            // elsewhere, auto-prepare the rescorer now so transcription
+            // picks up the bias on the next dictation.
             if store.isEnabled, CtcModelCache.shared.isCached {
                 Task { await prepareRescorerIfPossible() }
             }
@@ -122,26 +133,30 @@ struct VocabularySettingsView: View {
                 }
             }
 
+            // Edit-mode inline-add row, preserved for Edit-mode parity with
+            // the previous implementation. The visible floating FAB is the
+            // primary entry, but Edit-button reorder users get this fallback.
             Button {
-                addTerm()
+                addInlineBlankTerm()
             } label: {
                 Label("Add Term", systemImage: "plus")
             }
         } header: {
             HStack {
-                Text("Terms")
+                Text(termsHeader)
                 Spacer()
                 if !store.terms.isEmpty {
-                    Text("\(store.terms.count)")
+                    Text("A to Z")
                         .foregroundStyle(.secondary)
                 }
             }
         } footer: {
-            // Two-character warning happens inline per-row; this footer
-            // is the prose version + the file-location hint for users
-            // who want to know where their list lives.
-            Text("Each term should be at least 3 characters. The list lives in this device's app data; reset Jot to clear it.")
+            Text("Helps Jot recognize names, technical terms, and words it tends to mishear. The list stays on your iPhone.")
         }
+    }
+
+    private var termsHeader: String {
+        store.terms.isEmpty ? "Terms" : "Terms · \(store.terms.count)"
     }
 
     // MARK: - Boost model
@@ -149,7 +164,9 @@ struct VocabularySettingsView: View {
     @ViewBuilder
     private var boostModelSection: some View {
         Section {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(spacing: 12) {
+                IconBox(symbol: "waveform", tint: Color.teal, size: 36)
+
                 VStack(alignment: .leading, spacing: 3) {
                     Text(boostModelHeadline)
                         .font(.subheadline.weight(.medium))
@@ -238,10 +255,8 @@ struct VocabularySettingsView: View {
     }
 
     private func prepareRescorerIfPossible() async {
-        // Re-check the cache: `CtcModelCache.shared` may have been
-        // invalidated by a concurrent path. Refresh UI state before
-        // attempting to prepare, so a failed prepare leaves the user
-        // on a correct "not downloaded" row instead of a stale "ready".
+        // Re-check the cache before attempting prepare — see original
+        // VocabularySettingsView for the full rationale.
         guard let url = store.fileURL else { return }
         guard CtcModelCache.shared.isCached else {
             boostModelStatus = .notDownloaded
@@ -262,7 +277,7 @@ struct VocabularySettingsView: View {
                 .padding(.top, 16)
             Text("No vocabulary yet.")
                 .font(.subheadline.weight(.medium))
-            Text("Add names and acronyms Jot should get right.")
+            Text("Tap + Add term to start.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 8)
@@ -272,9 +287,52 @@ struct VocabularySettingsView: View {
         .listRowBackground(Color.clear)
     }
 
+    // MARK: - Add-term FAB
+
+    /// Floating coral "+ Add term" button at the bottom of the list. Matches
+    /// the `DictateFAB` shape (smaller — ~140pt wide). Tapping it presents
+    /// the `AddVocabularyTermSheet`.
+    @ViewBuilder
+    private var addTermFAB: some View {
+        Button {
+            showAddSheet = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("Add term")
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .foregroundStyle(Color.white)
+            .frame(minHeight: 48)
+            .padding(.horizontal, 24)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.jotAccent, Color.jotAccent.opacity(0.92)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
+            )
+            .shadow(color: Color.jotAccent.opacity(0.35), radius: 14, x: 0, y: 8)
+            .shadow(color: Color.black.opacity(0.10), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add term")
+        .accessibilityHint("Opens the new-term sheet")
+    }
+
     // MARK: - Actions
 
-    private func addTerm() {
+    /// Edit-mode inline add path — preserved from the original
+    /// implementation for users who're already in Edit mode reordering.
+    private func addInlineBlankTerm() {
         let new = store.addBlankTerm()
         // Focus lands inside the new row's TextField after SwiftUI
         // rebuilds the ForEach. A short runloop hop is enough for the
@@ -313,6 +371,7 @@ private struct VocabRow: View {
     var body: some View {
         HStack(spacing: 8) {
             TextField("Term", text: $term.text)
+                .font(.system(size: 16))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled(true)
                 .focused(focusedID, equals: rowID)
@@ -325,6 +384,7 @@ private struct VocabRow: View {
                     .accessibilityLabel(warning)
             }
         }
+        .frame(minHeight: 44)
     }
 
     private var warningMessage: String? {

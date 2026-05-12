@@ -9,6 +9,7 @@ private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", categ
 struct JotApp: App {
     @Environment(\.scenePhase) private var scenePhase
     private let stopRequestObserver: CrossProcessNotification.Observer
+    private let warmResumeObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var streamingService: StreamingTranscriptionService
@@ -28,11 +29,34 @@ struct JotApp: App {
     /// surviving the cold-launch race per design §4.2.
     @State private var pendingKeyboardSessionID: UUID?
 
+    /// Repeating Task that refreshes `AppGroup.Keys.appForegroundHeartbeat`
+    /// every ~1s while `scenePhase == .active`. Started on scene-active,
+    /// cancelled on scene-inactive / background. The keyboard extension
+    /// reads the heartbeat freshness to detect "host app == Jot" — see
+    /// `AppGroup.isJotAppForeground()` and `JotKeyboardViewController.handleMicCTATap`
+    /// for the consumer side.
+    @State private var heartbeatTask: Task<Void, Never>?
+
     init() {
         stopRequestObserver = CrossProcessNotification.addObserver(
             name: CrossProcessNotification.stopRequested
         ) {
             CrossProcessRecordingStopCoordinator.shared.handleStopRequested()
+        }
+
+        warmResumeObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.warmResumeRequested
+        ) {
+            Task { @MainActor in
+                do {
+                    try await RecordingService.shared.start()
+                    lifecycleLog.info("Warm resume requested from keyboard; recording started")
+                } catch RecordingService.RecordingError.alreadyRunning {
+                    lifecycleLog.info("Warm resume requested from keyboard but recording is already running or pipeline is in flight")
+                } catch {
+                    lifecycleLog.error("Warm resume requested from keyboard failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
 
         lifecycleLog.info("JotApp init — begin")
@@ -89,6 +113,11 @@ struct JotApp: App {
         // `isRecording` from `phase == .recording` rather than reading a
         // separate projection. Per design §4.2.
         PipelinePhaseProjection.reset()
+        // Phase 4 stale-clear: spec §1a #13 — warm-hold never auto-activates on
+        // cold launch. If the previous process crashed mid-warm, this projection
+        // could linger for up to 60s and mislead the keyboard into posting Darwin
+        // into a dead listener. Clear on launch.
+        AppGroup.warmHoldExpiresAt = nil
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
 
@@ -107,6 +136,19 @@ struct JotApp: App {
                     }
                     .environment(transcriptionService)
                     .environment(streamingService)
+                    // Phase 6: W7 (in-app dictation test) wires through the
+                    // production `RecordingService.shared` so the user
+                    // exercises the same recording path they'll use after
+                    // setup. The wizard reads it via `@Environment`.
+                    .environment(recordingService)
+                    // W7 renders `streamingPartial.streamingText` as the
+                    // live preview while recording. Without this injection
+                    // the wizard would hit an `@Environment` lookup miss
+                    // and crash on read; the production singleton is the
+                    // one the recorder's tap is already publishing into,
+                    // so the wizard sees the same stream the home surface
+                    // does.
+                    .environment(streamingPartial)
                 }
                 .onAppear {
                     presentSetupIfNeeded()
@@ -121,6 +163,16 @@ struct JotApp: App {
                     // existing dictation auto-start path.
                     if url.host == "rewrite" {
                         handleRewriteURL(url)
+                        return
+                    }
+
+                    // `jot://history` — keyboard's "See all" recents-card
+                    // header link. Brings the main app to the foreground at
+                    // home (where the recents list lives) WITHOUT triggering
+                    // dictation auto-start. The app's home view is the
+                    // default scene root, so simply returning here is enough
+                    // to land the user on the recents list.
+                    if url.host == "history" {
                         return
                     }
 
@@ -149,9 +201,20 @@ struct JotApp: App {
                         triggerAutoStart(reason: "setup completion")
                     }
                 }
-                .onChange(of: scenePhase) { _, newPhase in
+                .onChange(of: scenePhase, initial: true) { _, newPhase in
+                    // `initial: true` fires on first attach so the heartbeat
+                    // starts even when the scene is already `.active` before
+                    // the modifier wires up — without it, `onChange` would
+                    // never fire on initial render and the keyboard's
+                    // `isJotAppForeground()` would return false during a cold
+                    // W8 entry. The .background/.inactive teardown path is
+                    // unaffected — initial-fire on `.active` just kicks the
+                    // same flow that would normally fire on transition.
                     if newPhase == .active {
                         handleSceneActive()
+                        startForegroundHeartbeat()
+                    } else {
+                        stopForegroundHeartbeat()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes
@@ -223,6 +286,54 @@ struct JotApp: App {
     private func presentSetupIfNeeded() {
         setupCompleted = SetupCompletion.isCompleted
         showSetupWizard = !setupCompleted
+    }
+
+    /// Starts (or restarts) the foreground heartbeat that publishes a
+    /// recent `Date` into `AppGroup.Keys.appForegroundHeartbeat` every
+    /// ~1s. The keyboard extension reads this slot to decide whether
+    /// the host app is Jot itself — see `AppGroup.isJotAppForeground()`.
+    ///
+    /// Idempotent: tears down any previous task first so a flapping
+    /// `scenePhase` (active → inactive → active) doesn't leak parallel
+    /// heartbeat loops. Writes once immediately on start so a keyboard
+    /// tap inside W8 sees a fresh heartbeat without waiting up to a full
+    /// second for the first loop tick.
+    private func startForegroundHeartbeat() {
+        heartbeatTask?.cancel()
+        // First write happens synchronously here so the heartbeat is
+        // already fresh before the first `Task.sleep` returns. Without
+        // this, the keyboard's first `isJotAppForeground()` read after
+        // the main app foregrounds could miss the 2.5s window on a
+        // pathologically-slow first loop iteration.
+        AppGroup.defaults.set(
+            Date(),
+            forKey: AppGroup.Keys.appForegroundHeartbeat
+        )
+        heartbeatTask = Task { @MainActor in
+            while !Task.isCancelled {
+                // 1s cadence — well inside the 2.5s freshness window
+                // `AppGroup.isJotAppForeground()` allows, leaving margin
+                // for one missed tick (Task scheduling jitter).
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                AppGroup.defaults.set(
+                    Date(),
+                    forKey: AppGroup.Keys.appForegroundHeartbeat
+                )
+            }
+        }
+    }
+
+    /// Cancels the foreground heartbeat and clears the App Group key so
+    /// the keyboard immediately observes "host is not Jot" on the next
+    /// `isJotAppForeground()` read. Called on `scenePhase` transitions
+    /// out of `.active` (background, inactive).
+    private func stopForegroundHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        AppGroup.defaults.removeObject(
+            forKey: AppGroup.Keys.appForegroundHeartbeat
+        )
     }
 
     /// Handles `jot://rewrite?session=<uuid>` — the keyboard's URL-scheme

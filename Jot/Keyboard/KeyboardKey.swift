@@ -86,7 +86,11 @@ struct KeyboardKey: View {
         ZStack {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(background)
-                .shadow(color: Color.black.opacity(scheme == .dark ? 0 : 0.28),
+                // v2 retheme: soften the 28%-black drop hint to 8%. The
+                // new key faces are translucent over a known gray
+                // chrome — a heavy under-shadow muddied the gray edge.
+                // Dark mode stays shadowless (the chrome is dark already).
+                .shadow(color: Color.black.opacity(scheme == .dark ? 0 : 0.08),
                         radius: 0, x: 0, y: 1)
 
             content
@@ -130,47 +134,54 @@ struct KeyboardKey: View {
     private var background: Color {
         if isPressed { return pressedBackground }
 
+        // v2 retheme (2026-05-11): adaptive tokens hand-rolled in
+        // `JotDesign.swift` per `keyboard-retheme-v2-spec.md`. Replaces
+        // the system `UIColor.keyboardButtonBackground` assets — those
+        // didn't match the spec's exact hex values for our gray chrome
+        // and broke the visual cohesion the keyboard wants.
         switch descriptor.style {
         case .primary:
-            // Alpha, digits, punctuation, space — the lighter of the two
-            // key tones, sits against the darker keyboard base. The
-            // `keyboardButtonBackground` asset auto-adapts: `#FFFFFF` in
-            // light, `#6B6B6B` in dark. Research §1 summary table.
-            return Color(uiColor: .keyboardButtonBackground)
+            // Punctuation (literal) + space — `#FFFFFF` light /
+            // `rgba(110,114,126,0.42)` dark.
+            return Color.jotKeyboardKeyFill
         case .action:
-            // Shift, delete, plane toggle, history — the darker tone.
-            // `keyboardDarkButtonBackground` → `#ABB1BA` light / `#474747`
-            // dark.
-            return Color(uiColor: .keyboardDarkButtonBackground)
+            // Backspace — slightly darker so the modifier reads as a
+            // different role from punctuation.
+            return Color.jotKeyboardBackspaceFill
         case .returnAccent:
-            // Return key accent. iOS uses `.systemBlue` for primary-action
-            // return types (Go / Search / Send). We use a similar accent
-            // that's readable in both appearances.
-            return Color.accentColor.opacity(scheme == .dark ? 0.75 : 0.92)
+            // Return — soft blue in light, neutral gray-blue in dark.
+            return Color.jotKeyboardReturnFill
         }
     }
 
     /// Pressed feedback. Research §6.1: iOS inverts — alpha keys flip to
-    /// the action-key color (and vice versa). The swap direction itself
-    /// inverts with light/dark appearance, which is why we read the
-    /// appearance-aware `UIColor` tokens rather than hardcoding hex.
+    /// the action-key color (and vice versa). v2 keeps the inversion
+    /// using the adaptive tokens so the dark mode still pulses correctly.
     private var pressedBackground: Color {
         switch descriptor.style {
         case .primary:
-            return Color(uiColor: .keyboardDarkButtonBackground)
+            return Color.jotKeyboardBackspaceFill
         case .action:
-            return Color(uiColor: .keyboardButtonBackground)
+            return Color.jotKeyboardKeyFill
         case .returnAccent:
-            return Color.accentColor.opacity(scheme == .dark ? 0.55 : 0.75)
+            // Same fill, darkened — keeps the return key from flipping
+            // to a competing primary-blue on press.
+            return Color.jotKeyboardReturnFill.opacity(0.7)
         }
     }
 
     private var foreground: Color {
         switch descriptor.style {
         case .primary, .action:
-            return Color(uiColor: .label)
+            // Punctuation glyph + backspace glyph share the same ink —
+            // deep charcoal in light, near-white in dark. v2 token
+            // pair replaces `UIColor.label` so we control the exact
+            // 92% alpha the spec calls for in dark mode.
+            return Color.jotKeyboardKeyInk
         case .returnAccent:
-            return .white
+            // Return key label adapts: charcoal on soft blue (light) /
+            // white on neutral gray (dark).
+            return Color.jotKeyboardReturnInk
         }
     }
 

@@ -1,9 +1,25 @@
 import SwiftUI
 import UIKit
 
-/// Compact Jot keyboard surface for dictation, paste, and punctuation
-/// input. The view stays stateless: controller-owned callbacks perform document
-/// mutations, app launch, and App Group reads.
+/// Compact Jot keyboard surface — Phase 2 of the UX overhaul.
+///
+/// Standard-mode keyboard with:
+///   - Top strip: `RecentsStrip` (idle) / `StreamingStrip` (recording).
+///     Recents shows top-5 with an optional "just now" marker for the
+///     most recent successful paste (Mockup 01 / 02 / 03).
+///   - Action row: wand (rewrite) + Dictate pill (red stop pill while
+///     recording) + Actions (popover trigger). Punctuation row is
+///     hidden while recording per Mockup 02.
+///   - Bottom row: space + return (globe key removed 2026-05-11 — user
+///     explicitly opted out per ux-overhaul-plan §4.1; system globe in
+///     the iOS keyboard chrome is the path to switch input modes).
+///   - Bottom-right Actions button toggles a 220pt-wide glass-heavy
+///     popover anchored above it (Mockup 06).
+///
+/// All visual tokens go through `JotDesign` / `JotType` / Phase-1
+/// components. The view stays stateless: every mutating action is a
+/// controller callback. Backend invariant: zero changes to the
+/// recording / transcription / Darwin-notification stack.
 struct KeyboardView: View {
     let hasFullAccess: Bool
     let hasPasteboardContent: Bool
@@ -14,46 +30,83 @@ struct KeyboardView: View {
     let needsInputModeSwitchKey: Bool
     let returnKeyType: UIReturnKeyType
     let historyEntries: [TranscriptHistoryMirror.Entry]
-    let showHistory: Bool
     let canUndoLastInsertion: Bool
     let canRedoInsertion: Bool
+
+    /// Source of truth for the just-now marker (plan §13 risk 7).
+    /// Set by the keyboard controller at the moment a successful paste
+    /// lands; `AppGroup.lastDictation` is NOT a valid source (consumed
+    /// by the auto-paste pipeline).
+    let lastPastedText: String?
+    let lastPastedAt: Date?
 
     /// True from the moment the keyboard's controller posted `stopRequested`
     /// until the next `pipelinePhaseChanged` confirming a non-`.recording`
     /// phase. Used to disable the speak button so iOS suppresses taps while
-    /// the stop is in flight (closes the duplicate-rapid-tap race that the
-    /// controller-level `inflightPhases` guard caught only after the tap
-    /// already cost a button-press).
+    /// the stop is in flight.
     let isStopRequestPending: Bool
 
     /// True when the AI Rewrite master toggle is OFF in the main app's
-    /// settings. Drives the wand button's "AI off" state in the keyboard
-    /// accessory bar. Phi-4-specific readiness is opaque to the keyboard
-    /// extension; the master toggle is the single signal we surface here.
+    /// settings. Drives the wand button's "AI off" state.
     let aiUnavailable: Bool
-    /// Transient status banner text (e.g. "Rewrite timed out"). Renders a
-    /// brief auto-fading banner above the streaming preview strip when set.
+
+    /// Transient status banner text (e.g. "Rewrite timed out").
     let statusBanner: String?
+
+    /// Phase 2.5 — when true, the keyboard renders the 58pt
+    /// `CollapsedBarView` instead of the standard mode body. Driven by
+    /// the controller's persisted `jot.keyboard.collapsed` flag.
+    let isCollapsed: Bool
+
+    /// v2 retheme (2026-05-11) — host's `keyboardAppearance` hint
+    /// (`UIKeyboardAppearance.default` / `.light` / `.dark`). Some
+    /// hosts force `.dark` even when the system is in light mode; this
+    /// signal is OR-ed with the SwiftUI `colorScheme` env to determine
+    /// the effective scheme. Passed from the controller in
+    /// `JotKeyboardViewController.makeKeyboardView` via
+    /// `textDocumentProxy.keyboardAppearance`.
+    let keyboardAppearance: UIKeyboardAppearance
 
     let onCopy: () -> Void
     let onPaste: () -> Void
+    let onCopyLastDictation: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
     let onSelectPromptForSelection: (SavedPrompt) -> Void
     let onTapToSpeak: () -> Void
-    let onShowHistory: () -> Void
     let onInsertHistoryEntry: (TranscriptHistoryMirror.Entry) -> Void
-    let onDismissHistory: () -> Void
+    let onInsertText: (String) -> Void
     let onKey: (KeyboardKeyDescriptor) -> Void
     let onKeyPressChange: (KeyboardKeyDescriptor, Bool) -> Void
     let onAdvanceToNextInputMode: () -> Void
     let onOpenFullAccess: () -> Void
     let onStatusBannerRendered: () -> Void
 
+    /// "See all" tap on the recents card header. Launches the containing
+    /// app at the home view via `jot://history` (handled by `JotApp`'s
+    /// `.onOpenURL`). Distinct from `onTapToSpeak` — this one does NOT
+    /// auto-start a recording; it just opens the app.
+    let onOpenHome: () -> Void
+
+    /// Phase 2.5 — fired by the small chevron-down button in the
+    /// standard-mode chrome (and by the collapsed bar's chevron-up).
+    /// The controller flips `isCollapsed`, persists it, and mutates the
+    /// host view's height constraint.
+    let onToggleCollapsed: () -> Void
+
     let feedback: KeyboardFeedback
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// v2 retheme — SwiftUI's own scheme. Used together with the host's
+    /// `keyboardAppearance` to pick a final effective scheme (see
+    /// `effectiveColorScheme`). Either signal saying "dark" wins.
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    /// Whether the bottom-right Actions popover is currently shown. Local
+    /// state — the controller doesn't need to know about popover visibility
+    /// because the popover dismisses itself after every tap.
+    @State private var showActionsPopover: Bool = false
 
     private let punctuationKeys: [KeyboardKeyDescriptor] = [
         .literal("@"),
@@ -66,255 +119,247 @@ struct KeyboardView: View {
     ]
 
     var body: some View {
+        ZStack {
+            if isCollapsed {
+                CollapsedBarView(
+                    hasFullAccess: hasFullAccess,
+                    recordingState: recordingState,
+                    isStopRequestPending: isStopRequestPending,
+                    keyboardAppearance: keyboardAppearance,
+                    onTapToSpeak: onTapToSpeak,
+                    onOpenFullAccess: onOpenFullAccess,
+                    onToggleCollapsed: onToggleCollapsed,
+                    feedback: feedback
+                )
+                .transition(.opacity)
+            } else {
+                standardModeBody
+                    .transition(.opacity)
+            }
+        }
+        // v2 retheme: force the SwiftUI color-scheme env to the resolved
+        // effective scheme so every adaptive `Color(uiColor: UIColor { ... })`
+        // token below — chrome stops, glass fills, key faces — resolves
+        // against the same source of truth. If the host says dark
+        // (keyboardAppearance == .dark) but the system is in light, we
+        // still want dark tokens; .environment(...) accomplishes that.
+        .environment(\.colorScheme, effectiveColorScheme)
+        // The internal content cross-fade — UIKit owns the height
+        // transition (an explicit NSLayoutConstraint on
+        // `JotKeyboardViewController.view.heightAnchor`); SwiftUI only
+        // animates the branch swap. We deliberately do NOT animate the
+        // outer envelope here because `UIHostingController` on iOS 17+
+        // mis-handles `withAnimation` on height-affecting state
+        // (forum 776712).
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25),
+                   value: isCollapsed)
+        // Lower bound only — collapsed mode pins to 58pt; standard mode
+        // matches the UIKit host height pin (310pt expanded, 58pt
+        // collapsed — see `JotKeyboardViewController.expandedHeight` /
+        // `collapsedHeight`) so SwiftUI and UIKit agree on the envelope.
+        // The UIKit `heightConstraint` pins the host view regardless,
+        // but SwiftUI's intrinsic-size machinery would otherwise emit
+        // "Unable to simultaneously satisfy constraints" console spam.
+        .frame(minHeight: isCollapsed ? CollapsedBarView.height : 310)
+    }
+
+    /// Standard-mode body — extracted so the top-level `body` can
+    /// branch cleanly between collapsed and standard surfaces.
+    private var standardModeBody: some View {
         GeometryReader { proxy in
             let metrics = KeyboardMetrics(availableWidth: proxy.size.width)
-            ZStack(alignment: .bottom) {
-                VStack(spacing: metrics.rowSpacing) {
-                    streamingPreviewStrip
+            ZStack(alignment: .bottomTrailing) {
+                // Bug 8/spacing-tightening (2026-05-11): drop inter-row
+                // spacing from `metrics.rowSpacing` (~9pt) to 6pt so the
+                // keyboard reads dense like the native iOS surface.
+                // Outer vertical padding tightened from `verticalInset`
+                // (~4.5pt) to a flat 4pt for the same reason. Going to 0
+                // was rejected — keys need breathing room.
+                VStack(spacing: 6) {
+                    topStrip
                     actionAndMicRow
-                    punctuationRow(metrics: metrics)
+                    if !recordingState.isRecording {
+                        punctuationRow(metrics: metrics)
+                    }
                     bottomRow(metrics: metrics)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, metrics.sideInset)
-                .padding(.vertical, metrics.verticalInset)
+                .padding(.vertical, 4)
+                // Keyboard rebuild (2026-05-11): chrome now branches on
+                // recording state. Idle is warm-cream paper, recording is
+                // blue-tinted cream — both with a top hairline + a soft
+                // inner highlight that reads as "single editorial surface
+                // sitting under the iOS keyboard accessory bar".
+                .background(chromeBackground)
+                .overlay(alignment: .top) {
+                    // v2 retheme: idle has NO top hairline. The chrome
+                    // gray matches the iOS system bar exactly — there's
+                    // no seam to hide. Recording state keeps the soft
+                    // blue hairline + glow so the focus state still
+                    // signals "we're listening" at the top edge.
+                    if recordingState.isRecording {
+                        Rectangle()
+                            .fill(Color.jotKeyboardChromeRecordingHairline)
+                            .frame(height: 0.5)
+                            .shadow(color: Color.jotKeyboardAccent.opacity(0.10),
+                                    radius: 12, x: 0, y: -4)
+                    }
+                }
                 .overlay(alignment: .top) {
                     statusBannerOverlay
                         .padding(.horizontal, metrics.sideInset)
-                        .padding(.top, metrics.verticalInset)
+                        .padding(.top, 4)
                 }
 
-                if showHistory && hasFullAccess {
+                if showActionsPopover {
+                    // Dim catcher behind the popover so a tap outside dismisses.
                     Color.clear
                         .contentShape(Rectangle())
-                        .onTapGesture(perform: onDismissHistory)
-                        .transition(.opacity)
+                        .onTapGesture { showActionsPopover = false }
+                        .accessibilityHidden(true)
 
-                    HistoryOverlay(
-                        entries: Array(historyEntries.prefix(10)),
-                        onInsert: onInsertHistoryEntry,
-                        onDismiss: onDismissHistory
+                    ActionsPopover(
+                        hasPasteboardContent: hasPasteboardContent,
+                        hasLastDictation: !historyEntries.isEmpty,
+                        canUndo: canUndoLastInsertion,
+                        canRedo: canRedoInsertion,
+                        onPaste: onPaste,
+                        onCopyLast: onCopyLastDictation,
+                        onUndo: onUndoLastInsertion,
+                        onRedo: onRedoInsertion,
+                        onDismiss: { showActionsPopover = false }
                     )
-                    .frame(maxHeight: 280)
-                    .padding(.horizontal, metrics.sideInset)
-                    .padding(.bottom, metrics.verticalInset)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(1)
+                    .padding(.trailing, 8)
+                    // Position above the bottom row (~bottomRow height +
+                    // action row height + spacing). 110pt clears the
+                    // bottom row + the actions trigger without overlapping.
+                    .padding(.bottom, 110)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.95, anchor: .bottomTrailing)
+                                .combined(with: .opacity)
+                    )
+                    .zIndex(2)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showHistory)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.15),
+                       value: showActionsPopover)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                       value: recordingState.isRecording)
         }
-        .frame(minHeight: 250)
     }
 
-    // MARK: - Rows
+    // MARK: - Top strip (recents / streaming)
 
-    /// Live partial-transcript caption rendered above the action+mic row
-    /// while a recording is in flight. Mirrored from the main app via the
-    /// `streamingPartialText` App Group projection (see
-    /// `JotKeyboardViewController.refreshStreamingPartialFromProjection`).
-    ///
-    /// Real `ScrollView` with a fixed-height frame so the strip never
-    /// collapses when the text is short and never grows when the text gets
-    /// long. Auto-scrolls to the trailing tail on every text change so the
-    /// latest words stay visible.
+    /// Idle vs streaming branch. In landscape (compact vertical size class)
+    /// we still render the strip but at a smaller height — the keyboard
+    /// envelope itself shrinks, but losing the strip would break the
+    /// just-now feedback loop after auto-paste.
     @ViewBuilder
-    private var streamingPreviewStrip: some View {
-        // Landscape iPhone keyboards live in a ~162-216pt vertical envelope.
-        // Including the 64pt strip plus spacing pushes the stack over the
-        // budget and clips the bottom row (return/globe/space). Landscape
-        // dictation is rare and the user can read partials in the in-app
-        // live preview or by switching to portrait, so we hide the strip
-        // entirely in compact-height layouts (cleanest of the two options
-        // considered — see kb-fixer round 2 / Issue 3).
-        if verticalSizeClass == .compact {
-            EmptyView()
-        } else if recordingState.isRecording, !recordingState.streamingPartialText.isEmpty {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    Text(recordingState.streamingPartialText)
-                        .font(.subheadline)
-                        .foregroundStyle(Color(uiColor: .label))
-                        .lineSpacing(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .id("streamingTail")
-                        // Cap the VoiceOver label to the last ~200 chars so a
-                        // multi-minute dictation doesn't make VO read the
-                        // entire buffer when focus lands. Matches what the
-                        // visual scroll-to-tail already shows
-                        // (kb-fixer round 3 / Issue B).
-                        .accessibilityLabel("Live transcript: \(String(recordingState.streamingPartialText.suffix(200)))")
-                        .accessibilityAddTraits(.updatesFrequently)
-                }
-                .frame(height: 64)
-                // Vertical edge fade so partials enter and exit the strip
-                // softly rather than hard-clipping against the rounded
-                // corners — Messages-style caption affordance.
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.00),
-                            .init(color: .black, location: 0.14),
-                            .init(color: .black, location: 0.86),
-                            .init(color: .clear, location: 1.00),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .background(
-                    // `Color(.systemGray6)` is intentionally low-contrast in
-                    // dark mode — matches Apple's Messages composer
-                    // reference for a soft, recessed caption strip. Don't
-                    // bump the contrast without revisiting that comparison
-                    // (kb-fixer round 2 / Issue 8 verdict).
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(uiColor: .systemGray6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color(uiColor: .separator), lineWidth: 0.5)
-                        )
-                )
-                .transition(reduceMotion
-                            ? .opacity
-                            : .opacity.combined(with: .move(edge: .top)))
-                .onAppear {
-                    // First appearance can already have many words — `onChange`
-                    // won't fire if the projection arrived before the view
-                    // mounted. Snap to the tail without animation so the
-                    // initial frame doesn't show the start of a long buffer.
-                    proxy.scrollTo("streamingTail", anchor: .bottom)
-                }
-                .onChange(of: recordingState.streamingPartialText) { _, _ in
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
-                        proxy.scrollTo("streamingTail", anchor: .bottom)
-                    }
-                }
-            }
-        } else {
-            // Reserve the same 64pt slot whether streaming text is showing
-            // or not so the keyboard total height stays constant and the
-            // bottom row never reflows. Resting state shows a subtle
-            // italic caption affordance — communicates the strip's purpose
-            // without competing for attention. Hidden from VoiceOver because
-            // the mic button already carries the actionable hint.
-            //
-            // Placeholder copy is phase-aware: while a recording exists but
-            // no partials have arrived yet ("warming up"), or while the
-            // pipeline is mid-transcription, the strip says so. Otherwise
-            // the strip nudges the user toward dictation.
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(uiColor: .systemGray6).opacity(0.55))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 0.5)
-                    )
-                Text(streamingPlaceholderText)
-                    .font(.subheadline.italic())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .padding(.horizontal, 16)
-            }
-            .frame(height: 64)
-            .accessibilityHidden(true)
-        }
-    }
-
-    /// Idle placeholder copy. Phase-aware so the strip narrates the
-    /// in-flight pipeline state when partials haven't arrived yet — keeps
-    /// the user oriented after they tap the mic without flooding them with
-    /// motion. Also surfaces the wand-button selection-rewrite state so the
-    /// user has a visible signal while the rewrite races against the 45s
-    /// timeout (the wand button itself stays a static greyed glyph).
-    private var streamingPlaceholderText: String {
-        if isRewritingSelection {
-            return "Rewriting…"
-        }
+    private var topStrip: some View {
         if recordingState.isRecording {
-            return "Listening…"
-        }
-        switch recordingState.phase {
-        case .rewriting:
-            return "Rewriting…"
-        case .transcribing, .processing, .cleaning, .publishing:
-            return "Transcribing…"
-        case .failed:
-            return "Recording failed — tap mic to retry"
-        case .idle, .recording:
-            return "Speak to dictate"
-        }
-    }
-
-    /// Auto-fading banner surfaced above the streaming preview strip when
-    /// the most recent dictation fell back from rewrite to raw paste
-    /// (Phi-4 timeout, model error, etc.). The keyboard owns the fade-out
-    /// timing — `onStatusBannerRendered` clears the App Group slot once
-    /// the banner has been on-screen long enough for the user to read it
-    /// (~2.5s). Severity styling: orange for transient issues like
-    /// timeout, red for hard errors. Heuristic: anything containing the
-    /// word "timed" / "timeout" reads as orange; everything else as red.
-    @ViewBuilder
-    private var statusBannerOverlay: some View {
-        if let banner = statusBanner, !banner.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: bannerIsWarning(banner)
-                      ? "exclamationmark.triangle.fill"
-                      : "xmark.octagon.fill")
-                    .imageScale(.small)
-                Text(banner)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .minimumScaleFactor(0.8)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(bannerIsWarning(banner)
-                          ? Color(uiColor: .systemOrange)
-                          : Color(uiColor: .systemRed))
+            StreamingStrip(
+                partialText: recordingState.streamingPartialText,
+                startedAt: recordingState.startedAt
             )
-            .transition(reduceMotion
-                        ? .opacity
-                        : .opacity.combined(with: .move(edge: .top)))
-            .accessibilityLabel(banner)
-            .accessibilityAddTraits(.isStaticText)
-            .task(id: banner) {
-                guard banner != "Rewriting…" else { return }
-                // Fade-out window: render for 2.5s, then signal the
-                // controller to clear the App Group slot. The next
-                // re-render observes `statusBanner == nil` and the
-                // overlay branches to `EmptyView()`.
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                onStatusBannerRendered()
-            }
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top))
+            )
         } else {
-            EmptyView()
+            RecentsStrip(
+                entries: historyEntries,
+                onInsertEntry: onInsertHistoryEntry,
+                onSeeAll: onOpenHome
+            )
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top))
+            )
         }
     }
 
-    private func bannerIsWarning(_ message: String) -> Bool {
-        let lower = message.lowercased()
-        return lower.contains("timed") || lower.contains("timeout")
-    }
+    // MARK: - Action + mic row
 
-    /// Primary controls row - selection rewrite, Speak CTA, and Actions menu.
+    /// Primary controls row — collapse-chevron, wand (rewrite),
+    /// Dictate (or red stop pill), and Actions popover trigger.
+    ///
+    /// Phase 2.5 added the leading `collapseToggle` so the user can
+    /// minimize the keyboard into the 58pt low-profile bar. The
+    /// chevron lives here (and not in the bottomRow) so the bottomRow
+    /// stays a pure alpha-key surface — globe + space + return — and
+    /// the chrome controls cluster together.
     private var actionAndMicRow: some View {
         HStack(spacing: 10) {
+            collapseToggle
             wandButton
             speakButton
                 .frame(maxWidth: .infinity)
             actionsButton
         }
-        .frame(minHeight: 52)
+        // Bug 8 (2026-05-11): action row trimmed from 52 → 48pt — pairs
+        // with the dictate button's matching `minHeight: 48` change so
+        // the row fits the tighter ~310pt envelope without clipping.
+        .frame(minHeight: 48)
+    }
+
+    /// `chevron.compact.down` — taps collapse the keyboard into the
+    /// 58pt `CollapsedBarView`. Liquid Glass square so it matches the
+    /// wand + actions buttons.
+    private var collapseToggle: some View {
+        Button {
+            feedback.systemClick()
+            feedback.selectionTick()
+            onToggleCollapsed()
+        } label: {
+            Image(systemName: "chevron.compact.down")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color.jotKeyboardActionsInk)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.jotKeyboardGlassFill1,
+                                        Color.jotKeyboardGlassFill2,
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    }
+                )
+                .overlay(
+                    // Inset highlight — matches the Recents / Streaming /
+                    // wand / Actions recipe so all five Liquid Glass
+                    // surfaces read uniformly.
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .inset(by: 0.5)
+                        .stroke(Color.jotKeyboardGlassHighlight, lineWidth: 0.5)
+                        .blendMode(.plusLighter)
+                        .allowsHitTesting(false)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.jotKeyboardGlassHairline, lineWidth: 0.5)
+                )
+                // Drop shadow — uniform Liquid Glass recipe.
+                .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 4)
+                .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse keyboard")
+        .accessibilityHint("Minimizes the Jot keyboard to a compact bar")
+        .accessibilityAddTraits(.isButton)
     }
 
     @ViewBuilder
@@ -334,13 +379,6 @@ struct KeyboardView: View {
             .accessibilityLabel("AI Rewrite is turned off")
             .accessibilityAddTraits(.isButton)
         } else {
-            // Single wand affordance for the AI-on case. Interactive when
-            // there is a selection AND no rewrite is in flight; otherwise
-            // greyed out as a disabled button. The rewrite in-flight state
-            // surfaces in the streaming display panel ("Rewriting…") rather
-            // than swapping the wand glyph for a spinner — keeps the row
-            // visually stable and matches the dictation placeholder
-            // convention.
             let isInteractive = hasSelection && !isRewritingSelection
             if isInteractive {
                 Menu {
@@ -384,6 +422,41 @@ struct KeyboardView: View {
         }
     }
 
+    /// Primary dictation CTA.
+    ///
+    /// ## Bug A — wizard W8 "Dictate is greyed out / can't be tapped" (2026-05-11)
+    ///
+    /// Root cause: when the user reaches W8 (TryKeyboardStep) WITHOUT having
+    /// actually enabled "Allow Full Access" in W5, the keyboard extension's
+    /// inherited `UIInputViewController.hasFullAccess` resolves to `false`.
+    /// W5 (FullAccessStep) advances on a manual "I've enabled it" tap with
+    /// no verification (the main-app process can't read the keyboard's
+    /// `hasFullAccess` directly — see FullAccessStep.swift docblock), so a
+    /// user who taps through W5 without flipping the switch lands on W8 with
+    /// no Full Access.
+    ///
+    /// Pre-fix behavior: this branch (`!hasFullAccess`) used
+    /// `Color(uiColor: .secondarySystemFill)` (a flat system grey) for the
+    /// pill background and showed "Unlock" + `lock.shield`. The button was
+    /// still tappable — it routed to `onOpenFullAccess()` → Settings — but
+    /// it visually read as DISABLED. The user reported "greyed out, can't be
+    /// tapped" because the visual treatment communicated "disabled" so
+    /// strongly that they didn't try.
+    ///
+    /// Fix: the `!hasFullAccess` pill now uses the same iOS-system-blue
+    /// surface as the active Dictate pill, with white ink and a clear
+    /// "Enable Full Access" label. The lock.shield icon stays so the user
+    /// knows the next step is Settings, not dictation. Tap still routes to
+    /// `onOpenFullAccess()` → `extensionContext.open(openSettingsURLString)`
+    /// — which deep-links to the app's settings page where the user can
+    /// flip "Allow Full Access" on. Visually this reads as "this is the
+    /// CTA, tap me", not "I am disabled".
+    ///
+    /// The `.disabled(...)` modifier below is unchanged — it still only
+    /// fires for `hasFullAccess && (inflight || stop-pending)`. So the
+    /// no-Full-Access branch was never *actually* disabled in code; it was
+    /// only perceived as disabled. We are fixing the perception, not the
+    /// gate logic.
     private var speakButton: some View {
         Button {
             feedback.longPressImpact()
@@ -397,59 +470,73 @@ struct KeyboardView: View {
                 if hasFullAccess, recordingState.isRecording {
                     let startedAt = recordingState.startedAt ?? Date()
                     TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
-                        HStack(spacing: 8) {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 20, weight: .semibold))
+                        // Spec stop pill: white stop square 12×12pt + timer
+                        // + pulsing white dot. The square is a rounded
+                        // rectangle (not `stop.fill`) so it matches the
+                        // exact 3pt-radius square in the design reference.
+                        HStack(spacing: 10) {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color.white)
+                                .frame(width: 12, height: 12)
                             Text(elapsedText(now: context.date))
-                                .font(.body.weight(.semibold))
+                                .font(.system(size: 15, weight: .semibold, design: .monospaced))
                                 .monospacedDigit()
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
-                            PulsingRecordingDot()
+                            PulsingDot(color: .white)
                         }
                     }
                 } else if hasFullAccess, recordingState.isInflightPostRecording {
-                    // In-flight after stop: show a small progress spinner +
-                    // label so the user understands the tap landed and the
-                    // pipeline is still working. Disabled at the controller
-                    // level (mic taps are ignored during in-flight phases),
-                    // but the visual signal closes the feedback loop.
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
                             .tint(.white)
                         Text("Working")
-                            .font(.body.weight(.semibold))
+                            .font(JotType.chromeBold)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
                 } else {
                     HStack(spacing: 8) {
                         Image(systemName: hasFullAccess ? "mic.fill" : "lock.shield")
-                            .font(.system(size: 20, weight: .semibold))
-                        Text(hasFullAccess ? "Speak" : "Unlock")
-                            .font(.body.weight(.semibold))
+                            .font(.system(size: 18, weight: .semibold))
+                        // Bug A fix: prior copy was "Unlock" — too cryptic.
+                        // "Enable Full Access" tells the user exactly what
+                        // tapping the pill is going to do.
+                        Text(hasFullAccess ? "Dictate" : "Enable Full Access")
+                            .font(.system(size: 15, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
                 }
             }
-            .foregroundStyle(hasFullAccess ? .white : Color(uiColor: .label))
+            // White ink across all branches per spec.
+            .foregroundStyle(.white)
             .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 52)
-            .background(speakBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: speakShadow, radius: 8, x: 0, y: 2)
+            // 42pt visual height per spec; outer min stays ≥44pt for HIG.
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(speakBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(
+                // Inset top highlight on the pill — spec's
+                // `rgba(255,255,255,0.4)` top inset.
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .inset(by: 0.5)
+                    .stroke(Color.white.opacity(0.40), lineWidth: 0.5)
+                    .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
+            )
+            // Primary drop shadow — heavier when recording (4×14×40%)
+            // vs idle (4×12×32%) per spec.
+            .shadow(color: speakShadow,
+                    radius: recordingState.isRecording ? 14 : 12,
+                    x: 0, y: 4)
+            // Outer halo on the recording state only — second shadow at
+            // a wider radius / lower opacity to match the spec's "4px
+            // outer halo rgba(0,122,255,0.10)" treatment.
+            .shadow(color: speakOuterHalo, radius: 4, x: 0, y: 0)
         }
         .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        // `.disabled(...)` is the SwiftUI-level visual source of truth: iOS
-        // suppresses taps and routes hit-testing past the button while we're
-        // mid-flight or have a stop request pending. The controller still
-        // runs an `inflightPhases` guard inside `handleMicCTATap` as
-        // defense-in-depth against optimistic-UI lag (per design §4.6.D),
-        // but the visual is what closes the duplicate-rapid-tap race.
-        // `hasFullAccess` stays interactive: tapping while locked opens the
-        // host settings page so the user can flip "Allow Full Access".
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .disabled(hasFullAccess
                   && (recordingState.isInflightPostRecording
                       || isStopRequestPending))
@@ -464,39 +551,72 @@ struct KeyboardView: View {
                                 : .isButton)
     }
 
-    @ViewBuilder
     private var actionsButton: some View {
-        Menu {
-            if hasSelection {
-                copyMenuItem(highlighted: true)
-                pasteMenuItem(highlighted: false)
-            } else {
-                pasteMenuItem(highlighted: true)
-                copyMenuItem(highlighted: false)
-            }
-
-            Button(action: onUndoLastInsertion) {
-                Label("Undo last insertion", systemImage: "arrow.uturn.backward")
-            }
-            .disabled(!canUndoLastInsertion)
-
-            Button(action: onRedoInsertion) {
-                Label("Redo", systemImage: "arrow.uturn.forward")
-            }
-            .disabled(!canRedoInsertion)
+        Button {
+            feedback.systemClick()
+            feedback.selectionTick()
+            showActionsPopover.toggle()
         } label: {
             secondaryControlLabel(
                 title: "Actions",
                 systemImage: "ellipsis",
                 enabled: true,
-                lit: false
+                lit: showActionsPopover
             )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Actions")
-        .accessibilityHint(actionsAccessibilityHint)
+        .accessibilityHint("Opens Paste, Copy last, Undo, and Redo actions")
         .accessibilityAddTraits(.isButton)
     }
+
+    // MARK: - Status banner
+
+    @ViewBuilder
+    private var statusBannerOverlay: some View {
+        if let banner = statusBanner, !banner.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: bannerIsWarning(banner)
+                      ? "exclamationmark.triangle.fill"
+                      : "xmark.octagon.fill")
+                    .imageScale(.small)
+                Text(banner)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(bannerIsWarning(banner)
+                          ? Color.jotWarning
+                          : Color.jotRecord)
+            )
+            .transition(reduceMotion
+                        ? .opacity
+                        : .opacity.combined(with: .move(edge: .top)))
+            .accessibilityLabel(banner)
+            .accessibilityAddTraits(.isStaticText)
+            .task(id: banner) {
+                guard banner != "Rewriting…" else { return }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                onStatusBannerRendered()
+            }
+        } else {
+            EmptyView()
+        }
+    }
+
+    private func bannerIsWarning(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("timed") || lower.contains("timeout")
+    }
+
+    // MARK: - Key rows
 
     private func punctuationRow(metrics: KeyboardMetrics) -> some View {
         let keyWidth = max(
@@ -521,47 +641,26 @@ struct KeyboardView: View {
     }
 
     private func bottomRow(metrics: KeyboardMetrics) -> some View {
-        let actionWidth = max(42, metrics.letterKeyWidth * 1.25)
+        // Bug 11 (2026-05-11): globe key removed. User confirmed they
+        // rely on the system globe (in iOS keyboard chrome below) to
+        // switch input modes; the duplicate inside our keyboard was
+        // wasted real-estate. HIG 4.4.1 deviation is documented in
+        // ux-overhaul-plan §4.1; risk accepted (also §14.2). The
+        // `needsInputModeSwitchKey` / `onAdvanceToNextInputMode` props
+        // are retained on the view in case we ever need to re-add the
+        // globe in a follow-up; they are currently unused by this row.
         let returnWidth = max(78, metrics.letterKeyWidth * 2.2)
 
         return HStack(spacing: metrics.keySpacing) {
-            keyButton(
-                width: actionWidth,
-                metrics: metrics,
-                style: .action,
-                enabled: needsInputModeSwitchKey,
-                accessibilityLabel: "Next keyboard",
-                action: onAdvanceToNextInputMode
-            ) {
-                Image(systemName: "globe")
-                    .imageScale(.medium)
-            }
-
-            keyButton(
-                width: actionWidth,
-                metrics: metrics,
-                style: .action,
-                enabled: hasFullAccess,
-                accessibilityLabel: "Transcript history",
-                action: onShowHistory
-            ) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .imageScale(.medium)
-            }
-
             keyButton(
                 metrics: metrics,
                 style: .primary,
                 accessibilityLabel: "space",
                 action: { onKey(.space) }
             ) {
-                HStack(spacing: 7) {
-                    Image(systemName: "leaf.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("space")
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                Text("space")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
 
             keyButton(
@@ -580,38 +679,6 @@ struct KeyboardView: View {
     }
 
     // MARK: - Components
-
-    @ViewBuilder
-    private func copyMenuItem(highlighted: Bool) -> some View {
-        if highlighted {
-            Button(action: onCopy) {
-                Label("Copy", systemImage: "doc.on.doc")
-                    .foregroundStyle(Color.accentColor)
-            }
-            .tint(Color.accentColor)
-            .disabled(!hasSelection)
-        } else {
-            Button(action: onCopy) {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-            .disabled(!hasSelection)
-        }
-    }
-
-    @ViewBuilder
-    private func pasteMenuItem(highlighted: Bool) -> some View {
-        if highlighted {
-            Button(action: onPaste) {
-                Label("Paste", systemImage: "doc.on.clipboard")
-                    .foregroundStyle(Color.accentColor)
-            }
-            .tint(Color.accentColor)
-        } else {
-            Button(action: onPaste) {
-                Label("Paste", systemImage: "doc.on.clipboard")
-            }
-        }
-    }
 
     private func secondaryControlLabel(
         title: String,
@@ -636,24 +703,67 @@ struct KeyboardView: View {
         lit: Bool,
         @ViewBuilder icon: () -> Icon
     ) -> some View {
-        HStack(spacing: 6) {
+        // Liquid Glass shell — same recipe as the recents / streaming
+        // cards, just compact. Title ink is `#3a3a45` (jotKeyboardActionsInk)
+        // at 14pt 500 weight per spec; icon ink follows the lit state so
+        // the wand glyph reads iOS-blue when interactive.
+        HStack(spacing: 4) {
             icon()
             if !title.isEmpty {
                 Text(title)
-                    .font(.callout.weight(.medium))
+                    .font(.system(size: 14, weight: .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
             }
         }
         .foregroundStyle(secondaryForeground(lit: lit))
-        .padding(.horizontal, 16)
-        .frame(minWidth: 52, minHeight: 52)
+        .padding(.horizontal, 14)
+        // 42pt visual height per spec; outer frame stays ≥44pt for HIG.
+        .frame(minWidth: 44, minHeight: 48)
         .background(
-            secondaryBackground(lit: lit),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            ZStack {
+                // Liquid Glass: `.ultraThinMaterial` for the live blur,
+                // overlaid with the translucent-white gradient (0.78 →
+                // 0.48) so the spec recipe lands without losing the
+                // underlying chrome's color.
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.jotKeyboardGlassFill1,
+                                Color.jotKeyboardGlassFill2,
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                if lit {
+                    // Subtle blue tint on the lit (popover-open / wand-
+                    // active) state so the glass surface itself reads
+                    // "this is engaged" without flipping to solid coral.
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Color.jotKeyboardAccent.opacity(0.12))
+                }
+            }
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.jotKeyboardGlassHairline, lineWidth: 0.5)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .inset(by: 0.5)
+                .stroke(Color.jotKeyboardGlassHighlight, lineWidth: 0.5)
+                .blendMode(.plusLighter)
+                .allowsHitTesting(false)
+        )
+        // Drop shadow — uniform Liquid Glass recipe shared with the
+        // Recents / Streaming / collapse-chevron surfaces.
+        .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 4)
         .opacity(enabled ? 1 : 0.32)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 
     private func keyButton<Content: View>(
@@ -688,51 +798,100 @@ struct KeyboardView: View {
 
     // MARK: - Styling
 
-    private var speakBackground: Color {
-        if hasFullAccess, recordingState.isRecording {
-            return Color(uiColor: .systemRed)
-        }
-
-        if hasFullAccess, recordingState.isInflightPostRecording {
-            // Slightly muted accent so the in-flight state reads as "still
-            // working, don't tap" without flashing back to idle. Avoids a
-            // second hue (red → orange → blue) that would confuse the user
-            // about whether the recording succeeded.
-            return Color.accentColor.opacity(0.65)
-        }
-
-        if hasFullAccess {
-            return Color.accentColor
-        } else {
-            return Color(uiColor: .secondarySystemFill)
-        }
+    /// v2 retheme: effective color scheme is the OR of the SwiftUI env
+    /// and the host-provided `keyboardAppearance`. If either says dark,
+    /// we render dark — that way the keyboard adapts to dark hosts
+    /// (Spotlight, dark Mail, dark Notes) even when the system itself
+    /// is in light mode.
+    private var effectiveColorScheme: ColorScheme {
+        if keyboardAppearance == .dark { return .dark }
+        return systemColorScheme
     }
 
+    /// Chrome background — v2 retheme.
+    ///
+    /// Idle: iOS-system-gray two-stop gradient. The hex values match the
+    /// iOS bottom system bar exactly so the seam between our chrome and
+    /// iOS's accessory area disappears.
+    ///
+    /// Recording: same gray gradient with a subtle blue tint overlaid
+    /// ON TOP — not a separate gradient. The surface still reads as the
+    /// system keyboard, just lit blue.
+    @ViewBuilder
+    private var chromeBackground: some View {
+        LinearGradient(
+            colors: [
+                Color.jotKeyboardChromeIdleTop,
+                Color.jotKeyboardChromeIdleBottom,
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .overlay(
+            // Recording-state tint overlay. Layered (not replaced) so
+            // the underlying gray chrome still matches the iOS bar
+            // perfectly — only the recording signal changes.
+            recordingState.isRecording
+                ? Color.jotKeyboardChromeRecordingTint
+                : Color.clear
+        )
+    }
+
+    /// Dictate pill background — STATIC blue gradient (`#007AFF → #0064CC`)
+    /// in idle + recording states; dimmed during in-flight. Spec requires
+    /// the pill to be the SAME pixel-for-pixel in light + dark (iOS blue
+    /// reads well on both gray chromes). Hardcoding `#007AFF` as the top
+    /// stop instead of `Color.jotKeyboardAccent` (which adapts to dark
+    /// system blue `#0A84FF`) keeps the pill identical across modes. The
+    /// recording state's HEAVIER halo is supplied at the `.shadow` call
+    /// site, not here (callers compose shadow + halo separately).
+    private static let pillTopBlue = Color(red: 0/255, green: 122/255, blue: 255/255)
+    private var speakBackground: some ShapeStyle {
+        if hasFullAccess, recordingState.isInflightPostRecording {
+            return AnyShapeStyle(KeyboardView.pillTopBlue.opacity(0.65))
+        }
+        return AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    KeyboardView.pillTopBlue,
+                    Color.jotKeyboardAccentDeep,
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    /// Drop shadow color for the dictate pill. Heavier when recording
+    /// (spec calls for a 4px×14px halo at 40% opacity + an outer 10%
+    /// halo); idle gets a softer 4×12 / 32% halo.
     private var speakShadow: Color {
         if hasFullAccess, recordingState.isRecording {
-            return Color(uiColor: .systemRed).opacity(0.3)
+            return Color.jotKeyboardAccent.opacity(0.40)
         }
-        if hasFullAccess {
-            return Color.accentColor.opacity(0.25)
-        }
-        return .clear
+        return Color.jotKeyboardAccent.opacity(0.32)
+    }
+
+    /// Outer halo radius for the dictate pill — used as a second shadow
+    /// in the recording state to match the spec's "4px outer halo
+    /// rgba(0,122,255,0.10)" treatment.
+    private var speakOuterHalo: Color {
+        recordingState.isRecording
+            ? Color.jotKeyboardAccent.opacity(0.10)
+            : .clear
     }
 
     private func secondaryBackground(lit: Bool) -> Color {
-        lit ? Color.accentColor.opacity(0.18) : Color(uiColor: .secondarySystemFill)
+        lit ? Color.jotKeyboardAccent.opacity(0.18) : Color(uiColor: .secondarySystemFill)
     }
 
     private func secondaryForeground(lit: Bool) -> Color {
-        lit ? Color.accentColor : Color(uiColor: .label)
-    }
-
-    private var actionsAccessibilityHint: String {
-        "Opens Copy, Paste, Undo last insertion, and Redo actions."
+        lit ? Color.jotKeyboardAccent : Color.jotKeyboardActionsInk
     }
 
     private var micAccessibilityLabel: String {
         guard hasFullAccess else { return "Enable Full Access" }
-        return recordingState.isRecording ? "Stop recording" : "Tap to speak"
+        return recordingState.isRecording ? "Stop recording" : "Tap to dictate"
     }
 
     private var micAccessibilityHint: String {
@@ -801,38 +960,64 @@ private struct KeyButtonStyle: ButtonStyle {
                 background(pressed: configuration.isPressed),
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
-            .shadow(color: Color.black.opacity(scheme == .dark ? 0 : 0.28),
+            // v2 retheme: drop the hard 28%-black 1pt shadow in light mode.
+            // The new key faces are translucent over a known gray chrome —
+            // a heavy under-shadow muddied the gray edge. Light mode keeps
+            // a much softer 8% hint; dark stays shadowless (the chrome is
+            // already dark).
+            .shadow(color: Color.black.opacity(scheme == .dark ? 0 : 0.08),
                     radius: 0, x: 0, y: 1)
     }
 
     private var foreground: Color {
         switch keyStyle {
-        case .primary, .action:
-            return Color(uiColor: .label)
+        case .primary:
+            // Space-bar label — softer than punctuation ink. The space
+            // glyph reads as a hint, not a primary character.
+            return Color.jotKeyboardSpaceLabel
+        case .action:
+            // Backspace symbol (delete.left). Adaptive: dark-chrome dark
+            // mode needs near-white ink; light mode keeps deep charcoal.
+            return Color.jotKeyboardKeyInk
         case .returnAccent:
-            return .white
+            // Return key — adaptive ink. Light mode: deep charcoal on
+            // soft blue. Dark mode: white on neutral gray.
+            return Color.jotKeyboardReturnInk
         }
     }
 
     private func background(pressed: Bool) -> Color {
         switch keyStyle {
         case .primary:
-            return Color(uiColor: pressed ? .keyboardDarkButtonBackground : .keyboardButtonBackground)
+            // Space + util key. v2 hand-rolled adaptive fill (white
+            // light / translucent gray dark). Pressed state nudges
+            // toward the backspace fill for the same "key flips to
+            // the other tone on press" feedback iOS uses natively.
+            return pressed ? Color.jotKeyboardBackspaceFill : Color.jotKeyboardKeyFill
         case .action:
-            return Color(uiColor: pressed ? .keyboardButtonBackground : .keyboardDarkButtonBackground)
+            // Backspace — flips toward the lighter key fill on press
+            // to match iOS-native press-inversion behavior.
+            return pressed ? Color.jotKeyboardKeyFill : Color.jotKeyboardBackspaceFill
         case .returnAccent:
-            return Color.accentColor.opacity(pressed ? 0.72 : 0.92)
+            // Return — soft blue-tinted in light, neutral gray-tinted
+            // in dark. Pressed state darkens via 0.7 opacity so the
+            // user still reads "I pressed it" without flipping to a
+            // competing primary-blue (the Dictate pill owns that).
+            return pressed
+                ? Color.jotKeyboardReturnFill.opacity(0.7)
+                : Color.jotKeyboardReturnFill
         }
     }
 }
 
-private struct PulsingRecordingDot: View {
+private struct PulsingDot: View {
+    let color: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isLit = false
 
     var body: some View {
         Circle()
-            .fill(Color.white)
+            .fill(color)
             .frame(width: 6, height: 6)
             .opacity(reduceMotion ? 1 : (isLit ? 1 : 0.32))
             .onAppear {

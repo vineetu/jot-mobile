@@ -68,6 +68,12 @@ enum AppGroup {
         /// that opts the device in to the on-device LLM path.
         static let aiRewriteEnabled = "jot.ai.rewriteEnabled"
 
+        /// User-facing master toggle for the 60s warm-hold feature. When
+        /// `false` (default), Jot fully cools after each dictation. Users opt
+        /// in via the wizard step (Phase 2) or Settings toggle (Phase 1).
+        static let warmHoldEnabled = "jot.warmHold.enabled"
+        static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
+
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
         /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`
@@ -84,6 +90,17 @@ enum AppGroup {
         /// + load. Default (key missing) is `"parakeetV2"` to preserve
         /// existing-install behaviour.
         static let speechModelVariant = "jot.speech.modelVariant"
+
+        /// Wall-clock `Date` of the most recent main-app foreground
+        /// heartbeat. Written by `JotApp` every ~1s while
+        /// `scenePhase == .active`, cleared on `.background` /
+        /// `.inactive`. Read by the keyboard extension to detect
+        /// "host app is Jot itself" — used to short-circuit the mic
+        /// CTA's URL bounce (`extensionContext.open(jot://dictate)`)
+        /// in the setup wizard W8 case, where iOS refuses to re-launch
+        /// the already-foreground app via URL scheme. See
+        /// `AppGroup.isJotAppForeground()` for the read helper.
+        static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
     }
 
     /// User-facing master toggle for AI Rewrite. Default `false` (feature
@@ -95,6 +112,36 @@ enum AppGroup {
     static var aiRewriteEnabled: Bool {
         get { defaults.bool(forKey: Keys.aiRewriteEnabled) }
         set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
+    }
+
+    /// User-facing master toggle for the 60s warm-hold feature. Default
+    /// `false` (feature off), so users explicitly opt in via the wizard step
+    /// (Phase 2) or Settings toggle (Phase 1).
+    ///
+    /// When enabled, the audio session stays active for 60s after each
+    /// successful dictation so the next dictation skips cold-start latency.
+    /// The iOS orange microphone indicator stays on during that window.
+    ///
+    /// Uses `bool(forKey:)` because the missing-key default is `false`,
+    /// which `UserDefaults.bool(forKey:)` returns naturally.
+    static var warmHoldEnabled: Bool {
+        get { defaults.bool(forKey: Keys.warmHoldEnabled) }
+        set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
+    }
+
+    /// Wall-clock Date when the current warm-hold window will auto-cool.
+    /// Set by RecordingService.enterWarmHold; cleared on warm exit.
+    /// Read by the keyboard extension to decide between the warm fast-path
+    /// (Darwin notification) and cold-launch (jot:// URL bounce).
+    static var warmHoldExpiresAt: Date? {
+        get { defaults.object(forKey: Keys.warmHoldExpiresAt) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Keys.warmHoldExpiresAt)
+            } else {
+                defaults.removeObject(forKey: Keys.warmHoldExpiresAt)
+            }
+        }
     }
 
     /// Selected AI rewrite backend. Currently the only valid value is
@@ -127,5 +174,32 @@ enum AppGroup {
     static var speechModelVariant: String {
         get { defaults.string(forKey: Keys.speechModelVariant) ?? "parakeetV2" }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
+    }
+
+    /// Returns `true` when the main Jot app is currently foreground —
+    /// inferred from the recency of `Keys.appForegroundHeartbeat`.
+    ///
+    /// The keyboard extension uses this to detect "host app == Jot"
+    /// (typically: setup wizard W8). When `true`, the mic CTA tap is
+    /// routed to a Darwin notification (`keyboardDictateTapped`) instead
+    /// of the normal `jot://dictate` URL bounce, because iOS silently
+    /// refuses to re-launch the already-foreground app via URL scheme
+    /// and the tap would otherwise appear to do nothing.
+    ///
+    /// Freshness window: 2.5s. The main app refreshes the heartbeat
+    /// every ~1s while foreground (see `JotApp.heartbeatTask`), so a
+    /// 2.5s window tolerates one missed tick (Timer skew, brief task
+    /// pause) without false-positive "Jot is foreground" reads after
+    /// force-quit or backgrounding. Force-quit + immediate keyboard tap
+    /// in another host within the 2.5s window is a known stale-read
+    /// edge case — the worst-case fallout is the keyboard skipping the
+    /// URL bounce and posting the Darwin notification, which the
+    /// (now-suspended) main app simply doesn't observe; the user sees
+    /// nothing happen and retries. Tolerable for the wizard W8 case.
+    static func isJotAppForeground() -> Bool {
+        guard let last = defaults.object(
+            forKey: Keys.appForegroundHeartbeat
+        ) as? Date else { return false }
+        return Date().timeIntervalSince(last) < 2.5
     }
 }

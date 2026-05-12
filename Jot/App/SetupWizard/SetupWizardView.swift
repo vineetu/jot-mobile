@@ -1,509 +1,248 @@
-@preconcurrency import AVFAudio
+//
+//  SetupWizardView.swift
+//  Jot
+//
+//  Phase 6 of the UX overhaul — 12-panel setup wizard reskin.
+//
+//  Step state machine: a 12-case enum covers the W1–W12 visual surfaces.
+//  Each case maps to a small per-step view file under `Steps/`. Shared
+//  chrome (wallpaper, progress dots, close X, primary CTA pill, home
+//  indicator) lives in `Components/WizardChrome.swift`.
+//
+//  Backend wiring is preserved end-to-end:
+//    - W2 mic permission → `AVAudioApplication.requestRecordPermission`
+//    - W3 speech model   → `TranscriptionService.warmUp()` +
+//                          `StreamingTranscriptionService.warmUp()` +
+//                          `CtcModelCache.shared.ensureLoaded()` under
+//                          the existing `ModelDownloadGate` consent.
+//    - W4 keyboard install → Settings deep-link + scene-active detection
+//                            via `UITextInputMode.activeInputModes`.
+//    - W5 Full Access   → Settings deep-link + manual "I've enabled it".
+//                          Main-app process cannot read the keyboard's
+//                          `hasFullAccess` directly.
+//    - W7 in-app test   → real `RecordingService.shared.start/stop` +
+//                          `TranscriptionService.shared.transcribe`.
+//    - W8 keyboard test → polls `ClipboardHandoff.readFresh()` for a
+//                          fresh handoff newer than W8 entry.
+//    - W9 warm hold     → writes `AppGroup.warmHoldEnabled`.
+//    - W11 vocab seed   → `VocabularyStore.shared.addBlankTerm()` +
+//                          `.update(id:text:aliases:)`.
+//    - W12 AI offer     → `LLMClientUIAdapter.warm()` against
+//                          `LLMClientFactory.shared.client()`.
+//
+//  Setup completion is gated by `SetupCompletion.markCompleted()`, which
+//  is unchanged from before — its persistence key remains the source of
+//  truth for "should the wizard re-present on next launch?".
+//
+
 import SwiftUI
-import UIKit
 
 struct SetupWizardView: View {
-    @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
-    @Environment(\.openURL) private var openURL
-
     let onComplete: () -> Void
 
+    @Environment(TranscriptionService.self) private var transcriptionService
+    @Environment(StreamingTranscriptionService.self) private var streamingService
+    @Environment(RecordingService.self) private var recordingService
+
     @State private var step: SetupStep = .welcome
-    @State private var microphonePermission = AVAudioApplication.shared.recordPermission
-    @State private var isRequestingMicrophone = false
     @State private var downloadGate = ModelDownloadGate()
+    /// Darwin observer for `keyboardDictateTapped` — posted by the
+    /// keyboard extension when the user taps the Dictate pill AND the
+    /// host app is Jot itself (W8 case). On W8 this STARTS A RECORDING
+    /// in the main app (the keyboard extension cannot capture audio
+    /// itself); off-W8 it's ignored (the user is mid-flow on another
+    /// step). Auto-advance to W9 happens via `TryKeyboardStep`'s
+    /// existing polling on `ClipboardHandoff.readFresh()` — the user
+    /// taps Stop in the keyboard's pill, transcription completes, the
+    /// paste lands in the wizard's TextField, and the polling sees the
+    /// fresh handoff and calls onAdvance to W9.
+    /// Receiving the notification at all implies the keyboard has Full
+    /// Access (without it the keyboard can't read the App Group
+    /// foreground-heartbeat slot used for host detection), so the W5
+    /// bounce-back path mentioned in the bug spec is not needed — the
+    /// no-FA branch is handled keyboard-side by the existing
+    /// `openHostSettings()` fallback.
+    @State private var dictateTapObserver: CrossProcessNotification.Observer?
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                progressHeader
+        Group {
+            switch step {
+            case .welcome:
+                WelcomeStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .microphone) }
+                )
 
-                Spacer(minLength: 24)
+            case .microphone:
+                MicStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .speechModel) }
+                )
 
-                Group {
-                    switch step {
-                    case .welcome:
-                        WelcomeStep {
-                            advance(to: .microphone)
-                        }
-                    case .microphone:
-                        MicrophoneStep(
-                            permission: microphonePermission,
-                            isRequesting: isRequestingMicrophone,
-                            requestPermission: requestMicrophonePermission,
-                            openSettings: openSystemSettings,
-                            continueAction: { advance(to: .model) }
-                        )
-                    case .model:
-                        ModelDownloadStep(
-                            modelState: transcriptionService.modelState,
-                            gate: downloadGate,
-                            startDownload: startModelDownload,
-                            continueAction: { advance(to: .done) }
-                        )
-                    case .done:
-                        DoneStep {
-                            SetupCompletion.markCompleted()
-                            onComplete()
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
+            case .speechModel:
+                SpeechModelStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .keyboardInstall) },
+                    gate: downloadGate
+                )
 
-                Spacer(minLength: 24)
+            case .keyboardInstall:
+                KeyboardInstallStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .fullAccess) }
+                )
+
+            case .fullAccess:
+                FullAccessStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .howItWorks) }
+                )
+
+            case .howItWorks:
+                HowItWorksStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .tryInApp) }
+                )
+
+            case .tryInApp:
+                TryInAppStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .tryKeyboard) }
+                )
+
+            case .tryKeyboard:
+                TryKeyboardStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .warmHold) }
+                )
+
+            case .warmHold:
+                WarmHoldStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .youreReady) }
+                )
+
+            case .youreReady:
+                YoureReadyStep(
+                    onClose: closeAndComplete,
+                    onAdvanceToOptional: { advance(to: .vocabSeed) },
+                    onSkipOptional: closeAndComplete
+                )
+
+            case .vocabSeed:
+                VocabSeedStep(
+                    onClose: closeAndComplete,
+                    onAdvance: { advance(to: .aiOffer) },
+                    onSkip: closeAndComplete
+                )
+
+            case .aiOffer:
+                AIOfferStep(
+                    onClose: closeAndComplete,
+                    onComplete: closeAndComplete
+                )
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Setup")
-            .navigationBarTitleDisplayMode(.inline)
-            .task {
-                refreshMicrophonePermission()
-                downloadGate.start()
+        }
+        .task {
+            downloadGate.start()
+        }
+        .onAppear {
+            // Install the keyboard-dictate-tapped observer on first
+            // wizard appearance. The keyboard posts this Darwin
+            // notification ONLY when the host app is Jot (heartbeat
+            // freshness check) AND the user taps the Dictate pill —
+            // which on the wizard W8 surface is exactly the gesture
+            // we're verifying.
+            //
+            // Idempotent: re-installing replaces the previous observer
+            // (the Observer's deinit removes itself from the Darwin
+            // center), so flapping `onAppear` doesn't double-fire.
+            dictateTapObserver = CrossProcessNotification.addObserver(
+                name: CrossProcessNotification.keyboardDictateTapped
+            ) {
+                handleKeyboardDictateTapped()
             }
+        }
+        .onDisappear {
+            // Tear down on wizard dismissal — once setup is complete,
+            // the production keyboard surface drives the normal
+            // `jot://dictate` URL bounce and the wizard observer
+            // would be a no-op anyway. Letting the Observer linger
+            // would also keep a stale Darwin registration alive for
+            // the rest of the app's lifetime.
+            dictateTapObserver = nil
         }
     }
 
-    private var progressHeader: some View {
-        HStack(spacing: 8) {
-            ForEach(SetupStep.allCases) { item in
-                Capsule()
-                    .fill(item.index <= step.index ? Color.accentColor : Color.secondary.opacity(0.25))
-                    .frame(height: 4)
+    /// Handles the keyboard's `keyboardDictateTapped` notification.
+    /// Tap on keyboard's Dictate triggers the main-app recording —
+    /// the keyboard extension can't capture audio itself, so W8's
+    /// end-to-end test (record → transcribe → paste lands in the
+    /// wizard's TextField) requires the main app to drive the
+    /// recording while the keyboard surfaces the Stop pill via its
+    /// cross-process recording-state observer.
+    ///
+    /// Auto-advance to W9 happens via `TryKeyboardStep`'s existing
+    /// polling on `ClipboardHandoff.readFresh()`, NOT here — once the
+    /// user taps Stop in the keyboard, the transcription publishes a
+    /// fresh handoff that the polling picks up.
+    ///
+    /// Off-W8 (welcome, fullAccess, etc.) we deliberately ignore the
+    /// signal: the wizard is mid-flow on a different step and a
+    /// silent recording-start would confuse the user.
+    private func handleKeyboardDictateTapped() {
+        guard step == .tryKeyboard else { return }
+        // `start()` is async-throwing; wrap in a Task. If a recording
+        // is already in flight (e.g. rapid double-tap of the keyboard
+        // pill), `RecordingService.start()`'s internal guard throws —
+        // log and ignore so we don't crash on the contention case.
+        Task { @MainActor in
+            do {
+                try await recordingService.start()
+            } catch {
+                // Expected on already-recording / pipeline-in-flight
+                // contention; non-fatal — the existing in-flight
+                // recording covers the user's intent.
             }
         }
-        .accessibilityHidden(true)
     }
 
     private func advance(to next: SetupStep) {
-        withAnimation(.easeInOut(duration: 0.2)) {
+        withAnimation(.easeInOut(duration: 0.22)) {
             step = next
         }
     }
 
-    private func refreshMicrophonePermission() {
-        microphonePermission = AVAudioApplication.shared.recordPermission
-    }
-
-    private func requestMicrophonePermission() {
-        guard !isRequestingMicrophone else { return }
-        isRequestingMicrophone = true
-
-        Task { @MainActor in
-            _ = await AVAudioApplication.requestRecordPermission()
-            refreshMicrophonePermission()
-            isRequestingMicrophone = false
-
-            if microphonePermission == .granted {
-                advance(to: .model)
-            }
-        }
-    }
-
-    private func openSystemSettings() {
-        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-        openURL(url)
-    }
-
-    private func startModelDownload() {
-        // All three downloads kick off under the single explicit-tap
-        // consent — the gate's size copy accounts for the bundle:
-        //   • Parakeet (speech) ~500 MB
-        //   • EOU 320ms (live preview)   ~448 MB
-        //   • CTC 110M (vocab biasing) ~100 MB
-        //   ≈ 1.05 GB total
-        //
-        // `transcriptionService.warmUp()` downloads + loads Parakeet into
-        // ANE. `streamingService.warmUp()` is download-only (per
-        // cleanup-on-every-stop policy: streaming weights live on disk
-        // between sessions, ANE load happens lazily in `beginSession`).
-        // `CtcModelCache.shared.ensureLoaded()` is fire-and-forget: if it
-        // fails (network drop after speech model lands), the user can
-        // retry from the Vocabulary pane's Boost-model Download button.
-        // Boost-model failure does not block setup completion — the rest
-        // of Jot keeps working without it.
-        transcriptionService.warmUp()
-        streamingService.warmUp()
-        Task.detached {
-            _ = try? await CtcModelCache.shared.ensureLoaded()
-        }
+    /// Marks the setup wizard complete and dismisses. The "X" close
+    /// button and the "Maybe later"/"Skip" buttons on W10/W11/W12 all
+    /// share this exit path.
+    private func closeAndComplete() {
+        SetupCompletion.markCompleted()
+        onComplete()
     }
 }
 
-private enum SetupStep: String, CaseIterable, Identifiable {
-    case welcome
-    case microphone
-    case model
-    case done
-
-    var id: String { rawValue }
-
-    var index: Int {
-        switch self {
-        case .welcome: return 0
-        case .microphone: return 1
-        case .model: return 2
-        case .done: return 3
-        }
-    }
-}
-
-private struct WelcomeStep: View {
-    let continueAction: () -> Void
-
-    var body: some View {
-        WizardCard(
-            systemImage: "mic.fill",
-            title: "Welcome to Jot",
-            message: "Speak. It's written. Jot records and transcribes entirely on this iPhone.",
-            primaryTitle: "Get Started",
-            primaryAction: continueAction
-        )
-    }
-}
-
-private struct MicrophoneStep: View {
-    let permission: AVAudioApplication.recordPermission
-    let isRequesting: Bool
-    let requestPermission: () -> Void
-    let openSettings: () -> Void
-    let continueAction: () -> Void
-
-    var body: some View {
-        WizardCard(
-            systemImage: symbol,
-            title: title,
-            message: message,
-            primaryTitle: primaryTitle,
-            primaryAction: primaryAction,
-            primaryDisabled: isRequesting,
-            secondaryTitle: secondaryTitle,
-            secondaryAction: secondaryAction,
-            accessory: {
-                if isRequesting {
-                    ProgressView()
-                } else {
-                    EmptyView()
-                }
-            }
-        )
-    }
-
-    private var symbol: String {
-        switch permission {
-        case .granted: return "checkmark.circle.fill"
-        case .denied: return "mic.slash.fill"
-        case .undetermined: return "mic.fill"
-        @unknown default: return "mic.fill"
-        }
-    }
-
-    private var title: String {
-        switch permission {
-        case .granted: return "Microphone Ready"
-        case .denied: return "Microphone Access Off"
-        case .undetermined: return "Allow Microphone"
-        @unknown default: return "Allow Microphone"
-        }
-    }
-
-    private var message: String {
-        switch permission {
-        case .granted:
-            return "Jot can record your voice. Audio stays on this iPhone."
-        case .denied:
-            return "Turn microphone access on in Settings before recording."
-        case .undetermined:
-            return "Jot needs the microphone to capture dictation. Audio is transcribed on device."
-        @unknown default:
-            return "Jot needs microphone access to capture dictation."
-        }
-    }
-
-    private var primaryTitle: String {
-        switch permission {
-        case .granted: return "Continue"
-        case .denied: return "Open Settings"
-        case .undetermined: return isRequesting ? "Requesting..." : "Allow Microphone"
-        @unknown default: return "Allow Microphone"
-        }
-    }
-
-    private var primaryAction: () -> Void {
-        switch permission {
-        case .granted: return continueAction
-        case .denied: return openSettings
-        case .undetermined: return requestPermission
-        @unknown default: return requestPermission
-        }
-    }
-
-    private var secondaryTitle: String? {
-        nil
-    }
-
-    private var secondaryAction: (() -> Void)? {
-        nil
-    }
-}
-
-private struct ModelDownloadStep: View {
-    let modelState: TranscriptionService.ModelState
-    @Bindable var gate: ModelDownloadGate
-    let startDownload: () -> Void
-    let continueAction: () -> Void
-
-    var body: some View {
-        WizardCard(
-            systemImage: symbol,
-            title: title,
-            message: message,
-            primaryTitle: primaryTitle,
-            primaryAction: primaryAction,
-            primaryDisabled: primaryDisabled,
-            accessory: {
-                accessory
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var accessory: some View {
-        switch modelState {
-        case .downloading(let fraction):
-            VStack(spacing: 8) {
-                ProgressView(value: fraction)
-                Text("\(Int((fraction * 100).rounded()))%")
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-        case .loading:
-            ProgressView()
-        case .notLoaded, .failed:
-            consentDetails
-        case .ready:
-            EmptyView()
-        }
-    }
-
-    private var consentDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: networkIcon)
-                    .foregroundStyle(.secondary)
-                Text("Currently on \(gate.networkType.displayName)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Text("~1.05 GB")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
-
-            Toggle(isOn: $gate.allowCellular) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Use cellular")
-                        .font(.subheadline)
-                    Text("Off by default — Wi-Fi recommended for ~1.05 GB")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Text("One-time download. Models persist across launches.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if !gate.canStartDownload {
-                Text(gateBlockedReason)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    private var networkIcon: String {
-        switch gate.networkType {
-        case .wifi: return "wifi"
-        case .cellular: return "antenna.radiowaves.left.and.right"
-        case .wired: return "cable.connector"
-        case .other: return "network"
-        case .unavailable: return "wifi.slash"
-        }
-    }
-
-    private var gateBlockedReason: String {
-        switch gate.networkType {
-        case .cellular:
-            return "Turn on \"Use cellular\" to download over cellular."
-        case .unavailable:
-            return "Connect to the internet to download."
-        case .wifi, .wired, .other:
-            return ""
-        }
-    }
-
-    private var symbol: String {
-        switch modelState {
-        case .ready: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .downloading, .loading: return "arrow.down.circle.fill"
-        case .notLoaded: return "square.and.arrow.down.fill"
-        }
-    }
-
-    private var title: String {
-        switch modelState {
-        case .ready: return "Speech Model Installed"
-        case .failed: return "Download Failed"
-        case .loading: return "Preparing Speech Model"
-        case .downloading: return "Downloading Parakeet"
-        case .notLoaded: return "Download Speech Models"
-        }
-    }
-
-    private var message: String {
-        switch modelState {
-        case .ready:
-            return "Parakeet is ready for English dictation."
-        case .failed(let reason):
-            return reason
-        case .loading:
-            return "Loading the on-device speech model."
-        case .downloading:
-            return "Keep Jot open until the first download finishes."
-        case .notLoaded:
-            return "Jot transcribes entirely on this iPhone. The on-device Parakeet model is ~1.05 GB."
-        }
-    }
-
-    private var primaryTitle: String {
-        switch modelState {
-        case .ready: return "Continue"
-        case .failed: return "Retry Download (~1.05 GB)"
-        case .notLoaded: return "Download Speech Models (~1.05 GB)"
-        case .downloading: return "Downloading..."
-        case .loading: return "Preparing..."
-        }
-    }
-
-    private var primaryAction: () -> Void {
-        switch modelState {
-        case .ready: return continueAction
-        case .failed, .notLoaded: return startDownload
-        case .downloading, .loading: return {}
-        }
-    }
-
-    private var primaryDisabled: Bool {
-        switch modelState {
-        case .downloading, .loading: return true
-        case .ready: return false
-        case .notLoaded, .failed: return !gate.canStartDownload
-        }
-    }
-}
-
-private struct DoneStep: View {
-    let finishAction: () -> Void
-
-    var body: some View {
-        WizardCard(
-            systemImage: "checkmark.circle.fill",
-            title: "You're Set Up",
-            message: "Tap the mic to dictate. You can re-run setup any time from Settings.",
-            primaryTitle: "Take Me to Jot",
-            primaryAction: finishAction
-        )
-    }
-}
-
-private struct WizardCard<Accessory: View>: View {
-    let systemImage: String
-    let title: String
-    let message: String
-    let primaryTitle: String
-    let primaryAction: () -> Void
-    var primaryDisabled = false
-    var secondaryTitle: String?
-    var secondaryAction: (() -> Void)?
-    @ViewBuilder var accessory: () -> Accessory
-
-    var body: some View {
-        VStack(spacing: 22) {
-            Image(systemName: systemImage)
-                .font(.system(size: 48, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 72, height: 72)
-
-            VStack(spacing: 10) {
-                Text(title)
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.center)
-
-                Text(message)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            accessory()
-                .frame(maxWidth: .infinity)
-
-            VStack(spacing: 8) {
-                if let secondaryTitle, let secondaryAction {
-                    Button(secondaryTitle, action: secondaryAction)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-
-                Button(primaryTitle, action: primaryAction)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(primaryDisabled)
-                    .frame(maxWidth: .infinity)
-            }
-            .padding(.top, 18)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 30)
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-}
-
-private extension WizardCard where Accessory == EmptyView {
-    init(
-        systemImage: String,
-        title: String,
-        message: String,
-        primaryTitle: String,
-        primaryAction: @escaping () -> Void,
-        primaryDisabled: Bool = false,
-        secondaryTitle: String? = nil,
-        secondaryAction: (() -> Void)? = nil
-    ) {
-        self.systemImage = systemImage
-        self.title = title
-        self.message = message
-        self.primaryTitle = primaryTitle
-        self.primaryAction = primaryAction
-        self.primaryDisabled = primaryDisabled
-        self.secondaryTitle = secondaryTitle
-        self.secondaryAction = secondaryAction
-        self.accessory = { EmptyView() }
-    }
+/// 12-case step machine — one case per W1..W12 visual surface. Cases are
+/// ordered to mirror the visual W-number sequence exactly, which keeps the
+/// progress-dot row in lockstep with the step transitions.
+private enum SetupStep: Hashable {
+    case welcome           // W1
+    case microphone        // W2
+    case speechModel       // W3
+    case keyboardInstall   // W4
+    case fullAccess        // W5
+    case howItWorks        // W6
+    case tryInApp          // W7
+    case tryKeyboard       // W8
+    case warmHold          // W9
+    case youreReady        // W10
+    case vocabSeed         // W11 (optional)
+    case aiOffer           // W12 (optional)
 }
 
 #Preview {
     SetupWizardView {}
         .environment(TranscriptionService())
         .environment(StreamingTranscriptionService())
+        .environment(RecordingService.shared)
 }

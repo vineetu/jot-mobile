@@ -1,0 +1,123 @@
+import SwiftUI
+
+/// 220pt-wide glass-heavy popover anchored above the bottom-right
+/// Actions button (Mockup 06 / plan §4.5).
+///
+/// Rows:
+///   - Paste              — `insertText(UIPasteboard.general.string)`
+///   - Copy last          — `UIPasteboard.general.string = lastDictation.text`
+///   - Undo last insertion — controller's undo ledger
+///   - Redo               — controller's redo ledger
+///
+/// NO "Clear field" row (plan §13 risk 9 — unreliable in keyboard
+/// extensions).
+///
+/// Rewrite / wand stays on the LEFT side of the action row, NOT inside
+/// this popover (the popover is intentionally edit-only).
+///
+/// Position + animation are hand-rolled (no `UIPopoverPresentationController`
+/// — that doesn't play nicely in keyboard extensions). The popover is
+/// rendered as a SwiftUI overlay at the bottom-right of the keyboard
+/// surface with a `.scale + .opacity` transition.
+struct ActionsPopover: View {
+    let hasPasteboardContent: Bool
+    let hasLastDictation: Bool
+    let canUndo: Bool
+    let canRedo: Bool
+
+    let onPaste: () -> Void
+    let onCopyLast: () -> Void
+    let onUndo: () -> Void
+    let onRedo: () -> Void
+    let onDismiss: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 220pt fixed width per Mockup 06.
+    private static let popoverWidth: CGFloat = 220
+
+    var body: some View {
+        VStack(spacing: 0) {
+            row(
+                title: "Paste",
+                systemImage: "doc.on.clipboard",
+                enabled: hasPasteboardContent,
+                action: handle(onPaste)
+            )
+            divider
+            row(
+                title: "Copy last",
+                systemImage: "doc.on.doc",
+                enabled: hasLastDictation,
+                action: handle(onCopyLast)
+            )
+            divider
+            row(
+                title: "Undo last insertion",
+                systemImage: "arrow.uturn.backward",
+                enabled: canUndo,
+                action: handle(onUndo)
+            )
+            divider
+            row(
+                title: "Redo",
+                systemImage: "arrow.uturn.forward",
+                enabled: canRedo,
+                action: handle(onRedo)
+            )
+        }
+        .frame(width: Self.popoverWidth)
+        .modifier(JotDesign.Surface.heavy.modifier(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Actions menu")
+    }
+
+    // MARK: - Row
+
+    private func row(
+        title: String,
+        systemImage: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(enabled ? Color.jotInk : Color.jotMuteWeak)
+                    .frame(width: 22, alignment: .center)
+
+                Text(title)
+                    .font(JotType.bodyChrome)
+                    .foregroundStyle(enabled ? Color.jotInk : Color.jotMuteWeak)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44) // ≥44pt HIG hit target
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(title)
+        .accessibilityHint(enabled ? "Performs \(title.lowercased())" : "\(title) is unavailable")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// Wraps an action with auto-dismiss so the popover closes immediately
+    /// after a tap (matches Mockup 06's transient menu behavior).
+    private func handle(_ action: @escaping () -> Void) -> () -> Void {
+        return {
+            action()
+            onDismiss()
+        }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.jotMuteWeak.opacity(0.35))
+            .frame(height: 0.5)
+            .padding(.leading, 48)
+    }
+}

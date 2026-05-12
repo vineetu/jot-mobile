@@ -63,6 +63,11 @@ targets:
       # a valid `icon-1024.png` got dropped on the floor.
       - path: Resources/Assets.xcassets
       - path: Resources/PrivacyInfo.xcprivacy
+      # Fraunces editorial typeface (SIL OFL). Phase 1 of the UX overhaul
+      # bundles the 72pt opsz-keyed statics; UIAppFonts in
+      # Resources/Info.plist registers them at runtime.
+      - path: Resources/Fonts
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:
@@ -85,6 +90,20 @@ targets:
           - CFBundleURLName: com.vineetu.jot.mobile
             CFBundleURLSchemes:
               - jot
+        # Phase 1 of the UX overhaul: register Fraunces TTFs so
+        # Font.custom("Fraunces72pt-Regular", ...) resolves at runtime.
+        # Files live under Jot/Resources/Fonts/ and ship as bundle
+        # resources via the main-app target's sources list.
+        #
+        # Phase 1 punch-list FIX 1: the 9pt-opsz Italic static is the
+        # text-tuned cut used at 19pt body italic (`editorialItalic`).
+        # The 72pt-opsz Italic stays for display-sized italics (≥24pt).
+        UIAppFonts:
+          - Fraunces-Regular.ttf
+          - Fraunces-Medium.ttf
+          - Fraunces-Italic.ttf
+          - Fraunces-MediumItalic.ttf
+          - Fraunces9pt-Italic.ttf
     entitlements:
       path: Resources/Jot.entitlements
       properties:
@@ -142,7 +161,34 @@ targets:
     sources:
       - path: Keyboard
       - path: Shared
+      # Phase 2 of the UX overhaul (mockups 01-03, 06): the keyboard
+      # surface uses the Phase-1 design-system tokens — JotDesign,
+      # JotType, color extensions on `Color`, GlassCard, SectionLabel,
+      # etc. These files have zero main-app dependencies (pure SwiftUI
+      # + Color tokens) so compiling them into the appex is free.
+      # Files themselves are Phase-1 locked; only the project membership
+      # is added here.
+      #
+      # Phase 2 reviewer FIX 3: explicit per-file inclusion instead of
+      # the full `App/Design` directory. DictateFAB, ActionBar, and
+      # JotDesignCatalog are main-app-only — they don't belong in the
+      # 60MB extension envelope. The keyboard pulls in only:
+      #   - JotDesign.swift (tokens + Color/Font extensions)
+      #   - Components/GlassCard.swift, IconBox.swift, SectionLabel.swift
+      #   - Components/RowChevron.swift, StatusPill.swift
+      - path: App/Design/JotDesign.swift
+      - path: App/Design/Components/GlassCard.swift
+      - path: App/Design/Components/IconBox.swift
+      - path: App/Design/Components/SectionLabel.swift
+      - path: App/Design/Components/RowChevron.swift
+      - path: App/Design/Components/StatusPill.swift
       - path: Resources/PrivacyInfo.xcprivacy
+      # Fraunces must also be inside the keyboard extension bundle so the
+      # streaming-strip / just-now-marker text rendered from the appex
+      # process resolves the Font.custom(...) PostScript names. Otherwise
+      # SwiftUI silently falls back to system serif inside the keyboard.
+      - path: Resources/Fonts
+        buildPhase: resources
     info:
       path: Resources/Keyboard-Info.plist
       properties:
@@ -158,6 +204,19 @@ targets:
             RequestsOpenAccess: true
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).JotKeyboardViewController
+        # Phase 1 of the UX overhaul: register Fraunces TTFs inside the
+        # keyboard extension bundle too. The keyboard renders the streaming
+        # caption + just-now marker with Fraunces; without this UIAppFonts
+        # array the appex would silently fall back to system serif.
+        #
+        # Phase 1 punch-list FIX 1: 9pt-opsz Italic static for 19pt body
+        # italic (`editorialItalic`) shipped to the appex as well.
+        UIAppFonts:
+          - Fraunces-Regular.ttf
+          - Fraunces-Medium.ttf
+          - Fraunces-Italic.ttf
+          - Fraunces-MediumItalic.ttf
+          - Fraunces9pt-Italic.ttf
     entitlements:
       path: Resources/Keyboard.entitlements
       properties:

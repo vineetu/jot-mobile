@@ -66,6 +66,8 @@ final class RecordingService {
     private(set) var isRecording: Bool = false
     private(set) var isStopInFlight: Bool = false
     private(set) var isPipelineInFlight: Bool = false
+    private(set) var isWarm: Bool = false
+    private(set) var warmExpiresAt: Date?
 
     /// Single source of truth for cross-process pipeline phase. Reads as
     /// `.idle` when no pipeline activity is in flight; transitions through
@@ -110,6 +112,7 @@ final class RecordingService {
 
     private var engine: AVAudioEngine?
     private var capture: CaptureContext?
+    private var warmCooldownTask: Task<Void, Never>?
     // Array rather than Set because `NSObjectProtocol` isn't Hashable.
     // We only ever iterate to remove — semantics are identical.
     private var observers: [NSObjectProtocol] = []
@@ -118,6 +121,7 @@ final class RecordingService {
     private var priorCategory: AVAudioSession.Category?
     private var priorMode: AVAudioSession.Mode?
     private var priorOptions: AVAudioSession.CategoryOptions?
+    private static let warmHoldDuration: TimeInterval = 60
 
     // MARK: - Streaming preview (dual-model-streaming)
     //
@@ -265,9 +269,32 @@ final class RecordingService {
         self.streamingQueue = nil
     }
 
+    /// Starts recording.
+    ///
+    /// v1 limitation: warm-resume cannot succeed while a prior pipeline is still
+    /// in flight because warm-resume requires the prior pipeline to have reached
+    /// terminal so currentSessionID and pipelinePhase publish cleanly. Re-taps
+    /// during the `.transcribing` tail throw, and the keyboard fast-path (Phase 4)
+    /// falls back to cold-launch via jot://. See keyboard-warm-mic-60s-research.md §1a.
     func start() async throws {
         guard !isRecording else { throw RecordingError.alreadyRunning }
-        guard !isPipelineInFlight else { throw RecordingError.alreadyRunning }
+
+        if isPipelineInFlight {
+            if isWarm {
+                log.info("Warm-resume blocked - prior pipeline still in flight; caller should cold-launch")
+            }
+            throw RecordingError.alreadyRunning
+        }
+
+        if isWarm {
+            if let engine {
+                try await startFromWarmHold(engine: engine)
+                return
+            }
+
+            log.error("Warm-hold state had no engine; falling back to cold start.")
+            exitWarmHold()
+        }
 
         try configureSession()
 
@@ -320,6 +347,54 @@ final class RecordingService {
         // initial samples queued before the drain is alive get consumed
         // when the drain spawns. No-op when the model isn't on disk or the
         // caller is headless (no presenter injected).
+        Task { [weak self] in
+            await self?.kickOffStreamingSession()
+        }
+    }
+
+    private func startFromWarmHold(engine: AVAudioEngine) async throws {
+        warmCooldownTask?.cancel()
+        warmCooldownTask = nil
+        isWarm = false
+        AppGroup.warmHoldExpiresAt = nil
+        warmExpiresAt = nil
+
+        let input = engine.inputNode
+        let hardwareFormat = input.outputFormat(forBus: 0)
+
+        guard let converter = AVAudioConverter(from: hardwareFormat, to: Self.target) else {
+            fullyTeardownEngine()
+            throw RecordingError.converterUnavailable
+        }
+
+        let capture = CaptureContext(converter: converter, inputFormat: hardwareFormat, target: Self.target, log: log)
+
+        // Pre-allocate the streaming queue BEFORE installTap. Warm resume keeps
+        // the engine instance but each recording still owns a fresh queue.
+        let streamingQueue = StreamingBufferQueue()
+        self.streamingQueue = streamingQueue
+
+        installTap(on: engine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
+
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            self.streamingQueue = nil
+            self.capture = nil
+            fullyTeardownEngine()
+            throw RecordingError.engineStart(error)
+        }
+
+        self.engine = engine
+        self.capture = capture
+        subscribeSystemObservers(engine: engine)
+        let startedAt = Date()
+        isRecording = true
+        setCurrentRecordingStartedAt(startedAt)
+        publishPipelinePhase(.recording)
+        log.info("Warm recording resumed at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
+
         Task { [weak self] in
             await self?.kickOffStreamingSession()
         }
@@ -388,28 +463,33 @@ final class RecordingService {
 
             if let engine {
                 engine.inputNode.removeTap(onBus: 0)
-                engine.stop()
             }
 
             let samples = capture.drain()
 
             // Streaming teardown — mirrors prototype `DualRecorder.swift:271-291`.
-            // After engine.stop() the audio thread is dead; tap callbacks
-            // can no longer push into the streaming queue. tearDown signals
-            // EOS, awaits the drain task (bounded by in-flight chunk
-            // inference, ~50-200ms typical), promotes the streaming preview
-            // to its final snapshot via engine.finish(), then releases the
-            // FluidAudio manager via engine.cleanup() (cleanup-on-every-stop
-            // policy per spec §2.1).
+            // The tap has already been removed; `CaptureContext.drain()` waits
+            // for in-flight tap callbacks to leave the converter/storage path.
+            // tearDown then signals EOS, awaits the drain task (bounded by
+            // in-flight chunk inference, ~50-200ms typical), promotes the
+            // streaming preview to its final snapshot via engine.finish(), then
+            // releases the FluidAudio manager via engine.cleanup() (cleanup-on-
+            // every-stop policy per spec §2.1).
             await tearDownStreamingSession()
 
-            unsubscribeSystemObservers()
-            self.engine = nil
             self.capture = nil
-            restoreSession()
             isRecording = false
             currentAmplitude = nil
             AmplitudeProjection.clear()
+
+            let shouldEnterWarmHold = AppGroup.warmHoldEnabled
+                && !samples.isEmpty
+                && engine != nil
+
+            if !shouldEnterWarmHold {
+                fullyTeardownEngine()
+            }
+
             // Advance the pipeline phase off `.recording`. With pipeline phase
             // as the single source of truth, the keyboard derives
             // `isRecording` from `phase == .recording`, so the moment we
@@ -421,6 +501,9 @@ final class RecordingService {
 
             let seconds = Double(samples.count) / Self.sampleRate
             log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
+            if shouldEnterWarmHold {
+                enterWarmHold()
+            }
             isStopInFlight = false
             return samples
         } catch {
@@ -435,6 +518,61 @@ final class RecordingService {
             publishPipelinePhase(.failed, failureReason: "stop-throw")
             throw error
         }
+    }
+
+    private func enterWarmHold() {
+        guard let engine else {
+            log.error("Warm-hold entry requested without an engine; fully tearing down.")
+            fullyTeardownEngine()
+            return
+        }
+
+        warmCooldownTask?.cancel()
+
+        // `stop()` removes the tap before draining capture. Warm hold keeps the
+        // prepared engine and active audio session, but no tap remains installed
+        // while Jot is not actively recording/transcribing audio.
+        engine.pause()
+
+        let expiresAt = Date().addingTimeInterval(Self.warmHoldDuration)
+        isWarm = true
+        warmExpiresAt = expiresAt
+        AppGroup.warmHoldExpiresAt = warmExpiresAt
+        warmCooldownTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.warmHoldDuration))
+            } catch {
+                return
+            }
+            guard let self, self.isWarm else { return }
+            self.exitWarmHold()
+        }
+
+        log.info("Warm hold entered; expiresAt=\(expiresAt.timeIntervalSince1970, privacy: .public)")
+    }
+
+    private func exitWarmHold() {
+        let wasWarm = isWarm
+        warmCooldownTask?.cancel()
+        warmCooldownTask = nil
+        warmExpiresAt = nil
+        AppGroup.warmHoldExpiresAt = nil
+        isWarm = false
+
+        fullyTeardownEngine()
+
+        if wasWarm {
+            log.info("Warm hold exited; audio session restored.")
+        }
+    }
+
+    private func fullyTeardownEngine() {
+        if let engine {
+            engine.stop()
+        }
+        unsubscribeSystemObservers()
+        self.engine = nil
+        restoreSession()
     }
 
     // MARK: - Session
@@ -529,6 +667,11 @@ final class RecordingService {
     /// Discards captured samples silently. If the caller needs the samples,
     /// they must call `stop()` on the happy path, not this.
     func forceStop() {
+        if isWarm {
+            exitWarmHold()
+            return
+        }
+
         guard !isStopInFlight else {
             log.notice("Force-stop skipped because stop is already in flight.")
             return
@@ -780,6 +923,8 @@ final class RecordingService {
     // MARK: - System observers (best-practices §2.3, §2.4, §2.5)
 
     private func subscribeSystemObservers(engine: AVAudioEngine) {
+        guard observers.isEmpty else { return }
+
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
 
@@ -826,7 +971,21 @@ final class RecordingService {
             }
         }
 
-        observers = [interruption, route, engineConfig]
+        // Settings kill-switch: flipping warm hold off during the 60s window
+        // must cool the engine immediately. Filter to the App Group defaults
+        // instance so unrelated process defaults changes do not poke the state
+        // machine.
+        let warmHoldDefaults = center.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: AppGroup.defaults,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleWarmHoldDefaultsChange()
+            }
+        }
+
+        observers = [interruption, route, engineConfig, warmHoldDefaults]
     }
 
     private func unsubscribeSystemObservers() {
@@ -839,8 +998,13 @@ final class RecordingService {
         guard let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            log.notice("Audio session interrupted — stopping recording")
-            internalStop(reason: "interruption")
+            if isWarm {
+                log.notice("Audio session interrupted during warm hold — cooling engine")
+                exitWarmHold()
+            } else {
+                log.notice("Audio session interrupted — stopping recording")
+                internalStop(reason: "interruption")
+            }
         case .ended:
             // Per spec: do not auto-resume. User re-presses Record.
             // `.shouldResume` only advises us; we still defer to the user.
@@ -853,8 +1017,13 @@ final class RecordingService {
     private func handleRouteChange(reasonRaw: UInt) {
         guard let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
         if reason == .oldDeviceUnavailable {
-            log.notice("Audio route device went away — stopping recording")
-            internalStop(reason: "route change")
+            if isWarm {
+                log.notice("Audio route device went away during warm hold — cooling engine")
+                exitWarmHold()
+            } else {
+                log.notice("Audio route device went away — stopping recording")
+                internalStop(reason: "route change")
+            }
         }
         // `.newDeviceAvailable` and friends are ignored: iOS already did the
         // right routing, and interrupting capture on every AirPod reconnect
@@ -862,8 +1031,19 @@ final class RecordingService {
     }
 
     private func handleEngineConfigChange() {
-        log.notice("Engine configuration changed — stopping recording")
-        internalStop(reason: "engine config change")
+        if isWarm {
+            log.notice("Engine configuration changed during warm hold — cooling engine")
+            exitWarmHold()
+        } else {
+            log.notice("Engine configuration changed — stopping recording")
+            internalStop(reason: "engine config change")
+        }
+    }
+
+    private func handleWarmHoldDefaultsChange() {
+        guard isWarm, !AppGroup.warmHoldEnabled else { return }
+        log.notice("Warm hold disabled in Settings — cooling engine")
+        exitWarmHold()
     }
 
     /// Tear down the engine and session AND auto-drain captured samples
@@ -884,6 +1064,12 @@ final class RecordingService {
     /// interruption fires no longer gets the manual stop-and-publish flow —
     /// the publish has already happened automatically by the time they tap.
     private func internalStop(reason: String) {
+        if isWarm {
+            log.notice("Internal stop requested during warm hold — cooling engine")
+            exitWarmHold()
+            return
+        }
+
         guard isRecording, let engine else { return }
 
         // ===== Snapshot phase =====

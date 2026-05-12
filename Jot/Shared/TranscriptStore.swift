@@ -212,6 +212,14 @@ enum TranscriptStore {
         // invalidate the successful insert.
         TranscriptHistoryMirror.refresh(from: context)
 
+        // Wake any live keyboard extension AFTER the mirror is on disk.
+        // `transcriptReady` fires from the dictation pipeline BEFORE the
+        // append/mirror-write runs (publish-first contract), so an
+        // observer listening on that notification would re-read a stale
+        // mirror. `historyMirrorUpdated` is the canonical "mirror has been
+        // written" signal — see `CrossProcessNotification.swift`.
+        CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+
         return transcript
     }
 

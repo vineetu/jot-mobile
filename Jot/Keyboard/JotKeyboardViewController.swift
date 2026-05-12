@@ -60,7 +60,59 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private var hostingController: UIHostingController<AnyView>?
     private let recordingState = KeyboardRecordingState()
-    private var transcriptReadyObserver: CrossProcessNotification.Observer?
+
+    // MARK: - Phase 2.5 collapsed-keyboard state
+    //
+    // Height transitions are driven by an explicit `NSLayoutConstraint`
+    // on `self.view.heightAnchor` (priority 999, long-lived). We mutate
+    // `.constant` between `expandedHeight` and `collapsedHeight` and
+    // animate via `UIView.animate(...)` + `layoutIfNeeded()`. SwiftUI's
+    // `withAnimation` is deliberately NOT used for the envelope because
+    // `UIHostingController` on iOS 17+ mis-handles height-affecting
+    // animations (Apple Developer Forums thread 776712); SwiftUI only
+    // owns the inner content cross-fade.
+    //
+    // Persistence: `UserDefaults.standard`, scoped to the appex
+    // sandbox. We deliberately do NOT share this preference with the
+    // main app via App Group — collapse is a keyboard-only affordance.
+
+    private static let collapsedHeight: CGFloat = 58
+    // Bug 8 (2026-05-11): keyboard was too tall at 450pt — recents strip
+    // alone was 268pt. After Bug 8/9/11 fixes the strip drops to ~128pt
+    // (3 visible rows + scroll) and the bottom row loses the globe key,
+    // so total envelope can shrink to the native-keyboard band (~310pt).
+    private static let expandedHeight: CGFloat = 310
+
+    /// User-preferred collapsed state, persisted across keyboard
+    /// presentations. Seeded from `UserDefaults.standard` so a user who
+    /// last left the keyboard collapsed re-opens to the same surface.
+    private var isCollapsed: Bool = UserDefaults.standard.bool(
+        forKey: "jot.keyboard.collapsed"
+    )
+
+    /// Long-lived height pin on `self.view`. Installed in `viewDidLoad`,
+    /// mutated by `applyCollapsedHeight(animated:)`, re-applied on
+    /// rotation to defend against any platform-side constraint solver
+    /// resets.
+    private var heightConstraint: NSLayoutConstraint?
+
+    /// Safety timer fallback for the status-banner auto-expand. The
+    /// banner's SwiftUI `.task` normally calls `clearStatusBannerSlot()`
+    /// at ~2.5s, but if the banner is dropped without that callback
+    /// firing (e.g. external clear path) we still want to drop back to
+    /// the collapsed bar — this Task enforces that.
+    private var bannerAutoExpandResetTask: Task<Void, Never>?
+    /// Observer for `historyMirrorUpdated`. Posted by the main app AFTER
+    /// `TranscriptHistoryMirror.refresh(...)` finishes writing — see
+    /// `CrossProcessNotification.swift`. We listen here instead of
+    /// `transcriptReady` because the dictation pipeline posts
+    /// `transcriptReady` BEFORE the SwiftData append + mirror write run
+    /// (publish-first contract). An observer on `transcriptReady` would
+    /// reload the mirror before the new row hits disk and re-render
+    /// stale recents. The pipeline-phase observer covers the auto-paste
+    /// flush + status banner path independently, so dropping the old
+    /// `transcriptReady` observer here doesn't regress paste behaviour.
+    private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
 
@@ -109,6 +161,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// the host document still ends with the last inserted string.
     private let undoLedger = KeyboardUndoLedger()
     private var renderedActionAvailability = KeyboardActionAvailability.empty
+    /// v2 retheme (2026-05-11): last `textDocumentProxy.keyboardAppearance`
+    /// value passed into the SwiftUI tree. Tracked here so
+    /// `renderRootViewIfAppearanceChanged()` can re-render when a host
+    /// dynamically switches its appearance (e.g. dark Mail flipping
+    /// to a light compose modal mid-session). Initially `nil` so the
+    /// first render always sets the baseline.
+    private var renderedKeyboardAppearance: UIKeyboardAppearance?
     private var magicFollowUpExpiresAt: Date?
 
     /// Snapshot of recent transcripts loaded from the App Group mirror.
@@ -136,8 +195,17 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `clearStatusBannerSlot()` to drop the App Group slot.
     private var statusBanner: String?
 
-    /// Whether the history overlay is currently visible.
-    private var showHistory = false
+    /// Phase 2 just-now marker source of truth (plan §13 risk 7).
+    /// Set the moment a successful auto-paste lands. The `RecentsStrip`
+    /// renders the top row in the green "just now" style when the
+    /// timestamp is within 5s; after the window expires the row ages
+    /// back into a normal mono-timestamp row.
+    ///
+    /// We CANNOT read `AppGroup.lastDictation` for this — that slot is
+    /// consumed by the auto-paste pipeline (`markConsumed()`) so by the
+    /// time the strip would observe it, the payload is gone.
+    private var lastPastedText: String?
+    private var lastPastedAt: Date?
 
     /// Guards against auto-paste firing twice within a single keyboard
     /// presentation (e.g. orientation change → `viewWillAppear` re-entry).
@@ -233,21 +301,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // before the user opens Settings.
         SavedPromptStore.seedIfNeeded()
         installKeyboardView()
-        startObservingTranscriptReady()
+        installHeightConstraint()
+        startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        showHistory = false
         // Refresh the Full Access grant — the user can flip "Allow Full
         // Access" in Settings between keyboard presentations, and haptic +
         // audio both require it. Then warm the Taptic Engine so the first
         // keypress feels as crisp as the hundredth (HIG → Playing Haptics).
         feedback.fullAccess = hasFullAccess
         feedback.prepare()
-        startObservingTranscriptReady()
+        startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
         // Rewrite drain MUST run BEFORE installing the live observer so a
@@ -281,7 +349,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        transcriptReadyObserver = nil
+        historyMirrorUpdatedObserver = nil
         pipelinePhaseObserver = nil
         streamingPartialObserver = nil
         // Tear the rewrite observer down so a result delivered while the
@@ -297,6 +365,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         pendingLaunchDeadlineTask?.cancel()
         pendingLaunchDeadlineTask = nil
         cancelBackspaceRepeat()
+        cancelBannerAutoExpandReset()
     }
 
     override func textDidChange(_ textInput: (any UITextInput)?) {
@@ -307,12 +376,17 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // refreshPasteState().
         refreshSelectionState()
         renderRootViewIfActionAvailabilityChanged()
+        // v2 retheme: also re-render if the host swapped its
+        // `keyboardAppearance` mid-session (rare, but happens with
+        // sheets inside dark-mode apps).
+        renderRootViewIfKeyboardAppearanceChanged()
     }
 
     override func selectionDidChange(_ textInput: (any UITextInput)?) {
         super.selectionDidChange(textInput)
         refreshSelectionState()
         renderRootViewIfActionAvailabilityChanged()
+        renderRootViewIfKeyboardAppearanceChanged()
     }
 
     // MARK: - Hosting
@@ -333,15 +407,186 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         host.didMove(toParent: self)
         self.hostingController = host
         renderedActionAvailability = currentActionAvailability
+        renderedKeyboardAppearance = textDocumentProxy.keyboardAppearance ?? .default
     }
 
     private func renderRootView() {
         hostingController?.rootView = makeRootView()
         renderedActionAvailability = currentActionAvailability
+        // v2 retheme: snapshot the appearance so we can detect future
+        // dynamic flips without re-rendering on every text-input poll.
+        renderedKeyboardAppearance = textDocumentProxy.keyboardAppearance ?? .default
+    }
+
+    // MARK: - Phase 2.5 collapsed-keyboard plumbing
+
+    /// Installs the long-lived height pin on `self.view`. Priority
+    /// `.required - 1` (999) so iOS's own input-view geometry
+    /// constraints (system-imposed, priority 1000) always win in any
+    /// hypothetical edge case — but at 999 our value drives the layout
+    /// pass under normal conditions. Long-lived: never deactivated,
+    /// only its `.constant` mutates.
+    private func installHeightConstraint() {
+        guard heightConstraint == nil else { return }
+        let constraint = view.heightAnchor.constraint(
+            equalToConstant: isCollapsed
+                ? Self.collapsedHeight
+                : Self.expandedHeight
+        )
+        constraint.priority = UILayoutPriority(999)
+        constraint.isActive = true
+        heightConstraint = constraint
+    }
+
+    /// User-initiated flip between collapsed (58pt) and standard
+    /// (450pt). Persists the new state to `UserDefaults` so the next
+    /// keyboard presentation honors the user's choice, announces the
+    /// transition over VoiceOver, then animates the height. The
+    /// SwiftUI tree picks up the new `isCollapsed` via `renderRootView`
+    /// and does its own cross-fade (the `withAnimation` keyed on
+    /// `isCollapsed` inside `KeyboardView.body`).
+    func toggleCollapsed() {
+        isCollapsed.toggle()
+        UserDefaults.standard.set(isCollapsed, forKey: "jot.keyboard.collapsed")
+        UIAccessibility.post(
+            notification: .announcement,
+            argument: isCollapsed ? "Keyboard minimized" : "Keyboard expanded"
+        )
+        // Re-render BEFORE the animate block so the SwiftUI branch swap
+        // begins immediately; UIKit handles the height envelope.
+        renderRootView()
+        applyCollapsedHeight(animated: true)
+    }
+
+    /// Mutates the height constraint to match the current `isCollapsed`
+    /// value. Honors Reduce Motion (no-animate branch). The
+    /// `layoutIfNeeded()` call is what actually drives the visible
+    /// height change — without it AutoLayout would batch the constant
+    /// change to the next layout pass.
+    private func applyCollapsedHeight(animated: Bool) {
+        guard let constraint = heightConstraint else { return }
+        let target: CGFloat = isCollapsed ? Self.collapsedHeight : Self.expandedHeight
+        constraint.constant = target
+
+        let runImmediate = !animated || UIAccessibility.isReduceMotionEnabled
+        if runImmediate {
+            view.layoutIfNeeded()
+            return
+        }
+        UIView.animate(
+            withDuration: 0.25,
+            delay: 0,
+            options: [.curveEaseInOut, .beginFromCurrentState]
+        ) { [weak self] in
+            self?.view.layoutIfNeeded()
+        }
+    }
+
+    /// Defensive re-application of the height after a rotation /
+    /// trait-collection change. The system input-view container may
+    /// reset solver state across orientation changes; re-asserting our
+    /// preferred constant inside the transition coordinator keeps the
+    /// collapsed state visually consistent.
+    override func viewWillTransition(
+        to size: CGSize,
+        with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            guard let self else { return }
+            self.heightConstraint?.constant = self.isCollapsed
+                ? Self.collapsedHeight
+                : Self.expandedHeight
+            self.view.layoutIfNeeded()
+        })
+    }
+
+    /// Central setter for `statusBanner`. Routes every write through a
+    /// single seam so the Phase 2.5 auto-expand hook fires consistently:
+    /// when a banner needs to render and the user is in collapsed mode,
+    /// we temporarily lift the height to `expandedHeight` so the banner
+    /// is visible, then collapse back after the banner lifecycle ends
+    /// (either via `clearStatusBannerSlot()` from the SwiftUI `.task`
+    /// or via the 2.5s safety timer).
+    ///
+    /// The user's `isCollapsed` preference is NOT mutated by this auto-
+    /// expand — only the live height constraint is. When the banner
+    /// clears we restore the height to whatever `isCollapsed` says it
+    /// should be (per plan §14.2).
+    private func setStatusBanner(_ message: String?) {
+        let previous = statusBanner
+        statusBanner = message
+
+        let wasNil = (previous == nil)
+        let isNonNil = (message != nil && !(message?.isEmpty ?? true))
+        let nowNil = (message == nil || (message?.isEmpty ?? true))
+
+        if wasNil, isNonNil, isCollapsed {
+            // nil → non-nil while collapsed: temporary expand for the
+            // banner lifetime so the user actually sees the message.
+            temporarilyExpandForBanner()
+        } else if !wasNil, nowNil, isCollapsed {
+            // non-nil → nil while user preference is collapsed: snap
+            // back to the collapsed envelope.
+            cancelBannerAutoExpandReset()
+            applyCollapsedHeight(animated: true)
+        }
+    }
+
+    /// Lifts the height to `expandedHeight` so a status banner is
+    /// visible in collapsed mode. Arms a 2.5s safety reset Task that
+    /// restores the collapsed height even if `clearStatusBannerSlot()`
+    /// never fires (defensive — the banner's SwiftUI `.task` should
+    /// always fire, but a host that tears the keyboard down mid-banner
+    /// would skip the callback).
+    private func temporarilyExpandForBanner() {
+        guard isCollapsed, let constraint = heightConstraint else { return }
+        constraint.constant = Self.expandedHeight
+        if UIAccessibility.isReduceMotionEnabled {
+            view.layoutIfNeeded()
+        } else {
+            UIView.animate(
+                withDuration: 0.25,
+                delay: 0,
+                options: [.curveEaseInOut, .beginFromCurrentState]
+            ) { [weak self] in
+                self?.view.layoutIfNeeded()
+            }
+        }
+        cancelBannerAutoExpandReset()
+        bannerAutoExpandResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(2_500))
+            guard let self, !Task.isCancelled else { return }
+            // Only collapse back if the user still prefers collapsed —
+            // a user-initiated expand during the banner lifetime should
+            // win.
+            if self.isCollapsed {
+                self.applyCollapsedHeight(animated: true)
+            }
+            self.bannerAutoExpandResetTask = nil
+        }
+    }
+
+    private func cancelBannerAutoExpandReset() {
+        bannerAutoExpandResetTask?.cancel()
+        bannerAutoExpandResetTask = nil
     }
 
     private func renderRootViewIfActionAvailabilityChanged() {
         guard currentActionAvailability != renderedActionAvailability else { return }
+        renderRootView()
+    }
+
+    /// v2 retheme: re-render when the host's `keyboardAppearance` flips
+    /// dynamically. Some hosts switch their proxy appearance mid-
+    /// session (e.g. a sheet inside a dark-mode app). Without this
+    /// check the keyboard would stay frozen on whatever appearance
+    /// was passed at viewWillAppear. Called from textDidChange /
+    /// selectionDidChange, the same hooks that re-poll the proxy for
+    /// other reasons — adding one more cheap comparison is fine.
+    private func renderRootViewIfKeyboardAppearanceChanged() {
+        let current = textDocumentProxy.keyboardAppearance ?? .default
+        guard current != renderedKeyboardAppearance else { return }
         renderRootView()
     }
 
@@ -361,28 +606,39 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             needsInputModeSwitchKey: needsInputModeSwitchKey,
             returnKeyType: textDocumentProxy.returnKeyType ?? .default,
             historyEntries: historyEntries,
-            showHistory: showHistory,
             canUndoLastInsertion: canUndoLastInsertion,
             canRedoInsertion: canRedoInsertion,
+            lastPastedText: lastPastedText,
+            lastPastedAt: lastPastedAt,
             isStopRequestPending: stopRequestPosted,
             aiUnavailable: aiUnavailable,
             statusBanner: statusBanner,
+            isCollapsed: isCollapsed,
+            // v2 retheme (2026-05-11): host's `keyboardAppearance` hint.
+            // Some hosts (dark Mail, dark Notes, Spotlight) force
+            // `.dark` even when the system itself is in light mode. We
+            // pass the proxy's signal through; `KeyboardView` resolves
+            // it against the SwiftUI `colorScheme` env and the dark
+            // path wins if either says dark.
+            keyboardAppearance: textDocumentProxy.keyboardAppearance ?? .default,
             onCopy: { [weak self] in self?.handleCopyMenuSelection() },
             onPaste: { [weak self] in self?.handlePasteMenuSelection() },
+            onCopyLastDictation: { [weak self] in self?.handleCopyLastDictation() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
             onRedoInsertion: { [weak self] in self?.handleRedoMenuSelection() },
             onSelectPromptForSelection: { [weak self] prompt in
                 self?.handleSelectPromptForSelection(prompt)
             },
             onTapToSpeak: { [weak self] in self?.handleMicCTATap() },
-            onShowHistory: { [weak self] in self?.showHistoryOverlay() },
             onInsertHistoryEntry: { [weak self] entry in self?.insertHistoryEntry(entry) },
-            onDismissHistory: { [weak self] in self?.dismissHistoryOverlay() },
+            onInsertText: { [weak self] text in self?.insertHistoryText(text) },
             onKey: { [weak self] key in self?.handleKeyTap(key) },
             onKeyPressChange: { [weak self] key, pressed in self?.handleKeyPressChange(key, pressed: pressed) },
             onAdvanceToNextInputMode: { [weak self] in self?.advanceToNextInputMode() },
             onOpenFullAccess: { [weak self] in self?.openHostSettings() },
             onStatusBannerRendered: { [weak self] in self?.clearStatusBannerSlot() },
+            onOpenHome: { [weak self] in self?.openHostHome() },
+            onToggleCollapsed: { [weak self] in self?.toggleCollapsed() },
             feedback: feedback
         )
     }
@@ -417,6 +673,20 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         guard !text.isEmpty else { return }
         textDocumentProxy.insertText(text)
         undoLedger.recordInsertion(text)
+    }
+
+    /// Records a just-paste event for the Phase 2 recents-strip just-now
+    /// marker (plan §4.3). The `RecentsStrip` reads `lastPastedText` +
+    /// `lastPastedAt` and renders the top row in green-marker style for
+    /// 5s before ageing it back into a normal mono-timestamp row.
+    ///
+    /// Idempotent: a second paste of the same text within the window
+    /// re-stamps `lastPastedAt` so the visual cue extends.
+    private func stampJustNowMarker(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        lastPastedText = trimmed
+        lastPastedAt = Date()
     }
 
     private func refreshMagicFollowUpWindowFromHandoff() {
@@ -467,6 +737,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
         magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
         insertTrackedText(text)
+        // Manual paste of a fresh dictation — same UX as the auto-paste
+        // path, so stamp the just-now marker too.
+        stampJustNowMarker(text: text)
         ClipboardHandoff.markConsumed()
         freshPreview = nil
         hasPasteboardContent = UIPasteboard.general.hasStrings
@@ -572,22 +845,47 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // MARK: - Keyboard-initiated auto-paste
 
-    private func startObservingTranscriptReady() {
-        guard transcriptReadyObserver == nil else { return }
-        transcriptReadyObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.transcriptReady
+    /// Observes `historyMirrorUpdated`, which the main app posts AFTER
+    /// `TranscriptHistoryMirror.refresh(...)` finishes writing. Unlike
+    /// `transcriptReady` (which the dictation pipeline posts BEFORE the
+    /// SwiftData append + mirror write run as part of its publish-first
+    /// contract), this notification arrives only once the mirror file
+    /// reflects the latest history — including append, delete, and
+    /// in-app rewrite write paths. Reloading on this signal is the
+    /// canonical fix for the keyboard rendering stale recents until the
+    /// next presentation.
+    ///
+    /// Auto-paste + status banner state is driven by
+    /// `pipelinePhaseChanged` (via `refreshPipelinePhase`), which fires
+    /// in lockstep with the publish step, so this observer focuses on
+    /// the history-mirror reload and the dependent UI surfaces that
+    /// read from AppGroup state already settled by the time the mirror
+    /// finishes writing.
+    private func startObservingHistoryMirrorUpdated() {
+        guard historyMirrorUpdatedObserver == nil else { return }
+        historyMirrorUpdatedObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.historyMirrorUpdated
         ) { [weak self] in
             guard let self else { return }
-            self.flushPendingAutoPasteIfPossible()
-            // Banner state may have changed (timeout / error fallback wrote
-            // a new message before publishing the raw transcript). Refresh
-            // and re-render so the banner overlay starts its 2.5s task.
+            // Snapshot the surfaces that may shift as a result of the
+            // write, then refresh and re-render only on actual change.
+            // Banner state can move because timeout / error fallback
+            // paths write a new message immediately before the ledger
+            // append that triggered this notification.
             let priorBanner = self.statusBanner
             let priorPrompts = self.availableSavedPrompts
+            let priorHistory = self.historyEntries
             self.refreshAvailableSavedPrompts()
             self.refreshStatusBanner()
+            // The mirror is the source of truth for the RecentsStrip
+            // rows. Without this reload, a new dictation only appears
+            // the next time the keyboard is re-presented — the just-now
+            // marker ages out after 5s and the strip then shows stale
+            // entries missing the latest transcript.
+            self.refreshHistory()
             if priorBanner != self.statusBanner
-                || priorPrompts != self.availableSavedPrompts {
+                || priorPrompts != self.availableSavedPrompts
+                || priorHistory != self.historyEntries {
                 self.renderRootView()
             }
         }
@@ -753,6 +1051,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
             insertTrackedText(payload.text)
+            // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
+            // the keyboard's own state at the moment of insertion so the
+            // RecentsStrip's top row can render in the green just-now
+            // style for ~5s. Reading AppGroup.lastDictation after this
+            // returns nil because markConsumed() (below) clears it.
+            stampJustNowMarker(text: payload.text)
             ClipboardHandoff.markConsumed()
             clearPendingPasteSession()
             freshPreview = nil
@@ -913,28 +1217,37 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         availableSavedPrompts = SavedPromptStore.all()
     }
 
-    private func toggleHistory() {
-        if !showHistory {
-            refreshHistory()
-        }
-        showHistory.toggle()
-        renderRootView()
-    }
-
-    private func showHistoryOverlay() {
-        refreshHistory()
-        showHistory = true
-        renderRootView()
-    }
-
-    private func dismissHistoryOverlay() {
-        showHistory = false
-        renderRootView()
-    }
-
+    /// Phase 2: the legacy `HistoryOverlay` modal was replaced by the
+    /// always-visible `RecentsStrip` at the top of the keyboard. Tapping a
+    /// row inserts the transcript into the host. Kept on the controller
+    /// because the keyboard's renderRootView is the one path everything
+    /// hangs off — the row's tap handler is wired through
+    /// `makeKeyboardView`'s `onInsertHistoryEntry` closure.
     private func insertHistoryEntry(_ entry: TranscriptHistoryMirror.Entry) {
         insertTrackedText(entry.text)
-        showHistory = false
+        renderRootView()
+    }
+
+    /// Inserts an arbitrary string into the host. Used by the recents
+    /// strip's just-now row (the user re-inserting their own most-recent
+    /// dictation by tapping the green marker).
+    private func insertHistoryText(_ text: String) {
+        guard !text.isEmpty else { return }
+        insertTrackedText(text)
+        renderRootView()
+    }
+
+    /// Copies the most recent transcript to the system clipboard. Backs
+    /// the Actions popover "Copy last" row (Mockup 06 / plan §4.5).
+    /// Sourced from `historyEntries` (a `TranscriptHistoryMirror`
+    /// projection) — NOT from `AppGroup.lastDictation`, which is
+    /// consumed by auto-paste.
+    private func handleCopyLastDictation() {
+        fireMenuSelectionFeedback()
+        guard hasFullAccess else { return }
+        guard let latest = historyEntries.first else { return }
+        UIPasteboard.general.string = latest.text
+        hasPasteboardContent = true
         renderRootView()
     }
 
@@ -1045,7 +1358,46 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     private func handleMicCTATap() {
+        if let expiresAt = AppGroup.warmHoldExpiresAt, expiresAt > Date() {
+            CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
+            keyboardLog.info("Posted warm-resume; skipping URL bounce")
+            return
+        }
+
+        // Wizard W8 short-circuit: if the host app is Jot itself (detected
+        // via the App Group foreground heartbeat written by `JotApp` while
+        // `scenePhase == .active`), `extensionContext.open(jot://dictate)`
+        // would be silently refused by iOS (iOS will not re-launch the
+        // already-foreground app via URL scheme), making the Dictate tap
+        // appear to do nothing. Post a Darwin notification instead — the
+        // wizard's `SetupWizardView` observes this on W8 and advances to
+        // W9. W7 already verified actual dictation; W8 only verifies the
+        // user can find + tap Dictate in the keyboard.
+        //
+        // Gated by `hasFullAccess` because App Group reads require it —
+        // without Full Access, `isJotAppForeground()` always returns
+        // false, and the no-Full-Access branch below falls through to
+        // `openHostSettings()` as today.
+        //
+        // Only short-circuit on the `.start` decision — recording / stop-
+        // pending / in-flight-post-recording taps must go through the
+        // normal pipeline below so the cross-process state machine stays
+        // coherent. Gating on `!isRecording` alone wasn't enough: a tap
+        // during the transcription/cleaning tail (`isInflightPostRecording`)
+        // or while a stop is already posted (`stopRequestPosted`) would
+        // still incorrectly fire `keyboardDictateTapped`. Mirroring
+        // `decideMicTap()`'s state machine here keeps the two paths in
+        // lock-step — if the decision says "this tap should start a new
+        // recording", it's safe to delegate that to the wizard observer.
         let decision = decideMicTap()
+        if hasFullAccess && AppGroup.isJotAppForeground(),
+           case .start = decision {
+            CrossProcessNotification.post(
+                name: CrossProcessNotification.keyboardDictateTapped
+            )
+            keyboardLog.info("mic tap routed via Darwin notification (host=Jot)")
+            return
+        }
         switch decision {
         case .noop(let reason):
             // The mic CTA is also `.disabled(...)` at the SwiftUI layer for
@@ -1226,7 +1578,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             clearPendingRewriteState()
             rewriteInFlight = false
             AppGroup.lastDictationStatusMessage = "Couldn't open Jot — please open the app and try again."
-            statusBanner = AppGroup.lastDictationStatusMessage
+            setStatusBanner(AppGroup.lastDictationStatusMessage)
             renderRootView()
             return
         }
@@ -1282,7 +1634,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             self.clearPendingRewriteState()
             self.rewriteInFlight = false
             AppGroup.lastDictationStatusMessage = "Couldn't open Jot — please open the app and try again."
-            self.statusBanner = AppGroup.lastDictationStatusMessage
+            self.setStatusBanner(AppGroup.lastDictationStatusMessage)
             self.renderRootView()
         }
     }
@@ -1383,13 +1735,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 keyboardRewriteLog.notice(
                     "KB.rewrite drain: CANCELLED sessionID=\(pendingSessionID, privacy: .public)"
                 )
-                statusBanner = nil
+                setStatusBanner(nil)
             } else {
                 keyboardRewriteLog.error(
                     "KB.rewrite drain: ERROR sessionID=\(pendingSessionID, privacy: .public) error=\(errorMsg, privacy: .public)"
                 )
                 AppGroup.lastDictationStatusMessage = "Rewrite failed: \(errorMsg)"
-                statusBanner = AppGroup.lastDictationStatusMessage
+                setStatusBanner(AppGroup.lastDictationStatusMessage)
             }
             renderRootView()
             return
@@ -1400,7 +1752,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // the user isn't left wondering why nothing changed.
             keyboardRewriteLog.error("KB.rewrite drain: empty result sessionID=\(pendingSessionID, privacy: .public)")
             AppGroup.lastDictationStatusMessage = "Rewrite returned empty text"
-            statusBanner = AppGroup.lastDictationStatusMessage
+            setStatusBanner(AppGroup.lastDictationStatusMessage)
             renderRootView()
             return
         }
@@ -1438,7 +1790,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             textDocumentProxy.deleteBackward()
             textDocumentProxy.insertText(rewritten)
             undoLedger.recordReplacement(deleted: capturedSelection, inserted: rewritten)
-            statusBanner = nil
+            setStatusBanner(nil)
             keyboardRewriteLog.notice(
                 "KB.rewrite apply: AUTO-REPLACE liveLen=\(liveLen, privacy: .public) capLen=\(capLen, privacy: .public) outputChars=\(rewritten.count, privacy: .public)"
             )
@@ -1452,7 +1804,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // the live selection still contains the exact captured text.
         UIPasteboard.general.string = rewritten
         AppGroup.lastDictationStatusMessage = "Tap to paste rewritten text"
-        statusBanner = AppGroup.lastDictationStatusMessage
+        setStatusBanner(AppGroup.lastDictationStatusMessage)
         keyboardRewriteLog.notice(
             "KB.rewrite apply: PASTEBOARD-FALLBACK liveLen=\(liveLen, privacy: .public) capLen=\(capLen, privacy: .public) outputChars=\(rewritten.count, privacy: .public)"
         )
@@ -1503,7 +1855,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         clearPendingRewriteState()
         rewriteInFlight = false
         AppGroup.lastDictationStatusMessage = "Rewrite timed out"
-        statusBanner = AppGroup.lastDictationStatusMessage
+        setStatusBanner(AppGroup.lastDictationStatusMessage)
         renderRootView()
     }
 
@@ -1531,10 +1883,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private func refreshStatusBanner() {
         guard hasFullAccess else {
-            statusBanner = nil
+            setStatusBanner(nil)
             return
         }
-        statusBanner = AppGroup.lastDictationStatusMessage
+        setStatusBanner(AppGroup.lastDictationStatusMessage)
     }
 
     /// Called by the SwiftUI banner overlay's `task` after ~2.5s on-screen
@@ -1543,7 +1895,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func clearStatusBannerSlot() {
         guard statusBanner != nil else { return }
         AppGroup.lastDictationStatusMessage = nil
-        statusBanner = nil
+        setStatusBanner(nil)
         renderRootView()
     }
 
@@ -1593,6 +1945,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
         keyboardLog.error("No UIApplication/UIWindowScene in responder chain for url=\(url.absoluteString, privacy: .public)")
         ClipboardHandoff.clearPendingPasteSession()
+    }
+
+    /// "See all" link in the recents card header. Brings the containing
+    /// app to the foreground at home (the default scene root, where the
+    /// recents list lives). Distinct from `launchJotAppForDictation()` —
+    /// `jot://history` is a no-op auto-start URL in `JotApp.onOpenURL`,
+    /// so the user lands on the home view WITHOUT a recording kicking
+    /// off behind their back.
+    private func openHostHome() {
+        guard hasFullAccess else {
+            openHostSettings()
+            return
+        }
+        guard let url = URL(string: "jot://history") else { return }
+        openContainingApp(url)
     }
 
     private func openHostSettings() {

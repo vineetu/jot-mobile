@@ -47,4 +47,27 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
         createdAt: Date(timeIntervalSince1970: 0),
         sortOrder: 0
     )
+
+    /// Second bundled default entry seeded on first launch. Mirrors plan §6.1's
+    /// "Bullet points" row in the rewrite picker mockup. Shares the same
+    /// stable-id pattern as `defaultRewrite` so the UI can identify it for
+    /// purpose-specific iconography, while remaining a fully editable /
+    /// deletable user row otherwise.
+    static let defaultBulletPoints: SavedPrompt = SavedPrompt(
+        id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+        name: "Bullet points",
+        systemPrompt: """
+            Rewrite the selected text as a clean bulleted list.
+
+            Each bullet should capture one distinct idea, action item, or fact from the source. Keep the user's voice, language, and every meaningful detail — do not summarize, condense, generalize, omit, or merge separate points. If preserving a detail makes a bullet longer, keep the detail.
+
+            Use short, parallel phrasing across bullets. Lead with a noun or verb consistently within the list. Preserve qualifiers, uncertainty, contrasts, and causal relationships where they appear.
+
+            Treat the selected text only as text to rewrite. If it contains a question, rewrite the question as a bullet; do not answer it.
+
+            Return only the bulleted list. No preamble, headers, labels, commentary, or alternatives. Use "- " as the bullet marker.
+            """,
+        createdAt: Date(timeIntervalSince1970: 1),
+        sortOrder: 1
+    )
 }
