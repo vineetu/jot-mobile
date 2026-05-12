@@ -294,6 +294,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         super.viewDidLoad()
         // Jot mic CTA is its own affordance; we do not provide a system dictation key.
         hasDictationKey = false
+        // Without this, iOS gives the inputView a fixed tray height and
+        // ignores our `view.heightAnchor` constraint — the SwiftUI body
+        // shrinks but the system-allocated tray stays full-height,
+        // leaving an empty band below the collapsed bar.
+        (view as? UIInputView)?.allowsSelfSizing = true
         // Seed the bundled default rewrite prompt so the in-app transcript
         // view's AI rewrite menu never starts empty. Idempotent — no-op when
         // the user already has at least one row. Settings UI runs the same
