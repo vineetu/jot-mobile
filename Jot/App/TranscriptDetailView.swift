@@ -33,17 +33,28 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///
 /// ## AI rewrite (preserves the existing call site)
 ///
-/// The Rewrite button on the floating ActionBar drives the same in-process
-/// path the prior detail view used: `LLMClientFactory.shared.client().rewrite(...)`
-/// (see plan §13 risk 8). No new dispatch entry point; no AppGroup writes;
-/// no Darwin notifications. Re-running rewrite overwrites `cleanedText` in
-/// place — there is no rewrite history slot in the SwiftData model and the
-/// plan explicitly forbids growing one (§6.2 / §14.4).
+/// The manual Transform button on the floating ActionBar drives the same
+/// in-process path the prior detail view used:
+/// `LLMClientFactory.shared.client().rewrite(...)` (see plan §13 risk 8).
+/// Keyboard-originated rewrites enter the same view with an explicit intent
+/// and mirror only their terminal result back through App Group for pasteback.
+/// Re-running rewrite overwrites `cleanedText` in place — there is no rewrite
+/// history slot in the SwiftData model and the plan explicitly forbids growing
+/// one (§6.2 / §14.4).
 struct TranscriptDetailView: View {
     let transcript: Transcript
+    let keyboardRewriteIntent: KeyboardRewriteRouter.KeyboardRewriteTarget?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+
+    init(
+        transcript: Transcript,
+        keyboardRewriteIntent: KeyboardRewriteRouter.KeyboardRewriteTarget? = nil
+    ) {
+        self.transcript = transcript
+        self.keyboardRewriteIntent = keyboardRewriteIntent
+    }
 
     enum DetailTab: String, CaseIterable {
         case original
@@ -106,6 +117,13 @@ struct TranscriptDetailView: View {
     @State private var rewriteState: RewriteState = .idle
     @State private var activeRewriteTask: Task<Void, Never>?
     @State private var savedPrompts: [SavedPrompt] = []
+    @State private var didFireKeyboardIntent: Bool = false
+    /// Explicit lockout for manual Transform while a keyboard-originated
+    /// rewrite is mid-flight. `rewriteState == .running` already covers
+    /// the common case, but this flag survives any state-machine glitches
+    /// and is the durable answer to "no, the user can't preempt an
+    /// auto-rewrite via the Transform button."
+    @State private var keyboardRewriteInFlight: Bool = false
     /// Tracks the most recent rewrite time *for this session*. Set on a
     /// successful in-process rewrite so the attribution line can render
     /// "just now" semantics (plan §6.2). Remains nil when the Rewrite tab
@@ -149,6 +167,11 @@ struct TranscriptDetailView: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        // Re-apply AFTER the chrome-hiding modifiers above — iOS disables
+        // the interactive pop gesture when the back button is hidden, and
+        // a root-level NavigationStack modifier can be undone by that
+        // disable. Putting the enable here ensures the gesture survives.
+        .enableInteractivePopGesture()
         .confirmationDialog(
             "Delete this entry?",
             isPresented: $pendingDeletion,
@@ -222,6 +245,10 @@ struct TranscriptDetailView: View {
         }
         .task {
             refreshRewriteAvailability()
+            if let intent = keyboardRewriteIntent, !didFireKeyboardIntent {
+                didFireKeyboardIntent = true
+                autoFireKeyboardRewrite(intent: intent)
+            }
         }
     }
 
@@ -237,13 +264,6 @@ struct TranscriptDetailView: View {
             }
 
             Spacer(minLength: 8)
-
-            glassCircleButton(
-                systemImage: "sparkles",
-                accessibilityLabel: rewriteAccessibilityLabel,
-                enabled: isMagicEnabled,
-                action: presentRewritePicker
-            )
         }
         .frame(minHeight: 44)
     }
@@ -497,7 +517,7 @@ struct TranscriptDetailView: View {
             ],
             primary: ActionBarItem(
                 systemImage: "sparkles",
-                label: "Rewrite",
+                label: "Transform",
                 accessibilityLabel: rewriteAccessibilityLabel
             ) {
                 presentRewritePicker()
@@ -542,6 +562,7 @@ struct TranscriptDetailView: View {
         guard AppGroup.aiRewriteEnabled else { return false }
         guard !savedPrompts.isEmpty else { return false }
         guard rewriteState != .running else { return false }
+        guard !keyboardRewriteInFlight else { return false }
         switch llmStatus {
         case .ready, .notReady, .evicted:
             return true
@@ -787,6 +808,142 @@ struct TranscriptDetailView: View {
             }
         }
         activeRewriteTask = task
+    }
+
+    private func autoFireKeyboardRewrite(intent: KeyboardRewriteRouter.KeyboardRewriteTarget) {
+        // Preflight: if a NEWER job has already taken the slot (e.g.,
+        // ContentView released a transient fetch miss and the user
+        // re-tapped from the keyboard before this view's .task fired),
+        // don't waste an MLX inference + a Transcript.cleanedText write.
+        // Terminal delivery would be dropped downstream anyway, but the
+        // compute and on-disk side effects are wasteful.
+        guard AppGroup.rewriteJobID == intent.jobID else {
+            detailLog.notice("autoFireKeyboardRewrite: jobID slot moved on; skipping")
+            return
+        }
+
+        guard let prompt = SavedPromptStore.all().first(where: { $0.id == intent.promptID }) else {
+            writeKeyboardError("Prompt not found", sessionID: intent.sessionID)
+            return
+        }
+
+        startKeyboardOriginatedRewrite(with: prompt, intent: intent)
+    }
+
+    private func startKeyboardOriginatedRewrite(
+        with prompt: SavedPrompt,
+        intent: KeyboardRewriteRouter.KeyboardRewriteTarget
+    ) {
+        let source = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            let message = "Transcript is empty."
+            rewriteState = .error(message)
+            if AppGroup.rewriteJobID == intent.jobID {
+                writeKeyboardError(message, sessionID: intent.sessionID)
+            }
+            return
+        }
+
+        activeRewriteTask?.cancel()
+        keyboardRewriteInFlight = true
+        rewriteState = .running
+        selectedTab = .rewrite
+
+        let promptText = prompt.systemPrompt
+        let jobID: UUID? = intent.jobID
+        let task = Task { @MainActor in
+            // Defer clears the lockout on every exit path — success,
+            // .error, CancellationError, save failure, or any future
+            // catch branch. No need to remember to nil it in each leg.
+            defer { keyboardRewriteInFlight = false }
+            do {
+                try await Self.waitUntilForeground(timeout: 10)
+                let result = try await LLMClientFactory.shared.client().rewrite(
+                    text: source,
+                    systemPrompt: promptText
+                )
+                try Task.checkCancellation()
+                let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    let message = "Rewrite returned no text."
+                    rewriteState = .error(message)
+                    guard AppGroup.rewriteJobID == jobID else { return }
+                    writeKeyboardError(message, sessionID: intent.sessionID)
+                    return
+                }
+                transcript.cleanedText = trimmed
+                do {
+                    try modelContext.save()
+                    TranscriptHistoryMirror.refresh(from: modelContext)
+                    // The keyboard's RecentsStrip renders `cleaned ?? raw`;
+                    // notify it that the mirror was rewritten so the new
+                    // cleaned text shows up without a presentation cycle.
+                    CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                    guard AppGroup.rewriteJobID == jobID else {
+                        detailLog.notice("Keyboard-originated rewrite finished but App Group job changed; dropping terminal write.")
+                        return
+                    }
+                    AppGroup.rewriteResult = trimmed
+                    AppGroup.rewriteError = nil
+                    AppGroup.rewriteResultSessionID = intent.sessionID
+                    AppGroup.rewriteJobID = nil
+                    RewriteNotifications.postCompleted()
+                    lastRewriteAt = Date()
+                    rewriteState = .idle
+                    detailLog.info(
+                        "Keyboard-originated transcript rewrite SUCCESS prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
+                    )
+                } catch {
+                    modelContext.rollback()
+                    let message = "Couldn't save: \(error.localizedDescription)"
+                    rewriteState = .error(message)
+                    guard AppGroup.rewriteJobID == jobID else { return }
+                    writeKeyboardError(message, sessionID: intent.sessionID)
+                    detailLog.error(
+                        "Keyboard-originated transcript rewrite save failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            } catch is CancellationError {
+                rewriteState = .idle
+                guard AppGroup.rewriteJobID == jobID else { return }
+                writeKeyboardError(RewriteNotifications.cancelledSentinel, sessionID: intent.sessionID)
+                detailLog.info(
+                    "Keyboard-originated transcript rewrite cancelled prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public)"
+                )
+            } catch {
+                let message = error.localizedDescription
+                rewriteState = .error(message)
+                guard AppGroup.rewriteJobID == jobID else { return }
+                writeKeyboardError(message, sessionID: intent.sessionID)
+                detailLog.error(
+                    "Keyboard-originated transcript rewrite FAILED prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        activeRewriteTask = task
+    }
+
+    private static func waitUntilForeground(timeout: TimeInterval) async throws {
+        if UIApplication.shared.applicationState == .active { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while UIApplication.shared.applicationState != .active {
+            if Date() >= deadline {
+                throw NSError(
+                    domain: "TranscriptDetailView",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Open Jot and try the rewrite again."]
+                )
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func writeKeyboardError(_ message: String, sessionID: UUID) {
+        AppGroup.rewriteError = message
+        AppGroup.rewriteResult = nil
+        AppGroup.rewriteResultSessionID = sessionID
+        AppGroup.rewriteJobID = nil
+        RewriteNotifications.postCompleted()
     }
 
     private func cancelActiveRewrite() {

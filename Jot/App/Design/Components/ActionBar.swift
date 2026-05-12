@@ -92,6 +92,12 @@ struct ActionBar: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Color.jotInk)
                 .frame(width: 44, height: 44)
+                // Without contentShape, SwiftUI's hit area for the
+                // button is just the drawn icon pixels — taps on the
+                // surrounding padding (which looks tappable) silently
+                // no-op. contentShape(Rectangle()) makes the full 44pt
+                // frame hit-testable.
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(item.accessibilityLabel)
@@ -105,6 +111,8 @@ struct ActionBar: View {
                     .font(.system(size: 16, weight: .semibold))
                 Text(item.label)
                     .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .foregroundStyle(Color.white)
             .padding(.horizontal, 18)

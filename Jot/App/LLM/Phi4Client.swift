@@ -102,10 +102,14 @@ final class Phi4Client: LLMClient {
         // the prototype validated end-to-end on real iPhone.
         Memory.cacheLimit = 32 * 1024 * 1024
         #endif
-        // The HF cache layout owned by the MLX bridge isn't trivial to probe
-        // from outside, so we conservatively start `.notReady`. The first
-        // `warm()` call will short-circuit if the snapshot is already cached.
-        observableStatus = .notReady
+        // Probe the HF hub cache synchronously so an already-downloaded
+        // Phi-4 snapshot starts as `.evicted`: weights are on disk, but the
+        // ModelContainer has not been loaded into memory yet.
+        if Self.isPhi4SnapshotPresentOnDisk() {
+            observableStatus = .evicted
+        } else {
+            observableStatus = .notReady
+        }
     }
 
     // MARK: - LLMClient
@@ -210,6 +214,54 @@ final class Phi4Client: LLMClient {
         #endif
         observableStatus = .evicted
         log.info("Phi-4 model evicted")
+    }
+
+    nonisolated private static func isPhi4SnapshotPresentOnDisk() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+
+        func expandedDirectoryURL(for path: String) -> URL {
+            URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+        }
+
+        let cacheBase: URL
+        if let hubCache = environment["HF_HUB_CACHE"], !hubCache.isEmpty {
+            cacheBase = expandedDirectoryURL(for: hubCache)
+        } else if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
+            cacheBase = expandedDirectoryURL(for: hfHome)
+                .appendingPathComponent("hub", isDirectory: true)
+        } else {
+            cacheBase = URL.cachesDirectory
+                .appendingPathComponent("huggingface", isDirectory: true)
+                .appendingPathComponent("hub", isDirectory: true)
+        }
+
+        let repoDirectory = cacheBase
+            .appendingPathComponent("models--mlx-community--Phi-4-mini-instruct-4bit", isDirectory: true)
+        let refFile = repoDirectory
+            .appendingPathComponent("refs", isDirectory: true)
+            .appendingPathComponent("main")
+
+        guard let commitHash = try? String(contentsOf: refFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !commitHash.isEmpty
+        else {
+            return false
+        }
+
+        let snapshotDirectory = repoDirectory
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(commitHash, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: snapshotDirectory.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            return false
+        }
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: snapshotDirectory.path) else {
+            return false
+        }
+        return !entries.isEmpty
     }
 
     func rewrite(text: String, systemPrompt: String) async throws -> String {

@@ -42,6 +42,12 @@ struct CollapsedBarView: View {
     /// SwiftUI's intrinsic-size signaling — this is the visual envelope.
     static let height: CGFloat = 58
 
+    /// Fixed width for the leading Maximize button + matching trailing
+    /// symmetry placeholder. Sized to comfortably fit the chevron icon
+    /// plus the "Maximize" label inside the Liquid Glass capsule while
+    /// keeping the dictate pill optically centered between them.
+    fileprivate static let maximizeButtonWidth: CGFloat = 108
+
     var body: some View {
         HStack(spacing: 12) {
             expandButton
@@ -50,10 +56,11 @@ struct CollapsedBarView: View {
                 .frame(maxWidth: 260)
             Spacer(minLength: 0)
             // Symmetry placeholder so the speak pill stays centered without
-            // depending on the trailing edge of the chevron. 44pt matches
-            // the leading chevron-toggle's footprint.
+            // depending on the trailing edge of the chevron. Width matches
+            // the leading Maximize button's footprint so the dictate pill
+            // visually centers in the bar.
             Color.clear
-                .frame(width: 44, height: 44)
+                .frame(width: Self.maximizeButtonWidth, height: 44)
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, 10)
@@ -74,23 +81,68 @@ struct CollapsedBarView: View {
 
     // MARK: - Toggle
 
-    /// `chevron.compact.up` — taps return to the standard 450pt layout.
+    /// `[ ⌃ Maximize ]` — Liquid Glass capsule that mirrors the expanded
+    /// keyboard's Minimize button (icon + label rhythm) so toggling
+    /// between modes feels symmetric. Recipe is inlined (not shared
+    /// with KeyboardView's `secondaryControlLabel`) to keep the blast
+    /// radius small; the collapsed bar has no lit/enabled state to
+    /// track so the simpler always-on variant suffices.
     private var expandButton: some View {
         Button {
             feedback.systemClick()
             feedback.selectionTick()
             onToggleCollapsed()
         } label: {
-            Image(systemName: "chevron.compact.up")
-                .font(.system(size: 22, weight: .semibold))
-                // v2 retheme: adaptive ink so the chevron reads on both
-                // light gray and dark chrome.
-                .foregroundStyle(Color.jotKeyboardActionsInk)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.compact.up")
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.monochrome)
+                Text("Maximize")
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            .foregroundStyle(Color.jotKeyboardActionsInk)
+            .padding(.horizontal, 14)
+            // 48pt min visual height matches the Minimize button's outer
+            // frame; the 58pt bar still has 5pt breathing room above/below.
+            .frame(width: Self.maximizeButtonWidth, height: 48)
+            .background(
+                ZStack {
+                    // Liquid Glass: live blur + translucent-white gradient,
+                    // identical recipe to KeyboardView.secondaryControlLabel
+                    // so both buttons share the same surface.
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.jotKeyboardGlassFill1,
+                                    Color.jotKeyboardGlassFill2,
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                }
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(Color.jotKeyboardGlassHairline, lineWidth: 0.5)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .inset(by: 0.5)
+                    .stroke(Color.jotKeyboardGlassHighlight, lineWidth: 0.5)
+                    .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
+            )
+            .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 4)
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Expand keyboard")
+        .accessibilityLabel("Maximize keyboard")
         .accessibilityHint("Returns to the full Jot keyboard")
         .accessibilityAddTraits(.isButton)
     }
@@ -190,31 +242,25 @@ struct CollapsedBarView: View {
 
     // MARK: - Backgrounds
 
-    /// v2 retheme: collapsed bar uses the same iOS-system-gray gradient
-    /// as the standard mode + the same blue-tint overlay during
-    /// recording. Idle has no top hairline (chrome matches the system
-    /// bar — no seam to hide); recording keeps the soft blue hairline.
+    /// Collapsed bar background: transparent over the native keyboard
+    /// backdrop, plus the same blue-tint overlay during recording. Idle
+    /// has no top hairline; recording keeps the soft blue hairline.
     private var barBackground: some View {
-        LinearGradient(
-            colors: [
-                Color.jotKeyboardChromeIdleTop,
-                Color.jotKeyboardChromeIdleBottom,
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .overlay(
-            recordingState.isRecording
-                ? Color.jotKeyboardChromeRecordingTint
-                : Color.clear
-        )
-        .overlay(alignment: .top) {
-            if recordingState.isRecording {
-                Rectangle()
-                    .fill(Color.jotKeyboardChromeRecordingHairline)
-                    .frame(height: 0.5)
+        // Transparent: lets the parent UIInputView(style: .keyboard)
+        // backdrop render through. Recording-state tint overlays on top.
+        Color.clear
+            .overlay(
+                recordingState.isRecording
+                    ? Color.jotKeyboardChromeRecordingTint
+                    : Color.clear
+            )
+            .overlay(alignment: .top) {
+                if recordingState.isRecording {
+                    Rectangle()
+                        .fill(Color.jotKeyboardChromeRecordingHairline)
+                        .frame(height: 0.5)
+                }
             }
-        }
     }
 
     /// Dictate / Stop pill background — STATIC blue gradient

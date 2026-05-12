@@ -97,6 +97,14 @@ enum RewriteRequestDispatcher {
         }
 
         do {
+            // MLX/Metal forbids GPU work from background apps — iOS kills
+            // the process with `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`.
+            // The URL bounce from the keyboard usually foregrounds Jot,
+            // but there's a brief race between `onOpenURL` firing and the
+            // scene reaching `.active`. Wait it out (≤10s) before
+            // submitting any GPU work.
+            try await waitUntilForeground(timeout: 10)
+
             let client = LLMClientFactory.shared.client()
             let result = try await client.rewrite(
                 text: request.selection,
@@ -149,6 +157,27 @@ enum RewriteRequestDispatcher {
             log.error(
                 "rewrite FAILED jobID=\(jobID, privacy: .public) sessionID=\(request.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
+        }
+    }
+
+    /// Polls `UIApplication.applicationState` until the app reaches
+    /// `.active` or `timeout` elapses. Cheap busy-wait at 100ms cadence
+    /// (yields between each check); typical wait after a URL bounce is
+    /// <500ms. Throws if the deadline passes while still in background —
+    /// preferable to letting MLX crash the process on the first GPU
+    /// dispatch from background.
+    private static func waitUntilForeground(timeout: TimeInterval) async throws {
+        if UIApplication.shared.applicationState == .active { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while UIApplication.shared.applicationState != .active {
+            if Date() >= deadline {
+                throw NSError(
+                    domain: "RewriteRequestDispatcher",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Open Jot and try the rewrite again."]
+                )
+            }
+            try await Task.sleep(for: .milliseconds(100))
         }
     }
 

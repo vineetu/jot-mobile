@@ -16,6 +16,7 @@ struct JotApp: App {
     @State private var streamingPartial: StreamingPartial
     @State private var cleanupService: CleanupService
     @State private var setupRerunTrigger: SettingsRerunTrigger
+    @State private var keyboardRewriteRouter = KeyboardRewriteRouter()
     @State private var showSetupWizard = false
     @State private var setupCompleted = SetupCompletion.isCompleted
     @State private var autoStartConsumed = false
@@ -129,6 +130,7 @@ struct JotApp: App {
                 .environment(streamingService)
                 .environment(streamingPartial)
                 .environment(cleanupService)
+                .environment(keyboardRewriteRouter)
                 .fullScreenCover(isPresented: $showSetupWizard) {
                     SetupWizardView {
                         setupCompleted = SetupCompletion.isCompleted
@@ -337,10 +339,11 @@ struct JotApp: App {
     }
 
     /// Handles `jot://rewrite?session=<uuid>` — the keyboard's URL-scheme
-    /// handoff for the saved-prompt rewrite path. Parses the session ID,
-    /// hands it to `RewriteRequestDispatcher`, which reads the App Group
-    /// stash, dispatches the LLM rewrite, and posts the Darwin completion
-    /// notification the keyboard observes.
+    /// handoff for the saved-prompt rewrite path. Valid requests are converted
+    /// into a transcript-detail navigation target so the user can watch the
+    /// rewrite generate. Legacy dispatcher fallback is preserved for malformed
+    /// prompt/selection/persistence edges so the keyboard still gets a terminal
+    /// App Group write.
     ///
     /// This is the URL-scheme replacement for the previous (broken) direct
     /// `RewriteWithPromptIntent.perform()` call from the keyboard process.
@@ -353,9 +356,60 @@ struct JotApp: App {
             lifecycleLog.error("rewrite URL missing/invalid session param url=\(url.absoluteString, privacy: .public)")
             return
         }
-        // `RewriteRequestDispatcher` is `@available(iOS 26.0, *)` — same as
-        // the project's deployment floor. No runtime guard needed.
-        RewriteRequestDispatcher.dispatch(sessionID: sessionID)
+        guard let request = AppGroup.pendingRewriteRequest else {
+            lifecycleLog.notice("rewrite URL sessionID=\(sessionID, privacy: .public) missing pending request stash; ignoring.")
+            return
+        }
+
+        guard request.id == sessionID else {
+            lifecycleLog.error(
+                "rewrite URL session mismatch — url=\(sessionID, privacy: .public) stash=\(request.id, privacy: .public). Ignoring."
+            )
+            return
+        }
+
+        guard let promptID = UUID(uuidString: request.promptID),
+              SavedPromptStore.all().contains(where: { $0.id == promptID })
+        else {
+            lifecycleLog.error("rewrite URL prompt not found sessionID=\(sessionID, privacy: .public) promptID=\(request.promptID, privacy: .public); falling back to dispatcher.")
+            RewriteRequestDispatcher.dispatch(sessionID: sessionID)
+            return
+        }
+
+        let transcript: Transcript
+        do {
+            guard let appended = try TranscriptStore.append(raw: request.selection) else {
+                lifecycleLog.error("rewrite URL empty selection sessionID=\(sessionID, privacy: .public); falling back to dispatcher.")
+                RewriteRequestDispatcher.dispatch(sessionID: sessionID)
+                return
+            }
+            transcript = appended
+        } catch {
+            lifecycleLog.error("rewrite URL transcript append failed sessionID=\(sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public); falling back to dispatcher.")
+            RewriteRequestDispatcher.dispatch(sessionID: sessionID)
+            return
+        }
+
+        AppGroup.pendingRewriteRequest = nil
+
+        let jobID = UUID()
+        AppGroup.rewriteJobID = jobID
+        AppGroup.rewriteResult = nil
+        AppGroup.rewriteError = nil
+        AppGroup.rewriteCancelRequested = false
+        AppGroup.rewriteSelectionLength = request.selectionLength
+
+        let target = KeyboardRewriteRouter.KeyboardRewriteTarget(
+            id: transcript.id,
+            sessionID: sessionID,
+            jobID: jobID,
+            promptID: promptID,
+            selectionLength: request.selectionLength
+        )
+        keyboardRewriteRouter.setPending(target)
+        lifecycleLog.info(
+            "rewrite URL routed to transcript detail sessionID=\(sessionID, privacy: .public) jobID=\(jobID, privacy: .public) transcriptID=\(transcript.id, privacy: .public) promptID=\(promptID, privacy: .public)"
+        )
     }
 
     private func handleSceneActive() {

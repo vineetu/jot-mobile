@@ -5,16 +5,6 @@ import OSLog
 
 private let keyboardLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot.Keyboard", category: "keyboard")
 
-/// Shared `category=rewrite` log handle so the keyboard's URL-bounce
-/// rewrite path emits to the same `subsystem=com.vineetu.jot.mobile
-/// category=rewrite` stream the in-app rewrite uses. Single Console.app
-/// filter (`subsystem:com.vineetu.jot.mobile category:rewrite`) covers
-/// both code paths.
-private let keyboardRewriteLog = Logger(
-    subsystem: "com.vineetu.jot.mobile",
-    category: "rewrite"
-)
-
 /// Jot's custom keyboard extension. Provides a compact dictation-first keyboard
 /// surface plus two Jot-specific affordances:
 ///
@@ -176,19 +166,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// keystroke.
     private var historyEntries: [TranscriptHistoryMirror.Entry] = []
 
-    /// Saved rewrite prompts available to the keyboard's selection rewrite
-    /// menu. Empty without Full Access because the App Group store is not
-    /// readable.
-    private var availableSavedPrompts: [SavedPrompt] = []
-
-    /// True when the AI Rewrite master toggle is OFF in the main app's
-    /// settings. Drives the wand button's "AI off" state in the keyboard
-    /// accessory bar. Phi-4 readiness (download in progress, download
-    /// error, etc.) is communicated to the user in the main app's
-    /// settings; the keyboard surfaces only the master-toggle state
-    /// because Phi-4 status is opaque to the extension target.
-    private var aiUnavailable: Bool = false
-
     /// Transient banner string read off `AppGroup.lastDictationStatusMessage`.
     /// `nil` when no banner is pending. The keyboard view runs a 2.5s `task`
     /// per banner instance, then calls back into
@@ -211,20 +188,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// presentation (e.g. orientation change → `viewWillAppear` re-entry).
     private var autoPasteAttempted = false
 
-    /// True while an in-keyboard Apple Intelligence rewrite is running for
-    /// the current pending session. Set the moment we claim the payload
-    /// (markConsumed + clearPending) and start the rewrite Task; cleared
-    /// after the final paste lands. Prevents the `transcriptReady` Darwin
-    /// notification observer (or a subsequent `viewWillAppear`-triggered
-    /// flush) from re-entering the happy-path branch and double-pasting
-    /// while the LLM call is still in flight.
-    ///
-    /// Note: by the time this is set, `clearPendingPasteSession()` and
-    /// `ClipboardHandoff.markConsumed()` have already been called, so any
-    /// re-entry would early-return on the `let session = readPendingPasteSession()`
-    /// guard — this flag is belt-and-suspenders.
-    private var rewriteInFlight: Bool = false
-
     /// True from the moment the keyboard posts `stopRequested` until the next
     /// `pipelinePhaseChanged` reflecting the app's view of the world. Drives
     /// the speak button's `.disabled` modifier (so iOS suppresses taps while
@@ -232,44 +195,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// noop branch (defense-in-depth against optimistic-UI lag). Cleared in
     /// `refreshPipelinePhase` once projection moves off `.recording`.
     private var stopRequestPosted = false
-
-    // MARK: - URL-bounce rewrite correlation state (plan §5 Step 4)
-    //
-    // In-memory mirror of the keyboard's currently-pending rewrite. Used as
-    // a fast-path read; on keyboard extension recycle these go to nil and
-    // `viewWillAppear` rehydrates from `AppGroup.keyboardPendingRewriteState`.
-    //
-    // The session UUID stored here is the SAME UUID that's:
-    //   - the `?session=<uuid>` query param on `jot://rewrite?...`
-    //   - `PendingRewriteRequest.id` in the AppGroup stash
-    //   - `KeyboardPendingRewriteState.sessionID` in the AppGroup snapshot
-    //   - `AppGroup.rewriteResultSessionID` written by the dispatcher on
-    //     terminal completion
-    // — so a single UUID equality check correlates the result back to the
-    // captured selection.
-    private var pendingRewriteSessionID: UUID?
-    private var pendingRewriteSelectionText: String?
-    private var pendingRewriteSelectionLength: Int?
-    private var pendingRewriteStartedAt: Date?
-
-    /// Observer for `RewriteNotifications.rewriteCompleted`. Installed on
-    /// `viewWillAppear` AFTER the drain step (so a result that landed
-    /// before the keyboard reappeared isn't missed by the observer-only
-    /// path). Torn down on `viewWillDisappear` along with the other
-    /// cross-process observers.
-    private var rewriteCompletedObserver: RewriteNotifications.Observer?
-
-    /// Tracks whether the live timeout banner has already fired for the
-    /// current pending rewrite. The 60s timeout task arms inside
-    /// `viewWillAppear` and is cancelled on drain or `viewWillDisappear`.
-    private var rewriteLiveTimeoutTask: Task<Void, Never>?
-
-    /// Wall-clock ceiling for the URL-bounce rewrite round trip — keyboard
-    /// captures selection → URL launches main app → main app dispatches
-    /// rewrite → AppGroup result lands → keyboard drains. Mirrors the
-    /// previous in-keyboard `keyboardRewriteTimeoutSeconds` (45s) plus a
-    /// 15s slack for the launch + dispatcher overhead. Per plan §5 Step 4d.
-    private static let rewriteRoundTripTimeoutSeconds: TimeInterval = 60
 
     // MARK: - Haptic + audio feedback
 
@@ -290,21 +215,16 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // MARK: - Lifecycle
 
+    override func loadView() {
+        let inputView = UIInputView(frame: .zero, inputViewStyle: .keyboard)
+        inputView.allowsSelfSizing = true
+        self.view = inputView
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Jot mic CTA is its own affordance; we do not provide a system dictation key.
         hasDictationKey = false
-        // Without this, iOS gives the inputView a fixed tray height and
-        // ignores our `view.heightAnchor` constraint — the SwiftUI body
-        // shrinks but the system-allocated tray stays full-height,
-        // leaving an empty band below the collapsed bar.
-        (view as? UIInputView)?.allowsSelfSizing = true
-        // Seed the bundled default rewrite prompt so the in-app transcript
-        // view's AI rewrite menu never starts empty. Idempotent — no-op when
-        // the user already has at least one row. Settings UI runs the same
-        // call; keeping it here ensures the prompts list is populated even
-        // before the user opens Settings.
-        SavedPromptStore.seedIfNeeded()
         installKeyboardView()
         installHeightConstraint()
         startObservingHistoryMirrorUpdated()
@@ -323,15 +243,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
-        // Rewrite drain MUST run BEFORE installing the live observer so a
-        // result that landed while the keyboard was detached (the common
-        // URL-bounce case — Jot foregrounded, keyboard torn down) is not
-        // missed by the observer-only path. Drain reads correlation state
-        // from AppGroup if the in-memory mirror went away during extension
-        // recycle. Per plan §5 Step 4d.
-        drainPendingRewriteResultOnAppear()
-        startObservingRewriteCompleted()
-        rearmRewriteLiveTimeoutIfPending()
         refreshPipelinePhase()
         refreshStreamingPartialFromProjection()
         refreshSelectionState()
@@ -346,8 +257,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         rearmLaunchDeadlineIfPending()
         refreshPasteState()
         refreshHistory()
-        refreshAIAvailability()
-        refreshAvailableSavedPrompts()
         refreshStatusBanner()
         renderRootView()
     }
@@ -357,14 +266,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         historyMirrorUpdatedObserver = nil
         pipelinePhaseObserver = nil
         streamingPartialObserver = nil
-        // Tear the rewrite observer down so a result delivered while the
-        // keyboard is detached doesn't hop onto a stale @MainActor handler.
-        // The next `viewWillAppear` re-installs after draining whatever
-        // landed in the meantime — durable delivery via AppGroup, not via
-        // a long-lived observer.
-        rewriteCompletedObserver = nil
-        rewriteLiveTimeoutTask?.cancel()
-        rewriteLiveTimeoutTask = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
         pendingLaunchDeadlineTask?.cancel()
@@ -604,9 +505,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         KeyboardView(
             hasFullAccess: hasFullAccess,
             hasPasteboardContent: hasPasteboardContent,
-            hasSelection: selectedTextSnapshot != nil,
-            availableSavedPrompts: availableSavedPrompts,
-            isRewritingSelection: rewriteInFlight,
             recordingState: recordingState,
             needsInputModeSwitchKey: needsInputModeSwitchKey,
             returnKeyType: textDocumentProxy.returnKeyType ?? .default,
@@ -616,7 +514,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             lastPastedText: lastPastedText,
             lastPastedAt: lastPastedAt,
             isStopRequestPending: stopRequestPosted,
-            aiUnavailable: aiUnavailable,
             statusBanner: statusBanner,
             isCollapsed: isCollapsed,
             // v2 retheme (2026-05-11): host's `keyboardAppearance` hint.
@@ -631,9 +528,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onCopyLastDictation: { [weak self] in self?.handleCopyLastDictation() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
             onRedoInsertion: { [weak self] in self?.handleRedoMenuSelection() },
-            onSelectPromptForSelection: { [weak self] prompt in
-                self?.handleSelectPromptForSelection(prompt)
-            },
             onTapToSpeak: { [weak self] in self?.handleMicCTATap() },
             onInsertHistoryEntry: { [weak self] entry in self?.insertHistoryEntry(entry) },
             onInsertText: { [weak self] text in self?.insertHistoryText(text) },
@@ -878,9 +772,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // paths write a new message immediately before the ledger
             // append that triggered this notification.
             let priorBanner = self.statusBanner
-            let priorPrompts = self.availableSavedPrompts
             let priorHistory = self.historyEntries
-            self.refreshAvailableSavedPrompts()
             self.refreshStatusBanner()
             // The mirror is the source of truth for the RecentsStrip
             // rows. Without this reload, a new dictation only appears
@@ -889,7 +781,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // entries missing the latest transcript.
             self.refreshHistory()
             if priorBanner != self.statusBanner
-                || priorPrompts != self.availableSavedPrompts
                 || priorHistory != self.historyEntries {
                 self.renderRootView()
             }
@@ -1193,8 +1084,20 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // MARK: - Selection state
 
+    /// Reconstructs selection context because iOS may truncate
+    /// `UITextDocumentProxy.selectedText` for long selections.
+    private func reconstructedSelectionTextFromDocumentContext() -> String? {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let selected = textDocumentProxy.selectedText ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
+        guard !selected.isEmpty || !(before + after).isEmpty else { return nil }
+        let reconstructed = before + selected + after
+        let selection = reconstructed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return selection.isEmpty ? nil : selection
+    }
+
     private func refreshSelectionState() {
-        guard let selectedText = textDocumentProxy.selectedText, !selectedText.isEmpty else {
+        guard let selectedText = reconstructedSelectionTextFromDocumentContext() else {
             selectedTextSnapshot = nil
             return
         }
@@ -1212,14 +1115,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             return
         }
         historyEntries = TranscriptHistoryMirror.load()
-    }
-
-    private func refreshAvailableSavedPrompts() {
-        guard hasFullAccess else {
-            availableSavedPrompts = []
-            return
-        }
-        availableSavedPrompts = SavedPromptStore.all()
     }
 
     /// Phase 2: the legacy `HistoryOverlay` modal was replaced by the
@@ -1363,10 +1258,44 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     private func handleMicCTATap() {
-        if let expiresAt = AppGroup.warmHoldExpiresAt, expiresAt > Date() {
+        // Warm-resume fast-path. Gated on TWO signals:
+        //   1. `warmHoldExpiresAt` still in the future (the 60s window)
+        //   2. `warmHoldHeartbeat` is fresh (≤4s old) — proof the main
+        //      app process is still alive to receive the Darwin notification
+        // Without the heartbeat check, a jetsammed main app leaves a ghost
+        // `warmHoldExpiresAt` that traps Dictate taps: the Darwin post
+        // lands on no listener, the URL bounce never fires, and the tap
+        // appears to do nothing. On stale heartbeat, clear the ghost keys
+        // opportunistically and fall through to the cold-launch URL.
+        //
+        // 4s threshold (vs 2.5s) leaves headroom for MainActor scheduling
+        // jitter on a backgrounded warm-held app — audio session restoration
+        // and ASR finalize tails can stretch the 1s heartbeat cadence past
+        // 2.5s on a healthy process. False-positive jetsam classification is
+        // worse than a slightly delayed ghost-cleanup.
+        //
+        // AppGroup reads are snapshotted into locals so we don't race a
+        // mid-cleanup interleave from the main app (`exitWarmHold` clearing
+        // both keys non-atomically) — keeps the ghost-cleanup branch from
+        // firing on a legitimate exit race.
+        let now = Date()
+        let expiresAtSnapshot = AppGroup.warmHoldExpiresAt
+        let heartbeatSnapshot = AppGroup.warmHoldHeartbeat
+        if let expiresAt = expiresAtSnapshot, expiresAt > now,
+           let heartbeat = heartbeatSnapshot,
+           now.timeIntervalSince(heartbeat) < 4.0 {
             CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
             keyboardLog.info("Posted warm-resume; skipping URL bounce")
             return
+        } else if expiresAtSnapshot != nil || heartbeatSnapshot != nil {
+            // Ghost cleanup — main app is gone (or just exited warm-hold).
+            // Log includes deltas so we can distinguish stale-jetsam from
+            // legitimate-exit-race in field reports.
+            let expiresAtDelta = expiresAtSnapshot.map { $0.timeIntervalSince(now) } ?? .infinity
+            let heartbeatAge = heartbeatSnapshot.map { now.timeIntervalSince($0) } ?? .infinity
+            AppGroup.warmHoldExpiresAt = nil
+            AppGroup.warmHoldHeartbeat = nil
+            keyboardLog.notice("Ghost warm-hold projection cleared; expiresAtDelta=\(expiresAtDelta, privacy: .public)s heartbeatAge=\(heartbeatAge, privacy: .public)s; falling through to URL bounce")
         }
 
         // Wizard W8 short-circuit: if the host app is Jot itself (detected
@@ -1467,421 +1396,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 self?.refreshPipelinePhase()
             }
         }
-    }
-
-    // MARK: - AI availability
-
-    /// Refreshes the AI-rewrite availability gate for keyboard rewrite
-    /// affordances. No Full Access means the keyboard cannot read the
-    /// App Group, so we leave the gate open (treat the wand as
-    /// available); the rewrite path itself will fail later if the user
-    /// has truly disabled AI rewrite.
-    ///
-    /// The keyboard no longer probes `SystemLanguageModel.default.availability`
-    /// — Apple Intelligence is no longer a rewrite provider. The only
-    /// signal the keyboard can read cheaply is `AppGroup.aiRewriteEnabled`
-    /// (the master toggle in the main app's settings). Phi-4's actual
-    /// readiness (download in progress, weights missing, load failure) is
-    /// opaque to the extension target — those failures surface through
-    /// the URL-bounce dispatcher round-trip and the keyboard's inline
-    /// error banner.
-    private func refreshAIAvailability() {
-        guard hasFullAccess else {
-            aiUnavailable = false
-            return
-        }
-        aiUnavailable = !AppGroup.aiRewriteEnabled
-    }
-
-    /// Fires the selection-rewrite handoff: captures the live host
-    /// selection, stashes a `PendingRewriteRequest` and a
-    /// `KeyboardPendingRewriteState` snapshot in the App Group, then
-    /// URL-bounces into the main app via `jot://rewrite?session=<uuid>`.
-    /// The main app's `RewriteRequestDispatcher` runs the LLM call and
-    /// writes the terminal result to AppGroup; the keyboard drains it on
-    /// the next `viewWillAppear` (the URL bounce foregrounds Jot, which
-    /// detaches the keyboard) and re-applies it via the safe-replacement
-    /// gate.
-    ///
-    /// Why URL bounce instead of in-process inference: the keyboard
-    /// extension is bounded by iOS to a 60 MB memory ceiling. The
-    /// Phi-4 mini weights are ~2.4 GB on disk and the MLX runtime
-    /// itself doesn't fit either. The main app already runs the
-    /// rewrite stack for the in-app transcript pane; we route the
-    /// keyboard's request to the same dispatcher rather than maintain
-    /// a second inference path.
-    private func handleSelectPromptForSelection(_ prompt: SavedPrompt) {
-        guard hasFullAccess else { return }
-        guard !rewriteInFlight else { return }
-        guard let selection = textDocumentProxy.selectedText, !selection.isEmpty else { return }
-        // SavedPrompt.id is `UUID`; the App Group `PendingRewriteRequest`
-        // carries it as a `String` (forward-compat with non-UUID prompt
-        // IDs the dispatcher already tolerates). The dispatcher parses
-        // the string back to a UUID and falls through to "Prompt not
-        // found" on bad input.
-        let promptIDString = prompt.id.uuidString
-
-        keyboardRewriteLog.notice(
-            "KB.rewrite (selection): ENTRY chars=\(selection.count, privacy: .public) promptID=\(promptIDString, privacy: .public)"
-        )
-
-        let sessionID = UUID()
-        let selectionLength = selection.utf16.count
-        let startedAt = Date()
-
-        // Stash the dispatcher's input — the URL handler in `JotApp` reads
-        // and deletes `pendingRewriteRequest` on receipt. Both struct
-        // identifiers carry the same `sessionID` so the keyboard's drain
-        // can correlate the dispatcher's `rewriteResultSessionID` back
-        // to its captured selection. Order: write the AppGroup state
-        // FIRST, open the URL SECOND. iOS may suspend the extension as
-        // soon as the URL hands off; if the URL went first the dispatcher
-        // could find an empty stash and discard the request.
-        AppGroup.pendingRewriteRequest = PendingRewriteRequest(
-            id: sessionID,
-            promptID: promptIDString,
-            selection: selection,
-            selectionLength: selectionLength,
-            createdAt: startedAt
-        )
-        AppGroup.keyboardPendingRewriteState = KeyboardPendingRewriteState(
-            sessionID: sessionID,
-            selectionText: selection,
-            selectionLength: selectionLength,
-            startedAt: startedAt
-        )
-        // Belt-and-suspenders: the dispatcher already echoes
-        // `selectionLength` into this slot from the request, but pre-
-        // writing it here guarantees the keyboard's drain has a usable
-        // length even if the dispatcher hasn't started yet (for
-        // diagnostic logging only — the safe-replacement gate uses
-        // strict text equality, never length).
-        AppGroup.rewriteSelectionLength = selectionLength
-
-        // Mirror to in-memory state for the fast-path (no extension
-        // recycle case). On recycle these are nil and `viewWillAppear`
-        // hydrates from `keyboardPendingRewriteState`.
-        pendingRewriteSessionID = sessionID
-        pendingRewriteSelectionText = selection
-        pendingRewriteSelectionLength = selectionLength
-        pendingRewriteStartedAt = startedAt
-
-        rewriteInFlight = true
-        // In-flight state is surfaced in the streaming display panel via
-        // `isRewritingSelection`. The 60s round-trip timeout banner is
-        // handled by the live-timeout task armed below.
-        renderRootView()
-
-        // Open `jot://rewrite?session=<uuid>` via the responder-chain
-        // workaround. Apple does NOT guarantee `extensionContext.open`
-        // for keyboards — see the doc on `openContainingApp`. The
-        // open-failure completion clears the pending state slots so a
-        // failed launch doesn't strand a pending rewrite that will
-        // never receive a result.
-        guard let url = URL(string: "jot://rewrite?session=\(sessionID.uuidString)") else {
-            keyboardRewriteLog.error("KB.rewrite (selection): URL construction failed for sessionID=\(sessionID, privacy: .public)")
-            clearPendingRewriteState()
-            rewriteInFlight = false
-            AppGroup.lastDictationStatusMessage = "Couldn't open Jot — please open the app and try again."
-            setStatusBanner(AppGroup.lastDictationStatusMessage)
-            renderRootView()
-            return
-        }
-        openContainingAppForRewrite(url)
-
-        // Arm the 60s wall-clock round-trip timeout. Cancelled on drain
-        // (success path) or on the next `viewWillDisappear`. If the task
-        // fires, it surfaces a banner and clears pending state.
-        rearmRewriteLiveTimeoutIfPending()
-    }
-
-    // MARK: - Rewrite handoff plumbing (URL bounce + AppGroup drain)
-
-    /// Wraps `openContainingApp` for the rewrite path with a tighter
-    /// failure path: when responder-chain `open(_:)` returns `false`,
-    /// clear the pending rewrite state so the next `viewWillAppear`
-    /// drain doesn't sit there waiting for a result that will never
-    /// arrive. We can't return failure synchronously — `open(_:)` is
-    /// async by Apple's contract — so we route through a callback that
-    /// inspects `AppGroup.rewriteResultSessionID` to disambiguate "open
-    /// failed" from "open succeeded but result hasn't landed yet."
-    ///
-    /// `openContainingApp` already calls `ClipboardHandoff.clearPendingPasteSession()`
-    /// on failure; we additionally clear the rewrite-specific slots
-    /// here. The two clear paths are independent — pending paste and
-    /// pending rewrite are different App Group keys.
-    private func openContainingAppForRewrite(_ url: URL) {
-        // Reuse the existing responder-chain workaround. It handles its
-        // own logging and one inline cleanup (paste session). The
-        // rewrite-specific cleanup is handled here on the failure-poll
-        // path below.
-        openContainingApp(url)
-
-        // Best-effort post-launch sanity check: 1.5s after the URL post,
-        // if the dispatcher hasn't even claimed the stash (the dispatcher
-        // clears `pendingRewriteRequest` synchronously on receipt — see
-        // `RewriteRequestDispatcher.swift:67`), assume open failed and
-        // clear pending state. This is heuristic, not authoritative —
-        // a slow launch can race with the 1.5s window — so we guard with
-        // an extra "still pending and stash not consumed" check.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(1500))
-            guard let self else { return }
-            // Already drained or already cleared — nothing to do.
-            guard let sessionID = self.pendingRewriteSessionID else { return }
-            // Dispatcher took the stash (good) — the round-trip timeout
-            // still applies, but the open succeeded.
-            if AppGroup.pendingRewriteRequest == nil { return }
-            // Stash still present → dispatcher never received the URL.
-            // This is the "RequestsOpenAccess denied" / private-URL-blocked
-            // case. Clear pending state and show the open-failure banner.
-            keyboardRewriteLog.error("KB.rewrite (selection): open(_:) appears to have failed — sessionID=\(sessionID, privacy: .public)")
-            self.clearPendingRewriteState()
-            self.rewriteInFlight = false
-            AppGroup.lastDictationStatusMessage = "Couldn't open Jot — please open the app and try again."
-            self.setStatusBanner(AppGroup.lastDictationStatusMessage)
-            self.renderRootView()
-        }
-    }
-
-    /// Installs the rewrite-completion Darwin observer. Called from
-    /// `viewWillAppear` AFTER `drainPendingRewriteResultOnAppear` so the
-    /// drain consumes any result that landed while the keyboard was
-    /// detached. The observer covers the rare case where the keyboard
-    /// stays foregrounded across the full round trip — host == Jot
-    /// itself (e.g. rewriting in the in-app transcript editor while the
-    /// keyboard is still the active input view).
-    private func startObservingRewriteCompleted() {
-        guard rewriteCompletedObserver == nil else { return }
-        rewriteCompletedObserver = RewriteNotifications.addCompletedObserver { [weak self] in
-            guard let self else { return }
-            self.drainPendingRewriteResultOnAppear()
-        }
-    }
-
-    /// Drains the dispatcher's terminal result from AppGroup if it
-    /// matches the keyboard's pending session. Recovers correlation
-    /// state from `keyboardPendingRewriteState` first if the in-memory
-    /// mirror is nil (extension-recycle case). Idempotent — running it
-    /// twice with no result waiting is a no-op.
-    ///
-    /// Reads in the order the dispatcher writes (reverse of write
-    /// order):
-    ///   - `rewriteResultSessionID` first (correlation key)
-    ///   - then `rewriteResult` / `rewriteError` (payload)
-    /// — so a partial write where the dispatcher set the payload but
-    /// not yet the session ID surfaces as "no result yet" rather than
-    /// as a mis-correlated drain. The dispatcher writes both
-    /// synchronously on `@MainActor`, so a torn write is unlikely; this
-    /// ordering is belt-and-suspenders.
-    private func drainPendingRewriteResultOnAppear() {
-        // Hydrate from AppGroup snapshot if in-memory mirror was lost
-        // (extension recycled between URL post and result delivery).
-        if pendingRewriteSessionID == nil, let snapshot = AppGroup.keyboardPendingRewriteState {
-            pendingRewriteSessionID = snapshot.sessionID
-            pendingRewriteSelectionText = snapshot.selectionText
-            pendingRewriteSelectionLength = snapshot.selectionLength
-            pendingRewriteStartedAt = snapshot.startedAt
-            // Restore the in-flight flag so the UI guard
-            // (`isRewritingSelection`) and the new-rewrite gate in
-            // `handleSelectPromptForSelection` correctly recognize that a
-            // rewrite is still pending after an extension recycle. Without
-            // this, the user could trigger a duplicate rewrite while the
-            // hydrated one is still in flight.
-            rewriteInFlight = true
-            keyboardRewriteLog.info(
-                "KB.rewrite drain: hydrated from AppGroup snapshot sessionID=\(snapshot.sessionID, privacy: .public)"
-            )
-        }
-        guard let pendingSessionID = pendingRewriteSessionID else { return }
-
-        // Read the correlation slot. If it's nil or mismatches, the
-        // dispatcher hasn't written a terminal value yet (or it wrote
-        // one for a different rewrite that completed and was already
-        // drained). Either way, leave the result slots alone and wait
-        // for either the live observer or the next viewWillAppear.
-        guard let resultSessionID = AppGroup.rewriteResultSessionID,
-              resultSessionID == pendingSessionID
-        else {
-            return
-        }
-
-        // We own this terminal write — drain payload.
-        let result = AppGroup.rewriteResult
-        let errorMsg = AppGroup.rewriteError
-        let pendingText = pendingRewriteSelectionText ?? ""
-
-        // Clear AppGroup terminal state BEFORE applying the result so
-        // re-entry (e.g. the live observer firing during a slow
-        // applyDrainedRewriteResult) doesn't double-consume.
-        AppGroup.rewriteResult = nil
-        AppGroup.rewriteError = nil
-        AppGroup.rewriteResultSessionID = nil
-        AppGroup.rewriteSelectionLength = nil
-        AppGroup.keyboardPendingRewriteState = nil
-        // pendingRewriteRequest was already consumed by the dispatcher
-        // (it deletes the key synchronously on dispatch). Belt-and-
-        // suspenders: clear it here too in case a malformed dispatch
-        // left it stranded.
-        AppGroup.pendingRewriteRequest = nil
-
-        // Cancel the round-trip timeout — we got a terminal value.
-        rewriteLiveTimeoutTask?.cancel()
-        rewriteLiveTimeoutTask = nil
-
-        // Clear in-memory pending state and the in-flight flag.
-        clearInMemoryPendingRewriteState()
-        rewriteInFlight = false
-
-        if let errorMsg, !errorMsg.isEmpty {
-            // Cancellation is user-driven — silent fallback, no banner.
-            // Anything else surfaces to the user.
-            if errorMsg == RewriteNotifications.cancelledSentinel {
-                keyboardRewriteLog.notice(
-                    "KB.rewrite drain: CANCELLED sessionID=\(pendingSessionID, privacy: .public)"
-                )
-                setStatusBanner(nil)
-            } else {
-                keyboardRewriteLog.error(
-                    "KB.rewrite drain: ERROR sessionID=\(pendingSessionID, privacy: .public) error=\(errorMsg, privacy: .public)"
-                )
-                AppGroup.lastDictationStatusMessage = "Rewrite failed: \(errorMsg)"
-                setStatusBanner(AppGroup.lastDictationStatusMessage)
-            }
-            renderRootView()
-            return
-        }
-
-        guard let result, !result.isEmpty else {
-            // Empty result from a successful path — surface as error so
-            // the user isn't left wondering why nothing changed.
-            keyboardRewriteLog.error("KB.rewrite drain: empty result sessionID=\(pendingSessionID, privacy: .public)")
-            AppGroup.lastDictationStatusMessage = "Rewrite returned empty text"
-            setStatusBanner(AppGroup.lastDictationStatusMessage)
-            renderRootView()
-            return
-        }
-
-        keyboardRewriteLog.notice(
-            "KB.rewrite drain: SUCCESS sessionID=\(pendingSessionID, privacy: .public) outputChars=\(result.count, privacy: .public)"
-        )
-        applyDrainedRewriteResult(result, capturedSelection: pendingText)
-    }
-
-    /// Strict-text-equality safe-replacement gate (plan §5 Step 4e —
-    /// pass-4 P3-1). Only auto-replaces when the live host selection
-    /// EXACTLY equals the captured selection text. Any divergence —
-    /// nil/empty selection, different text, or even same-length-but-
-    /// different-text — falls to pasteboard + banner. Length-based
-    /// gates are unsafe because the user may have collapsed the
-    /// selection and re-selected something else of the same length;
-    /// we deliberately do NOT attempt a length-only fallback.
-    ///
-    /// Length is logged for diagnostics but does not authorize
-    /// replacement.
-    private func applyDrainedRewriteResult(_ rewritten: String, capturedSelection: String) {
-        let live = textDocumentProxy.selectedText ?? ""
-        let liveLen = live.utf16.count
-        let capLen = capturedSelection.utf16.count
-
-        if !live.isEmpty, live == capturedSelection {
-            // Strict-equality match — selection is still the captured
-            // text. Single `deleteBackward()` clears the entire active
-            // selection on a host that reports a non-empty selection
-            // range; we deliberately do NOT loop deleteBackward over
-            // selection.count because once the first call collapses
-            // the selection, further deletes would chew unselected
-            // document text.
-            textDocumentProxy.deleteBackward()
-            textDocumentProxy.insertText(rewritten)
-            undoLedger.recordReplacement(deleted: capturedSelection, inserted: rewritten)
-            setStatusBanner(nil)
-            keyboardRewriteLog.notice(
-                "KB.rewrite apply: AUTO-REPLACE liveLen=\(liveLen, privacy: .public) capLen=\(capLen, privacy: .public) outputChars=\(rewritten.count, privacy: .public)"
-            )
-            renderRootView()
-            return
-        }
-
-        // Pasteboard + banner fallback. Replacing the wrong text
-        // silently is a worse failure mode than asking the user to
-        // paste — so we err on the safe side whenever we cannot prove
-        // the live selection still contains the exact captured text.
-        UIPasteboard.general.string = rewritten
-        AppGroup.lastDictationStatusMessage = "Tap to paste rewritten text"
-        setStatusBanner(AppGroup.lastDictationStatusMessage)
-        keyboardRewriteLog.notice(
-            "KB.rewrite apply: PASTEBOARD-FALLBACK liveLen=\(liveLen, privacy: .public) capLen=\(capLen, privacy: .public) outputChars=\(rewritten.count, privacy: .public)"
-        )
-        renderRootView()
-    }
-
-    /// Arms the 60s wall-clock round-trip timeout if a rewrite is
-    /// pending and not already armed. Cancelled on drain (success path)
-    /// or on the next `viewWillDisappear`. Also re-armed by
-    /// `viewWillAppear` so a long round-trip across an extension
-    /// recycle still surfaces a "took too long" banner instead of
-    /// hanging indefinitely.
-    ///
-    /// Computes the remaining timeout from `pendingRewriteStartedAt`
-    /// (or the AppGroup-hydrated value), so re-arming after a recycle
-    /// fires near the original 60s mark, not 60s from re-arm.
-    private func rearmRewriteLiveTimeoutIfPending() {
-        guard pendingRewriteSessionID != nil else { return }
-        guard rewriteLiveTimeoutTask == nil else { return }
-        let startedAt = pendingRewriteStartedAt ?? Date()
-        let elapsed = Date().timeIntervalSince(startedAt)
-        let remaining = Self.rewriteRoundTripTimeoutSeconds - elapsed
-        guard remaining > 0 else {
-            // Already past the deadline — fire immediately.
-            handleRewriteRoundTripTimeout()
-            return
-        }
-        rewriteLiveTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(remaining))
-            guard let self, !Task.isCancelled else { return }
-            self.handleRewriteRoundTripTimeout()
-        }
-    }
-
-    /// Fires when the 60s round-trip timeout elapses without a result.
-    /// Clears pending state (both in-memory and AppGroup) and surfaces
-    /// the timeout banner. Result slots are NOT cleared — the
-    /// dispatcher may still complete and overwrite them; on the next
-    /// `viewWillAppear` they'll be ignored because the
-    /// `keyboardPendingRewriteState` slot is gone (no correlation key
-    /// to match against).
-    private func handleRewriteRoundTripTimeout() {
-        guard let pendingSessionID = pendingRewriteSessionID else { return }
-        keyboardRewriteLog.error(
-            "KB.rewrite TIMEOUT sessionID=\(pendingSessionID, privacy: .public) — clearing pending state"
-        )
-        rewriteLiveTimeoutTask = nil
-        clearPendingRewriteState()
-        rewriteInFlight = false
-        AppGroup.lastDictationStatusMessage = "Rewrite timed out"
-        setStatusBanner(AppGroup.lastDictationStatusMessage)
-        renderRootView()
-    }
-
-    /// Clears both the AppGroup and in-memory keyboard-pending state.
-    /// Called on open-failure, on round-trip timeout, and on terminal
-    /// drain. Does NOT touch the dispatcher's result slots — those are
-    /// independently cleared on drain (where they were just consumed)
-    /// and left alone on timeout (where the dispatcher may still write
-    /// them).
-    private func clearPendingRewriteState() {
-        AppGroup.keyboardPendingRewriteState = nil
-        AppGroup.pendingRewriteRequest = nil
-        AppGroup.rewriteSelectionLength = nil
-        clearInMemoryPendingRewriteState()
-    }
-
-    private func clearInMemoryPendingRewriteState() {
-        pendingRewriteSessionID = nil
-        pendingRewriteSelectionText = nil
-        pendingRewriteSelectionLength = nil
-        pendingRewriteStartedAt = nil
     }
 
     // MARK: - Status banner (v0.4)

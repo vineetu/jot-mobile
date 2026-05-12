@@ -73,6 +73,7 @@ enum AppGroup {
         /// in via the wizard step (Phase 2) or Settings toggle (Phase 1).
         static let warmHoldEnabled = "jot.warmHold.enabled"
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
+        static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
@@ -140,6 +141,23 @@ enum AppGroup {
                 defaults.set(newValue, forKey: Keys.warmHoldExpiresAt)
             } else {
                 defaults.removeObject(forKey: Keys.warmHoldExpiresAt)
+            }
+        }
+    }
+
+    /// Liveness heartbeat written by RecordingService every ~1s while
+    /// warm-hold is active. The keyboard gates the warm-resume fast-path
+    /// on this being fresh (≤2.5s old) — without it, a ghost expiry
+    /// from a jetsammed main app would silently swallow Dictate taps
+    /// because no listener exists for the warm-resume Darwin notification.
+    /// Stale heartbeat → fall through to URL bounce.
+    static var warmHoldHeartbeat: Date? {
+        get { defaults.object(forKey: Keys.warmHoldHeartbeat) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Keys.warmHoldHeartbeat)
+            } else {
+                defaults.removeObject(forKey: Keys.warmHoldHeartbeat)
             }
         }
     }

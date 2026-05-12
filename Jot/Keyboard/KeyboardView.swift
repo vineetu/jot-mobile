@@ -7,7 +7,7 @@ import UIKit
 ///   - Top strip: `RecentsStrip` (idle) / `StreamingStrip` (recording).
 ///     Recents shows top-5 with an optional "just now" marker for the
 ///     most recent successful paste (Mockup 01 / 02 / 03).
-///   - Action row: wand (rewrite) + Dictate pill (red stop pill while
+///   - Action row: Minimize + Dictate pill (red stop pill while
 ///     recording) + Actions (popover trigger). Punctuation row is
 ///     hidden while recording per Mockup 02.
 ///   - Bottom row: space + return (globe key removed 2026-05-11 — user
@@ -23,9 +23,6 @@ import UIKit
 struct KeyboardView: View {
     let hasFullAccess: Bool
     let hasPasteboardContent: Bool
-    let hasSelection: Bool
-    let availableSavedPrompts: [SavedPrompt]
-    let isRewritingSelection: Bool
     let recordingState: KeyboardRecordingState
     let needsInputModeSwitchKey: Bool
     let returnKeyType: UIReturnKeyType
@@ -45,10 +42,6 @@ struct KeyboardView: View {
     /// phase. Used to disable the speak button so iOS suppresses taps while
     /// the stop is in flight.
     let isStopRequestPending: Bool
-
-    /// True when the AI Rewrite master toggle is OFF in the main app's
-    /// settings. Drives the wand button's "AI off" state.
-    let aiUnavailable: Bool
 
     /// Transient status banner text (e.g. "Rewrite timed out").
     let statusBanner: String?
@@ -72,7 +65,6 @@ struct KeyboardView: View {
     let onCopyLastDictation: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
-    let onSelectPromptForSelection: (SavedPrompt) -> Void
     let onTapToSpeak: () -> Void
     let onInsertHistoryEntry: (TranscriptHistoryMirror.Entry) -> Void
     let onInsertText: (String) -> Void
@@ -286,8 +278,8 @@ struct KeyboardView: View {
 
     // MARK: - Action + mic row
 
-    /// Primary controls row — collapse-chevron, wand (rewrite),
-    /// Dictate (or red stop pill), and Actions popover trigger.
+    /// Primary controls row — Minimize, Dictate (or red stop pill),
+    /// and Actions popover trigger.
     ///
     /// Phase 2.5 added the leading `collapseToggle` so the user can
     /// minimize the keyboard into the 58pt low-profile bar. The
@@ -297,7 +289,6 @@ struct KeyboardView: View {
     private var actionAndMicRow: some View {
         HStack(spacing: 10) {
             collapseToggle
-            wandButton
             speakButton
                 .frame(maxWidth: .infinity)
             actionsButton
@@ -308,118 +299,23 @@ struct KeyboardView: View {
         .frame(minHeight: 48)
     }
 
-    /// `chevron.compact.down` — taps collapse the keyboard into the
-    /// 58pt `CollapsedBarView`. Liquid Glass square so it matches the
-    /// wand + actions buttons.
     private var collapseToggle: some View {
         Button {
             feedback.systemClick()
             feedback.selectionTick()
             onToggleCollapsed()
         } label: {
-            Image(systemName: "chevron.compact.down")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Color.jotKeyboardActionsInk)
-                .frame(width: 44, height: 44)
-                .background(
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.jotKeyboardGlassFill1,
-                                        Color.jotKeyboardGlassFill2,
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                    }
-                )
-                .overlay(
-                    // Inset highlight — matches the Recents / Streaming /
-                    // wand / Actions recipe so all five Liquid Glass
-                    // surfaces read uniformly.
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .inset(by: 0.5)
-                        .stroke(Color.jotKeyboardGlassHighlight, lineWidth: 0.5)
-                        .blendMode(.plusLighter)
-                        .allowsHitTesting(false)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(Color.jotKeyboardGlassHairline, lineWidth: 0.5)
-                )
-                // Drop shadow — uniform Liquid Glass recipe.
-                .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 4)
-                .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            secondaryControlLabel(
+                title: "Minimize",
+                systemImage: "chevron.compact.down",
+                enabled: true,
+                lit: false
+            )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Collapse keyboard")
+        .accessibilityLabel("Minimize keyboard")
         .accessibilityHint("Minimizes the Jot keyboard to a compact bar")
         .accessibilityAddTraits(.isButton)
-    }
-
-    @ViewBuilder
-    private var wandButton: some View {
-        if aiUnavailable {
-            Button {} label: {
-                secondaryControlLabel(
-                    title: "AI off",
-                    systemImage: "exclamationmark.triangle",
-                    enabled: true,
-                    lit: false
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(true)
-            .opacity(0.45)
-            .accessibilityLabel("AI Rewrite is turned off")
-            .accessibilityAddTraits(.isButton)
-        } else {
-            let isInteractive = hasSelection && !isRewritingSelection
-            if isInteractive {
-                Menu {
-                    ForEach(availableSavedPrompts) { prompt in
-                        Button {
-                            feedback.systemClick()
-                            feedback.selectionTick()
-                            onSelectPromptForSelection(prompt)
-                        } label: {
-                            Text(prompt.name)
-                        }
-                    }
-                } label: {
-                    secondaryControlLabel(
-                        title: "",
-                        systemImage: "wand.and.stars",
-                        enabled: true,
-                        lit: true
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Rewrite selection — choose a prompt")
-                .accessibilityAddTraits(.isButton)
-            } else {
-                Button {} label: {
-                    secondaryControlLabel(
-                        title: "",
-                        systemImage: "wand.and.stars",
-                        enabled: true,
-                        lit: false
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(true)
-                .opacity(0.45)
-                .accessibilityLabel(isRewritingSelection
-                                    ? "Rewriting selection…"
-                                    : "Rewrite — select text to enable")
-                .accessibilityAddTraits(.isButton)
-            }
-        }
     }
 
     /// Primary dictation CTA.
@@ -706,7 +602,7 @@ struct KeyboardView: View {
         // Liquid Glass shell — same recipe as the recents / streaming
         // cards, just compact. Title ink is `#3a3a45` (jotKeyboardActionsInk)
         // at 14pt 500 weight per spec; icon ink follows the lit state so
-        // the wand glyph reads iOS-blue when interactive.
+        // active controls read iOS-blue when engaged.
         HStack(spacing: 4) {
             icon()
             if !title.isEmpty {
@@ -740,8 +636,8 @@ struct KeyboardView: View {
                         )
                     )
                 if lit {
-                    // Subtle blue tint on the lit (popover-open / wand-
-                    // active) state so the glass surface itself reads
+                    // Subtle blue tint on the lit / popover-open state
+                    // so the glass surface itself reads
                     // "this is engaged" without flipping to solid coral.
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .fill(Color.jotKeyboardAccent.opacity(0.12))
@@ -808,33 +704,23 @@ struct KeyboardView: View {
         return systemColorScheme
     }
 
-    /// Chrome background — v2 retheme.
+    /// Chrome background — transparent over the native keyboard backdrop.
     ///
-    /// Idle: iOS-system-gray two-stop gradient. The hex values match the
-    /// iOS bottom system bar exactly so the seam between our chrome and
-    /// iOS's accessory area disappears.
+    /// Idle: parent `UIInputView(style: .keyboard)` supplies Apple's
+    /// adaptive keyboard tray material.
     ///
-    /// Recording: same gray gradient with a subtle blue tint overlaid
-    /// ON TOP — not a separate gradient. The surface still reads as the
-    /// system keyboard, just lit blue.
+    /// Recording: subtle blue tint overlaid ON TOP. The surface still
+    /// reads as the system keyboard, just lit blue.
     @ViewBuilder
     private var chromeBackground: some View {
-        LinearGradient(
-            colors: [
-                Color.jotKeyboardChromeIdleTop,
-                Color.jotKeyboardChromeIdleBottom,
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .overlay(
-            // Recording-state tint overlay. Layered (not replaced) so
-            // the underlying gray chrome still matches the iOS bar
-            // perfectly — only the recording signal changes.
-            recordingState.isRecording
-                ? Color.jotKeyboardChromeRecordingTint
-                : Color.clear
-        )
+        // Transparent: lets the parent UIInputView(style: .keyboard)
+        // backdrop render through. Recording-state tint overlays on top.
+        Color.clear
+            .overlay(
+                recordingState.isRecording
+                    ? Color.jotKeyboardChromeRecordingTint
+                    : Color.clear
+            )
     }
 
     /// Dictate pill background — STATIC blue gradient (`#007AFF → #0064CC`)

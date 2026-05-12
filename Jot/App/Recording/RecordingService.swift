@@ -113,6 +113,12 @@ final class RecordingService {
     private var engine: AVAudioEngine?
     private var capture: CaptureContext?
     private var warmCooldownTask: Task<Void, Never>?
+    /// Repeating task that refreshes `AppGroup.warmHoldHeartbeat` every
+    /// ~1s while warm-hold is active. The keyboard treats a stale
+    /// heartbeat (>2.5s old) as proof the main app was jetsammed and
+    /// falls back to the URL bounce instead of posting a Darwin
+    /// notification to a dead listener.
+    private var warmHeartbeatTask: Task<Void, Never>?
     // Array rather than Set because `NSObjectProtocol` isn't Hashable.
     // We only ever iterate to remove — semantics are identical.
     private var observers: [NSObjectProtocol] = []
@@ -355,8 +361,11 @@ final class RecordingService {
     private func startFromWarmHold(engine: AVAudioEngine) async throws {
         warmCooldownTask?.cancel()
         warmCooldownTask = nil
+        warmHeartbeatTask?.cancel()
+        warmHeartbeatTask = nil
         isWarm = false
         AppGroup.warmHoldExpiresAt = nil
+        AppGroup.warmHoldHeartbeat = nil
         warmExpiresAt = nil
 
         let input = engine.inputNode
@@ -538,6 +547,9 @@ final class RecordingService {
         isWarm = true
         warmExpiresAt = expiresAt
         AppGroup.warmHoldExpiresAt = warmExpiresAt
+        // Seed the heartbeat immediately so the keyboard's first liveness
+        // check after enterWarmHold doesn't see a nil/stale value.
+        AppGroup.warmHoldHeartbeat = Date()
         warmCooldownTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .seconds(Self.warmHoldDuration))
@@ -548,6 +560,19 @@ final class RecordingService {
             self.exitWarmHold()
         }
 
+        warmHeartbeatTask?.cancel()
+        warmHeartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.isWarm else { return }
+                AppGroup.warmHoldHeartbeat = Date()
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
+        }
+
         log.info("Warm hold entered; expiresAt=\(expiresAt.timeIntervalSince1970, privacy: .public)")
     }
 
@@ -555,8 +580,11 @@ final class RecordingService {
         let wasWarm = isWarm
         warmCooldownTask?.cancel()
         warmCooldownTask = nil
+        warmHeartbeatTask?.cancel()
+        warmHeartbeatTask = nil
         warmExpiresAt = nil
         AppGroup.warmHoldExpiresAt = nil
+        AppGroup.warmHoldHeartbeat = nil
         isWarm = false
 
         fullyTeardownEngine()

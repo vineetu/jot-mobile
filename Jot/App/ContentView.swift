@@ -90,10 +90,12 @@ enum HeroIntent {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(RecordingService.self) private var recordingService
+    @Environment(KeyboardRewriteRouter.self) private var keyboardRewriteRouter
 
     @Query(sort: \Transcript.createdAt, order: .reverse)
     private var transcripts: [Transcript]
 
+    @State private var navPath = NavigationPath()
     @State private var searchText = ""
     @State private var showSettings = false
     /// Drives the modal Help sheet from the home header's "?" glass-circle
@@ -129,7 +131,7 @@ struct ContentView: View {
     @State private var heroIntent: HeroIntent = .adoptInFlight
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ZStack(alignment: .bottom) {
                 JotDesign.background
                     .ignoresSafeArea()
@@ -167,7 +169,25 @@ struct ContentView: View {
                     intent: heroIntent
                 )
             }
+            .navigationDestination(for: KeyboardRewriteRouter.KeyboardRewriteTarget.self) { target in
+                let fetched = fetchTranscript(byID: target.id)
+                if let fetched {
+                    TranscriptDetailView(
+                        transcript: fetched,
+                        keyboardRewriteIntent: target
+                    )
+                } else {
+                    // Fetch miss: JotApp.handleRewriteURL already cleared
+                    // pendingRewriteRequest and stamped rewriteJobID, so the
+                    // keyboard's Darwin observer is waiting on a postCompleted
+                    // that would otherwise never fire (60s timeout). Surface a
+                    // terminal error so the keyboard unblocks immediately.
+                    EmptyView()
+                        .onAppear { releaseStrandedKeyboard(target: target) }
+                }
+            }
         }
+        .enableInteractivePopGesture()
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .sheet(isPresented: $showSettings, onDismiss: handleSettingsDismissed) {
             SettingsView(onRerunRequested: { pendingRerunAfterDismiss = true })
@@ -198,6 +218,9 @@ struct ContentView: View {
         }
         .onAppear {
             copyHaptic.prepare()
+            if let target = keyboardRewriteRouter.consumePending() {
+                navPath.append(target)
+            }
             // Cold-launch / first-appear adoption: if `JotApp.onOpenURL`
             // already kicked the recording before our nav stack rendered,
             // we land here with `isRecording == true`. Push the hero on
@@ -208,6 +231,11 @@ struct ContentView: View {
                 heroIntent = .adoptInFlight
                 showRecordingHero = true
             }
+        }
+        .onChange(of: keyboardRewriteRouter.pendingTarget) { _, newTarget in
+            guard let newTarget else { return }
+            navPath.append(newTarget)
+            _ = keyboardRewriteRouter.consumePending()
         }
         .onDisappear {
             copyResetTask?.cancel()
@@ -340,7 +368,10 @@ struct ContentView: View {
                         VStack(spacing: 0) {
                             ForEach(group.items) { transcript in
                                 NavigationLink {
-                                    TranscriptDetailView(transcript: transcript)
+                                    TranscriptDetailView(
+                                        transcript: transcript,
+                                        keyboardRewriteIntent: nil
+                                    )
                                 } label: {
                                     TranscriptRow(
                                         transcript: transcript,
@@ -500,6 +531,36 @@ struct ContentView: View {
         SettingsRerunTrigger.shared.requestRerun()
     }
 
+    private func fetchTranscript(byID id: UUID) -> Transcript? {
+        var descriptor = FetchDescriptor<Transcript>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    /// Terminal-error write path for the keyboard-rewrite destination when
+    /// the SwiftData fetch returns nil. Without this, the keyboard's Darwin
+    /// observer waits up to `rewriteRoundTripTimeoutSeconds` (60s) before
+    /// surfacing its own timeout. Guarded on `rewriteJobID == target.jobID`
+    /// so a stale fetch-miss view doesn't clobber a newer job's slot.
+    private func releaseStrandedKeyboard(target: KeyboardRewriteRouter.KeyboardRewriteTarget) {
+        contentLog.error(
+            "Keyboard rewrite target fetched nil transcript; releasing keyboard sessionID=\(target.sessionID, privacy: .public) jobID=\(target.jobID, privacy: .public) transcriptID=\(target.id, privacy: .public)"
+        )
+        // Whole terminal write must be guarded on jobID match — without
+        // this, a stale `EmptyView().onAppear` from a transient fetch
+        // miss can clobber the result slots of a NEWER job that's
+        // already mid-flight. Drop silently when the slot has moved on.
+        guard AppGroup.rewriteJobID == target.jobID else {
+            contentLog.notice("releaseStrandedKeyboard: jobID slot moved on; skipping terminal write")
+            return
+        }
+        AppGroup.rewriteError = "Couldn't open transcript."
+        AppGroup.rewriteResult = nil
+        AppGroup.rewriteResultSessionID = target.sessionID
+        AppGroup.rewriteJobID = nil
+        RewriteNotifications.postCompleted()
+    }
+
     private func copy(_ transcript: Transcript) {
         UIPasteboard.general.string = transcript.displayText
         copyHaptic.impactOccurred()
@@ -604,6 +665,7 @@ private struct TranscriptRow: View {
 #Preview {
     ContentView()
         .environment(RecordingService())
+        .environment(KeyboardRewriteRouter())
         .environment(TranscriptionService())
         .environment(StreamingPartial())
         .modelContainer(for: Transcript.self, inMemory: true)

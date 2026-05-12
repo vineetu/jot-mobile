@@ -147,6 +147,9 @@ struct RecordingHeroView: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        // See TranscriptDetailView for rationale — re-apply AFTER hiding
+        // chrome so the swipe-back gesture isn't disabled by iOS.
+        .enableInteractivePopGesture()
         .onAppear {
             startHaptic.prepare()
             stopHaptic.prepare()

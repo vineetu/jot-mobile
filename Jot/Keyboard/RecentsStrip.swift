@@ -195,7 +195,8 @@ struct RecentsStrip: View {
                     // correctly on the dark glass card (where the prior
                     // `.jotMute` was too dark to be legible).
                     .foregroundStyle(Color.jotKeyboardTimeMute)
-                    .frame(width: 42, alignment: .leading)
+                    .lineLimit(1)
+                    .frame(width: 52, alignment: .leading)
 
                 Text(entry.text)
                     .font(.system(size: 12.5, weight: .regular))

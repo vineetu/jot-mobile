@@ -12,9 +12,6 @@ import SwiftUI
 /// NO "Clear field" row (plan §13 risk 9 — unreliable in keyboard
 /// extensions).
 ///
-/// Rewrite / wand stays on the LEFT side of the action row, NOT inside
-/// this popover (the popover is intentionally edit-only).
-///
 /// Position + animation are hand-rolled (no `UIPopoverPresentationController`
 /// — that doesn't play nicely in keyboard extensions). The popover is
 /// rendered as a SwiftUI overlay at the bottom-right of the keyboard
