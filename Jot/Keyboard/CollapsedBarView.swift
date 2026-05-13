@@ -243,24 +243,12 @@ struct CollapsedBarView: View {
     // MARK: - Backgrounds
 
     /// Collapsed bar background: transparent over the native keyboard
-    /// backdrop, plus the same blue-tint overlay during recording. Idle
-    /// has no top hairline; recording keeps the soft blue hairline.
+    /// backdrop in both idle and recording.
     private var barBackground: some View {
-        // Transparent: lets the parent UIInputView(style: .keyboard)
-        // backdrop render through. Recording-state tint overlays on top.
+        // Transparent — UIInputView(style: .keyboard) backdrop renders
+        // through. No recording-state tint or hairline (matches the
+        // expanded keyboard's idle-only chrome treatment).
         Color.clear
-            .overlay(
-                recordingState.isRecording
-                    ? Color.jotKeyboardChromeRecordingTint
-                    : Color.clear
-            )
-            .overlay(alignment: .top) {
-                if recordingState.isRecording {
-                    Rectangle()
-                        .fill(Color.jotKeyboardChromeRecordingHairline)
-                        .frame(height: 0.5)
-                }
-            }
     }
 
     /// Dictate / Stop pill background — STATIC blue gradient

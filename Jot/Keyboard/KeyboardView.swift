@@ -178,26 +178,9 @@ struct KeyboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, metrics.sideInset)
                 .padding(.vertical, 4)
-                // Keyboard rebuild (2026-05-11): chrome now branches on
-                // recording state. Idle is warm-cream paper, recording is
-                // blue-tinted cream — both with a top hairline + a soft
-                // inner highlight that reads as "single editorial surface
-                // sitting under the iOS keyboard accessory bar".
+                // Transparent chrome lets the native keyboard backdrop render
+                // through in both idle and recording.
                 .background(chromeBackground)
-                .overlay(alignment: .top) {
-                    // v2 retheme: idle has NO top hairline. The chrome
-                    // gray matches the iOS system bar exactly — there's
-                    // no seam to hide. Recording state keeps the soft
-                    // blue hairline + glow so the focus state still
-                    // signals "we're listening" at the top edge.
-                    if recordingState.isRecording {
-                        Rectangle()
-                            .fill(Color.jotKeyboardChromeRecordingHairline)
-                            .frame(height: 0.5)
-                            .shadow(color: Color.jotKeyboardAccent.opacity(0.10),
-                                    radius: 12, x: 0, y: -4)
-                    }
-                }
                 .overlay(alignment: .top) {
                     statusBannerOverlay
                         .padding(.horizontal, metrics.sideInset)
@@ -709,18 +692,14 @@ struct KeyboardView: View {
     /// Idle: parent `UIInputView(style: .keyboard)` supplies Apple's
     /// adaptive keyboard tray material.
     ///
-    /// Recording: subtle blue tint overlaid ON TOP. The surface still
-    /// reads as the system keyboard, just lit blue.
+    /// Recording: same transparent chrome; the stop pill and streaming text
+    /// supply the visual recording cue.
     @ViewBuilder
     private var chromeBackground: some View {
-        // Transparent: lets the parent UIInputView(style: .keyboard)
-        // backdrop render through. Recording-state tint overlays on top.
+        // Transparent — UIInputView(style: .keyboard) backdrop renders
+        // through. No recording-state tint: the stop pill + streaming
+        // text card supply the visual recording cue.
         Color.clear
-            .overlay(
-                recordingState.isRecording
-                    ? Color.jotKeyboardChromeRecordingTint
-                    : Color.clear
-            )
     }
 
     /// Dictate pill background — STATIC blue gradient (`#007AFF → #0064CC`)
