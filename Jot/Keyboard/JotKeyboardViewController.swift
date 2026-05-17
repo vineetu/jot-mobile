@@ -249,6 +249,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // keypress feels as crisp as the hundredth (HIG → Playing Haptics).
         feedback.fullAccess = hasFullAccess
         feedback.prepare()
+        // Mirror Full Access state to the App Group so the main app
+        // (specifically the W3 wizard step) can detect it. iOS does not
+        // expose a direct API for the main app to read `hasFullAccess`;
+        // this write is the workaround. Caveat: until the user has
+        // presented the keyboard at least once after enabling FA, the
+        // flag remains false on the app side.
+        AppGroup.keyboardHasFullAccess = hasFullAccess
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
@@ -1359,15 +1366,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             keyboardLog.notice("Ghost warm-hold projection cleared; expiresAtDelta=\(expiresAtDelta, privacy: .public)s heartbeatAge=\(heartbeatAge, privacy: .public)s; falling through to URL bounce")
         }
 
-        // Wizard W7 short-circuit: if the host app is Jot itself (detected
+        // Wizard W5 short-circuit: if the host app is Jot itself (detected
         // via the App Group foreground heartbeat written by `JotApp` while
         // `scenePhase == .active`), `extensionContext.open(jot://dictate)`
         // would be silently refused by iOS (iOS will not re-launch the
         // already-foreground app via URL scheme), making the Dictate tap
         // appear to do nothing. Post a Darwin notification instead — the
-        // wizard's `SetupWizardView` observes this on W7 and advances to
-        // W8. W6 already verified actual dictation; W7 only verifies the
-        // user can find + tap Dictate in the keyboard.
+        // wizard's `SetupWizardView` observes this on W5 (keyboard
+        // try-it) and advances to W6 once a fresh dictation arrives.
         //
         // Gated by `hasFullAccess` because App Group reads require it —
         // without Full Access, `isJotAppForeground()` always returns

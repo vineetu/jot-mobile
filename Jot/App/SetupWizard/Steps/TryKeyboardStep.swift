@@ -2,7 +2,8 @@
 //  TryKeyboardStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W6.
+//  Phase 6 — wizard panel W5 (formerly W6 before the in-app try-it step
+//  was dropped).
 //  "Now try the keyboard" — passive verification. Auto-advances when a
 //  fresh `ClipboardHandoff.FreshDictation` newer than this step's entry
 //  timestamp lands in the App Group. Provides a manual "I've got it"
@@ -14,7 +15,7 @@ import os.log
 
 private let tryKeyboardLog = Logger(
     subsystem: "com.vineetu.jot.mobile.Jot",
-    category: "setup-wizard.W6"
+    category: "setup-wizard.W5"
 )
 
 struct TryKeyboardStep: View {
@@ -30,7 +31,7 @@ struct TryKeyboardStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 5), onClose: onClose, onBack: onBack)
+            header: WizardHeader(style: .core(current: 4), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 16) {
                 Spacer(minLength: 16)
@@ -65,7 +66,7 @@ struct TryKeyboardStep: View {
             pollTask = nil
             let service = recordingService
             let teardown: @MainActor () -> Void = {
-                tryKeyboardLog.notice("W6 disappearing while recording in flight — force-stopping (wizard contract)")
+                tryKeyboardLog.notice("W5 disappearing while recording in flight — force-stopping (wizard contract)")
                 service.forceStop()
                 service.markPipelineFinished()
                 service.publishPipelinePhase(.idle)

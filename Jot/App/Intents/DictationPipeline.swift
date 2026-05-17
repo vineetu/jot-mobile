@@ -231,34 +231,13 @@ enum DictationPipeline {
             "follow-up candidate — uiActive=\(uiFollowUpActive, privacy: .public) priorPresent=\(priorText != nil, privacy: .public) priorAge=\(priorAge ?? -1, privacy: .public) transcriptChars=\(transcript.count, privacy: .public)"
         )
 
-        // Bundled disfluency-cleanup pass (opt-in, off by default). Runs
-        // BEFORE the chained-follow-up classifier so the classifier sees
-        // the same text the user will see pasted into the host — keeping
-        // "redo" / "shorten" intents semantically aligned with what's on
-        // screen. The cleanup itself is fail-safe: any internal throw
-        // returns the input unchanged. `transcript` (raw) stays in scope
-        // and is what we always write into the ledger's `raw` slot; only
-        // the downstream publish + classifier + AI-Rewrite-cleanup paths
-        // switch to `disfluencyCleanedTranscript`.
-        let disfluencyCleanupActive = AppGroup.disfluencyCleanupEnabled
-            && !postProcessing.isCancellationRequested
-        let disfluencyCleanedTranscript: String = {
-            guard disfluencyCleanupActive else { return transcript }
-            return DisfluencyCleanup.shared.clean(transcript)
-        }()
-        let disfluencyDidChangeText =
-            disfluencyCleanupActive && disfluencyCleanedTranscript != transcript
-        logger.info(
-            "disfluency cleanup — enabled=\(AppGroup.disfluencyCleanupEnabled, privacy: .public) active=\(disfluencyCleanupActive, privacy: .public) changed=\(disfluencyDidChangeText, privacy: .public) rawChars=\(transcript.count, privacy: .public) cleanedChars=\(disfluencyCleanedTranscript.count, privacy: .public)"
-        )
-
         await DictationActivityCoordinator.shared.update(phase: .processing)
         recording.publishPipelinePhase(.processing)
 
         let resolution: CommandResolution
         do {
             resolution = try await postProcessing.resolveUtterance(
-                new: disfluencyCleanedTranscript,
+                new: transcript,
                 priorTranscript: priorText
             )
         } catch is CancellationError {
@@ -304,12 +283,8 @@ enum DictationPipeline {
                 await DictationActivityCoordinator.shared.update(phase: .cleaning)
                 recording.publishPipelinePhase(.cleaning)
                 do {
-                    // AI-Rewrite-style cleanup runs on top of any disfluency
-                    // cleanup that already happened upstream — the two
-                    // cleanups are independent toggles and the AI pass
-                    // sees the disfluency-cleaned text as its input.
                     let cleaned = try await postProcessing.clean(
-                        transcript: disfluencyCleanedTranscript,
+                        transcript: transcript,
                         settings: cleanup
                     )
                     if postProcessing.isCancellationRequested {
@@ -325,38 +300,21 @@ enum DictationPipeline {
                     }
                 } catch {
                     // ANY throw — cancellation, model-unavailable, generation-
-                    // failure. Degrade to raw. Do not skip publish.
-                    //
-                    // Disfluency cleanup did NOT throw to get here (its
-                    // `clean(_:)` is fail-safe and returns input unchanged
-                    // on error). The throw is from the AI Rewrite cleanup,
-                    // which is the more invasive pass — falling back to
-                    // raw avoids confusing the user with a half-rewritten
-                    // surface. Disfluency-only mode (AI cleanup OFF,
-                    // disfluency cleanup ON) never enters this branch.
+                    // failure. Degrade to raw. Do not skip publish. The AI
+                    // Rewrite cleanup is the more invasive pass — falling
+                    // back to raw avoids confusing the user with a
+                    // half-rewritten surface.
                     logger.error(
                         "cleanup degraded to raw: \(error.localizedDescription, privacy: .public)"
                     )
                     finalText = transcript
                     cleanedText = nil
                 }
-            } else if disfluencyDidChangeText {
-                // Disfluency-only path: the upstream cleanup produced a
-                // different string. Publish the cleaned version so the
-                // keyboard pastes cleaned text. `cleanedText` stays nil —
-                // disfluency cleanup is treated as part of the original
-                // transcript (Detail's Original tab), NOT as an AI Rewrite
-                // (which is what Detail's Rewrite tab surfaces). The
-                // disfluency-cleaned text is persisted via the separate
-                // `disfluencyCleaned:` parameter on `TranscriptStore.append`
-                // below.
-                finalText = disfluencyCleanedTranscript
-                cleanedText = nil
             } else {
-                // Neither cleanup ran (or disfluency cleanup ran and was
-                // a no-op). `disfluencyCleanedTranscript == transcript`
-                // here either way, but we prefer `transcript` for clarity
-                // — the published text IS the raw text.
+                // No AI Rewrite cleanup ran — the published text IS the raw
+                // text. Lightweight regex filler-word sweep that always runs
+                // on every transcript lives downstream of the publish/append
+                // surfaces (Detail's Original tab applies it on render).
                 finalText = transcript
                 cleanedText = nil
             }
@@ -392,7 +350,6 @@ enum DictationPipeline {
                     id: transcriptID,
                     raw: transcript,
                     cleaned: cleanedText,
-                    disfluencyCleaned: disfluencyDidChangeText ? disfluencyCleanedTranscript : nil,
                     duration: duration
                 )
             } catch {
@@ -439,7 +396,6 @@ enum DictationPipeline {
                         id: transcriptID,
                         raw: transcript,
                         cleaned: nil,
-                        disfluencyCleaned: disfluencyDidChangeText ? disfluencyCleanedTranscript : nil,
                         duration: duration
                     )
                 } catch {
@@ -507,7 +463,6 @@ enum DictationPipeline {
                     id: transcriptID,
                     raw: transcript,
                     cleaned: result,
-                    disfluencyCleaned: disfluencyDidChangeText ? disfluencyCleanedTranscript : nil,
                     duration: duration,
                     derivedFrom: priorID,
                     instruction: instruction

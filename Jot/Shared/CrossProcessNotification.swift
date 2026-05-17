@@ -39,12 +39,12 @@ enum CrossProcessNotification {
 
     /// Posted by the keyboard extension when the user taps the Dictate
     /// (mic CTA) pill AND the host app is detected as Jot itself
-    /// (typically: setup wizard W8). iOS silently refuses
+    /// (typically: setup wizard W5 keyboard-try step). iOS silently refuses
     /// `extensionContext.open` for the already-foreground app, so the
     /// keyboard cannot route the tap through the normal `jot://dictate`
     /// URL bounce in this case — without this notification, the tap
     /// appears to do nothing. The main app's wizard observer treats this
-    /// as proof the user can find the Dictate pill and advances W8 → W9.
+    /// as proof the user can find the Dictate pill and advances W5 → W6.
     /// See `JotKeyboardViewController.handleMicCTATap` for the host-app
     /// detection (App Group foreground heartbeat) and `SetupWizardView`
     /// for the wizard wiring.
@@ -57,7 +57,7 @@ enum CrossProcessNotification {
     /// main app's observer calls `RecordingService.start()` which takes the
     /// warm fast-path (`engine.start()` on the paused engine). Distinct from
     /// `keyboardDictateTapped` -- that one signals "user found the pill during
-    /// wizard W8" and the wizard observer advances. `warmResumeRequested`
+    /// wizard W5" and the wizard observer advances. `warmResumeRequested`
     /// signals "recording should resume now via the warm path".
     static let warmResumeRequested = Name(
         rawValue: "com.vineetu.jot.mobile.warm-resume-requested"

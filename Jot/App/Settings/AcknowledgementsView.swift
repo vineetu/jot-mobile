@@ -106,22 +106,6 @@ struct AcknowledgementsView: View {
                         showDivider: true
                     )
                     AcknowledgementRow(
-                        title: "Rocholl 6×96 disfluency tagger",
-                        author: "Johann Rocholl et al. (Google Research)",
-                        license: "Apache 2.0",
-                        version: nil,
-                        url: "https://arxiv.org/abs/2104.10769",
-                        showDivider: true
-                    )
-                    AcknowledgementRow(
-                        title: "DisfluencySpeech corpus",
-                        author: "AMAAI Lab (Singapore University of Technology and Design)",
-                        license: "Apache 2.0",
-                        version: nil,
-                        url: "https://huggingface.co/datasets/amaai-lab/DisfluencySpeech",
-                        showDivider: true
-                    )
-                    AcknowledgementRow(
                         title: "Fraunces",
                         author: "Undercase Type",
                         license: "SIL OFL 1.1",

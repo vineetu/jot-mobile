@@ -603,6 +603,10 @@ final class TranscriptionService {
                     tokenTimings: timings
                 )
             }
+            // Strip simple filler words AFTER paragraph segmentation so the
+            // removed tokens don't change pause-measurement decisions.
+            // This is a fast regex sweep that always runs on every transcript.
+            transcriptText = FillerWordCleaner.clean(transcriptText)
             return transcriptText
         } catch {
             let inferenceEndedAt = Date()

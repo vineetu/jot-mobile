@@ -53,10 +53,11 @@ targets:
     sources:
       - path: App
       - path: Shared
-      # Main-app-only asset catalog (AppIcon + future brand tokens).
-      # The keyboard extension doesn't render custom icons on iOS, so it
-      # doesn't need its own xcassets — the app icon is the only
-      # catalogued asset today.
+      # Main-app asset catalog (AppIcon + future brand tokens).
+      # The keyboard extension has its OWN separate catalog at
+      # `Keyboard/Assets.xcassets` so Settings → General → Keyboard →
+      # Keyboards can render an icon for the appex — see that target's
+      # sources block below.
       # `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` in the generated
       # pbxproj already expects a bundled AppIcon.appiconset; without this
       # source entry the catalog never made it into a build phase, so even
@@ -84,27 +85,6 @@ targets:
       # needed for the default dictation flow (App Review 4.2.3(ii)).
       - path: Resources/Models
         type: folder
-        buildPhase: resources
-      # Bundled disfluency-cleanup tagger (Rocholl 6x96 BERT, ~3.6 MB INT8
-      # CoreML + 226 KB WordPiece vocab). Off by default; users opt in via
-      # Settings → Speech Model → "Clean up filler words". The mlpackage
-      # lives OUTSIDE `Resources/Models/` so it isn't swallowed by the
-      # Parakeet folder reference above — that reference ships its tree as
-      # raw files (correct for `.mlmodelc`), but our `.mlpackage` needs the
-      # asset compiler's CoreML build phase to materialize an `.mlmodelc`
-      # at build time. `file.mlpackage` triggers that pipeline; a folder
-      # reference would not.
-      #
-      # Shipped to both the main app target and the keyboard appex even
-      # though only the main app runs cleanup today: `DictationPipeline`
-      # (main-app-only) is the single site that invokes the tagger. The
-      # keyboard URL-bounces dictation requests into the main app, which
-      # cleans + publishes the result back via clipboard. Bundling to the
-      # keyboard preserves future flexibility (in-extension cleanup) at a
-      # ~3.6 MB cost, well inside the 60 MB extension ceiling.
-      - path: Resources/DisfluencyCleanup/disfluency_rocholl6x96.mlpackage
-        type: file.mlpackage
-      - path: Resources/DisfluencyCleanup/vocab.txt
         buildPhase: resources
     info:
       path: Resources/Info.plist
@@ -198,6 +178,15 @@ targets:
     platform: iOS
     sources:
       - path: Keyboard
+      # Keyboard-extension AppIcon catalog. iOS shows this image in
+      # Settings → General → Keyboard → Keyboards alongside the
+      # extension's CFBundleDisplayName ("Jot Dictation"). Mirrors the
+      # main app's modern single-size universal-iOS format — Xcode
+      # synthesizes the per-resolution variants from the 1024×1024
+      # source at build time. Paired with
+      # `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` below so the
+      # asset compiler picks the right set.
+      - path: Keyboard/Assets.xcassets
       - path: Shared
       # Phase 2 of the UX overhaul (mockups 01-03, 06): the keyboard
       # surface uses the Phase-1 design-system tokens — JotDesign,
@@ -226,16 +215,6 @@ targets:
       # process resolves the Font.custom(...) PostScript names. Otherwise
       # SwiftUI silently falls back to system serif inside the keyboard.
       - path: Resources/Fonts
-        buildPhase: resources
-      # Bundled disfluency-cleanup tagger — same files the main app ships.
-      # The keyboard never invokes the tagger in this build (DictationPipeline
-      # is main-app-only), but the bundle membership is mirrored so future
-      # in-extension cleanup is a wiring change, not a packaging change.
-      # ~3.6 MB INT8 mlpackage + 226 KB vocab keeps the appex well inside
-      # the 60 MB extension ceiling.
-      - path: Resources/DisfluencyCleanup/disfluency_rocholl6x96.mlpackage
-        type: file.mlpackage
-      - path: Resources/DisfluencyCleanup/vocab.txt
         buildPhase: resources
     info:
       path: Resources/Keyboard-Info.plist
@@ -286,6 +265,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.Keyboard
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
+        # Resolves the AppIcon set inside Keyboard/Assets.xcassets so
+        # Settings → General → Keyboard → Keyboards shows the lavender
+        # paper-crane icon next to "Jot Dictation".
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG

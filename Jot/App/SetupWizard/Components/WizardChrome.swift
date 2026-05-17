@@ -28,11 +28,12 @@ struct WizardWallpaper: View {
 
 // MARK: - Progress dots
 
-private let wizardCoreStepCount = 8
+private let wizardCoreStepCount = 7
 
-/// 8-dot row representing the core Part A wizard progress (W1–W8).
+/// 7-dot row representing the core Part A wizard progress (W1–W7).
 /// The W3 "Download speech model" panel was removed when the default
-/// Parakeet bundle moved into the IPA, so the core count dropped 9 → 8.
+/// Parakeet bundle moved into the IPA, and the W5 in-app try-it step
+/// was later dropped — total core count is 7.
 /// Active dot is `jotAccent` 7pt; inactive dots use `jotPageInk.opacity(0.22)`.
 struct WizardProgressDots: View {
     let current: Int
@@ -66,9 +67,9 @@ struct WizardProgressDots: View {
     }
 }
 
-/// 8 muted dots + dash separator + 2 active dots — the Optional Step 1/2
-/// indicator. Mirrors the JSX `WizDotsB` shape (now 8 muted dots after
-/// the W3 speech-model step was removed in favor of bundled Parakeet).
+/// 7 muted dots + dash separator + 2 active dots — the Optional Step 1/2
+/// indicator. Mirrors the JSX `WizDotsB` shape (7 muted dots after the
+/// W3 speech-model step and W5 in-app try-it step were both removed).
 struct WizardProgressDotsOptional: View {
     let current: Int  // 0 or 1
 

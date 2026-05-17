@@ -2,7 +2,8 @@
 //  WarmHoldStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W7.
+//  Phase 6 — wizard panel W6 (formerly W7 before the in-app try-it step
+//  was dropped).
 //  Lets the user choose whether Jot keeps the audio session warm briefly
 //  after recording so the next dictation starts faster.
 //
@@ -18,7 +19,7 @@ struct WarmHoldStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 6), onClose: onClose, onBack: onBack)
+            header: WizardHeader(style: .core(current: 5), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 18) {
                 Spacer(minLength: 44)

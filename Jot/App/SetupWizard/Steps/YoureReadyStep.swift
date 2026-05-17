@@ -2,8 +2,9 @@
 //  YoureReadyStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W8 (renumbered from W9 after the bundled-Parakeet
-//  ship retired the W3 speech-model download step).
+//  Phase 6 — wizard panel W7 (renumbered after the bundled-Parakeet ship
+//  retired the W3 speech-model download step and the W5 in-app try-it
+//  step was dropped).
 //  Green check circle + "You're ready." + an italic note that names the
 //  two optional steps (vocab + AI rewrite). Primary CTA advances to the
 //  first optional step (vocab seed); secondary CTA dismisses and marks
@@ -20,7 +21,7 @@ struct YoureReadyStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 7), onClose: onClose, onBack: onBack)
+            header: WizardHeader(style: .core(current: 6), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 18) {
                 Spacer(minLength: 60)
@@ -48,8 +49,8 @@ struct YoureReadyStep: View {
                 Spacer(minLength: 16)
             }
         } footer: {
-            WizardPrimaryButton(title: "Set up now", action: onAdvanceToOptional)
-            WizardSecondaryTextButton(title: "Maybe later", action: onSkipOptional)
+            WizardPrimaryButton(title: "Maybe later", action: onSkipOptional)
+            WizardSecondaryTextButton(title: "Set up now", action: onAdvanceToOptional)
         }
     }
 

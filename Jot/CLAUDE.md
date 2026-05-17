@@ -30,8 +30,8 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 
 ## Wizard / setup-flow conventions
 
-- The 12-panel wizard (W1–W12) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`.
-- **Wizard contract:** any recording started inside the wizard (W7 mic test, W8 keyboard test) MUST be force-stopped before the wizard dismisses. Failing this leaks a zombie recording into the home view. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks. Don't bypass.
+- The 9-panel wizard (7 core W1–W7 + 2 optional follow-ons) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`.
+- **Wizard contract:** any recording started inside the wizard (W5 keyboard test triggered via the keyboard's Dictate-tap notification) MUST be force-stopped before the wizard dismisses. Failing this leaks a zombie recording into the home view. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks. Don't bypass.
 
 ## Build / run
 

@@ -17,13 +17,13 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///   fields (no semantic title field exists in v1 per plan §10.1, so the
 ///   editorial title slot is intentionally hidden).
 /// - **Original / Rewrite tab**: 2-pill segmented control. Original reads
-///   `transcript.disfluencyCleanedText ?? transcript.text` in Fraunces 24pt
-///   regular roman — so the user sees the lightly-cleaned version (um/uh
-///   removed) by default, with the raw audit text preserved underneath in
-///   the model. Rewrite reads `transcript.cleanedText` in Fraunces 19pt
-///   italic. If `cleanedText` is nil, the Rewrite tab shows a "Tap Rewrite
-///   to generate" empty state with a blue CTA. `cleanedText` is reserved
-///   for AI Rewrite output — disfluency cleanup never lands there.
+///   `transcript.text` in Fraunces 24pt regular roman — the published text
+///   already has the always-on regex filler sweep (um/uh) baked in by the
+///   dictation pipeline, so no separate render-time pass is needed here.
+///   Rewrite reads `transcript.cleanedText` in Fraunces 19pt italic. If
+///   `cleanedText` is nil, the Rewrite tab shows a "Tap Rewrite to
+///   generate" empty state with a blue CTA. `cleanedText` is reserved
+///   for AI Rewrite output.
 /// - **Floating ActionBar**: Copy / Share / Rewrite (prominent blue pill) /
 ///   More — anchored to the bottom safe area, glass-heavy.
 ///
@@ -402,13 +402,11 @@ struct TranscriptDetailView: View {
             Group {
                 switch selectedTab {
                 case .original:
-                    // Disfluency cleanup is treated as part of the original
-                    // transcript — show the cleaned version when present so
-                    // the user sees um/uh removed in their default view.
-                    // The truly-raw `transcript.text` remains in the model
-                    // for future use; we just don't surface it here.
+                    // The published text already has the always-on regex
+                    // filler sweep baked in by the dictation pipeline, so
+                    // just render `transcript.text` directly.
                     transcriptScrollContent(
-                        text: transcript.disfluencyCleanedText ?? transcript.text
+                        text: transcript.text
                     )
                 case .rewrite:
                     if let cleaned = transcript.cleanedText, !cleaned.isEmpty {
@@ -704,11 +702,10 @@ struct TranscriptDetailView: View {
     }
 
     /// Word count of the source transcript (Original tab). Surfaced in the
-    /// rewrite picker's sub-line per Mockup 10. Reads the disfluency-cleaned
-    /// text when present — the picker always rewrites what the user sees in
-    /// the Original tab, which after disfluency cleanup is the lightly-edited
-    /// version (um/uh removed). Truly-raw `transcript.text` remains in the
-    /// model but is not surfaced to the rewrite path.
+    /// rewrite picker's sub-line per Mockup 10. Reads `transcript.text`,
+    /// which already has the always-on regex filler sweep baked in by the
+    /// dictation pipeline — the picker always rewrites exactly what the user
+    /// sees in the Original tab.
     private var sourceWordCount: Int {
         rewriteSourceText
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
@@ -716,11 +713,10 @@ struct TranscriptDetailView: View {
     }
 
     /// Text the rewrite path consumes — equals what the Original tab shows.
-    /// Disfluency-cleaned when that pass ran and changed text, otherwise the
-    /// raw transcript. Single source of truth for the AI Rewrite input across
-    /// the manual Transform button and the keyboard-originated rewrite path.
+    /// Single source of truth for the AI Rewrite input across the manual
+    /// Transform button and the keyboard-originated rewrite path.
     private var rewriteSourceText: String {
-        transcript.disfluencyCleanedText ?? transcript.text
+        transcript.text
     }
 
     // MARK: - Derived strings
@@ -744,19 +740,17 @@ struct TranscriptDetailView: View {
 
     /// Body text the share + word-count read from — follows the currently
     /// selected tab so "52 words" matches what the user is looking at.
-    /// Original returns the disfluency-cleaned version when present (matches
-    /// what the Original tab renders); Rewrite returns the AI Rewrite output,
-    /// or — when no rewrite has been produced — falls back to the same
-    /// disfluency-cleaned original so Share/Copy on an empty Rewrite tab
-    /// still does something sensible.
+    /// Original returns `transcript.text` (which already has the always-on
+    /// regex filler sweep baked in by the pipeline). Rewrite returns the AI
+    /// Rewrite output, or — when no rewrite has been produced — falls back
+    /// to the original so Share/Copy on an empty Rewrite tab still does
+    /// something sensible.
     private var bodyTextForActiveTab: String {
         switch selectedTab {
         case .original:
-            return transcript.disfluencyCleanedText ?? transcript.text
+            return transcript.text
         case .rewrite:
-            return transcript.cleanedText
-                ?? transcript.disfluencyCleanedText
-                ?? transcript.text
+            return transcript.cleanedText ?? transcript.text
         }
     }
 
@@ -844,9 +838,8 @@ struct TranscriptDetailView: View {
     /// modal step in v1, per the single-rewrite contract (§6.2).
     private func startRewrite(with prompt: SavedPrompt) {
         // The user is "rewriting what they see" — feed the AI Rewrite the
-        // same text the Original tab displays (disfluency-cleaned when that
-        // pass ran). Sending the truly-raw text behind their back would
-        // re-introduce um/uh into the rewrite input and confuse the output.
+        // same text the Original tab displays. The published text already
+        // has the always-on regex filler sweep baked in by the pipeline.
         let source = rewriteSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else {
             rewriteState = .error("Transcript is empty.")
@@ -929,8 +922,8 @@ struct TranscriptDetailView: View {
         intent: KeyboardRewriteRouter.KeyboardRewriteTarget
     ) {
         // Same "rewrite what the user sees" rule as the manual Transform
-        // path — feed the disfluency-cleaned text when present so the AI
-        // Rewrite input matches the Original tab.
+        // path — feed the published text so the AI Rewrite input matches
+        // the Original tab.
         let source = rewriteSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else {
             let message = "Transcript is empty."

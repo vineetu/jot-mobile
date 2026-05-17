@@ -229,12 +229,12 @@ struct JotApp: App {
                     }
                     .environment(transcriptionService)
                     .environment(streamingService)
-                    // Phase 6: W6 (in-app dictation test) wires through the
+                    // Phase 6: W5 (keyboard dictation test) wires through the
                     // production `RecordingService.shared` so the user
                     // exercises the same recording path they'll use after
                     // setup. The wizard reads it via `@Environment`.
                     .environment(recordingService)
-                    // W6 renders `streamingPartial.streamingText` as the
+                    // W5 renders `streamingPartial.streamingText` as the
                     // live preview while recording. Without this injection
                     // the wizard would hit an `@Environment` lookup miss
                     // and crash on read; the production singleton is the

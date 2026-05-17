@@ -341,11 +341,11 @@ struct ContentView: View {
         // (`.transcribing` / `.cleaning`) deliberately do NOT trigger this
         // — see the docblock above for the reasoning.
         //
-        // Suppressed while the wizard is presenting — W6's "Try it once"
+        // Suppressed while the wizard is presenting — W5's "Try it once"
         // step calls `recordingService.start()` to drive an in-wizard mic
         // test. Without this gate, that start fires this observer and a
         // hero gets pushed onto the home view's nav stack behind the
-        // wizard. When the user taps stop inside W6 the recording cleanly
+        // wizard. When the user taps stop inside W5 the recording cleanly
         // ends, but the hero on the home nav stack has no symmetric pop
         // path — it sits there frozen in `.recording` phase. The user
         // then dismisses the wizard and lands on a zombie "Listening"

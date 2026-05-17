@@ -25,11 +25,6 @@ struct SettingsView: View {
     /// Mirror of `AppGroup.warmHoldEnabled` for the Privacy kill-switch.
     @State private var warmHoldEnabled: Bool = AppGroup.warmHoldEnabled
 
-    /// Mirror of `AppGroup.disfluencyCleanupEnabled` for the SPEECH MODEL
-    /// "Clean up filler words" toggle. Default `false` — the opt-in
-    /// disfluency cleanup pass only runs once the user flips this on.
-    @State private var disfluencyCleanupEnabled: Bool = AppGroup.disfluencyCleanupEnabled
-
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
     /// VOCABULARY card row both observe `terms.count`.
     @State private var vocabularyStore = VocabularyStore.shared
@@ -55,7 +50,6 @@ struct SettingsView: View {
                 speechModelVariant = AppGroup.speechModelVariant
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
-                disfluencyCleanupEnabled = AppGroup.disfluencyCleanupEnabled
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -72,9 +66,6 @@ struct SettingsView: View {
             }
             .onChange(of: warmHoldDurationSeconds) { _, newValue in
                 AppGroup.warmHoldDurationSeconds = newValue
-            }
-            .onChange(of: disfluencyCleanupEnabled) { _, newValue in
-                AppGroup.disfluencyCleanupEnabled = newValue
             }
         }
     }
@@ -307,46 +298,9 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Variant, currently \(variantShortName)")
                     .accessibilityHint("Opens variant picker")
-
-                    cardDivider
-                    disfluencyCleanupRow
                 }
             }
         }
-    }
-
-    private var disfluencyCleanupRow: some View {
-        HStack(alignment: .top, spacing: 14) {
-            IconTile(
-                systemImage: "text.badge.minus",
-                tint: JotDesign.JotSemanticIcon.speechModel,
-                shaded: JotDesign.JotSemanticIcon.speechModelShaded
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Clean up filler words")
-                    .font(JotType.rowTitle)
-                    .tracking(-0.2)
-                    .foregroundStyle(Color.jotPageInk)
-
-                Text("Removes um, uh, and false starts after each dictation. On-device. Off by default.")
-                    .font(JotType.rowSub)
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .lineSpacing(2)
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle("", isOn: $disfluencyCleanupEnabled)
-                .labelsHidden()
-                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
-                .accessibilityLabel("Clean up filler words")
-                .accessibilityHint("Removes filler words and false starts after each dictation. On-device. Off by default.")
-        }
-        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .contentShape(Rectangle())
     }
 
     private var speechModelDisplayName: String {

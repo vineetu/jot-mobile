@@ -85,15 +85,6 @@ enum AppGroup {
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
-        /// User-facing opt-in toggle for the bundled disfluency-cleanup
-        /// tagger ("Clean up filler words" in Settings → Speech Model).
-        /// `false` by default — the cleanup pass runs only when the user
-        /// has explicitly opted in. The cleanup model is bundled in the
-        /// app (no download), runs on-device, and removes filler words
-        /// ("um", "uh") and short false-starts AFTER each dictation. The
-        /// raw transcript is always preserved unchanged in the library.
-        static let disfluencyCleanupEnabled = "jot.disfluencyCleanup.enabled"
-
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
         /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`
@@ -117,10 +108,20 @@ enum AppGroup {
         /// `.inactive`. Read by the keyboard extension to detect
         /// "host app is Jot itself" — used to short-circuit the mic
         /// CTA's URL bounce (`extensionContext.open(jot://dictate)`)
-        /// in the setup wizard W8 case, where iOS refuses to re-launch
-        /// the already-foreground app via URL scheme. See
+        /// in the setup wizard W5 case (keyboard try-it), where iOS
+        /// refuses to re-launch the already-foreground app via URL
+        /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
+
+        /// Last-known value of `UIInputViewController.hasFullAccess`,
+        /// written by the keyboard extension on every `viewWillAppear`.
+        /// iOS gives the main app no direct API to read Full Access state,
+        /// so the keyboard mirrors its own `hasFullAccess` here for the
+        /// wizard's W3 detection to consult. Caveat: the flag is `false`
+        /// until the user has presented the Jot keyboard at least once
+        /// after enabling Full Access.
+        static let keyboardFullAccess = "jot.keyboard.fullAccess"
     }
 
     /// User-facing master toggle for AI Rewrite. Default `false` (feature
@@ -132,21 +133,6 @@ enum AppGroup {
     static var aiRewriteEnabled: Bool {
         get { defaults.bool(forKey: Keys.aiRewriteEnabled) }
         set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
-    }
-
-    /// User-facing opt-in toggle for the on-device disfluency-cleanup pass.
-    /// Default `false` — cleanup never runs unless the user has flipped this
-    /// on in Settings → Speech Model → "Clean up filler words". When `true`,
-    /// `DictationPipeline.completeEndOfRecording` invokes the bundled
-    /// `DisfluencyCleanup` tagger after transcription and publishes the
-    /// cleaned text (while always preserving the raw transcript in the
-    /// ledger). Read by the dictation pipeline on every end-of-recording.
-    ///
-    /// Uses `bool(forKey:)` because the missing-key default is `false`,
-    /// which `UserDefaults.bool(forKey:)` returns naturally.
-    static var disfluencyCleanupEnabled: Bool {
-        get { defaults.bool(forKey: Keys.disfluencyCleanupEnabled) }
-        set { defaults.set(newValue, forKey: Keys.disfluencyCleanupEnabled) }
     }
 
     /// User-facing master toggle for the warm-hold feature. Default
@@ -256,7 +242,7 @@ enum AppGroup {
     /// inferred from the recency of `Keys.appForegroundHeartbeat`.
     ///
     /// The keyboard extension uses this to detect "host app == Jot"
-    /// (typically: setup wizard W8). When `true`, the mic CTA tap is
+    /// (typically: setup wizard W5 keyboard try-it). When `true`, the mic CTA tap is
     /// routed to a Darwin notification (`keyboardDictateTapped`) instead
     /// of the normal `jot://dictate` URL bounce, because iOS silently
     /// refuses to re-launch the already-foreground app via URL scheme
@@ -271,11 +257,22 @@ enum AppGroup {
     /// edge case — the worst-case fallout is the keyboard skipping the
     /// URL bounce and posting the Darwin notification, which the
     /// (now-suspended) main app simply doesn't observe; the user sees
-    /// nothing happen and retries. Tolerable for the wizard W8 case.
+    /// nothing happen and retries. Tolerable for the wizard W5 case.
     static func isJotAppForeground() -> Bool {
         guard let last = defaults.object(
             forKey: Keys.appForegroundHeartbeat
         ) as? Date else { return false }
         return Date().timeIntervalSince(last) < 2.5
+    }
+
+    /// Mirror of the keyboard extension's `hasFullAccess`. Written by the
+    /// keyboard on every `viewWillAppear`; read by the wizard's W3 step
+    /// so the main app can detect whether Full Access has been granted.
+    /// `false` until the user has presented the Jot keyboard at least
+    /// once after enabling Full Access — there is no way around this
+    /// caveat on iOS (the main app can't read `hasFullAccess` directly).
+    static var keyboardHasFullAccess: Bool {
+        get { defaults.bool(forKey: Keys.keyboardFullAccess) }
+        set { defaults.set(newValue, forKey: Keys.keyboardFullAccess) }
     }
 }

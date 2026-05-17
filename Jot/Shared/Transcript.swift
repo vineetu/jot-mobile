@@ -37,21 +37,11 @@ final class Transcript {
     /// "no cleanup ran or it failed" — the UI falls back to `text`.
     ///
     /// This field is reserved for AI Rewrite / Apple Foundation Models cleanup
-    /// output. Lexical disfluency cleanup (um/uh/false starts) is NOT written
-    /// here — see `disfluencyCleanedText` instead, which is treated as part of
-    /// the "original" transcript rather than an AI Rewrite.
+    /// output. Lightweight regex filler-word cleanup (um/uh) is applied on
+    /// render in the Original tab and is NOT persisted here — see
+    /// `FillerWordCleaner` for the always-on regex sweep that runs in the
+    /// dictation pipeline before publish but is not stored separately.
     var cleanedText: String?
-    /// Output of the bundled on-device lexical disfluency cleanup pass
-    /// (um/uh/discourse markers/false starts), if it ran and changed text.
-    /// `nil` means "disfluency cleanup didn't run, or was a no-op" — surfaces
-    /// fall back to `text`.
-    ///
-    /// Stored separately from `cleanedText` because disfluency cleanup is a
-    /// lexical pass treated as part of the original transcript, while
-    /// `cleanedText` is reserved for AI Rewrite output. The Transcript Detail's
-    /// Original tab reads `disfluencyCleanedText ?? text`; the Rewrite tab
-    /// reads `cleanedText` only.
-    var disfluencyCleanedText: String?
     var createdAt: Date
     /// Wall-clock seconds between record start and stop. Optional because
     /// Shortcuts-invoked file transcriptions don't have a recording phase.
@@ -100,7 +90,6 @@ final class Transcript {
         id: UUID = UUID(),
         text: String,
         cleanedText: String? = nil,
-        disfluencyCleanedText: String? = nil,
         createdAt: Date = Date(),
         durationSeconds: Double? = nil,
         ledgerIndex: Int,
@@ -111,7 +100,6 @@ final class Transcript {
         self.id = id
         self.text = text
         self.cleanedText = cleanedText
-        self.disfluencyCleanedText = disfluencyCleanedText
         self.createdAt = createdAt
         self.durationSeconds = durationSeconds
         self.ledgerIndex = ledgerIndex
@@ -120,11 +108,11 @@ final class Transcript {
         self.supersededAt = supersededAt
     }
 
-    /// Preferred surface text: AI Rewrite cleanup if present, else the
-    /// disfluency-cleaned original if present, else the raw transcript.
-    /// Disfluency cleanup is treated as part of the "original" surface, so
-    /// it sits between `cleanedText` (AI Rewrite) and `text` (truly raw).
-    var displayText: String { cleanedText ?? disfluencyCleanedText ?? text }
+    /// Preferred surface text: AI Rewrite cleanup if present, else the raw
+    /// transcript. The always-on regex filler-word sweep is baked into `text`
+    /// at publish time by `FillerWordCleaner`, so there is no separate
+    /// stored field for lexical cleanup.
+    var displayText: String { cleanedText ?? text }
 
     /// `true` when this transcript was produced by a chained follow-up
     /// command. The Ledger row uses this to swap its eyebrow layout.

@@ -4,8 +4,10 @@
 //
 //  Phase 6 — wizard panel W4 (renumbered from W5 after the bundled-Parakeet
 //  ship retired the standalone speech-model download step).
-//  Two-paragraph explanation + the keyboard → coral mic → SWIPE → keyboard
-//  diagram. Caption: "TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED".
+//  Single lead sentence + the keyboard → origami-crane → SWIPE → keyboard
+//  flow diagram (scaled up ~1.7× to anchor the panel, with the Jot brand
+//  crane in the middle position replacing the coral mic glyph).
+//  Caption: "TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED".
 //
 
 import SwiftUI
@@ -19,50 +21,47 @@ struct HowItWorksStep: View {
         WizardPanel(
             header: WizardHeader(style: .core(current: 3), onClose: onClose, onBack: onBack)
         ) {
-            VStack(spacing: 16) {
-                Spacer(minLength: 24)
+            VStack(spacing: 20) {
+                Spacer(minLength: 16)
 
                 WizardItalicTitle(text: "How it works", size: 30)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 2)
 
-                Text("Jot is dictation-only — no QWERTY. Keep your usual keyboard for typing.")
-                    .font(.system(size: 14, weight: .regular))
+                Text("iOS doesn't let keyboards use the mic. Tap to open Jot, record, then swipe back to your keyboard when done.")
+                    .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
-                    .lineSpacing(1.5)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Text("Tapping Dictate opens Jot to record (iOS doesn't allow mic access from keyboards). After recording, swipe right along the bottom to return — text is in the field.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(1.5)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
 
                 diagram
-                    .padding(.top, 18)
+                    .padding(.top, 24)
+                    .padding(.bottom, 4)
 
                 Text("TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED")
                     .font(.system(size: 10, weight: .regular))
                     .foregroundStyle(Color.jotMute)
                     .tracking(0.8)
                     .multilineTextAlignment(.center)
-                    .padding(.top, 8)
+                    .padding(.top, 4)
 
                 Spacer(minLength: 16)
             }
         } footer: {
             WizardPrimaryButton(title: "Got it", action: onAdvance)
+                .padding(.horizontal, 16)
         }
     }
 
-    // MARK: - Diagram
+    // MARK: - Diagram (dialled back from the ~1.7× round — keyboard glyphs
+    // ~64pt, crane ~80pt so it still reads as the brand anchor)
 
     private var diagram: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             keyboardGlyph
             arrow
-            coralMicGlyph
+            craneGlyph
             swipeIndicator
             keyboardGlyph
         }
@@ -71,57 +70,50 @@ struct HowItWorksStep: View {
 
     private var keyboardGlyph: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
             Image(systemName: "keyboard")
-                .font(.system(size: 18, weight: .regular))
+                .font(.system(size: 22, weight: .regular))
                 .foregroundStyle(Color.jotInk.opacity(0.8))
         }
-        .frame(width: 52, height: 52)
+        .frame(width: 64, height: 64)
     }
 
-    private var coralMicGlyph: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 1.00, green: 0.32, blue: 0.28),
-                            Color(red: 0.90, green: 0.23, blue: 0.19)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            Image(systemName: "mic.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: 52, height: 52)
+    /// Origami crane — the Jot brand mark — sits at the centre of the flow
+    /// to read as "Jot opens to record." Replaces the earlier coral mic glyph.
+    /// Clipped to a continuous rounded rect so the PNG's baked-in black
+    /// margin reads as an iOS app-icon shape rather than a square frame.
+    private var craneGlyph: some View {
+        Image("OrigamiCrane")
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 80, height: 80)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .accessibilityLabel("Jot opens")
     }
 
     private var arrow: some View {
         Image(systemName: "arrow.right")
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(Color.jotMute)
-            .frame(width: 14)
+            .frame(width: 18)
             .accessibilityHidden(true)
     }
 
     private var swipeIndicator: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             Image(systemName: "arrow.forward")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.jotAccent)
                 .rotationEffect(.degrees(-12))
             Text("SWIPE")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.jotAccent)
-                .tracking(0.5)
+                .tracking(0.6)
         }
-        .frame(width: 36)
+        .frame(width: 44)
         .accessibilityHidden(true)
     }
 }
