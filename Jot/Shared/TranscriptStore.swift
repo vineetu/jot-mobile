@@ -161,8 +161,14 @@ enum TranscriptStore {
     ///   - raw: the Parakeet transcript before any LLM post-processing.
     ///     If this is empty/whitespace only, the call is a no-op — the user
     ///     didn't actually speak.
-    ///   - cleaned: the optional post-cleanup output, or `nil` when cleanup
-    ///     was disabled or failed. The UI shows `cleaned ?? raw`.
+    ///   - cleaned: the optional AI Rewrite / Apple FM cleanup output, or
+    ///     `nil` when no rewrite ran. The Transcript Detail's Rewrite tab
+    ///     reads this exclusively — lexical disfluency cleanup does NOT go
+    ///     here (use `disfluencyCleaned:` for that).
+    ///   - disfluencyCleaned: the optional lexical disfluency cleanup output
+    ///     (um/uh/false starts removed), or `nil` when the pass didn't run
+    ///     or produced no change. Treated as part of the "original"
+    ///     transcript by Detail's Original tab, not as an AI Rewrite.
     ///   - duration: wall-clock recording duration, if known. Pass `nil`
     ///     from file-transcription intents where "duration" is ambiguous.
     ///   - derivedFrom: the ID of the transcript this one was "derived from"
@@ -181,6 +187,7 @@ enum TranscriptStore {
         id: UUID = UUID(),
         raw: String,
         cleaned: String? = nil,
+        disfluencyCleaned: String? = nil,
         duration: TimeInterval? = nil,
         derivedFrom: UUID? = nil,
         instruction: String? = nil
@@ -193,6 +200,7 @@ enum TranscriptStore {
             id: id,
             text: raw,
             cleanedText: cleaned,
+            disfluencyCleanedText: disfluencyCleaned,
             durationSeconds: duration,
             ledgerIndex: nextLedgerIndex(),
             derivedFromID: derivedFrom,

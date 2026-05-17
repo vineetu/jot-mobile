@@ -409,6 +409,8 @@ final class DictationControllerImpl: DictationController {
     }
 
     func startRecording(startedAt: Date) async throws {
+        Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "dictation-intent")
+            .notice("RECORDING START FROM: DictateIntent.startRecording (Shortcuts / Action Button)")
         try await recording.start()
         currentPhase = .recording
     }

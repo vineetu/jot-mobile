@@ -2,8 +2,8 @@
 //  VocabSeedStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W10 (optional).
-//  Teal book IconBox + "Teach Jot some words" + a list of the user's
+//  Phase 6 — wizard panel Optional Step 1 (Vocab Seed).
+//  Teal book IconTile + "Teach Jot some words" + a list of the user's
 //  existing vocabulary terms (deletable) above a text-field row with a
 //  coral "+" button that pushes new entries into `VocabularyStore.shared`.
 //
@@ -19,6 +19,7 @@ import SwiftUI
 
 struct VocabSeedStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvance: () -> Void
     let onSkip: () -> Void
 
@@ -28,6 +29,8 @@ struct VocabSeedStep: View {
     // `@State` (not `let`) so reads of `store.terms` participate in
     // Observation tracking — see file-level note.
     @State private var store = VocabularyStore.shared
+
+    private static let placeholderTerms = ["Parakeet", "Phi-4"]
 
     /// Terms surfaced in the wizard list. Filters out blank rows (the
     /// store appends a blank row inside `addBlankTerm()` before the
@@ -39,24 +42,28 @@ struct VocabSeedStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .optional(current: 0), onClose: onClose)
+            header: WizardHeader(style: .optional(current: 0), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 18) {
                 Spacer(minLength: 24)
 
-                bookTile
+                IconTile(
+                    systemImage: "character.book.closed.fill",
+                    tint: JotDesign.JotSemanticIcon.vocabulary,
+                    shaded: JotDesign.JotSemanticIcon.vocabularyShaded,
+                    size: JotDesign.Spacing.tileHeroSize
+                )
+                .accessibilityHidden(true)
 
-                WizardTitle(text: "Teach Jot some words", size: 28)
+                WizardItalicTitle(text: "Teach Jot some words", size: 30)
                     .padding(.top, 4)
                 WizardBody(text: "Names or unusual terms Jot might mishear.")
 
-                if !visibleTerms.isEmpty {
-                    existingList
-                        .padding(.top, 16)
-                }
+                vocabularyList
+                    .padding(.top, 16)
 
                 entryRow
-                    .padding(.top, visibleTerms.isEmpty ? 16 : 10)
+                    .padding(.top, 10)
 
                 WizardItalicNote(text: "You can edit these any time in Settings → Vocabulary.")
                     .padding(.top, 8)
@@ -69,7 +76,7 @@ struct VocabSeedStep: View {
             }
         } footer: {
             // Done is the primary commit action — promote to the coral
-            // pill used by W2/W3/W9. Skip stays as the muted text button
+            // pill used by W2/W3/W7. Skip stays as the muted text button
             // beneath it. SwiftUI's default keyboard avoidance lifts the
             // footer above the system keyboard while the text field is
             // focused.
@@ -85,44 +92,11 @@ struct VocabSeedStep: View {
         }
     }
 
-    // MARK: - Tile
-
-    private var bookTile: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.0, green: 0.78, blue: 0.745),
-                            Color(red: 0.0, green: 0.659, blue: 0.62)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .inset(by: 0.5)
-                .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
-                .blendMode(.plusLighter)
-            Image(systemName: "book.closed.fill")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: 72, height: 72)
-        .shadow(
-            color: Color(red: 0.0, green: 0.78, blue: 0.745).opacity(0.30),
-            radius: 12,
-            x: 0,
-            y: 8
-        )
-        .accessibilityHidden(true)
-    }
-
     // MARK: - Entry row
 
     private var entryRow: some View {
         HStack(spacing: 10) {
-            TextField("Bengaluru", text: $draftTerm)
+            TextField("Liquid Glass", text: $draftTerm)
                 .font(.custom(JotType.frauncesRegular, size: 18))
                 .foregroundStyle(Color.jotInk)
                 .textInputAutocapitalization(.words)
@@ -156,43 +130,69 @@ struct VocabSeedStep: View {
         )
     }
 
-    /// List of existing terms with an xmark delete affordance per row.
+    /// List of existing terms with an xmark delete affordance per row, or
+    /// visual-only example rows before the user has saved vocabulary terms.
     /// The wizard panel is rendered inside a `ScrollView` already (see
     /// `WizardPanel`), so the list scrolls naturally with the panel when
     /// the term count grows. Settings → Vocabulary uses Form-row swipe-
     /// to-delete; we can't host a `List` inside the wizard's custom
     /// VStack chrome, so we mirror the same delete capability with a
     /// trailing xmark button. One persistence path (`store.delete(id:)`).
-    private var existingList: some View {
+    private var vocabularyList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(visibleTerms) { term in
-                HStack(spacing: 8) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(Color.jotMuteWeak)
-                    Text(term.text)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.jotInk)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 8)
-                    Button {
-                        store.delete(id: term.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(Color.jotMuteWeak)
-                    }
-                    .buttonStyle(.plain)
-                    .frame(minWidth: 44, minHeight: 32, alignment: .trailing)
-                    .accessibilityLabel("Remove \(term.text)")
+            if visibleTerms.isEmpty {
+                ForEach(Self.placeholderTerms, id: \.self) { term in
+                    placeholderTermRow(term)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(visibleTerms) { term in
+                    storedTermRow(term)
+                }
             }
         }
         .padding(.horizontal, 4)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Vocabulary terms")
+        .accessibilityLabel(visibleTerms.isEmpty ? "Vocabulary examples" : "Vocabulary terms")
+    }
+
+    private func storedTermRow(_ term: VocabTerm) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(Color.jotMuteWeak)
+            Text(term.text)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.jotInk)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            Button {
+                store.delete(id: term.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.jotMuteWeak)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 32, alignment: .trailing)
+            .accessibilityLabel("Remove \(term.text)")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func placeholderTermRow(_ term: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(Color.jotMuteWeak.opacity(0.75))
+            Text(term)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.jotPageInkCaption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+        }
+        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
     }
 
     // MARK: - Actions

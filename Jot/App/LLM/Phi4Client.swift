@@ -216,6 +216,16 @@ final class Phi4Client: LLMClient {
         log.info("Phi-4 model evicted")
     }
 
+    /// Public mirror of the on-disk snapshot probe — used by
+    /// `LLMClientFactory` to honor migration safety: existing TestFlight
+    /// users who already have Phi-4 downloaded should NOT be silently
+    /// flipped to a Qwen download just because Qwen is the new default.
+    /// See `LLMClientFactory.currentProvider` for the full default-resolution
+    /// logic.
+    nonisolated static func snapshotPresentOnDisk() -> Bool {
+        isPhi4SnapshotPresentOnDisk()
+    }
+
     nonisolated private static func isPhi4SnapshotPresentOnDisk() -> Bool {
         let environment = ProcessInfo.processInfo.environment
 

@@ -6,9 +6,9 @@
 //  See: Jot/tmp/ux-overhaul-plan.md §5.3 + §3 (Mockup 09).
 //
 //  Glass-heavy ~60pt floating dock anchored to the bottom of the transcript
-//  detail surface. Hosts Copy / Share / Rewrite (prominent coral pill) /
+//  detail surface. Hosts Copy / Share / Rewrite (prominent blue pill) /
 //  More. Each row item is ≥44pt for HIG-compliant hit targets; the Rewrite
-//  pill is the visually loudest control (coral fill + white glyph) so it
+//  pill is the visually loudest control (blue fill + white glyph) so it
 //  reads as the primary CTA without competing with the back / sparkle
 //  toolbar buttons up top.
 //
@@ -36,7 +36,7 @@ struct ActionBarItem: Identifiable {
     }
 }
 
-/// Floating glass-heavy action dock. The `primary` item renders as a coral
+/// Floating glass-heavy action dock. The `primary` item renders as a blue
 /// pill in the middle; the surrounding items render as small glass buttons.
 ///
 /// Layout: leading-trailing trio with the primary CTA centered. The four
@@ -122,8 +122,8 @@ struct ActionBar: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.jotAccent,
-                                Color.jotAccent.opacity(0.92)
+                                Color.jotBlueTop,
+                                Color.jotBlueBottom
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -134,7 +134,7 @@ struct ActionBar: View {
                 Capsule(style: .continuous)
                     .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
             )
-            .shadow(color: Color.jotAccent.opacity(0.30), radius: 8, x: 0, y: 4)
+            .shadow(color: Color.jotBlueTop.opacity(0.30), radius: 8, x: 0, y: 4)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(item.accessibilityLabel)

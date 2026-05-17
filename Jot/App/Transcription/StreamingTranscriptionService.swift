@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+@preconcurrency import CoreML
 import FluidAudio
 import Foundation
 import UIKit
@@ -129,50 +130,39 @@ final class StreamingTranscriptionService {
 
     // MARK: - Warm-up
 
-    /// Ensure EOU 320ms model weights are present on disk. Does NOT load
-    /// them into RAM — actual ANE load happens lazily on each
-    /// `beginSession(...)` call per the lifecycle policy at the top of this
-    /// file. Idempotent + coalescing.
+    /// Confirm bundled EOU 320ms model weights are visible to FluidAudio.
+    /// Does NOT load them into RAM — actual ANE load happens lazily on
+    /// each `beginSession(...)` call per the lifecycle policy at the top
+    /// of this file. Idempotent + coalescing.
     ///
-    /// Transitions `modelState`: `.notLoaded → .downloading(0..1) → .ready`
-    /// once weights are on disk. `.ready` here means "weights cached",
+    /// Transitions `modelState`: `.notLoaded → .ready` once the bundled
+    /// resources resolve. `.ready` here means "weights present on disk",
     /// NOT "manager loaded into ANE".
     ///
-    /// Call sites:
-    /// - `JotApp.task` (first scene activation), gated on setup completed
-    ///   AND models on disk (no silent first-run download per Apple
-    ///   Guideline 4.2.3(ii)).
-    /// - `SetupWizardView.startModelDownload()` alongside
-    ///   `transcriptionService.warmUp()`. Both downloads happen under the
-    ///   single explicit-tap consent for the bundled ~948 MB.
+    /// Pre-bundling this used to drive an HF download via
+    /// `loadModelsFromHuggingFace`. Now that the EOU bundle ships in the
+    /// IPA, `warmUp()` is effectively a presence check; the `.downloading`
+    /// state is no longer reachable from this path.
+    ///
+    /// Call site:
+    /// - `JotApp.task` (first scene activation), gated on setup completed.
+    ///   No first-launch network activity (App Review 4.2.3(ii)).
     func warmUp() {
         log.info("Streaming warmUp requested — modelState=\(Self.describe(self.modelState), privacy: .public)")
         _ = ensurePreparing()
     }
 
-    /// Discard cached weights and re-download. Dev/QA path; mirrors
-    /// `TranscriptionService.purgeAndReload()`. Safe to call between
-    /// recordings; if a session is in flight when this runs, the in-flight
-    /// engine's manager is unaffected (it owns its own loaded MLModel
-    /// references) but the next `beginSession(...)` will need to re-download.
+    /// Dev/QA path retained for symmetry with `TranscriptionService.purgeAndReload()`.
+    /// The streaming EOU weights now ship inside the IPA — the bundle is
+    /// read-only, so there's nothing to remove. We cancel any in-flight
+    /// prepare task and re-prime `modelState` from the bundle's presence
+    /// (effectively a no-op refresh).
     func purgeAndReload() async {
         prepareTask?.cancel()
         prepareTask = nil
         prepareGeneration += 1
 
-        let modelDir = Self.modelDirectory()
-        if FileManager.default.fileExists(atPath: modelDir.path) {
-            do {
-                try FileManager.default.removeItem(at: modelDir)
-                log.notice("Removed streaming model cache at \(modelDir.path, privacy: .public)")
-            } catch {
-                let summary = "Could not remove streaming model cache: \(error.localizedDescription)"
-                modelState = .failed(summary)
-                log.error("\(summary, privacy: .public)")
-                return
-            }
-        }
-
+        log.notice("purgeAndReload no-op — streaming weights are bundled and read-only")
         modelState = .notLoaded
         warmUp()
     }
@@ -218,18 +208,28 @@ final class StreamingTranscriptionService {
         presenter: StreamingPartial,
         queue: StreamingBufferQueue
     ) async -> StreamingTranscriptionEngine? {
-        guard Self.modelsExistOnDisk() else {
-            log.notice("beginSession skipped — EOU weights not on disk")
+        guard let modelDir = Self.bundledStreamingDirectory(),
+              Self.modelsExistOnDisk(at: modelDir) else {
+            log.notice("beginSession skipped — bundled EOU weights not found in app bundle")
             return nil
         }
 
-        let manager = StreamingModelVariant.parakeetEou320ms.createManager()
+        // Construct the concrete EOU manager so we can call
+        // `loadModels(modelDir:)` directly against the bundled directory.
+        // The protocol's parameterless `loadModels()` would route through
+        // `loadModelsFromHuggingFace` and attempt a download into
+        // Application Support — bypassing the bundle and re-introducing
+        // the first-launch HF Hub dependency this whole change exists to
+        // eliminate.
+        let manager = StreamingEouAsrManager(
+            configuration: MLModelConfiguration(),
+            chunkSize: .ms320
+        )
 
         do {
-            // Disk weights are already cached (gated on the
-            // modelsExistOnDisk check above), so `loadModels()` is the
-            // ~200-500ms ANE load only — no download.
-            try await manager.loadModels()
+            // Bundle weights are present (gated above); this is the
+            // ~200-500ms ANE load only — no download, no HF Hub touch.
+            try await manager.loadModels(modelDir: modelDir)
         } catch {
             log.error("beginSession loadModels failed — \(error.localizedDescription, privacy: .public)")
             return nil
@@ -282,48 +282,41 @@ final class StreamingTranscriptionService {
 
     // MARK: - Disk-existence check (for JotApp eager-warm gate)
 
-    /// `true` iff the EOU 320ms model files are already present in
-    /// FluidAudio's default cache directory. Mirrors the
-    /// `AsrModels.modelsExist(at:version:)` check the batch path uses to
-    /// avoid silent first-run downloads (App Review 4.2.3(ii)).
+    /// `true` iff the EOU 320ms model files are bundled into the app's
+    /// `Resources/Models/Parakeet/parakeet-eou-streaming/320ms/` folder.
+    /// On a healthy install this always returns `true` — the weights
+    /// can't be evicted without re-installing the app, so the
+    /// "models on disk" gate is effectively constant-true for the
+    /// streaming preview.
     static func modelsExistOnDisk() -> Bool {
-        let modelDir = modelDirectory()
+        guard let dir = bundledStreamingDirectory() else { return false }
+        return modelsExistOnDisk(at: dir)
+    }
+
+    /// Per-directory variant used by `beginSession`. Verifies every
+    /// file in `ModelNames.ParakeetEOU.requiredModels` resolves under
+    /// the supplied directory.
+    static func modelsExistOnDisk(at directory: URL) -> Bool {
         let required = ModelNames.ParakeetEOU.requiredModels
         return required.allSatisfy { name in
-            FileManager.default.fileExists(atPath: modelDir.appendingPathComponent(name).path)
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
         }
     }
 
-    /// Path to the EOU 320ms model directory.
-    ///
-    /// Matches `StreamingEouAsrManager.defaultCacheDirectory()` PLUS the
-    /// `repo.folderName` append that `loadModels(to:...)` performs internally.
-    /// FluidAudio's `defaultCacheDirectory()` already ends in
-    /// `parakeet-eou-streaming/`, then `loadModels` appends `repo.folderName`
-    /// which itself starts with `parakeet-eou-streaming/` — yielding a
-    /// double-nested actual location of:
-    ///
-    ///     <AppSupport>/FluidAudio/Models/parakeet-eou-streaming/parakeet-eou-streaming/320ms/
-    ///
-    /// We previously used `MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetEou320)`
-    /// which produces only the single-nested form, so `modelsExistOnDisk()`
-    /// always returned false even after a successful download — `beginSession`
-    /// then short-circuited, the streaming preview never started, and the
-    /// keyboard / in-app captions stayed empty.
-    ///
-    /// Verified against `StreamingEouAsrManager.swift:284-318` (FluidAudio
-    /// 0.13.6).
-    private static func modelDirectory() -> URL {
-        let appSupport = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-        return
-            appSupport
-            .appendingPathComponent("FluidAudio", isDirectory: true)
+    /// `<Bundle>/Models/Parakeet/parakeet-eou-streaming/320ms/` if present.
+    /// Composed directly from `Bundle.main.bundleURL` — see the note on
+    /// `TranscriptionService.bundledTdtCtc110mDirectory` for why we
+    /// don't use `Bundle.main.url(forResource:...)`. FluidAudio's
+    /// `StreamingEouAsrManager.loadModels(modelDir:)` reads
+    /// `streaming_encoder.mlmodelc`, `decoder.mlmodelc`,
+    /// `joint_decision.mlmodelc`, and `vocab.json` relative to this URL.
+    static func bundledStreamingDirectory() -> URL? {
+        let url = Bundle.main.bundleURL
             .appendingPathComponent("Models", isDirectory: true)
-            .appendingPathComponent("parakeet-eou-streaming", isDirectory: true)
+            .appendingPathComponent("Parakeet", isDirectory: true)
             .appendingPathComponent("parakeet-eou-streaming", isDirectory: true)
             .appendingPathComponent("320ms", isDirectory: true)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     // MARK: - Prepare core (mirrors TranscriptionService shape)
@@ -352,56 +345,31 @@ final class StreamingTranscriptionService {
         log.info("Streaming load bypassed on simulator")
         return
         #else
+        // EOU weights are bundled into the IPA under
+        // `Resources/Models/Parakeet/parakeet-eou-streaming/320ms/`,
+        // so the "ensure weights on disk" step collapses to a presence
+        // check. No HF download path here — that's the whole point of
+        // the bundled-Parakeet ship.
         if Self.modelsExistOnDisk() {
+            try checkPrepareGeneration(generation)
             modelState = .ready
-            log.info("Streaming weights already on disk — modelState=ready")
+            log.info("Streaming weights resolved from app bundle — modelState=ready")
             return
         }
 
-        try checkPrepareGeneration(generation)
-
-        modelState = .downloading(0)
-
-        do {
-            // Throwaway primer instance to drive the download via the
-            // protocol's parameterless `loadModels()`. Downloads weights to
-            // the default cache dir if absent, then loads them into ANE.
-            // We discard the loaded manager immediately via `cleanup()` so
-            // we don't carry ~66 MB of working memory between warmUp and
-            // the first beginSession (per team-lead Rule 3 cleanup-on-stop
-            // policy — no service-level warm manager).
-            let primer = StreamingModelVariant.parakeetEou320ms.createManager()
-            try await primer.loadModels()
-            await primer.cleanup()
-
-            try checkPrepareGeneration(generation)
-            modelState = .ready
-            log.info("Streaming weights ensured on disk")
-        } catch is CancellationError {
-            if prepareGeneration == generation {
-                prepareTask = nil
-                if !Self.modelsExistOnDisk() {
-                    modelState = .notLoaded
-                }
-            }
-            log.notice("Streaming load cancelled")
-            throw CancellationError()
-        } catch {
-            guard prepareGeneration == generation, !Task.isCancelled else {
-                if prepareGeneration == generation {
-                    prepareTask = nil
-                    if !Self.modelsExistOnDisk() {
-                        modelState = .notLoaded
-                    }
-                }
-                throw CancellationError()
-            }
-            let summary = "Streaming load failed: \(error.localizedDescription)"
-            modelState = .failed(summary)
-            prepareTask = nil
-            log.error("\(summary, privacy: .public)")
-            throw error
-        }
+        // Defensive: bundle resources missing (stripped IPA / dev-build
+        // misconfiguration). Surface as a failed state so Settings can
+        // show a meaningful error instead of silently sitting on
+        // `.notLoaded` forever.
+        let summary = "Streaming model not found in app bundle. Reinstall Jot."
+        modelState = .failed(summary)
+        prepareTask = nil
+        log.error("\(summary, privacy: .public)")
+        throw NSError(
+            domain: "com.vineetu.jot.mobile.Jot.streaming",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: summary]
+        )
         #endif
     }
 

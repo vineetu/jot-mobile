@@ -139,12 +139,16 @@ final class LLMClientUIAdapter {
 
     /// Forward a download/warm cancel into the underlying client.
     ///
-    /// `Phi4Client.cancelDownload()` halts an in-flight HuggingFace
-    /// download or load and drops back to `.notReady`. The protocol
-    /// itself doesn't require this method — only download-capable
-    /// backends expose it — so we accept a runtime cast and log a no-op
-    /// for any future client that doesn't implement cancel.
+    /// Both `Phi4Client.cancelDownload()` and `Qwen35Client.cancelDownload()`
+    /// halt an in-flight HuggingFace download or load and drop back to
+    /// `.notReady`. The protocol itself doesn't require this method — only
+    /// download-capable backends expose it — so we accept a runtime cast
+    /// and log a no-op for any future client that doesn't implement cancel.
     func cancelDownload() {
+        if let qwen = client as? Qwen35Client {
+            qwen.cancelDownload()
+            return
+        }
         if let phi4 = client as? Phi4Client {
             phi4.cancelDownload()
             return

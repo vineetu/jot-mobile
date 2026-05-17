@@ -17,11 +17,14 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///   fields (no semantic title field exists in v1 per plan §10.1, so the
 ///   editorial title slot is intentionally hidden).
 /// - **Original / Rewrite tab**: 2-pill segmented control. Original reads
-///   `transcript.text` in Fraunces 24pt regular roman; Rewrite reads
-///   `transcript.cleanedText` in Fraunces 19pt italic. If `cleanedText` is
-///   nil, the Rewrite tab shows a "Tap Rewrite to generate" empty state with
-///   a coral CTA.
-/// - **Floating ActionBar**: Copy / Share / Rewrite (prominent coral pill) /
+///   `transcript.disfluencyCleanedText ?? transcript.text` in Fraunces 24pt
+///   regular roman — so the user sees the lightly-cleaned version (um/uh
+///   removed) by default, with the raw audit text preserved underneath in
+///   the model. Rewrite reads `transcript.cleanedText` in Fraunces 19pt
+///   italic. If `cleanedText` is nil, the Rewrite tab shows a "Tap Rewrite
+///   to generate" empty state with a blue CTA. `cleanedText` is reserved
+///   for AI Rewrite output — disfluency cleanup never lands there.
+/// - **Floating ActionBar**: Copy / Share / Rewrite (prominent blue pill) /
 ///   More — anchored to the bottom safe area, glass-heavy.
 ///
 /// ## Tags / title intentionally absent
@@ -133,33 +136,39 @@ struct TranscriptDetailView: View {
     @State private var lastRewriteAt: Date?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            JotDesign.background
-                .ignoresSafeArea()
+            // Shared adaptive wallpaper — same one RecentsView uses, so the
+            // app reads as one continuous surface across both screens and the
+            // dark/light switch is handled in one place (WallpaperBackground).
+            WallpaperBackground()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    topToolbar
-                        .padding(.top, 6)
+            VStack(alignment: .leading, spacing: 14) {
+                topToolbar
+                    .padding(.top, 6)
 
-                    sublineRow
+                sublineRow
 
-                    tabSelector
+                tabSelector
 
-                    if rewriteState == .running {
-                        runningRewriteCard
-                    } else if case .error(let message) = rewriteState {
-                        errorCard(message: message)
-                    }
-
-                    bodyContent
+                if rewriteState == .running {
+                    runningRewriteCard
+                } else if case .error(let message) = rewriteState {
+                    errorCard(message: message)
                 }
-                .padding(.horizontal, JotDesign.Spacing.pageMargin)
-                .padding(.bottom, 120) // leave room for ActionBar
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                transcriptCard
+                    .frame(maxHeight: .infinity)
+
+                if selectedTab == .rewrite, hasRewrite {
+                    attributionLine
+                        .padding(.horizontal, 4)
+                }
             }
+            .padding(.horizontal, JotDesign.Spacing.pageMargin)
+            .padding(.bottom, 100) // leave room for ActionBar
 
             actionBar
                 .padding(.horizontal, JotDesign.Spacing.pageMargin)
@@ -326,9 +335,16 @@ struct TranscriptDetailView: View {
                         .background(
                             ZStack {
                                 if selectedTab == tab {
+                                    // Active tab: lifted glass — adaptive
+                                    // `.regularMaterial` over the rail, with
+                                    // the same hairline as `LiquidGlassCard`.
                                     Capsule(style: .continuous)
-                                        .fill(Color.white)
-                                        .shadow(color: Color.black.opacity(0.07), radius: 4, x: 0, y: 2)
+                                        .fill(.regularMaterial)
+                                        .overlay(
+                                            Capsule(style: .continuous)
+                                                .strokeBorder(activeTabHairline, lineWidth: 0.5)
+                                        )
+                                        .shadow(color: Color.black.opacity(activeTabShadowOpacity), radius: 4, x: 0, y: 2)
                                 }
                             }
                             .padding(3)
@@ -341,49 +357,107 @@ struct TranscriptDetailView: View {
         }
         .padding(3)
         .background(
+            // Rail: frosted glass — `.ultraThinMaterial` lets the wallpaper
+            // bleed through so the pill reads as a chrome surface over the
+            // page rather than as a separate floating card. Auto-adapts to
+            // dark mode (iOS picks the dark blur tint over our navy wallpaper).
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.55))
+                .fill(.ultraThinMaterial)
         )
         .overlay(
             Capsule(style: .continuous)
-                .strokeBorder(Color.jotMuteWeak.opacity(0.45), lineWidth: 0.5)
+                .strokeBorder(railHairline, lineWidth: 0.5)
         )
     }
 
-    // MARK: - Body content per tab
+    /// Adaptive hairline matching `LiquidGlassCard`: thin black in light,
+    /// thin white in dark — reads as a rim on either material.
+    private var railHairline: Color {
+        Color(uiColor: UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(white: 1.0, alpha: 0.10)
+                : UIColor(white: 0.0, alpha: 0.06)
+        })
+    }
+
+    private var activeTabHairline: Color {
+        Color(uiColor: UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(white: 1.0, alpha: 0.14)
+                : UIColor(white: 0.0, alpha: 0.05)
+        })
+    }
+
+    private var activeTabShadowOpacity: Double {
+        // No shadow in dark — invisible on dark wallpaper, just adds murk.
+        // Light keeps the subtle lift the prior pill had.
+        colorScheme == .dark ? 0 : 0.07
+    }
+
+    // MARK: - Transcript card (fills remaining viewport between chrome and ActionBar)
 
     @ViewBuilder
-    private var bodyContent: some View {
-        switch selectedTab {
-        case .original:
-            Text(transcript.text)
-                .font(JotType.editorialBody)
-                .foregroundStyle(Color.jotInk)
+    private var transcriptCard: some View {
+        LiquidGlassCard(paddingH: 0, paddingV: 0) {
+            Group {
+                switch selectedTab {
+                case .original:
+                    // Disfluency cleanup is treated as part of the original
+                    // transcript — show the cleaned version when present so
+                    // the user sees um/uh removed in their default view.
+                    // The truly-raw `transcript.text` remains in the model
+                    // for future use; we just don't surface it here.
+                    transcriptScrollContent(
+                        text: transcript.disfluencyCleanedText ?? transcript.text
+                    )
+                case .rewrite:
+                    if let cleaned = transcript.cleanedText, !cleaned.isEmpty {
+                        transcriptScrollContent(text: cleaned)
+                    } else if rewriteState == .running {
+                        // A rewrite is mid-flight — the `runningRewriteCard`
+                        // already surfaces a "Rewriting…" indicator above
+                        // this card. Showing the "No rewrite yet · Tap
+                        // Rewrite" empty state at the same time tells the
+                        // user to do what they just did. Leave the card
+                        // empty until the rewrite lands.
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        rewriteEmptyState
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Scrollable body text styled to match Recents row typography (system
+    /// sans-serif) but at a larger reading size. The card itself is fixed-height
+    /// (fills the viewport between the tab pill and ActionBar); the ScrollView
+    /// inside lets long transcripts scroll without growing the card.
+    @ViewBuilder
+    private func transcriptScrollContent(text: String) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.system(size: 17, weight: .regular, design: .default))
+                .tracking(-0.1)
+                .lineSpacing(4)
+                .foregroundStyle(Color.jotPageInk)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-        case .rewrite:
-            if let cleaned = transcript.cleanedText, !cleaned.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(cleaned)
-                        .font(JotType.editorialItalic)
-                        .foregroundStyle(Color.jotInk)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    attributionLine
-                }
-            } else {
-                rewriteEmptyState
-            }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .id(selectedTab)
     }
 
     private var attributionLine: some View {
         HStack(spacing: 6) {
             Image(systemName: "sparkles")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.jotAccent)
+                .foregroundStyle(Color.jotBlueTop)
             Text(attributionText)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.jotMute)
@@ -406,7 +480,7 @@ struct TranscriptDetailView: View {
 
     private var rewriteEmptyState: some View {
         VStack(spacing: 14) {
-            IconBox(symbol: "sparkles", tint: Color.jotAccent, size: 44)
+            IconBox(symbol: "sparkles", tint: Color.jotBlueTop, size: 44)
 
             VStack(spacing: 6) {
                 Text("No rewrite yet")
@@ -430,7 +504,7 @@ struct TranscriptDetailView: View {
                 .frame(minHeight: 44)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color.jotAccent)
+                        .fill(Color.jotBlueTop)
                 )
             }
             .buttonStyle(.plain)
@@ -457,7 +531,7 @@ struct TranscriptDetailView: View {
             }
             .buttonStyle(.borderless)
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(Color.jotAccent)
+            .foregroundStyle(Color.jotBlueTop)
             .accessibilityLabel("Cancel rewrite")
         }
         .padding(14)
@@ -630,13 +704,23 @@ struct TranscriptDetailView: View {
     }
 
     /// Word count of the source transcript (Original tab). Surfaced in the
-    /// rewrite picker's sub-line per Mockup 10. Read from `transcript.text`
-    /// directly — the picker always rewrites the original, not whatever
-    /// tab the user is looking at.
+    /// rewrite picker's sub-line per Mockup 10. Reads the disfluency-cleaned
+    /// text when present — the picker always rewrites what the user sees in
+    /// the Original tab, which after disfluency cleanup is the lightly-edited
+    /// version (um/uh removed). Truly-raw `transcript.text` remains in the
+    /// model but is not surfaced to the rewrite path.
     private var sourceWordCount: Int {
-        transcript.text
+        rewriteSourceText
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
             .count
+    }
+
+    /// Text the rewrite path consumes — equals what the Original tab shows.
+    /// Disfluency-cleaned when that pass ran and changed text, otherwise the
+    /// raw transcript. Single source of truth for the AI Rewrite input across
+    /// the manual Transform button and the keyboard-originated rewrite path.
+    private var rewriteSourceText: String {
+        transcript.disfluencyCleanedText ?? transcript.text
     }
 
     // MARK: - Derived strings
@@ -660,25 +744,31 @@ struct TranscriptDetailView: View {
 
     /// Body text the share + word-count read from — follows the currently
     /// selected tab so "52 words" matches what the user is looking at.
+    /// Original returns the disfluency-cleaned version when present (matches
+    /// what the Original tab renders); Rewrite returns the AI Rewrite output,
+    /// or — when no rewrite has been produced — falls back to the same
+    /// disfluency-cleaned original so Share/Copy on an empty Rewrite tab
+    /// still does something sensible.
     private var bodyTextForActiveTab: String {
         switch selectedTab {
         case .original:
-            return transcript.text
+            return transcript.disfluencyCleanedText ?? transcript.text
         case .rewrite:
-            return transcript.cleanedText ?? transcript.text
+            return transcript.cleanedText
+                ?? transcript.disfluencyCleanedText
+                ?? transcript.text
         }
     }
 
-    /// Display name for the rewrite-model attribution line. Reads through
-    /// `LLMClientFactory.shared.currentProvider` so the surface stays honest
-    /// with the active provider (plan §11). Falls back to the Phi-4 mini
-    /// brand string when the provider lookup yields an unfamiliar case.
+    /// Display name for the rewrite-model attribution line.
+    ///
+    /// Routes through `JotDesign.activeRewriteModelDisplayName`, which
+    /// itself reads `LLMClientFactory.shared.currentProvider.displayName`.
+    /// Single source of truth for the model brand string across the
+    /// transcript-detail attribution, the rewrite-empty CTA copy, and
+    /// the rewrite picker sheet's subline.
     private var rewriteModelDisplayName: String {
-        let provider = LLMClientFactory.shared.currentProvider
-        switch provider {
-        case .phi4:
-            return JotDesign.activeRewriteModelDisplayName
-        }
+        JotDesign.activeRewriteModelDisplayName
     }
 
     // MARK: - Actions
@@ -753,7 +843,11 @@ struct TranscriptDetailView: View {
     /// the Rewrite tab refreshes — there is no separate "propose / apply"
     /// modal step in v1, per the single-rewrite contract (§6.2).
     private func startRewrite(with prompt: SavedPrompt) {
-        let source = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The user is "rewriting what they see" — feed the AI Rewrite the
+        // same text the Original tab displays (disfluency-cleaned when that
+        // pass ran). Sending the truly-raw text behind their back would
+        // re-introduce um/uh into the rewrite input and confuse the output.
+        let source = rewriteSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else {
             rewriteState = .error("Transcript is empty.")
             return
@@ -834,7 +928,10 @@ struct TranscriptDetailView: View {
         with prompt: SavedPrompt,
         intent: KeyboardRewriteRouter.KeyboardRewriteTarget
     ) {
-        let source = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Same "rewrite what the user sees" rule as the manual Transform
+        // path — feed the disfluency-cleaned text when present so the AI
+        // Rewrite input matches the Original tab.
+        let source = rewriteSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else {
             let message = "Transcript is empty."
             rewriteState = .error(message)

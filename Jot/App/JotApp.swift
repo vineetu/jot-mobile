@@ -22,6 +22,15 @@ struct JotApp: App {
     @State private var autoStartConsumed = false
     @State private var autoStartPendingModelReady = false
 
+    /// Drives the `FullAccessPromptSheet` presentation. Flipped to true
+    /// by the `jot://full-access` branch of `.onOpenURL` — i.e. the
+    /// keyboard's locked-state "Enable Full Access" pill bounced the
+    /// user back into the main app. The sheet explains why Full Access
+    /// is required and provides a deep link into iOS Settings. We do
+    /// NOT auto-foreground Settings on the URL alone — the user gets
+    /// the explanation first.
+    @State private var showFullAccessPrompt = false
+
     /// Stashed session UUID parsed off the most recent `jot://dictate?session=<uuid>`
     /// URL. Consumed in `triggerAutoStart` immediately before `recording.start()`
     /// so the upcoming pipeline writes carry the keyboard's session ID. Held on
@@ -49,13 +58,47 @@ struct JotApp: App {
             name: CrossProcessNotification.warmResumeRequested
         ) {
             Task { @MainActor in
+                // Capture the moment we received the keyboard's ping — this
+                // is the actual "user pressed Dictate" timestamp for the
+                // new recording. Committed to the coordinator on success
+                // so the hero's adopt-in-flight path reads a fresh anchor
+                // instead of the previous session's stale value (Bug 2).
+                let startedAt = Date()
                 do {
+                    lifecycleLog.notice("RECORDING START FROM: warmResumeObserver (JotApp.init)")
                     try await RecordingService.shared.start()
+                    // Refresh the coordinator's recording-start timestamp
+                    // so the hero adopts THIS recording's start time, not
+                    // the previous one's. Without this, the hero's elapsed
+                    // timer counts up from a stale anchor (user reported
+                    // "26 min" when 3-4 min into the current recording —
+                    // root cause: warm-resume successfully started a new
+                    // recording but the coordinator's timestamp was never
+                    // updated, so the hero adopt path read the previous
+                    // recording's start time).
+                    await DictationActivityCoordinator.shared.start(startedAt: startedAt)
                     lifecycleLog.info("Warm resume requested from keyboard; recording started")
-                } catch RecordingService.RecordingError.alreadyRunning {
-                    lifecycleLog.info("Warm resume requested from keyboard but recording is already running or pipeline is in flight")
                 } catch {
-                    lifecycleLog.error("Warm resume requested from keyboard failed: \(error.localizedDescription, privacy: .public)")
+                    // Bug fix for "keyboard Dictate sometimes no-ops, takes
+                    // 3-4 taps". The warm-resume fast path is fire-and-
+                    // forget from the keyboard's side. If start() throws
+                    // for ANY reason — pipeline still publishing the prior
+                    // dictation tail (.alreadyRunning), cooldown timer
+                    // raced our snapshot, engine activation failed, etc.
+                    // — the keyboard keeps retrying the same dead fast
+                    // path because its cached warmHoldExpiresAt/heartbeat
+                    // still look fresh. Clear those AppGroup keys so the
+                    // keyboard's NEXT tap falls through to the URL-bounce
+                    // slow path, which actually works. Without this, the
+                    // user sees 3-4 dead taps until the heartbeat
+                    // naturally ages out (~4s of staleness).
+                    AppGroup.warmHoldExpiresAt = nil
+                    AppGroup.warmHoldHeartbeat = nil
+                    if case RecordingService.RecordingError.alreadyRunning = error {
+                        lifecycleLog.info("Warm resume requested from keyboard but recording is already running or pipeline is in flight — cleared warm-hold cache so next keyboard tap takes the URL-bounce path")
+                    } else {
+                        lifecycleLog.error("Warm resume requested from keyboard failed: \(error.localizedDescription, privacy: .public) — cleared warm-hold cache so next keyboard tap takes the URL-bounce path")
+                    }
                 }
             }
         }
@@ -105,6 +148,46 @@ struct JotApp: App {
         // purges. Detached + best-effort, does not block launch.
         TranscriptionService.sweepOrphanedPurgingDirs()
 
+        // One-shot migration: reclaim ~530 MB of Application Support disk
+        // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
+        // 110M weights cached on disk. Gated by a `UserDefaults` flag so
+        // this runs at most once. Does NOT touch the v2 (600M) cache.
+        TranscriptionService.sweepLegacyAppSupportWeights()
+
+        // Eager warm-up of the bundled speech models so the wizard's
+        // "Try It" panel (W7) doesn't pay the ANE-load + Metal-kernel-JIT
+        // tax on the first dictation tap. Both `warmUp()` calls are
+        // idempotent — running them once at launch is a no-op if they
+        // were already warm, and the scene-activation `.task` block
+        // below covers the post-init reload path. Dispatched as
+        // non-blocking MainActor tasks so app launch isn't held up while
+        // CoreML compiles kernels.
+        //
+        // App Review 4.2.3(ii) safety: gated on `modelsExistOnDisk` so
+        // an un-downloaded opt-in 0.6B v2 variant does NOT silently
+        // trigger a first-launch network download. The default Parakeet
+        // TDT-CTC 110M and the streaming EOU weights both ship bundled
+        // in the IPA, so the gate is constant-true on the default
+        // variant — which is the variant that matters for the W7
+        // perceived-latency fix. NOT gated on `SetupCompletion` because
+        // W7 itself runs DURING setup; gating on completion would defeat
+        // the purpose.
+        //
+        // Failure is internally handled by `warmUp()` (flips
+        // `modelState = .failed`); the task body cannot throw.
+        let warmTranscription = transcription
+        let warmStreaming = streamingService
+        if TranscriptionService.modelsExistOnDiskForSelectedVariant() {
+            Task(priority: .userInitiated) { @MainActor in
+                warmTranscription.warmUp()
+            }
+        }
+        if StreamingTranscriptionService.modelsExistOnDisk() {
+            Task(priority: .userInitiated) { @MainActor in
+                warmStreaming.warmUp()
+            }
+        }
+
         // Reset any leftover non-terminal pipeline-phase projection from a
         // crashed previous launch. Without this reset, the keyboard would
         // observe a stale non-idle phase on first appearance and only recover
@@ -124,13 +207,21 @@ struct JotApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(isWizardPresented: showSetupWizard)
                 .environment(recordingService)
                 .environment(transcriptionService)
                 .environment(streamingService)
                 .environment(streamingPartial)
                 .environment(cleanupService)
                 .environment(keyboardRewriteRouter)
+                .sheet(isPresented: $showFullAccessPrompt) {
+                    // Explanatory sheet for `jot://full-access`.
+                    // Presented at the app's root scene so it surfaces
+                    // regardless of which navigation depth the user was
+                    // sitting at when they tapped the keyboard's
+                    // locked-state pill. See `FullAccessPromptSheet`.
+                    FullAccessPromptSheet(isPresented: $showFullAccessPrompt)
+                }
                 .fullScreenCover(isPresented: $showSetupWizard) {
                     SetupWizardView {
                         setupCompleted = SetupCompletion.isCompleted
@@ -138,12 +229,12 @@ struct JotApp: App {
                     }
                     .environment(transcriptionService)
                     .environment(streamingService)
-                    // Phase 6: W7 (in-app dictation test) wires through the
+                    // Phase 6: W6 (in-app dictation test) wires through the
                     // production `RecordingService.shared` so the user
                     // exercises the same recording path they'll use after
                     // setup. The wizard reads it via `@Environment`.
                     .environment(recordingService)
-                    // W7 renders `streamingPartial.streamingText` as the
+                    // W6 renders `streamingPartial.streamingText` as the
                     // live preview while recording. Without this injection
                     // the wizard would hit an `@Environment` lookup miss
                     // and crash on read; the production singleton is the
@@ -178,6 +269,19 @@ struct JotApp: App {
                         return
                     }
 
+                    // `jot://full-access` — keyboard's locked-state pill
+                    // tap. The keyboard cannot read Full Access state from
+                    // the main app's process, so we bounce here, show an
+                    // explanatory sheet, and let the user opt into the
+                    // Settings deep link with full context. NOT auto-routed
+                    // to iOS Settings — silent-bounce loses the chance to
+                    // explain WHY Full Access is needed, which is the whole
+                    // point of this intermediate screen.
+                    if url.host == "full-access" {
+                        showFullAccessPrompt = true
+                        return
+                    }
+
                     // Explicit user intent — bypass the once-per-session gate.
                     autoStartConsumed = false
                     // v7 auto-paste: parse `?session=<uuid>` off the keyboard's
@@ -199,8 +303,16 @@ struct JotApp: App {
                 }
                 .onChange(of: setupCompleted) { _, completed in
                     if completed {
-                        autoStartConsumed = false   // setup just completed, allow one auto-start
-                        triggerAutoStart(reason: "setup completion")
+                        // Land the user on the home view after finishing
+                        // setup rather than auto-starting a recording —
+                        // dropping straight into the hero record screen
+                        // before they've seen the app's home is
+                        // disorienting. Marking `autoStartConsumed = true`
+                        // also suppresses the once-per-session
+                        // scene-activation auto-start so a quick
+                        // background/foreground cycle right after setup
+                        // doesn't trigger it through the back door.
+                        autoStartConsumed = true
                     }
                 }
                 .onChange(of: scenePhase, initial: true) { _, newPhase in
@@ -209,7 +321,7 @@ struct JotApp: App {
                     // the modifier wires up — without it, `onChange` would
                     // never fire on initial render and the keyboard's
                     // `isJotAppForeground()` would return false during a cold
-                    // W8 entry. The .background/.inactive teardown path is
+                    // W7 entry. The .background/.inactive teardown path is
                     // unaffected — initial-fire on `.active` just kicks the
                     // same flow that would normally fire on transition.
                     if newPhase == .active {
@@ -234,13 +346,14 @@ struct JotApp: App {
                 // activation — earliest post-init hook without blocking launch,
                 // and the ban on I/O inside `JotApp.init()` still holds.
                 //
-                // `warmUp()` is gated on (a) the user having finished the
-                // setup wizard (which is where the explicit "Download speech
-                // models (~948 MB)" tap lives), AND (b) the models actually
-                // being on disk. Together these guarantee `warmUp()` cannot
-                // initiate a silent first-run download — required by App
-                // Review Guideline 4.2.3(ii). If models are missing, the
-                // wizard re-presents on next launch and re-prompts.
+                // `warmUp()` is gated on (a) the user having finished
+                // the setup wizard, AND (b) the models being on disk.
+                // The default speech model ships bundled in the IPA so
+                // (b) is constant-true on the default variant; the gate
+                // matters only for the opt-in Parakeet 0.6B v2 variant
+                // and is the App-Review-4.2.3(ii)-safe path for that
+                // download. If the bundle is somehow missing, the
+                // wizard re-presents on next launch.
                 //
                 // Cold-launch mirror refresh: regenerates the App Group JSON
                 // projection the keyboard reads on `viewWillAppear`. Without
@@ -250,17 +363,23 @@ struct JotApp: App {
                 // Bootstrapping here makes history visible in the keyboard
                 // immediately after first launch of the main app.
                 .task {
+                    // Default Parakeet TDT-CTC 110M ships bundled in the
+                    // IPA, so `modelsOnDisk` is constant-true on the
+                    // default variant. For the 0.6B v2 opt-in variant it
+                    // reflects the actual Application Support cache and
+                    // gates eager warm-up so an un-downloaded opt-in
+                    // doesn't trigger a silent first-launch download
+                    // (Guideline 4.2.3(ii)).
                     let modelsOnDisk = TranscriptionService.modelsExistOnDiskForSelectedVariant()
                     if SetupCompletion.isCompleted && modelsOnDisk {
                         transcriptionService.warmUp()
                     }
-                    // Streaming weights live in a different on-disk location
-                    // (FluidAudio's `parakeet-eou-streaming/320ms/` cache);
-                    // gated independently. `warmUp()` here is "ensure
-                    // weights on disk" — does NOT load into ANE per the
-                    // service's cleanup-on-every-stop lifecycle. Same
-                    // 4.2.3(ii) gate (setup completed + models on disk):
-                    // a fresh install never auto-downloads.
+                    // Streaming EOU weights are bundled too — the
+                    // `modelsExistOnDisk` check resolves against the
+                    // bundle URL and is constant-true on healthy
+                    // installs. `warmUp()` here flips `modelState` to
+                    // `.ready` without an ANE load per the service's
+                    // cleanup-on-every-stop lifecycle.
                     if SetupCompletion.isCompleted
                         && StreamingTranscriptionService.modelsExistOnDisk() {
                         streamingService.warmUp()
@@ -298,7 +417,7 @@ struct JotApp: App {
     /// Idempotent: tears down any previous task first so a flapping
     /// `scenePhase` (active → inactive → active) doesn't leak parallel
     /// heartbeat loops. Writes once immediately on start so a keyboard
-    /// tap inside W8 sees a fresh heartbeat without waiting up to a full
+    /// tap inside W7 sees a fresh heartbeat without waiting up to a full
     /// second for the first loop tick.
     private func startForegroundHeartbeat() {
         heartbeatTask?.cancel()
@@ -419,8 +538,12 @@ struct JotApp: App {
             return
         }
         setupCompleted = true
-        guard !autoStartConsumed else { return }
-        triggerAutoStart(reason: "first scene activation")
+        // No auto-start on plain app launch / scene activation. The
+        // user explicitly starts a recording by tapping the mic on the
+        // home view, or via the keyboard's "Start dictate" handoff
+        // (which routes through `.onOpenURL` and calls
+        // `triggerAutoStart` directly with its own gate reset — that
+        // path is untouched by this change).
     }
 
     private func triggerAutoStart(reason: String) {
@@ -485,6 +608,7 @@ struct JotApp: App {
                 // cleanly.
                 await DictationActivityCoordinator.shared.start(startedAt: startedAt)
                 do {
+                    lifecycleLog.notice("RECORDING START FROM: triggerAutoStart reason=\(reason, privacy: .public)")
                     try await recordingService.start()
                     lifecycleLog.info("Auto-started recording after \(reason, privacy: .public) session=\(sid, privacy: .public)")
                 } catch {

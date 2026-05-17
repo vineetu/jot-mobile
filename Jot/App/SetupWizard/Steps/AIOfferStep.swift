@@ -2,33 +2,48 @@
 //  AIOfferStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W11 (optional).
-//  Coral sparkle IconBox + "Add AI rewrite" + "Download · 2.4 GB" CTA.
+//  Phase 6 — wizard panel Optional Step 2 (AI Offer).
+//  Coral sparkle IconTile + "Add AI rewrite" + "Download · 2.4 GB" CTA.
 //  Wires to `LLMClientUIAdapter.warm()` against
 //  `LLMClientFactory.shared.client()`. After the warm is kicked off we
-//  dismiss the wizard — the existing in-app `AIRewriteDownloadBanner`
-//  surfaces continuing progress.
+//  dismiss the wizard — continuing download progress is surfaced inline
+//  in `AIRewriteSettingsView`'s compact model strip (the legacy top-pinned
+//  banner was removed to kill a cold-launch flicker).
 //
 
 import SwiftUI
 
 struct AIOfferStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onComplete: () -> Void
 
     @State private var didKickOff = false
+    @State private var kickoffTask: Task<Void, Never>?
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .optional(current: 1), onClose: onClose)
+            header: WizardHeader(style: .optional(current: 1), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 22) {
                 Spacer(minLength: 40)
 
-                sparkleTile
-                    .padding(.bottom, 4)
+                IconTile(
+                    systemImage: "sparkles",
+                    tint: JotDesign.JotSemanticIcon.ai,
+                    shaded: JotDesign.JotSemanticIcon.aiShaded,
+                    size: JotDesign.Spacing.tileHeroSize
+                )
+                .accessibilityHidden(true)
+                .padding(.bottom, 4)
 
-                WizardTitle(text: "Add AI rewrite")
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    WizardItalicTitle(text: "Add AI rewrite", size: 30)
+                    experimentalChip
+                        .alignmentGuide(.firstTextBaseline) { dimensions in
+                            dimensions[.firstTextBaseline] + 6
+                        }
+                }
 
                 WizardBody(text: bodyCopy)
 
@@ -42,43 +57,25 @@ struct AIOfferStep: View {
             )
             WizardSecondaryTextButton(title: "Skip", action: onComplete)
         }
+        .onDisappear {
+            kickoffTask?.cancel()
+            kickoffTask = nil
+        }
     }
 
     private var bodyCopy: String {
         "Polish dictations and convert prose to bullets. \(JotDesign.activeRewriteModelDisplayName) runs on your iPhone — about \(JotDesign.activeRewriteModelSize)."
     }
 
-    // MARK: - Tile
-
-    private var sparkleTile: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 1.00, green: 0.32, blue: 0.28),
-                            Color(red: 0.90, green: 0.23, blue: 0.19)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .inset(by: 0.5)
-                .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
-                .blendMode(.plusLighter)
-            Image(systemName: "sparkles")
-                .font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: 92, height: 92)
-        .shadow(
-            color: Color(red: 1.00, green: 0.23, blue: 0.19).opacity(0.35),
-            radius: 15,
-            x: 0,
-            y: 10
-        )
-        .accessibilityHidden(true)
+    private var experimentalChip: some View {
+        Text("EXPERIMENTAL")
+            .font(.system(size: 10, weight: .heavy))
+            .tracking(1.2)
+            .foregroundStyle(Color.jotCoralBottom)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Color.jotCoralTop.opacity(0.14))
+            .clipShape(Capsule())
     }
 
     // MARK: - Warm kickoff
@@ -91,16 +88,17 @@ struct AIOfferStep: View {
         // UI adapter so its `observableStatus` mirror is alive when the
         // user lands on the AI Rewrite settings row. The download itself
         // is long-running (~2.4 GB) and we deliberately don't block the
-        // wizard on it — the existing `AIRewriteDownloadBanner` continues
-        // the progress UI inside Settings.
+        // wizard on it — the AI Rewrite settings model strip continues
+        // the progress UI (download bar + cancel) inline.
         let client = LLMClientFactory.shared.client()
         let adapter = LLMClientUIAdapter(client: client)
         adapter.warm()
 
         // Dismiss + mark setup complete on the next runloop tick so the
         // `disabled` state of the CTA gets the visual beat it needs.
-        Task { @MainActor in
+        kickoffTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
             onComplete()
         }
     }

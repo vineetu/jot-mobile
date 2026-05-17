@@ -143,7 +143,7 @@ struct HelpView: View {
                 )
 
                 bulletParagraph(
-                    "Rewrites happen entirely on-device using a 2.4 GB model. Your text never leaves your iPhone."
+                    "Rewrites happen entirely on-device using a \(JotDesign.activeRewriteModelSize) model. Your text never leaves your iPhone."
                 )
 
                 bulletParagraph(
@@ -169,7 +169,7 @@ struct HelpView: View {
                 )
 
                 bulletParagraph(
-                    "Optional AI rewrites are also on-device (Phi-4 mini)."
+                    "Optional AI rewrites are also on-device (\(JotDesign.activeRewriteModelDisplayName))."
                 )
             }
         }
@@ -200,7 +200,7 @@ struct HelpView: View {
                     )
                     troubleshootingRow(
                         question: "Model didn't download",
-                        answer: "Check Wi-Fi. The speech model is 1.25 GB; the AI rewriter is 2.4 GB. Both require Wi-Fi by default.",
+                        answer: "The default speech model ships with the app — no download needed. The optional Parakeet 600M speech model (~440 MB) and the AI rewriter (~\(JotDesign.activeRewriteModelSize)) need Wi-Fi; check your connection if either tap doesn't start.",
                         showDivider: true
                     )
                     troubleshootingRow(
@@ -223,7 +223,7 @@ struct HelpView: View {
             DisclosureGroup {
                 Text(answer)
                     .font(.system(size: 15))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -254,12 +254,12 @@ struct HelpView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Found a bug or have a feature idea? Email us — we read every message.")
                     .font(.system(size: 15))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button {
-                    if let url = URL(string: "mailto:feedback@jot.app?subject=Jot%20iOS%20Feedback") {
+                    if let url = URL(string: "mailto:jottranscribe@gmail.com?subject=Jot%20iOS%20Feedback") {
                         openURL(url)
                     }
                 } label: {
@@ -267,7 +267,7 @@ struct HelpView: View {
                         Image(systemName: "envelope")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.jotAccent)
-                        Text("feedback@jot.app")
+                        Text("jottranscribe@gmail.com")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(Color.jotAccent)
                         Spacer(minLength: 0)
@@ -279,7 +279,7 @@ struct HelpView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Email feedback at feedback@jot.app")
+                .accessibilityLabel("Email feedback at jottranscribe@gmail.com")
             }
         }
     }
@@ -333,7 +333,7 @@ struct HelpView: View {
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Circle()
-                .fill(Color.jotAccent.opacity(0.5))
+                .fill(Color.jotBlueTop.opacity(0.5))
                 .frame(width: 5, height: 5)
                 .padding(.top, 7)
 
@@ -343,7 +343,7 @@ struct HelpView: View {
                 + Text(trailing)
             )
             .font(.system(size: 15))
-            .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+            .foregroundStyle(Color.jotPageInkSecondary)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,5 +1,15 @@
 import SwiftUI
 import UIKit
+import OSLog
+
+// [KB-COLLAPSE-DEBUG] File-scope logger used only by the diagnostic
+// instrumentation in `collapseToggle`'s tap handler. Same subsystem /
+// category as the controller's `keyboardLog` so Console.app filters
+// see both streams together.
+private let kbCollapseLog = Logger(
+    subsystem: "com.vineetu.jot.mobile.Jot.Keyboard",
+    category: "keyboard"
+)
 
 /// Compact Jot keyboard surface — Phase 2 of the UX overhaul.
 ///
@@ -284,6 +294,11 @@ struct KeyboardView: View {
 
     private var collapseToggle: some View {
         Button {
+            // [KB-COLLAPSE-DEBUG] Tap-moment marker for Symptom 2 (partial
+            // minimize — inner view collapses but outer envelope stays
+            // expanded). Pair with the toggleCollapsed entry log in
+            // JotKeyboardViewController to confirm the tap reached UIKit.
+            kbCollapseLog.log("[KB-COLLAPSE-DEBUG] tap MINIMIZE")
             feedback.systemClick()
             feedback.selectionTick()
             onToggleCollapsed()
@@ -303,15 +318,14 @@ struct KeyboardView: View {
 
     /// Primary dictation CTA.
     ///
-    /// ## Bug A — wizard W8 "Dictate is greyed out / can't be tapped" (2026-05-11)
+    /// ## Bug A — wizard W7 "Dictate is greyed out / can't be tapped" (2026-05-11)
     ///
-    /// Root cause: when the user reaches W8 (TryKeyboardStep) WITHOUT having
-    /// actually enabled "Allow Full Access" in W5, the keyboard extension's
+    /// Root cause: when the user reaches W7 (TryKeyboardStep) WITHOUT having
+    /// actually enabled "Allow Full Access" in W4, the keyboard extension's
     /// inherited `UIInputViewController.hasFullAccess` resolves to `false`.
-    /// W5 (FullAccessStep) advances on a manual "I've enabled it" tap with
-    /// no verification (the main-app process can't read the keyboard's
-    /// `hasFullAccess` directly — see FullAccessStep.swift docblock), so a
-    /// user who taps through W5 without flipping the switch lands on W8 with
+    /// W4 includes a manual bypass because the main-app process can't read the
+    /// keyboard's `hasFullAccess` directly, so a user who taps through W4
+    /// without flipping the switch lands on W7 with
     /// no Full Access.
     ///
     /// Pre-fix behavior: this branch (`!hasFullAccess`) used

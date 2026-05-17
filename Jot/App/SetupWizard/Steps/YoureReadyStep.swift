@@ -2,38 +2,37 @@
 //  YoureReadyStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W10.
+//  Phase 6 — wizard panel W8 (renumbered from W9 after the bundled-Parakeet
+//  ship retired the W3 speech-model download step).
 //  Green check circle + "You're ready." + an italic note that names the
-//  two optional steps (vocab + AI rewrite). Primary CTA advances to W11
-//  for optional setup; secondary CTA dismisses and marks setup complete.
+//  two optional steps (vocab + AI rewrite). Primary CTA advances to the
+//  first optional step (vocab seed); secondary CTA dismisses and marks
+//  setup complete.
 //
 
 import SwiftUI
 
 struct YoureReadyStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvanceToOptional: () -> Void
     let onSkipOptional: () -> Void
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 9), onClose: onClose)
+            header: WizardHeader(style: .core(current: 7), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 18) {
                 Spacer(minLength: 60)
 
                 checkTile
 
-                Text("You're ready.")
-                    .font(.custom(JotType.frauncesSemiBold, size: 40))
-                    .foregroundStyle(Color.jotInk)
-                    .tracking(-0.8)
-                    .multilineTextAlignment(.center)
+                WizardItalicTitle(text: "You're ready.", size: 40)
                     .padding(.top, 8)
 
                 Text("Jot works now. You can start dictating any time.")
                     .font(.system(size: 15))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(1.5)
                     .padding(.top, 4)
@@ -64,32 +63,11 @@ struct YoureReadyStep: View {
     // MARK: - Tile
 
     private var checkTile: some View {
-        ZStack {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.204, green: 0.780, blue: 0.349),
-                            Color(red: 0.169, green: 0.659, blue: 0.290)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            Circle()
-                .inset(by: 0.5)
-                .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
-                .blendMode(.plusLighter)
-            Image(systemName: "checkmark")
-                .font(.system(size: 32, weight: .heavy))
-                .foregroundStyle(.white)
-        }
-        .frame(width: 72, height: 72)
-        .shadow(
-            color: Color(red: 0.204, green: 0.780, blue: 0.349).opacity(0.30),
-            radius: 15,
-            x: 0,
-            y: 10
+        IconTile(
+            systemImage: "checkmark",
+            tint: JotDesign.JotSemanticIcon.privacyOnDevice,
+            shaded: JotDesign.JotSemanticIcon.privacyOnDeviceShaded,
+            size: JotDesign.Spacing.tileHeroSize
         )
         .accessibilityHidden(true)
     }

@@ -35,7 +35,7 @@ struct AcknowledgementsView: View {
             .padding(.top, 8)
             .padding(.bottom, 24)
         }
-        .background(JotDesign.background.ignoresSafeArea())
+        .background(WallpaperBackground())
         .navigationTitle("Acknowledgements")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -48,7 +48,7 @@ struct AcknowledgementsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Jot is built on open-source software and open-weight models. The authors and licenses are credited below.")
                 .font(.system(size: 15))
-                .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                .foregroundStyle(Color.jotPageInkSecondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,11 +90,35 @@ struct AcknowledgementsView: View {
                         showDivider: true
                     )
                     AcknowledgementRow(
+                        title: "Qwen 3.5 4B",
+                        author: "Alibaba Cloud / Qwen Team",
+                        license: "Apache 2.0",
+                        version: nil,
+                        url: "https://huggingface.co/Qwen/Qwen3.5-4B",
+                        showDivider: true
+                    )
+                    AcknowledgementRow(
                         title: "Phi-4 mini",
                         author: "Microsoft",
                         license: "MIT",
                         version: nil,
                         url: "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+                        showDivider: true
+                    )
+                    AcknowledgementRow(
+                        title: "Rocholl 6×96 disfluency tagger",
+                        author: "Johann Rocholl et al. (Google Research)",
+                        license: "Apache 2.0",
+                        version: nil,
+                        url: "https://arxiv.org/abs/2104.10769",
+                        showDivider: true
+                    )
+                    AcknowledgementRow(
+                        title: "DisfluencySpeech corpus",
+                        author: "AMAAI Lab (Singapore University of Technology and Design)",
+                        license: "Apache 2.0",
+                        version: nil,
+                        url: "https://huggingface.co/datasets/amaai-lab/DisfluencySpeech",
                         showDivider: true
                     )
                     AcknowledgementRow(

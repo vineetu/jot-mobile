@@ -2,7 +2,7 @@
 //  TryKeyboardStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W8.
+//  Phase 6 — wizard panel W6.
 //  "Now try the keyboard" — passive verification. Auto-advances when a
 //  fresh `ClipboardHandoff.FreshDictation` newer than this step's entry
 //  timestamp lands in the App Group. Provides a manual "I've got it"
@@ -10,10 +10,19 @@
 //
 
 import SwiftUI
+import os.log
+
+private let tryKeyboardLog = Logger(
+    subsystem: "com.vineetu.jot.mobile.Jot",
+    category: "setup-wizard.W6"
+)
 
 struct TryKeyboardStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvance: () -> Void
+
+    @Environment(RecordingService.self) private var recordingService
 
     @State private var enteredAt: Date = Date()
     @State private var detectedFreshDictation = false
@@ -21,12 +30,12 @@ struct TryKeyboardStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 7), onClose: onClose)
+            header: WizardHeader(style: .core(current: 5), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 16) {
                 Spacer(minLength: 16)
 
-                WizardTitle(text: "Now try the keyboard", size: 26)
+                WizardItalicTitle(text: "Now try the keyboard", size: 28)
                     .padding(.bottom, 4)
 
                 WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Dictate.")
@@ -54,6 +63,34 @@ struct TryKeyboardStep: View {
         .onDisappear {
             pollTask?.cancel()
             pollTask = nil
+            let service = recordingService
+            let teardown: @MainActor () -> Void = {
+                tryKeyboardLog.notice("W6 disappearing while recording in flight — force-stopping (wizard contract)")
+                service.forceStop()
+                service.markPipelineFinished()
+                service.publishPipelinePhase(.idle)
+            }
+            if service.isRecording || service.isPipelineInFlight {
+                teardown()
+            } else {
+                // Dismiss-during-start race: W6's `start()` is fired
+                // from the wizard host's keyboard-tap handler in an
+                // untracked Task. If the user dismisses mid-`start()`,
+                // `isRecording`/`isPipelineInFlight` haven't flipped
+                // yet, so the synchronous check above misses it and the
+                // mic comes up after the wizard is gone. Watch briefly
+                // for a late flip and reap.
+                Task { @MainActor in
+                    let deadline = Date().addingTimeInterval(2.0)
+                    while Date() < deadline {
+                        if service.isRecording || service.isPipelineInFlight {
+                            teardown()
+                            return
+                        }
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                }
+            }
         }
     }
 
@@ -91,6 +128,7 @@ struct TryKeyboardStep: View {
                     // Brief beat so the user sees the "Got it" copy before
                     // auto-advancing.
                     try? await Task.sleep(nanoseconds: 600_000_000)
+                    guard !Task.isCancelled else { return }
                     onAdvance()
                     return
                 }

@@ -219,6 +219,7 @@ private struct StreamingPane: View {
                         )
                     }
                     .coordinateSpace(name: "streamingPane")
+                    .defaultScrollAnchor(.bottom)
                     .onPreferenceChange(ContentHeightKey.self) { height in
                         contentHeight = height
                     }

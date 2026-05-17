@@ -2,15 +2,14 @@ import FluidAudio
 import Foundation
 
 /// Process-wide coalescing lock so two concurrent setup/Settings/Vocab
-/// taps for the boost-model download don't race on the same files.
-/// FluidAudio's `DownloadUtils` has no in-flight lock — it checks
-/// existence then proceeds, so two simultaneous calls into
-/// `CtcModels.downloadAndLoad` can both start fetching the same
-/// CoreML packages in parallel. The wrapper below funnels concurrent
-/// callers into a single Task that the second tap simply awaits.
+/// taps for the boost-model load don't compile the same CoreML packages
+/// twice in parallel. The bundle resources are read-only and the
+/// `loadDirect` path doesn't touch the network, but the underlying
+/// `MLModel(contentsOf:)` calls are non-trivial and we keep a single
+/// in-flight load for symmetry with the old download-coordinator.
 @MainActor
-private final class CtcDownloadCoordinator {
-    static let shared = CtcDownloadCoordinator()
+private final class CtcLoadCoordinator {
+    static let shared = CtcLoadCoordinator()
     private var inFlight: Task<CtcModels, Error>?
 
     func ensureLoaded(directory: URL, variant: CtcModelVariant) async throws -> CtcModels {
@@ -18,7 +17,7 @@ private final class CtcDownloadCoordinator {
             return try await inFlight.value
         }
         let task = Task<CtcModels, Error> {
-            try await CtcModels.downloadAndLoad(to: directory, variant: variant)
+            try await CtcModels.loadDirect(from: directory, variant: variant)
         }
         inFlight = task
         defer { inFlight = nil }
@@ -26,22 +25,17 @@ private final class CtcDownloadCoordinator {
     }
 }
 
-/// On-disk location for the Parakeet CTC 110M bundle used by the
+/// Bundle location for the Parakeet CTC 110M bundle used by the
 /// vocabulary-boosting pipeline.
 ///
-/// Mirrors the main TDT model's `MLModelConfigurationUtils.defaultModelsDirectory`
-/// pattern: the CTC encoder lives under the app's own Application
-/// Support subtree so "delete Jot's data" is a single directory remove
-/// and users don't see an orphan "FluidAudio" folder in their iOS
-/// Files app.
-///
-/// The CTC bundle is ≈100 MB (MelSpectrogram + AudioEncoder + CtcHead
-/// CoreML packages + vocabulary/tokenizer JSON) and is **separate from
-/// the primary TDT model** — downloading one does not imply the other.
-/// On iOS, the user must explicitly opt in to this download via the
-/// Vocabulary pane (App Store 4.2.3(ii) consent).
-///
-/// Ported from `jot/Sources/Transcription/CtcModelCache.swift`.
+/// The CTC aux bundle (~100 MB — MelSpectrogram + AudioEncoder +
+/// CtcHead CoreML packages + vocabulary/tokenizer JSON) ships inside
+/// the IPA at
+/// `<Bundle>/Models/Parakeet/parakeet-ctc-110m-coreml/`, so
+/// vocabulary biasing is available immediately on install with no
+/// separate user-initiated download. `CtcModels.loadDirect(from:)`
+/// reads the `.mlmodelc` packages straight from the bundle —
+/// `DownloadUtils` is bypassed entirely.
 public struct CtcModelCache: Sendable {
     public let root: URL
     public let variant: CtcModelVariant
@@ -52,24 +46,16 @@ public struct CtcModelCache: Sendable {
     }
 
     public static let shared: CtcModelCache = {
-        let appSupport = try! FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        // Mobile keeps the Application Support root flat — the app
-        // sandbox already isolates per-app data, so a "Jot" subdir
-        // would be redundant. Models live under "Models/" alongside
-        // the TDT and EOU caches.
-        return CtcModelCache(
-            root: appSupport.appendingPathComponent("Models", isDirectory: true)
-        )
+        let bundleRoot = Bundle.main.bundleURL
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent("Parakeet", isDirectory: true)
+        return CtcModelCache(root: bundleRoot)
     }()
 
-    /// Directory FluidAudio reads from / writes to for the configured
-    /// variant. FluidAudio's own layout is `<parent>/<repo-name>/*.mlmodelc`
-    /// — we hand its API the parent directory and let it manage the subtree.
+    /// Directory containing the CTC `.mlmodelc` packages and `vocab.json`.
+    /// `CtcModels.loadDirect(from:)` reads
+    /// `MelSpectrogram.mlmodelc`, `AudioEncoder.mlmodelc`, and
+    /// `vocab.json` relative to this URL.
     public var directory: URL {
         switch variant {
         case .ctc110m:
@@ -80,39 +66,36 @@ public struct CtcModelCache: Sendable {
     }
 
     /// True when every file FluidAudio requires is on disk. Delegates to
-    /// the SDK — only it knows the exact required file set. A bare
-    /// "directory exists" check would falsely claim success on a partial
-    /// download.
+    /// the SDK — only it knows the exact required file set. On a healthy
+    /// install this is always true because the bundle ships the full
+    /// required-set.
     public var isCached: Bool {
         CtcModels.modelsExist(at: directory)
     }
 
     public func ensureRootExists() throws {
-        try FileManager.default.createDirectory(
-            at: root,
-            withIntermediateDirectories: true
-        )
+        // Bundle resources are read-only; nothing to create.
     }
 
-    /// Download + load in one step. If the files are already cached this
-    /// is a hot load from disk (no network). On cold start this is the
-    /// ≈100 MB download.
+    /// Load the CTC aux models from the bundled directory. On healthy
+    /// installs this is a pure in-process CoreML load; there is no
+    /// network or download branch — `CtcModels.loadDirect(from:)` reads
+    /// the `.mlmodelc` packages straight from the bundle.
     ///
-    /// Coalesced: concurrent callers (setup wizard fire-and-forget +
-    /// Settings re-download + Vocab pane Download tap) all funnel
-    /// through `CtcDownloadCoordinator` so only one download runs in
-    /// flight against FluidAudio's `DownloadUtils` at a time.
+    /// Coalesced via `CtcLoadCoordinator` so concurrent callers (vocab
+    /// pane, settings re-warm, transcription pipeline) share a single
+    /// in-flight load.
     public func ensureLoaded() async throws -> CtcModels {
-        try ensureRootExists()
-        return try await CtcDownloadCoordinator.shared.ensureLoaded(
+        return try await CtcLoadCoordinator.shared.ensureLoaded(
             directory: directory,
             variant: variant
         )
     }
 
-    /// Remove the cached bundle. Used after a failed download so the
-    /// next retry starts from a known-empty state.
+    /// No-op for bundled resources — the bundle is read-only.
+    /// Retained for source-compatibility with callers that previously
+    /// drove a re-download via this method.
     func removeCache() {
-        try? FileManager.default.removeItem(at: directory)
+        // No-op.
     }
 }

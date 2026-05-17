@@ -2,10 +2,12 @@
 //  KeyboardInstallStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W4.
-//  Sends the user to System Settings to add Jot as a keyboard, then
-//  auto-detects when they return by inspecting
-//  `UITextInputMode.activeInputModes` for the Jot keyboard identifier.
+//  Phase 6 — wizard panel W3 (renumbered from W4 after the bundled-Parakeet
+//  ship retired the standalone speech-model download step).
+//  Sends the user to System Settings to add Jot as a keyboard and enable
+//  Full Access in one trip. Keyboard installation auto-detects on return by
+//  inspecting `UITextInputMode.activeInputModes`; Full Access remains a
+//  manual attestation because the main app cannot read that setting.
 //
 
 import SwiftUI
@@ -13,6 +15,7 @@ import UIKit
 
 struct KeyboardInstallStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvance: () -> Void
 
     /// Bundle identifier of the JotKeyboard extension. Used to detect
@@ -26,7 +29,7 @@ struct KeyboardInstallStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 3), onClose: onClose)
+            header: WizardHeader(style: .core(current: 2), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 22) {
                 Spacer(minLength: 40)
@@ -34,17 +37,17 @@ struct KeyboardInstallStep: View {
                 keyboardTile
                     .padding(.bottom, 4)
 
-                WizardTitle(text: titleText)
+                WizardItalicTitle(text: titleText)
 
-                WizardBody(text: "iOS Settings → General → Keyboard → Keyboards → Add New Keyboard → Jot.")
+                WizardBody(text: "In Settings, add Jot as a keyboard, then open Jot and turn on Full Access so dictations can paste into other apps.")
 
-                WizardItalicNote(text: "We'll detect when you're back.")
+                WizardItalicNote(text: "We'll detect the keyboard when you're back. Full Access is a manual setting.")
 
                 Spacer(minLength: 16)
             }
         } footer: {
             WizardPrimaryButton(
-                title: keyboardInstalled ? "Continue" : "Open Settings",
+                title: keyboardInstalled ? "Continue" : "Open Keyboard Settings",
                 action: {
                     if keyboardInstalled {
                         onAdvance()
@@ -53,6 +56,8 @@ struct KeyboardInstallStep: View {
                     }
                 }
             )
+
+            WizardSecondaryTextButton(title: "I've already done this", action: onAdvance)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -65,50 +70,18 @@ struct KeyboardInstallStep: View {
     }
 
     private var titleText: String {
-        keyboardInstalled ? "Jot keyboard installed" : "Add Jot as a keyboard"
+        keyboardInstalled ? "Jot keyboard detected" : "Set up Jot Keyboard"
     }
 
     // MARK: - Tile
 
     private var keyboardTile: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(white: 1.0),
-                            Color(red: 0.949, green: 0.941, blue: 0.922)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .inset(by: 0.5)
-                .stroke(Color.white.opacity(0.8), lineWidth: 0.5)
-                .blendMode(.plusLighter)
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
-
-            // Stylized keyboard pictogram: three top rows of light pips + a
-            // coral space bar.
-            VStack(spacing: 4) {
-                ForEach(0..<2, id: \.self) { row in
-                    HStack(spacing: 3) {
-                        ForEach(0..<4, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                .fill(Color.jotInk.opacity(row == 0 ? 0.85 : 0.35))
-                                .frame(width: 6, height: 5)
-                        }
-                    }
-                }
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color.jotAccent)
-                    .frame(width: 26, height: 5)
-            }
-        }
-        .frame(width: 92, height: 92)
-        .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 8)
+        IconTile(
+            systemImage: "keyboard.fill",
+            tint: Color(red: 0.953, green: 0.933, blue: 0.906),
+            shaded: Color(red: 0.886, green: 0.847, blue: 0.792),
+            size: JotDesign.Spacing.tileHeroSize
+        )
         .accessibilityHidden(true)
     }
 
@@ -116,8 +89,8 @@ struct KeyboardInstallStep: View {
 
     /// Returns true iff the user has added the Jot keyboard in System
     /// Settings. Reads from `UITextInputMode.activeInputModes`, which is
-    /// the public surface for "keyboards the user has enabled for typing"
-    /// — it does NOT require Full Access (W5 handles that).
+    /// the public surface for "keyboards the user has enabled for typing".
+    /// It does NOT report the separate Full Access setting.
     private func isKeyboardInstalled() -> Bool {
         for mode in UITextInputMode.activeInputModes {
             let id = mode.value(forKey: "identifier") as? String ?? ""

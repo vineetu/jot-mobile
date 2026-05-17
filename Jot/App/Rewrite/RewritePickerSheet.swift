@@ -81,23 +81,23 @@ struct RewritePickerSheet: View {
                 .padding(.bottom, 18)
 
             // Prompt rows scroll within the sheet so 4+ user prompts don't
-            // overflow the fixed 360pt detent (plan §6.1). The header, the
-            // "+ New prompt" affordance, and the footer disclosure stay
-            // pinned outside the ScrollView.
+            // overflow the fixed 360pt detent (plan §6.1). Voice prompt
+            // sits at the tail of the same list as a compact one-line row
+            // so it reads as "one more prompt option" instead of standing
+            // off in a separate footer card. "+ New prompt" stays pinned
+            // outside the ScrollView as a plain centered text link.
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 10) {
                     ForEach(prompts) { prompt in
                         promptRow(prompt)
                     }
+                    voicePromptRow
                 }
             }
             .scrollIndicators(.automatic)
 
-            VStack(spacing: 10) {
-                voicePromptRow
-                newPromptRow
-            }
-            .padding(.top, 10)
+            newPromptLink
+                .padding(.top, 14)
 
             Spacer(minLength: 16)
 
@@ -107,7 +107,7 @@ struct RewritePickerSheet: View {
         .padding(.top, 8)
         .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(JotDesign.background.ignoresSafeArea())
+        .background(WallpaperBackground())
         .presentationDetents([.height(360)])
         .presentationDragIndicator(.visible)
         .presentationCornerRadius(JotDesign.Spacing.sheetRadius)
@@ -206,17 +206,26 @@ struct RewritePickerSheet: View {
             .frame(maxWidth: .infinity, minHeight: 60)
             .background(
                 RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.75))
+                    .fill(.ultraThinMaterial)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .strokeBorder(Color.jotMuteWeak.opacity(0.30), lineWidth: 0.5)
+                    .strokeBorder(Self.rowHairline, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(prompt.name). \(rowSecondary(for: prompt, kind: kind))")
         .accessibilityAddTraits(.isButton)
     }
+
+    /// Adaptive hairline shared by the prompt-row and voice-prompt-row cards.
+    /// Subtle dark stroke in light mode, subtle light stroke in dark mode —
+    /// reads as a rim on either material fill.
+    private static let rowHairline = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.10)
+            : UIColor(white: 0.0, alpha: 0.06)
+    })
 
     /// One of three visual kinds for a picker row, keyed by the stable id of
     /// the seeded defaults. User-created rows fall through to `.userPrompt`
@@ -270,40 +279,34 @@ struct RewritePickerSheet: View {
         Button {
             showVoicePrompt = true
         } label: {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
                 IconBox(
                     symbol: "mic.fill",
                     tint: Color.jotAccent,
-                    size: 44
+                    size: 32
                 )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Voice prompt")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.jotInk)
-                        .lineLimit(1)
-                    Text("Dictate a one-shot rewrite instruction.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.jotMute)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Voice prompt — dictate a one-shot instruction")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.jotInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.jotMuteWeak)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
             .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 60)
+            .frame(maxWidth: .infinity, minHeight: 48)
             .background(
                 RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.75))
+                    .fill(.ultraThinMaterial)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .strokeBorder(Color.jotMuteWeak.opacity(0.30), lineWidth: 0.5)
+                    .strokeBorder(Self.rowHairline, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -311,39 +314,24 @@ struct RewritePickerSheet: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    private var newPromptRow: some View {
+    private var newPromptLink: some View {
         Button {
             onNewPrompt()
             dismiss()
         } label: {
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(
-                            Color.jotMuteWeak.opacity(0.55),
-                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                        )
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Color.jotMute)
-                }
-                .frame(width: 44, height: 44)
-
-                Text("New prompt")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.jotInk)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Image(systemName: "chevron.right")
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.jotMuteWeak)
+                Text("New prompt")
+                    .font(.system(size: 14, weight: .semibold))
             }
+            .foregroundStyle(Color.jotAccent)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 6)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 56)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Add a new rewrite prompt")
+        .accessibilityLabel("New prompt")
         .accessibilityHint("Opens AI Rewrite settings to create a new prompt")
     }
 
@@ -392,7 +380,7 @@ private struct VoicePromptCaptureView: View {
         .padding(.top, 8)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(JotDesign.background.ignoresSafeArea())
+        .background(WallpaperBackground())
         .presentationDetents([.height(320)])
         .presentationDragIndicator(.visible)
         .presentationCornerRadius(JotDesign.Spacing.sheetRadius)
@@ -1020,7 +1008,7 @@ extension Color {
         .sheet(isPresented: .constant(true)) {
             RewritePickerSheet(
                 wordCount: 52,
-                modelDisplayName: "Phi-4 mini",
+                modelDisplayName: "Qwen 3.5 4B",
                 prompts: [SavedPrompt.defaultRewrite],
                 onPick: { _ in },
                 onNewPrompt: {}

@@ -1,18 +1,6 @@
 import SwiftUI
 
-/// Phase 5 — Settings main (mockup 15).
-///
-/// Reflowed from the original `Form`-based layout into editorial chrome:
-/// a Fraunces "Settings" 32pt header + glass Done pill at the top, then
-/// stacked `GlassCard(.regular)` sections in the order
-/// SPEECH MODEL → VOCABULARY → AI → PRIVACY → ABOUT.
-///
-/// The full speech-model variant picker + re-download confirmation moved
-/// into a dedicated `SpeechModelVariantPicker` pushed onto the nav stack
-/// via the "Variant" chevron row inside the SPEECH MODEL card. The main
-/// settings page only surfaces the active model name + status pill +
-/// size footer + the Variant chevron — the picker view owns variant
-/// selection, the re-download confirmation dialog, and the status detail.
+/// v0.9 Settings main, matched to the design handoff's `SettingsScreen`.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
@@ -31,8 +19,16 @@ struct SettingsView: View {
     /// SPEECH MODEL card footer reflects the active variant's on-disk size.
     @State private var speechModelVariant: String = AppGroup.speechModelVariant
 
+    /// Mirror of `AppGroup.warmHoldDurationSeconds` for the Privacy picker.
+    @State private var warmHoldDurationSeconds: TimeInterval = AppGroup.warmHoldDurationSeconds
+
     /// Mirror of `AppGroup.warmHoldEnabled` for the Privacy kill-switch.
     @State private var warmHoldEnabled: Bool = AppGroup.warmHoldEnabled
+
+    /// Mirror of `AppGroup.disfluencyCleanupEnabled` for the SPEECH MODEL
+    /// "Clean up filler words" toggle. Default `false` — the opt-in
+    /// disfluency cleanup pass only runs once the user flips this on.
+    @State private var disfluencyCleanupEnabled: Bool = AppGroup.disfluencyCleanupEnabled
 
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
     /// VOCABULARY card row both observe `terms.count`.
@@ -46,26 +42,20 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: JotDesign.Spacing.sectionGap) {
-                    editorialHeader
+            ZStack(alignment: .top) {
+                WallpaperBackground()
+                    .ignoresSafeArea()
 
-                    speechModelSection
-                    vocabularySection
-                    aiSection
-                    privacySection
-                    aboutSection
-
-                    Spacer(minLength: 24)
+                ScrollView {
+                    settingsContent
                 }
-                .padding(.horizontal, JotDesign.Spacing.pageMargin)
-                .padding(.top, 8)
             }
-            .background(JotDesign.background.ignoresSafeArea())
             .navigationBarHidden(true)
             .onAppear {
                 speechModelVariant = AppGroup.speechModelVariant
+                warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
+                disfluencyCleanupEnabled = AppGroup.disfluencyCleanupEnabled
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -80,17 +70,44 @@ struct SettingsView: View {
             .onChange(of: warmHoldEnabled) { _, newValue in
                 AppGroup.warmHoldEnabled = newValue
             }
+            .onChange(of: warmHoldDurationSeconds) { _, newValue in
+                AppGroup.warmHoldDurationSeconds = newValue
+            }
+            .onChange(of: disfluencyCleanupEnabled) { _, newValue in
+                AppGroup.disfluencyCleanupEnabled = newValue
+            }
         }
     }
 
-    // MARK: - Editorial header
+    // MARK: - Page chrome
 
-    private var editorialHeader: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Settings")
-                .font(.custom(JotType.frauncesSemiBold, size: 32))
-                .foregroundStyle(Color.jotInk)
-                .accessibilityAddTraits(.isHeader)
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            navRow
+            heroTitle
+            speechModelSection
+            vocabularySection
+            aiSection
+            privacySection
+            aboutSection
+            settingsFooter
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var navRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "j.square.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Color.jotPageInk)
+                    .frame(width: 20, height: 20)
+                    .accessibilityHidden(true)
+
+                Text("Jot")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color(red: 60 / 255, green: 60 / 255, blue: 67 / 255).opacity(0.85))
+            }
 
             Spacer()
 
@@ -98,51 +115,170 @@ struct SettingsView: View {
                 dismiss()
             } label: {
                 Text("Done")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.jotInk)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 9)
-                    .modifier(JotDesign.Surface.regular.modifier(cornerRadius: 22))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.jotPageInk)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .background(.regularMaterial, in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                    }
             }
             .buttonStyle(.plain)
             .frame(minHeight: 44)
             .accessibilityLabel("Done")
             .accessibilityHint("Dismisses Settings")
         }
-        .padding(.top, 4)
+        .padding(.horizontal, JotDesign.Spacing.pageGutter)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var heroTitle: some View {
+        Text("Settings.")
+            .font(JotType.displaySerif(44))
+            .tracking(-1.6)
+            .foregroundStyle(Color.jotPageInk)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.leading, 22)
+            .padding(.trailing, 22)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
+    }
+
+    @ViewBuilder
+    private func settingsSection<Content: View>(
+        label: String,
+        caption: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel(label)
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+
+            sectionCaption(caption)
+        }
+    }
+
+    private func sectionLabel(_ label: String) -> some View {
+        Text(label)
+            .font(JotType.sectionLabel)
+            .tracking(1.5)
+            .foregroundStyle(Color.jotPageInkCaption)
+            .padding(.horizontal, 22)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
+    }
+
+    private func sectionCaption(_ caption: String) -> some View {
+        Text(caption)
+            .font(JotType.rowSub)
+            .foregroundStyle(Color.jotPageInkCaption)
+            .padding(.horizontal, 22)
+            .padding(.top, 8)
+    }
+
+    private var cardDivider: some View {
+        Rectangle()
+            .fill(Color.jotPageSeparator)
+            .frame(height: 0.5)
+            .padding(.leading, 60)
+    }
+
+    @ViewBuilder
+    private func settingsIconRow<Trailing: View>(
+        systemImage: String,
+        tint: Color,
+        shaded: Color,
+        title: String,
+        subline: String? = nil,
+        alignment: VerticalAlignment = .center,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: alignment, spacing: 14) {
+            IconTile(
+                systemImage: systemImage,
+                tint: tint,
+                shaded: shaded
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                if let subline {
+                    Text(subline)
+                        .font(JotType.rowSub)
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                }
+            }
+
+            Spacer(minLength: 12)
+            trailing()
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var externalArrow: some View {
+        Image(systemName: "arrow.up.right")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.jotPageInkCaption)
+            .accessibilityHidden(true)
+    }
+
+    private var settingsFooter: some View {
+        Text("Made with care in San Francisco.\nNo accounts, no cloud, no telemetry.")
+            .font(.system(size: 12))
+            .foregroundStyle(Color(red: 60 / 255, green: 60 / 255, blue: 67 / 255).opacity(0.45))
+            .multilineTextAlignment(.center)
+            .lineSpacing(2)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 20)
+            .padding(.bottom, 24)
+            .padding(.horizontal, 22)
     }
 
     // MARK: - SPEECH MODEL
 
     private var speechModelSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("SPEECH MODEL")
-                .padding(.horizontal, 4)
-
-            GlassCard(tier: .regular, padding: 16) {
-                VStack(alignment: .leading, spacing: 14) {
+        settingsSection(label: "SPEECH MODEL", caption: speechModelFooter) {
+            LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 14) {
-                        IconBox(
-                            symbol: "waveform.badge.magnifyingglass",
-                            tint: Color.blue,
-                            size: 44
+                        IconTile(
+                            systemImage: "waveform",
+                            tint: JotDesign.JotSemanticIcon.speechModel,
+                            shaded: JotDesign.JotSemanticIcon.speechModelShaded
                         )
 
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(speechModelDisplayName)
-                                .font(.custom(JotType.frauncesSemiBold, size: 18))
-                                .foregroundStyle(Color.jotInk)
+                                .font(JotType.rowTitle)
+                                .tracking(-0.2)
+                                .foregroundStyle(Color.jotPageInk)
+
                             Text(speechModelLocationCopy)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.jotMute)
+                                .font(JotType.rowSub)
+                                .foregroundStyle(Color.jotPageInkSecondary)
                         }
 
-                        Spacer()
-
+                        Spacer(minLength: 12)
                         speechModelStatusPill
                     }
+                    .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+                    .padding(.vertical, 13)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
 
-                    Divider().opacity(0.4)
+                    cardDivider
 
                     NavigationLink {
                         SpeechModelVariantPicker()
@@ -151,28 +287,66 @@ struct SettingsView: View {
                     } label: {
                         HStack(spacing: 10) {
                             Text("Variant")
-                                .font(.system(size: 16))
-                                .foregroundStyle(Color.jotInk)
+                                .font(JotType.rowTitle)
+                                .tracking(-0.2)
+                                .foregroundStyle(Color.jotPageInk)
+
                             Spacer()
+
                             Text(variantShortName)
-                                .font(.system(size: 15))
-                                .foregroundStyle(Color.jotMute)
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(Color.jotPageInkSecondary)
+
                             RowChevron()
                         }
-                        .frame(minHeight: 44)
+                        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+                        .padding(.vertical, 13)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Variant, currently \(variantShortName)")
                     .accessibilityHint("Opens variant picker")
+
+                    cardDivider
+                    disfluencyCleanupRow
                 }
             }
-
-            Text(speechModelFooter)
-                .font(.footnote)
-                .foregroundStyle(Color.jotMute)
-                .padding(.horizontal, 4)
         }
+    }
+
+    private var disfluencyCleanupRow: some View {
+        HStack(alignment: .top, spacing: 14) {
+            IconTile(
+                systemImage: "text.badge.minus",
+                tint: JotDesign.JotSemanticIcon.speechModel,
+                shaded: JotDesign.JotSemanticIcon.speechModelShaded
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Clean up filler words")
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                Text("Removes um, uh, and false starts after each dictation. On-device. Off by default.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $disfluencyCleanupEnabled)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Clean up filler words")
+                .accessibilityHint("Removes filler words and false starts after each dictation. On-device. Off by default.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private var speechModelDisplayName: String {
@@ -201,10 +375,11 @@ struct SettingsView: View {
         "Runs entirely on this iPhone. Audio never leaves the device."
     }
 
-    /// "Installed" gate for the SPEECH MODEL display. Mirrors the 3-way AND
-    /// pattern in `SpeechModelStep.modelAlreadyOnDisk` so Settings doesn't
-    /// say "Not downloaded" when the bundles are on disk but Parakeet hasn't
-    /// been warmed into ANE yet (e.g. user opened Settings before recording).
+    /// "Installed" gate for the SPEECH MODEL display. Three-way AND across
+    /// the batch TDT, the streaming EOU, and the CTC aux. For the default
+    /// (bundled) TDT-CTC 110M variant all three are always present in the
+    /// IPA; for the 0.6B v2 opt-in variant the batch TDT lives in
+    /// Application Support and may still need a Settings download tap.
     /// Gating on bare `modelState == .ready` is wrong here — that flag is
     /// the "warmed into ANE for recording" signal, not the "is the model
     /// installed" signal.
@@ -220,19 +395,27 @@ struct SettingsView: View {
         // load is happening right now, surface the live progress chrome.
         switch transcriptionService.modelState {
         case .downloading(let fraction):
-            StatusPill(label: "\(Int((fraction * 100).rounded()))%", tint: .info)
+            StatusPillV09(label: "\(Int((fraction * 100).rounded()))%", tint: .info)
         case .loading:
-            StatusPill(label: "Loading", tint: .info)
+            StatusPillV09(label: "Loading", tint: .info)
         case .failed where !speechModelInstalled:
-            // Surface failures only when the bundles aren't already on disk
-            // — a stale failure flag is not a reason to mislead the user
-            // into thinking the model is missing.
-            StatusPill(label: "Error", tint: .warning)
-        case .ready, .notLoaded, .failed:
+            // Surface failures when the bundles aren't on disk — the user
+            // is missing files AND we couldn't load. The label below
+            // distinguishes the "files present but load failed" case from
+            // this one.
+            StatusPillV09(label: "Error", tint: .warning)
+        case .failed:
+            // Files present on disk but the load still failed — usually
+            // means the bundle is corrupted (truncated weights, mismatched
+            // mlmodelc, etc). Don't show "Ready" here; that misleads the
+            // user into thinking dictation will work when every tap will
+            // throw "Load failed: ..." at the moment of use.
+            StatusPillV09(label: "Load failed", tint: .warning)
+        case .ready, .notLoaded:
             if speechModelInstalled {
-                StatusPill(label: "Ready", tint: .success)
+                StatusPillV09(label: "Ready", tint: .ready)
             } else {
-                StatusPill(label: "Not downloaded", tint: .warning)
+                StatusPillV09(label: "Not downloaded", tint: .warning)
             }
         }
     }
@@ -240,45 +423,27 @@ struct SettingsView: View {
     // MARK: - VOCABULARY
 
     private var vocabularySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("VOCABULARY")
-                .padding(.horizontal, 4)
-
+        settingsSection(
+            label: "VOCABULARY",
+            caption: "Bias the speech model toward names, technical terms, and words Jot tends to mishear."
+        ) {
             NavigationLink {
                 VocabularySettingsView()
             } label: {
-                GlassCard(tier: .regular, padding: 14) {
-                    HStack(spacing: 14) {
-                        IconBox(
-                            symbol: "text.book.closed",
-                            tint: Color.teal,
-                            size: 36
-                        )
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Custom terms")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(Color.jotInk)
-                            Text(vocabularySubline)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.jotMute)
-                        }
-
-                        Spacer()
-                        RowChevron()
-                    }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                    settingsIconRow(
+                        systemImage: "text.book.closed",
+                        tint: JotDesign.JotSemanticIcon.vocabulary,
+                        shaded: JotDesign.JotSemanticIcon.vocabularyShaded,
+                        title: "Custom terms",
+                        subline: vocabularySubline,
+                        trailing: { RowChevron() }
+                    )
                 }
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Custom terms, \(vocabularyStore.terms.count) entries")
             .accessibilityHint("Opens the vocabulary list")
-
-            Text("Bias the speech model toward names, technical terms, and words Jot tends to mishear.")
-                .font(.footnote)
-                .foregroundStyle(Color.jotMute)
-                .padding(.horizontal, 4)
         }
     }
 
@@ -290,45 +455,27 @@ struct SettingsView: View {
     // MARK: - AI
 
     private var aiSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("AI")
-                .padding(.horizontal, 4)
-
+        settingsSection(
+            label: "AI",
+            caption: "Titles and tags use the system's built-in AI automatically."
+        ) {
             NavigationLink {
                 AIRewriteSettingsView()
             } label: {
-                GlassCard(tier: .regular, padding: 14) {
-                    HStack(spacing: 14) {
-                        IconBox(
-                            symbol: "wand.and.stars",
-                            tint: Color.jotAccent,
-                            size: 36
-                        )
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Rewrite & prompts")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(Color.jotInk)
-                            Text(aiSubline)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.jotMute)
-                        }
-
-                        Spacer()
-                        RowChevron()
-                    }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                    settingsIconRow(
+                        systemImage: "wand.and.stars",
+                        tint: JotDesign.JotSemanticIcon.ai,
+                        shaded: JotDesign.JotSemanticIcon.aiShaded,
+                        title: "Rewrite & prompts",
+                        subline: aiSubline,
+                        trailing: { RowChevron() }
+                    )
                 }
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Rewrite and prompts, \(aiSubline)")
             .accessibilityHint("Opens AI Rewrite settings")
-
-            Text("Titles and tags use the system's built-in AI automatically.")
-                .font(.footnote)
-                .foregroundStyle(Color.jotMute)
-                .padding(.horizontal, 4)
         }
     }
 
@@ -349,277 +496,271 @@ struct SettingsView: View {
     // MARK: - PRIVACY
 
     private var privacySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("PRIVACY")
-                .padding(.horizontal, 4)
-
-            GlassCard(tier: .regular, padding: 14) {
+        settingsSection(
+            label: "PRIVACY",
+            caption: "Your words stay on your iPhone. No accounts, no cloud, no telemetry."
+        ) {
+            LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(spacing: 0) {
-                    privacyRow(
-                        symbol: "iphone",
-                        tint: Color.green,
+                    settingsIconRow(
+                        systemImage: "iphone",
+                        tint: JotDesign.JotSemanticIcon.privacyOnDevice,
+                        shaded: JotDesign.JotSemanticIcon.privacyOnDeviceShaded,
                         title: "On-device only",
-                        value: "Always",
-                        showDivider: true
+                        subline: "Always",
+                        trailing: {
+                            StatusPillV09(label: "Always", tint: .always)
+                        }
                     )
 
-                    privacyRow(
-                        symbol: "lock.shield",
-                        tint: Color.indigo,
+                    cardDivider
+
+                    settingsIconRow(
+                        systemImage: "lock.shield",
+                        tint: JotDesign.JotSemanticIcon.privacyFullAccess,
+                        shaded: JotDesign.JotSemanticIcon.privacyFullAccessShaded,
                         title: "Full Access",
-                        value: "Required for paste",
-                        statusLabel: "Enabled",
-                        showDivider: true
+                        subline: "Required for paste",
+                        trailing: {
+                            StatusPillV09(label: "Enabled", tint: .ready)
+                        }
                     )
 
-                    privacyToggleRow(
-                        symbol: "mic",
-                        tint: Color.orange,
-                        title: "Keep mic ready",
-                        value: "Skips cold-start latency for repeat dictations within 60 seconds. " +
-                            "While ready, the iOS orange microphone indicator stays on — the audio session is active but Jot is not transcribing.",
-                        isOn: $warmHoldEnabled,
-                        showDivider: false
-                    )
-                }
-            }
+                    cardDivider
+                    privacyMicReadyRow
 
-            Text("Your words stay on your iPhone. No accounts, no cloud, no telemetry.")
-                .font(.footnote)
-                .foregroundStyle(Color.jotMute)
-                .padding(.horizontal, 4)
-        }
-    }
-
-    @ViewBuilder
-    private func privacyRow(
-        symbol: String,
-        tint: Color,
-        title: String,
-        value: String,
-        statusLabel: String? = nil,
-        showDivider: Bool
-    ) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                IconBox(symbol: symbol, tint: tint, size: 32)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(Color.jotInk)
-                    Text(value)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.jotMute)
-                }
-
-                Spacer()
-
-                if let statusLabel {
-                    StatusPill(label: statusLabel, tint: .success)
-                } else {
-                    StatusPill(label: "Always", tint: .success)
-                }
-            }
-            .frame(minHeight: 44)
-            .padding(.vertical, 6)
-
-            if showDivider {
-                Divider().opacity(0.4)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func privacyToggleRow(
-        symbol: String,
-        tint: Color,
-        title: String,
-        value: String,
-        isOn: Binding<Bool>,
-        showDivider: Bool
-    ) -> some View {
-        VStack(spacing: 0) {
-            Toggle(isOn: isOn) {
-                HStack(spacing: 12) {
-                    IconBox(symbol: symbol, tint: tint, size: 32)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Color.jotInk)
-                        Text(value)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.jotMute)
+                    if warmHoldEnabled {
+                        cardDivider
+                        privacyMicReadyDurationRow
                     }
                 }
             }
-            .tint(.jotAccent)
-            .frame(minHeight: 44)
-            .padding(.vertical, 6)
-
-            if showDivider {
-                Divider().opacity(0.4)
-            }
         }
+    }
+
+    private var privacyMicReadyRow: some View {
+        HStack(alignment: .top, spacing: 14) {
+            IconTile(
+                systemImage: "mic",
+                tint: JotDesign.JotSemanticIcon.privacyMicReady,
+                shaded: JotDesign.JotSemanticIcon.privacyMicReadyShaded
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Keep mic ready")
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                Text("Skips cold-start latency for repeat dictations within the selected ready window. While ready, the iOS orange microphone indicator stays on — the audio session is active but Jot is not transcribing.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $warmHoldEnabled)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Keep mic ready")
+                .accessibilityHint("Skips cold-start latency for repeat dictations within the selected ready window.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var privacyMicReadyDurationRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            IconTile(
+                systemImage: "mic",
+                tint: JotDesign.JotSemanticIcon.privacyMicReady,
+                shaded: JotDesign.JotSemanticIcon.privacyMicReadyShaded
+            )
+
+            Text("Ready for")
+                .font(JotType.rowTitle)
+                .foregroundStyle(Color.jotPageInk)
+                .tracking(-0.2)
+
+            Spacer(minLength: 12)
+
+            Picker("", selection: $warmHoldDurationSeconds) {
+                Text("60s").tag(TimeInterval(60))
+                Text("2 min").tag(TimeInterval(120))
+                Text("3 min").tag(TimeInterval(180))
+                Text("5 min").tag(TimeInterval(300))
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .accessibilityLabel("Mic-ready duration")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     // MARK: - ABOUT
 
     private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("ABOUT")
-                .padding(.horizontal, 4)
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("ABOUT")
 
-            GlassCard(tier: .regular, padding: 0) {
+            LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(spacing: 0) {
-                    // Help & Support sits at the top of ABOUT — it's the
-                    // first row a confused user will scroll for, and the
-                    // mirror to the home header's "?" sheet entry point.
+                    if DictationStats.totalCount > 0 {
+                        statsRow
+                        cardDivider
+                    }
+
                     NavigationLink {
                         HelpView()
                     } label: {
-                        aboutRowBody(
-                            symbol: "questionmark.circle",
-                            tint: Color.teal,
+                        settingsIconRow(
+                            systemImage: "questionmark.circle",
+                            tint: JotDesign.JotSemanticIcon.helpSupport,
+                            shaded: JotDesign.JotSemanticIcon.helpSupportShaded,
                             title: "Help & Support",
                             trailing: { RowChevron() }
                         )
                     }
                     .buttonStyle(.plain)
-                    Divider().opacity(0.4).padding(.leading, 56)
+                    .accessibilityLabel("Help & Support")
+                    .accessibilityHint("Opens Help")
 
-                    aboutRow(
-                        symbol: "arrow.clockwise",
-                        tint: Color.blue,
-                        title: "Re-run setup wizard",
-                        trailing: { RowChevron() },
-                        action: handleRerunSetupTap
-                    )
-                    Divider().opacity(0.4).padding(.leading, 56)
+                    cardDivider
 
-                    aboutLink(
-                        symbol: "envelope",
-                        tint: Color.indigo,
-                        title: "Send feedback",
-                        destination: URL(string: "mailto:feedback@jot.app?subject=Jot%20iOS%20Feedback")!
-                    )
-                    Divider().opacity(0.4).padding(.leading, 56)
+                    Button {
+                        handleRerunSetupTap()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "arrow.clockwise",
+                            tint: JotDesign.JotSemanticIcon.rerunWizard,
+                            shaded: JotDesign.JotSemanticIcon.rerunWizardShaded,
+                            title: "Re-run setup wizard",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
 
-                    aboutRow(
-                        symbol: "info.circle",
-                        tint: Color.gray,
+                    cardDivider
+
+                    Link(destination: URL(string: "mailto:jottranscribe@gmail.com?subject=Jot%20iOS%20Feedback")!) {
+                        settingsIconRow(
+                            systemImage: "envelope",
+                            tint: JotDesign.JotSemanticIcon.sendFeedback,
+                            shaded: JotDesign.JotSemanticIcon.sendFeedbackShaded,
+                            title: "Send feedback",
+                            trailing: { externalArrow }
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    cardDivider
+
+                    settingsIconRow(
+                        systemImage: "info.circle",
+                        tint: JotDesign.JotSemanticIcon.version,
+                        shaded: JotDesign.JotSemanticIcon.versionShaded,
                         title: "Version",
                         trailing: {
                             Text(versionString)
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.jotMute)
-                        },
-                        action: {}
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(Color.jotPageInkSecondary)
+                        }
                     )
-                    Divider().opacity(0.4).padding(.leading, 56)
 
-                    aboutLink(
-                        symbol: "hand.raised",
-                        tint: Color.purple,
-                        title: "Privacy Policy",
-                        destination: URL(string: "https://jot.ideaflow.page/privacy")!
-                    )
-                    Divider().opacity(0.4).padding(.leading, 56)
+                    cardDivider
+
+                    NavigationLink {
+                        DonationsView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "gift",
+                            tint: JotDesign.JotSemanticIcon.donations,
+                            shaded: JotDesign.JotSemanticIcon.donationsShaded,
+                            title: "Donations",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Donations")
+                    .accessibilityHint("Opens Donations")
+
+                    cardDivider
+
+                    Link(destination: URL(string: "https://jot.ideaflow.page/privacy")!) {
+                        settingsIconRow(
+                            systemImage: "hand.raised",
+                            tint: JotDesign.JotSemanticIcon.privacyPolicy,
+                            shaded: JotDesign.JotSemanticIcon.privacyPolicyShaded,
+                            title: "Privacy Policy",
+                            trailing: { externalArrow }
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    cardDivider
 
                     NavigationLink {
                         AcknowledgementsView()
                     } label: {
-                        aboutRowBody(
-                            symbol: "heart",
-                            tint: Color.pink,
+                        settingsIconRow(
+                            systemImage: "heart",
+                            tint: JotDesign.JotSemanticIcon.acknowledgements,
+                            shaded: JotDesign.JotSemanticIcon.acknowledgementsShaded,
                             title: "Acknowledgements",
                             trailing: { RowChevron() }
                         )
                     }
                     .buttonStyle(.plain)
-
-                    #if DEBUG
-                    Divider().opacity(0.4).padding(.leading, 56)
-
-                    NavigationLink {
-                        JotDesignCatalog()
-                    } label: {
-                        aboutRowBody(
-                            symbol: "paintpalette",
-                            tint: Color.orange,
-                            title: "Design catalog (debug)",
-                            trailing: { RowChevron() }
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    #endif
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+        }
+    }
+
+    private var statsRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            IconTile(
+                systemImage: "chart.line.uptrend.xyaxis",
+                tint: JotDesign.JotSemanticIcon.speechModel,
+                shaded: JotDesign.JotSemanticIcon.speechModelShaded
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Time saved")
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                Text(statsSubline)
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
             }
 
-            Text("Made with care in San Francisco. No accounts, no cloud, no telemetry.")
-                .font(.footnote)
-                .foregroundStyle(Color.jotMute)
-                .padding(.horizontal, 4)
-        }
-    }
+            Spacer(minLength: 12)
 
-    @ViewBuilder
-    private func aboutRow<Trailing: View>(
-        symbol: String,
-        tint: Color,
-        title: String,
-        @ViewBuilder trailing: () -> Trailing,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            aboutRowBody(symbol: symbol, tint: tint, title: title, trailing: trailing)
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func aboutLink(
-        symbol: String,
-        tint: Color,
-        title: String,
-        destination: URL
-    ) -> some View {
-        Link(destination: destination) {
-            aboutRowBody(
-                symbol: symbol,
-                tint: tint,
-                title: title,
-                trailing: {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.jotMuteWeak)
-                }
+            RecentsSparkline(
+                values: DictationStats.last14DaysSeconds,
+                width: 60,
+                height: 20
             )
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Time saved — \(statsSubline)")
     }
 
-    @ViewBuilder
-    private func aboutRowBody<Trailing: View>(
-        symbol: String,
-        tint: Color,
-        title: String,
-        @ViewBuilder trailing: () -> Trailing
-    ) -> some View {
-        HStack(spacing: 12) {
-            IconBox(symbol: symbol, tint: tint, size: 30)
-            Text(title)
-                .font(.system(size: 16))
-                .foregroundStyle(Color.jotInk)
-            Spacer()
-            trailing()
-        }
-        .frame(minHeight: 44)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
+    private var statsSubline: String {
+        let mins = max(0, Int(((DictationStats.todaySeconds * DictationStats.timeSavedMultiplier) / 60).rounded()))
+        return "\(mins) min today · \(RecentsFormatting.dictationCountText(DictationStats.totalCount))"
     }
 
     // MARK: - Misc
@@ -632,7 +773,7 @@ struct SettingsView: View {
     /// `onDismiss` is the deterministic fix — `DispatchQueue.main.async`
     /// only buys one runloop turn, which isn't guaranteed to outlast the
     /// ~300ms dismiss animation. Also stop any in-flight recording so the
-    /// wizard's W7 in-app dictation test doesn't collide with a live engine.
+    /// wizard's W6 in-app dictation test doesn't collide with a live engine.
     private func handleRerunSetupTap() {
         if recordingService.isRecording {
             recordingService.forceStop()
@@ -694,12 +835,21 @@ struct SpeechModelVariantPicker: View {
                     }
                 }
 
-                Button {
-                    handleModelAction()
-                } label: {
-                    Label(modelActionTitle, systemImage: "arrow.down.circle")
+                // Hide the download / re-download CTA for the bundled 110M
+                // variant — its weights live in the read-only IPA bundle, so
+                // both "Download all models" (nothing to fetch) and
+                // "Re-download all models" (purgeAndReload short-circuits for
+                // the bundled case) are dead-end taps. The v2 (600M) path is
+                // unchanged: its Application Support cache is writable and
+                // re-downloadable.
+                if speechModelVariant != "tdtCtc110m" {
+                    Button {
+                        handleModelAction()
+                    } label: {
+                        Label(modelActionTitle, systemImage: "arrow.down.circle")
+                    }
+                    .disabled(modelActionDisabled)
                 }
-                .disabled(modelActionDisabled)
             } header: {
                 Text("Model")
             }

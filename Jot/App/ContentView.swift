@@ -17,7 +17,7 @@ private let contentLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", categor
 /// - Search bar pill, UI-shell only (disabled in v1, see plan §5.1).
 /// - Grouped transcript list (Today / Yesterday / Last 7 days / Older),
 ///   each row a mono timestamp + duration + body excerpt.
-/// - Floating coral Dictate FAB centered above the safe area; tapping it
+/// - Floating blue Dictate FAB centered above the safe area; tapping it
 ///   pushes `RecordingHeroView` onto the nav stack (the new full-screen
 ///   recording surface, Mockup 08), so recording happens off-home.
 ///
@@ -88,9 +88,23 @@ enum HeroIntent {
 }
 
 struct ContentView: View {
+    /// True while the setup wizard's fullScreenCover is presenting on top
+    /// of the home view. The wizard owns its own recording UX during its
+    /// lifetime — W6's mic test surfaces the live transcript inside the
+    /// wizard panel itself. If we let the home view's `.onChange(of:
+    /// recordingService.isRecording)` auto-push the hero while the
+    /// wizard is up, we end up with a zombie hero sitting on the nav
+    /// stack BEHIND the wizard: tap-stop in the wizard kills the
+    /// recording but can't pop the hero (different nav scope), and the
+    /// user lands on home post-dismissal with a "Listening" page that
+    /// doesn't correspond to any actual capture.
+    var isWizardPresented: Bool = false
+
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(RecordingService.self) private var recordingService
     @Environment(KeyboardRewriteRouter.self) private var keyboardRewriteRouter
+    @Environment(StreamingPartial.self) private var streamingPartial
 
     @Query(sort: \Transcript.createdAt, order: .reverse)
     private var transcripts: [Transcript]
@@ -121,6 +135,21 @@ struct ContentView: View {
     /// it again. The hero view also writes to this binding (passed in as
     /// `@Binding`) to pop itself on stop / cancel / error / stale-mount.
     @State private var showRecordingHero = false
+    /// Set to true when the user taps the back chevron on the hero while a
+    /// recording is in progress. While this is true the auto-push observers
+    /// (`onAppear` and `onChange(of: isRecording)`) skip pushing the hero
+    /// even though `isRecording == true`, so the user can stay on home with
+    /// the recording running. Cleared automatically when the recording ends,
+    /// or when the user taps the home "return to recording" pill.
+    @State private var userDismissedHeroDuringRecording = false
+    /// Mirrors `DictationStats.shouldShowDonationCard` into a SwiftUI-watchable
+    /// flag. Re-evaluated on `onAppear` and on every transition to `.active`
+    /// scene phase — that covers (a) a fresh app launch, (b) returning to
+    /// home after the recording hero pops, and (c) returning from background
+    /// after the keyboard incremented the counter in another app. The
+    /// `DictationStats` state machine itself stays the source of truth; this
+    /// flag is just a cache that lets the body invalidate cleanly.
+    @State private var donationCardVisible: Bool = false
     /// What the hero should do on mount. `.startRecording` is set by the FAB
     /// (fresh user action — must call `start()`); `.adoptInFlight` is set by
     /// every auto-nav path (URL bounce, scene re-activation) and tells the
@@ -133,39 +162,96 @@ struct ContentView: View {
     var body: some View {
         NavigationStack(path: $navPath) {
             ZStack(alignment: .bottom) {
-                JotDesign.background
+                WallpaperBackground()
                     .ignoresSafeArea()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        headerRow
+                    VStack(alignment: .leading, spacing: JotDesign.Spacing.sectionGapV09) {
+                        RecentsNavBar(
+                            onSettings: { showSettings = true },
+                            onHelp: { showHelp = true }
+                        )
+
+                        heroTitle
 
                         searchBar
 
-                        groupedTranscriptsList
+                        if donationCardVisible {
+                            DonationCard(
+                                onDismiss: handleDonationCardDismiss,
+                                onSeeDonations: handleDonationCardOpen
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+
+                        RecentsListCard(
+                            transcripts: transcripts,
+                            groups: transcriptGroups,
+                            isSearching: !searchText.isEmpty,
+                            copiedTranscriptID: copiedTranscriptID,
+                            isLiveRecording: isLiveRecordingInline,
+                            liveStreamingText: streamingPartial.streamingText,
+                            onCopy: copy,
+                            onDelete: { pendingDeletion = $0 }
+                        )
                     }
-                    .padding(.horizontal, JotDesign.Spacing.pageMargin)
+                    .padding(.horizontal, JotDesign.Spacing.pageGutter)
                     .padding(.top, 8)
                     // Leave room at the bottom so the FAB doesn't obscure the
                     // last row of transcripts. FAB pill height (64pt) + bottom
                     // safe-area margin + breathing room.
                     .padding(.bottom, 120)
                 }
+                .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
 
-                DictateFAB {
-                    // Fresh user action: tell the hero to actually start a
-                    // recording. Set intent BEFORE flipping the binding so
-                    // the hero's `.onAppear` reads the right value.
-                    heroIntent = .startRecording
-                    showRecordingHero = true
+                // Bottom action zone: while a recording is running with the
+                // hero dismissed, swap the FAB for a "return to recording"
+                // pill. This is the only re-entry path for a user-backgrounded
+                // recording, so it has to stay obvious. Suppressed while the
+                // wizard is presenting — W6's in-wizard mic test sets
+                // `isRecording == true` and we don't want a stray pill leaking
+                // through the wizard overlay or driving a stale timer.
+                //
+                // Also gated on `userDismissedHeroDuringRecording` — the pill
+                // is ONLY a re-entry affordance for an explicit back-out, not
+                // a generic "recording is active" badge. On cold launch with
+                // a URL-bounce recording, `isRecording` flips true before
+                // `.onAppear` pushes the hero; without this gate the pill
+                // would flash briefly in that gap. Auto-push paths cover the
+                // "no flag set, recording active" case before any pixel ships.
+                if isLiveRecordingInline {
+                    RecordingReturnPill {
+                        // Re-enter the hero. Clear the dismissal flag so the
+                        // next back-tap arms it fresh, and adopt the running
+                        // session rather than `start()`-ing a second one.
+                        userDismissedHeroDuringRecording = false
+                        heroIntent = .adoptInFlight
+                        showRecordingHero = true
+                    }
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else {
+                    DictateFAB {
+                        // Fresh user action: tell the hero to actually start a
+                        // recording. Set intent BEFORE flipping the binding so
+                        // the hero's `.onAppear` reads the right value.
+                        heroIntent = .startRecording
+                        showRecordingHero = true
+                    }
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .padding(.bottom, 16)
             }
+            .animation(.easeInOut(duration: 0.25), value: recordingService.isRecording)
+            .animation(.easeInOut(duration: 0.25), value: showRecordingHero)
             .navigationBarHidden(true)
             .navigationDestination(isPresented: $showRecordingHero) {
                 RecordingHeroView(
                     showRecordingHero: $showRecordingHero,
+                    onBackgrounded: {
+                        userDismissedHeroDuringRecording = true
+                    },
                     intent: heroIntent
                 )
             }
@@ -218,6 +304,7 @@ struct ContentView: View {
         }
         .onAppear {
             copyHaptic.prepare()
+            refreshDonationCardVisibility()
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
             }
@@ -227,7 +314,14 @@ struct ContentView: View {
             // the next runloop so the recording surface owns the timer +
             // streaming preview from the user's POV. Tag the intent as
             // adoption — the hero must not call `start()` here.
-            if recordingService.isRecording {
+            //
+            // Suppress while the wizard is presenting — W6's mic test is
+            // recording-driven and we don't want a zombie hero accumulating
+            // on the nav stack behind the wizard. See `isWizardPresented`
+            // doc above.
+            if recordingService.isRecording,
+               !isWizardPresented,
+               !userDismissedHeroDuringRecording {
                 heroIntent = .adoptInFlight
                 showRecordingHero = true
             }
@@ -246,67 +340,80 @@ struct ContentView: View {
         // than calling `start()` a second time. Pipeline-tail transitions
         // (`.transcribing` / `.cleaning`) deliberately do NOT trigger this
         // — see the docblock above for the reasoning.
+        //
+        // Suppressed while the wizard is presenting — W6's "Try it once"
+        // step calls `recordingService.start()` to drive an in-wizard mic
+        // test. Without this gate, that start fires this observer and a
+        // hero gets pushed onto the home view's nav stack behind the
+        // wizard. When the user taps stop inside W6 the recording cleanly
+        // ends, but the hero on the home nav stack has no symmetric pop
+        // path — it sits there frozen in `.recording` phase. The user
+        // then dismisses the wizard and lands on a zombie "Listening"
+        // surface with no underlying capture. See `isWizardPresented`
+        // doc above.
         .onChange(of: recordingService.isRecording) { _, isRecording in
-            if isRecording {
+            if isRecording, !isWizardPresented, !userDismissedHeroDuringRecording {
                 // Auto-nav adoption — never `start()` from this path.
                 heroIntent = .adoptInFlight
                 showRecordingHero = true
+            } else if !isRecording {
+                // Recording ended (user stopped, cancelled, errored, or the
+                // pipeline finished). Reset the user-dismissal flag so the
+                // NEXT recording auto-pushes the hero normally. Without this
+                // the flag would stay armed and the user would have to tap
+                // the FAB explicitly forever after one back-out.
+                userDismissedHeroDuringRecording = false
+                // A successful end-of-recording is also the moment the
+                // donation card threshold could have just been crossed —
+                // re-evaluate so the card can animate in for the user as
+                // they land back on home.
+                refreshDonationCardVisibility()
+            }
+        }
+        // Keyboard dictations increment the stats counter from another
+        // process without ever opening Jot.app. When the user returns to
+        // the app, re-evaluate donation card visibility so the threshold
+        // crossing is reflected.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                refreshDonationCardVisibility()
             }
         }
     }
 
-    // MARK: - Header
+    // MARK: - Recording state
 
-    private var headerRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Jot")
-                    .font(JotType.editorialDisplay)
-                    .foregroundStyle(Color.jotInk)
-                    .accessibilityAddTraits(.isHeader)
+    /// True when a recording is hot AND the user has backed out of the hero
+    /// — i.e. the moment to surface the live streaming preview inline at the
+    /// top of the Recents list. Also drives the swap from FAB to blue
+    /// "Return to recording" pill. Wizard-presented state stays suppressed:
+    /// W6's in-wizard mic test runs `isRecording == true` and the wizard
+    /// owns its own surface during its lifetime.
+    private var isLiveRecordingInline: Bool {
+        recordingService.isRecording
+            && !showRecordingHero
+            && !isWizardPresented
+            && userDismissedHeroDuringRecording
+    }
 
-                Text(todayStatLine)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.jotMute)
-                    .monospacedDigit()
-            }
+    // MARK: - Hero
 
-            Spacer(minLength: 8)
+    private var heroTitle: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recents.")
+                .font(JotType.displaySerif(44))
+                .tracking(-1.6)
+                .foregroundStyle(Color.jotPageInk)
+                .accessibilityAddTraits(.isHeader)
 
-            HStack(spacing: 10) {
-                helpButton
-                settingsButton
-            }
+            Text(formattedDate)
+                .font(.system(size: 13, weight: .regular, design: .default))
+                .foregroundStyle(Color.jotPageInkSecondary)
         }
     }
 
-    private var helpButton: some View {
-        Button {
-            showHelp = true
-        } label: {
-            Image(systemName: "questionmark.circle")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-                .frame(width: 44, height: 44)
-                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 22))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Help")
-        .accessibilityHint("Opens the Help screen")
-    }
-
-    private var settingsButton: some View {
-        Button {
-            showSettings = true
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-                .frame(width: 44, height: 44)
-                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 22))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Settings")
+    private var formattedDate: String {
+        Date().formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 
     // MARK: - Search
@@ -321,15 +428,15 @@ struct ContentView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color.jotMute)
+                .foregroundStyle(Color.jotPageInkSecondary)
             TextField(
                 "",
                 text: $searchText,
                 prompt: Text("Search transcripts")
-                    .foregroundStyle(Color.jotMute)
+                    .foregroundStyle(Color.jotPageInkSecondary)
             )
             .font(.system(size: 15))
-            .foregroundStyle(Color.jotInk)
+            .foregroundStyle(Color.jotPageInk)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
             .submitLabel(.search)
@@ -340,7 +447,8 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(Color.jotMute)
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -349,110 +457,15 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .frame(height: 44)
         .frame(maxWidth: .infinity)
-        .modifier(JotDesign.Surface.key.modifier(cornerRadius: 22))
+        .background(.regularMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
+        )
         .accessibilityLabel("Search transcripts")
     }
 
-    // MARK: - Grouped list
-
-    private var groupedTranscriptsList: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if transcripts.isEmpty {
-                emptyState
-            } else if !searchText.isEmpty && filteredTranscripts.isEmpty {
-                noMatchesState
-            } else {
-                ForEach(transcriptGroups, id: \.title) { group in
-                    VStack(alignment: .leading, spacing: 10) {
-                        SectionLabel(group.title)
-                        VStack(spacing: 0) {
-                            ForEach(group.items) { transcript in
-                                NavigationLink {
-                                    TranscriptDetailView(
-                                        transcript: transcript,
-                                        keyboardRewriteIntent: nil
-                                    )
-                                } label: {
-                                    TranscriptRow(
-                                        transcript: transcript,
-                                        isCopied: copiedTranscriptID == transcript.id
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button {
-                                        copy(transcript)
-                                    } label: {
-                                        Label("Copy", systemImage: "doc.on.doc")
-                                    }
-
-                                    Button(role: .destructive) {
-                                        pendingDeletion = transcript
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        pendingDeletion = transcript
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-
-                                if transcript.id != group.items.last?.id {
-                                    Divider()
-                                        .overlay(Color.jotMuteWeak.opacity(0.45))
-                                        .padding(.leading, 4)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "mic")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(Color.jotMute)
-            Text("No transcripts yet")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-            Text("Tap Dictate to record your first note.")
-                .font(.system(size: 14))
-                .foregroundStyle(Color.jotMute)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-    }
-
-    private var noMatchesState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(Color.jotMute)
-            Text("No matches")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-            Text("Try a different search.")
-                .font(.system(size: 14))
-                .foregroundStyle(Color.jotMute)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-    }
-
     // MARK: - Grouping
-
-    private struct TranscriptGroup {
-        let title: String
-        let items: [Transcript]
-    }
 
     /// Source of truth for what gets rendered in the grouped list. When
     /// `searchText` is non-empty we filter case-insensitively across both
@@ -465,7 +478,7 @@ struct ContentView: View {
         }
     }
 
-    private var transcriptGroups: [TranscriptGroup] {
+    private var transcriptGroups: [RecentsTranscriptGroup] {
         let calendar = Calendar.current
         let now = Date()
         guard let startOfToday = calendar.dateInterval(of: .day, for: now)?.start
@@ -491,31 +504,12 @@ struct ContentView: View {
             }
         }
 
-        var groups: [TranscriptGroup] = []
+        var groups: [RecentsTranscriptGroup] = []
         if !today.isEmpty { groups.append(.init(title: "Today", items: today)) }
         if !yesterday.isEmpty { groups.append(.init(title: "Yesterday", items: yesterday)) }
         if !lastWeek.isEmpty { groups.append(.init(title: "Last 7 days", items: lastWeek)) }
         if !older.isEmpty { groups.append(.init(title: "Earlier", items: older)) }
         return groups
-    }
-
-    // MARK: - Stat line
-
-    /// "12 transcripts · 47 min today" — derived from `transcripts` in the
-    /// current calendar day. Falls back to a short copy line when the day is
-    /// still empty (the FAB carries the call to action visually).
-    private var todayStatLine: String {
-        let calendar = Calendar.current
-        let now = Date()
-        guard let startOfToday = calendar.dateInterval(of: .day, for: now)?.start
-        else { return "Ready when you are" }
-        let todays = transcripts.filter { $0.createdAt >= startOfToday }
-        guard !todays.isEmpty else { return "Ready when you are" }
-        let count = todays.count
-        let totalSeconds = todays.reduce(0.0) { $0 + ($1.durationSeconds ?? 0) }
-        let minutes = max(1, Int((totalSeconds / 60).rounded()))
-        let noun = count == 1 ? "transcript" : "transcripts"
-        return "\(count) \(noun) · \(minutes) min today"
     }
 
     // MARK: - Actions
@@ -529,6 +523,46 @@ struct ContentView: View {
         guard pendingRerunAfterDismiss else { return }
         pendingRerunAfterDismiss = false
         SettingsRerunTrigger.shared.requestRerun()
+    }
+
+    // MARK: - Donation card
+
+    /// Re-reads `DictationStats.shouldShowDonationCard` and updates the local
+    /// @State flag. Cheap (two UserDefaults reads + a date math step), so
+    /// it's fine to call from every plausible entry point — onAppear,
+    /// scenePhase active, post-stop hero pop. The animation block makes the
+    /// card's transition feel intentional rather than a jump.
+    private func refreshDonationCardVisibility() {
+        let next = DictationStats.shouldShowDonationCard
+        guard next != donationCardVisible else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            donationCardVisible = next
+        }
+    }
+
+    /// "Maybe later" tapped. Mark the card as dismissed (terminal — see
+    /// `DictationStats.DonationCardState` doc) and hide it. The threshold
+    /// is high enough that re-asking after a soft-dismiss would feel like
+    /// nagging.
+    private func handleDonationCardDismiss() {
+        DictationStats.donationCardState = .dismissed
+        withAnimation(.easeInOut(duration: 0.3)) {
+            donationCardVisible = false
+        }
+    }
+
+    /// "See donations" tapped. Optimistic transition to `.donated` (see
+    /// `DictationStats.DonationCardState` doc — same reasoning as the Mac
+    /// app: a false-positive is better UX than re-asking an actual donor).
+    /// Then open the donations page in Safari and hide the card.
+    private func handleDonationCardOpen() {
+        DictationStats.donationCardState = .donated
+        if let url = URL(string: "https://jot.ideaflow.page/donations") {
+            UIApplication.shared.open(url)
+        }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            donationCardVisible = false
+        }
     }
 
     private func fetchTranscript(byID id: UUID) -> Transcript? {
@@ -600,64 +634,91 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Transcript row
+/// Floating pill shown in place of the Dictate FAB when a recording is
+/// running but the user has backed out of the `RecordingHeroView`. Tap
+/// returns to the hero. Blue gradient + pulsing white dot + live elapsed
+/// timer + return arrow — chrome stays loud enough to be unmistakable
+/// without overwhelming the editorial home. A soft outer blue halo (via
+/// shadow) signals "live" without a hard ring.
+private struct RecordingReturnPill: View {
+    let action: () -> Void
 
-private struct TranscriptRow: View {
-    let transcript: Transcript
-    let isCopied: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulseOn = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(timeText)
-                        .font(JotType.monoTimestamp)
-                        .foregroundStyle(Color.jotMute)
-                        .monospacedDigit()
-                    if let duration = durationText {
-                        Text("·")
-                            .font(JotType.monoTimestamp)
-                            .foregroundStyle(Color.jotMuteWeak)
-                        Text(duration)
-                            .font(JotType.monoTimestamp)
-                            .foregroundStyle(Color.jotMute)
+        let startedAt = DictationActivityCoordinator.shared.recordingStartedAt
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 10, height: 10)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.30), lineWidth: 4)
+                    )
+                    .opacity(pulseOn ? 0.55 : 1.0)
+                    .accessibilityHidden(true)
+
+                Text("Recording")
+                    .font(.system(size: 15.5, weight: .semibold))
+                    .foregroundStyle(Color.white)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.30))
+                    .frame(width: 1, height: 16)
+                    .accessibilityHidden(true)
+
+                if let startedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(elapsedString(from: startedAt, to: context.date))
+                            .font(.system(size: 15, weight: .medium, design: .monospaced))
                             .monospacedDigit()
-                    }
-                    if isCopied {
-                        Spacer(minLength: 6)
-                        HStack(spacing: 3) {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
-                            Text("Copied")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundStyle(Color.jotSuccessInk)
+                            .foregroundStyle(Color.white.opacity(0.92))
                     }
                 }
 
-                Text(transcript.displayText)
-                    .font(.system(size: 16))
-                    .foregroundStyle(Color.jotInk)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .accessibilityHidden(true)
             }
-
-            Spacer(minLength: 0)
+            .padding(.horizontal, 22)
+            .frame(minHeight: 56)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.jotBlueTop, Color.jotBlueBottom],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
+            )
+            // Soft outer blue wash that reads as "live" — shadow with no
+            // offset spreads evenly in every direction, mimicking the
+            // `box-shadow: 0 0 0 6px blue22` halo in the design spec
+            // without a hard ring.
+            .shadow(color: Color.jotBlueTop.opacity(0.30), radius: 14, x: 0, y: 0)
+            .shadow(color: Color.jotBlueBottom.opacity(0.25), radius: 8, x: 0, y: 6)
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 4)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        .buttonStyle(.plain)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                pulseOn = true
+            }
+        }
+        .accessibilityLabel("Return to recording")
+        .accessibilityHint("Recording is still in progress. Double-tap to return to the recording surface.")
     }
 
-    private var timeText: String {
-        transcript.createdAt.formatted(date: .omitted, time: .shortened)
-    }
-
-    private var durationText: String? {
-        guard let duration = transcript.durationSeconds else { return nil }
-        let total = max(0, Int(duration.rounded()))
+    private func elapsedString(from start: Date, to now: Date) -> String {
+        let total = max(0, Int(now.timeIntervalSince(start).rounded(.down)))
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

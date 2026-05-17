@@ -2,7 +2,7 @@
 //  WarmHoldStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W9.
+//  Phase 6 — wizard panel W7.
 //  Lets the user choose whether Jot keeps the audio session warm briefly
 //  after recording so the next dictation starts faster.
 //
@@ -11,37 +11,39 @@ import SwiftUI
 
 struct WarmHoldStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvance: () -> Void
+
+    @State private var warmHoldEnabled = true
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 8), onClose: onClose)
+            header: WizardHeader(style: .core(current: 6), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 18) {
                 Spacer(minLength: 44)
 
                 readyTile
 
-                WizardTitle(text: "Keep mic ready?", size: 32)
+                WizardItalicTitle(text: "Keep mic ready?", size: 32)
                     .padding(.top, 8)
 
                 WizardBody(text: bodyCopy)
                     .padding(.top, 2)
 
+                warmHoldToggleRow
+                    .padding(.top, 8)
+
                 Spacer(minLength: 18)
             }
         } footer: {
-            VStack(spacing: 10) {
-                WarmHoldChoiceButton(
-                    title: "Keep mic ready",
-                    action: { chooseWarmHold(true) }
-                )
-
-                WarmHoldChoiceButton(
-                    title: "No thanks",
-                    action: { chooseWarmHold(false) }
-                )
+            WizardPrimaryButton(title: "Continue") {
+                AppGroup.warmHoldEnabled = warmHoldEnabled
+                onAdvance()
             }
+        }
+        .onAppear {
+            warmHoldEnabled = storedWarmHoldChoice ?? true
         }
     }
 
@@ -49,48 +51,57 @@ struct WarmHoldStep: View {
         "After a dictation, Jot can keep a 60-second audio session active so the next recording starts faster. The orange mic indicator stays on during that wait, but Jot is not transcribing while it waits. You can change this anytime in Settings."
     }
 
-    private func chooseWarmHold(_ enabled: Bool) {
-        AppGroup.warmHoldEnabled = enabled
-        onAdvance()
+    private var warmHoldBinding: Binding<Bool> {
+        Binding(
+            get: { warmHoldEnabled },
+            set: { newValue in
+                warmHoldEnabled = newValue
+                AppGroup.warmHoldEnabled = newValue
+            }
+        )
+    }
+
+    private var storedWarmHoldChoice: Bool? {
+        guard AppGroup.defaults.object(forKey: AppGroup.Keys.warmHoldEnabled) != nil else {
+            return nil
+        }
+        return AppGroup.warmHoldEnabled
     }
 
     private var readyTile: some View {
-        ZStack {
-            Circle()
-                .fill(.ultraThinMaterial)
-            Circle()
-                .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
-            Image(systemName: "mic.circle.fill")
-                .font(.system(size: 44, weight: .regular))
-                .foregroundStyle(Color.jotAccent)
-        }
-        .frame(width: 76, height: 76)
-        .shadow(color: Color.jotAccent.opacity(0.18), radius: 16, x: 0, y: 10)
+        IconTile(
+            systemImage: "mic.fill",
+            tint: JotDesign.JotSemanticIcon.privacyMicReady,
+            shaded: JotDesign.JotSemanticIcon.privacyMicReadyShaded,
+            size: JotDesign.Spacing.tileHeroSize
+        )
         .accessibilityHidden(true)
     }
-}
 
-private struct WarmHoldChoiceButton: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Text(title)
+    private var warmHoldToggleRow: some View {
+        HStack(spacing: 12) {
+            Toggle(isOn: warmHoldBinding) {
+                Text("Keep mic ready")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.jotInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity, minHeight: 28)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+            .tint(Color.jotSuccess)
+
+            StatusPillV09(
+                label: warmHoldEnabled ? "Always" : "Off",
+                tint: warmHoldEnabled ? .always : .neutral
             )
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+        .frame(maxWidth: .infinity, minHeight: 28)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
     }
 }

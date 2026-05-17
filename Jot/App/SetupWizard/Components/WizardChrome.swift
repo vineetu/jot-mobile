@@ -4,49 +4,36 @@
 //
 //  Phase 6 of the UX overhaul — Setup Wizard reskin.
 //
-//  Reusable chrome bits the 12 wizard panels share: the warm wallpaper
-//  backdrop, progress dot rows (core 10 + optional 2), the top-right
+//  Reusable chrome bits the 10 wizard panels share: the standard v0.9
+//  wallpaper backdrop, progress dot rows (core 8 + optional 2), the top-right
 //  glass close button, the coral primary CTA pill, secondary text
-//  button, the bottom home-indicator bar, and the Fraunces title/body
-//  typography pair that every panel uses.
+//  button, the bottom home-indicator bar, and the wizard title/body
+//  typography helpers that every panel uses.
 //
 //  Tokens are pulled from Phase 1 / Phase 4 (`JotDesign`, `Color`
-//  extensions, `JotType`). Wallpaper + CTA gradient stops are
-//  declared inline here because they live only inside the wizard
-//  surface; the rest of the app never renders this backdrop.
+//  extensions, `JotType`). The wallpaper is the app-wide v0.9
+//  `WallpaperBackground`; CTA gradient stops use the shared coral tokens.
 //
 
 import SwiftUI
 
 // MARK: - Wallpaper
 
-/// Warm radial/linear gradient backdrop used behind every wizard panel
-/// (per the JSX `wallpaperLight` token). Lives inside the wizard surface
-/// only — the rest of the app uses `JotDesign.background`.
+/// Standard v0.9 app wallpaper used behind every wizard panel.
 struct WizardWallpaper: View {
     var body: some View {
-        // `wallpaperLight` from the JSX: linear from `#fefcf9` at the
-        // top through `#fef7f1` mid to `#fef0e8` at the bottom.
-        LinearGradient(
-            stops: [
-                .init(color: Color(red: 0.996, green: 0.988, blue: 0.976), location: 0.0),
-                .init(color: Color(red: 0.996, green: 0.969, blue: 0.945), location: 0.60),
-                .init(color: Color(red: 0.996, green: 0.941, blue: 0.910), location: 1.0)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
+        WallpaperBackground()
     }
 }
 
 // MARK: - Progress dots
 
-private let wizardCoreStepCount = 10
+private let wizardCoreStepCount = 8
 
-/// 10-dot row representing the core Part A wizard progress (W1–W10).
-/// Active dot is `jotAccent` 7pt; past dots are `jotMuteWeak` 5pt;
-/// future dots are 5pt outlined.
+/// 8-dot row representing the core Part A wizard progress (W1–W8).
+/// The W3 "Download speech model" panel was removed when the default
+/// Parakeet bundle moved into the IPA, so the core count dropped 9 → 8.
+/// Active dot is `jotAccent` 7pt; inactive dots use `jotPageInk.opacity(0.22)`.
 struct WizardProgressDots: View {
     let current: Int
 
@@ -69,18 +56,19 @@ struct WizardProgressDots: View {
                 .frame(width: size, height: size)
         } else if index < current {
             Circle()
-                .fill(Color.jotMuteWeak)
+                .fill(Color.jotPageInk.opacity(0.22))
                 .frame(width: size, height: size)
         } else {
             Circle()
-                .strokeBorder(Color.jotMuteWeak, lineWidth: 1.5)
+                .strokeBorder(Color.jotPageInk.opacity(0.22), lineWidth: 1.5)
                 .frame(width: size, height: size)
         }
     }
 }
 
-/// 10 muted dots + dash separator + 2 active dots — the optional Part B
-/// (W11–W12) indicator. Mirrors the JSX `WizDotsB` shape.
+/// 8 muted dots + dash separator + 2 active dots — the Optional Step 1/2
+/// indicator. Mirrors the JSX `WizDotsB` shape (now 8 muted dots after
+/// the W3 speech-model step was removed in favor of bundled Parakeet).
 struct WizardProgressDotsOptional: View {
     let current: Int  // 0 or 1
 
@@ -88,12 +76,12 @@ struct WizardProgressDotsOptional: View {
         HStack(spacing: 6) {
             ForEach(0..<wizardCoreStepCount, id: \.self) { _ in
                 Circle()
-                    .fill(Color.jotMuteWeak.opacity(0.5))
-                    .frame(width: 4, height: 4)
+                    .fill(Color.jotPageInk.opacity(0.22))
+                    .frame(width: 5, height: 5)
             }
             Rectangle()
-                .fill(Color.jotMuteWeak)
-                .frame(width: 8, height: 1)
+                .fill(Color.jotPageInk.opacity(0.22))
+                .frame(width: 12, height: 1.5)
                 .padding(.horizontal, 3)
             ForEach(0..<2, id: \.self) { i in
                 optionalDot(for: i)
@@ -112,13 +100,44 @@ struct WizardProgressDotsOptional: View {
                 .frame(width: size, height: size)
         } else if index < current {
             Circle()
-                .fill(Color.jotMuteWeak)
+                .fill(Color.jotPageInk.opacity(0.22))
                 .frame(width: size, height: size)
         } else {
             Circle()
-                .strokeBorder(Color.jotMuteWeak, lineWidth: 1.5)
+                .strokeBorder(Color.jotPageInk.opacity(0.22), lineWidth: 1.5)
                 .frame(width: size, height: size)
         }
+    }
+}
+
+// MARK: - Back button
+
+/// 32pt top-left glass circle with a leading chevron. On tap, calls
+/// `onBack` to pop one step on the wizard's step machine. Only shown
+/// when the current step actually has a previous step (Welcome has no
+/// back affordance). Mirrors the close button's hit-target padding
+/// (+8pt) so the 44pt Apple HIG minimum is honored without moving the
+/// visual chrome.
+struct WizardBackButton: View {
+    let onBack: () -> Void
+
+    var body: some View {
+        Button(action: onBack) {
+            ZStack {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.jotInk)
+            }
+            .frame(width: 32, height: 32)
+            .contentShape(Circle())
+            .padding(8)
+        }
+        .accessibilityLabel("Back")
+        .accessibilityHint("Return to the previous step.")
     }
 }
 
@@ -196,16 +215,16 @@ struct WizardPrimaryButton: View {
                 .background(
                     LinearGradient(
                         colors: [
-                            Color(red: 1.00, green: 0.32, blue: 0.28),
-                            Color(red: 0.90, green: 0.23, blue: 0.19)
+                            Color.jotCoralTop,
+                            Color.jotCoralBottom
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     ),
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    in: Capsule(style: .continuous)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    Capsule(style: .continuous)
                         .inset(by: 0.5)
                         .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
                         .blendMode(.plusLighter)
@@ -218,7 +237,7 @@ struct WizardPrimaryButton: View {
                     y: 8
                 )
                 .opacity(isDisabled ? 0.55 : 1.0)
-                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .contentShape(Capsule(style: .continuous))
             }
             .disabled(isDisabled)
             .accessibilityHint(subtitle ?? "")
@@ -232,7 +251,7 @@ struct WizardPrimaryButton: View {
     }
 }
 
-/// Glass-pill secondary button used by the W11 vocab "Done" CTA.
+/// Glass-pill secondary button used by the Optional Step 1 vocab "Done" CTA.
 struct WizardGlassButton: View {
     let title: String
     let action: () -> Void
@@ -289,8 +308,8 @@ struct WizardHomeIndicator: View {
 // MARK: - Typography helpers
 
 /// Editorial title used at the top of most panels — Fraunces SemiBold
-/// at a tunable size (defaults to 32pt, W1 overrides to 80pt, W6/W7/W8/W11
-/// override to 26-28pt).
+/// at a tunable size (defaults to 32pt, W1 overrides to 80pt, W5/W6/W7 and
+/// Optional Step 1 override to 26-28pt).
 struct WizardTitle: View {
     let text: String
     var size: CGFloat = 32
@@ -306,6 +325,22 @@ struct WizardTitle: View {
     }
 }
 
+/// Italic system-serif hero title matching the v0.9 wizard spec.
+struct WizardItalicTitle: View {
+    let text: String
+    var size: CGFloat = 32
+
+    var body: some View {
+        Text(text)
+            .font(JotType.displaySerif(size))
+            .tracking(-0.6)
+            .foregroundStyle(Color.jotPageInk)
+            .multilineTextAlignment(.center)
+            .lineSpacing(1.05)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// 15pt regular grey-ish body used beneath the title.
 struct WizardBody: View {
     let text: String
@@ -313,7 +348,7 @@ struct WizardBody: View {
     var body: some View {
         Text(text)
             .font(.system(size: 15, weight: .regular))
-            .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+            .foregroundStyle(Color.jotPageInkSecondary)
             .multilineTextAlignment(.center)
             .lineSpacing(1.5)
             .fixedSize(horizontal: false, vertical: true)
@@ -352,14 +387,32 @@ struct WizardPanel<Content: View, Footer: View>: View {
             WizardWallpaper()
 
             VStack(spacing: 0) {
-                HStack {
+                HStack(spacing: 0) {
+                    Group {
+                        if let onBack = header.onBack {
+                            WizardBackButton(onBack: onBack)
+                                // The 8pt padding on the back button widens
+                                // the hit region — compensate so the visual
+                                // stays flush to the left edge.
+                                .padding(.leading, -8)
+                        } else {
+                            Color.clear
+                                .frame(width: 32, height: 32)
+                                .padding(8)
+                                .padding(.leading, -8)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                     header.dots
-                    Spacer()
+                        .frame(maxWidth: .infinity, alignment: .center)
+
+                    // The 8pt padding on the close button widens the hit
+                    // region — compensate so the visual stays flush to
+                    // the right edge.
                     WizardCloseButton(onClose: header.onClose)
-                        // The 8pt padding on the close button widens the hit
-                        // region — compensate so the visual stays flush to
-                        // the right edge.
                         .padding(.trailing, -8)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .frame(height: 36)
                 .padding(.horizontal, 20)
@@ -382,11 +435,44 @@ struct WizardPanel<Content: View, Footer: View>: View {
 
                 WizardHomeIndicator()
             }
+
+            // Left-edge swipe-back catcher. The wizard is presented via
+            // `.fullScreenCover`, so the system `interactivePopGesture`
+            // (which requires a UINavigationController) is unavailable —
+            // we recreate the gesture with a DragGesture pinned to the
+            // leading 22pt of the panel. Layered LAST in the ZStack so it
+            // gets first crack at the hit test inside its 22pt strip and
+            // beats the inner ScrollView's gesture system there; outside
+            // the strip the rest of the chrome is fully interactive.
+            if let onBack = header.onBack {
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: 22)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                                .onEnded { value in
+                                    let startedNearLeadingEdge = value.startLocation.x < 22
+                                    let draggedFarRight = value.translation.width > 60
+                                    let isHorizontal = abs(value.translation.width) > abs(value.translation.height)
+                                    if startedNearLeadingEdge && draggedFarRight && isHorizontal {
+                                        onBack()
+                                    }
+                                }
+                        )
+                    Spacer(minLength: 0)
+                        .allowsHitTesting(false)
+                }
+                .accessibilityHidden(true)
+            }
         }
     }
 }
 
-/// Header descriptor: which dots row to render plus the close action.
+/// Header descriptor: which dots row to render plus the close + optional
+/// back actions. `onBack` is nil on the Welcome step (no previous step
+/// exists) and non-nil for every subsequent step so the user can always
+/// undo a forward tap.
 struct WizardHeader {
     enum DotsStyle {
         case core(current: Int)
@@ -395,6 +481,13 @@ struct WizardHeader {
 
     let style: DotsStyle
     let onClose: () -> Void
+    let onBack: (() -> Void)?
+
+    init(style: DotsStyle, onClose: @escaping () -> Void, onBack: (() -> Void)? = nil) {
+        self.style = style
+        self.onClose = onClose
+        self.onBack = onBack
+    }
 
     @ViewBuilder
     var dots: some View {

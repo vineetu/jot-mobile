@@ -38,14 +38,32 @@ extension Color {
     /// from `jotAccent` so a recording state never reads as a generic CTA.
     static let jotRecord = Color(red: 1.00, green: 0.23, blue: 0.19)
 
-    /// `#1C1C1E` — primary editorial text.
-    static let jotInk = Color(red: 0.11, green: 0.11, blue: 0.12)
+    /// Primary editorial text — adapts for dark mode.
+    ///   - light: `#1C1C1E`
+    ///   - dark:  `rgba(255,255,255,0.96)`
+    static let jotInk = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.96)
+            : UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+    })
 
-    /// `#8B8B95` — secondary text, sub-labels.
-    static let jotMute = Color(red: 0.55, green: 0.55, blue: 0.58)
+    /// Secondary text, sub-labels — adapts for dark mode.
+    ///   - light: `#8B8B95`
+    ///   - dark:  `rgba(255,255,255,0.60)`
+    static let jotMute = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.60)
+            : UIColor(red: 0.55, green: 0.55, blue: 0.58, alpha: 1.0)
+    })
 
-    /// `#C7C7CC` — chevrons, dividers.
-    static let jotMuteWeak = Color(red: 0.78, green: 0.78, blue: 0.80)
+    /// Chevrons, dividers — adapts for dark mode.
+    ///   - light: `#C7C7CC`
+    ///   - dark:  `rgba(255,255,255,0.30)`
+    static let jotMuteWeak = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.30)
+            : UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1.0)
+    })
 
     /// `#34C759` — system green for status pills, AI-ready toast.
     static let jotSuccess = Color(red: 0.20, green: 0.78, blue: 0.35)
@@ -392,10 +410,9 @@ extension JotDesign {
 
 extension JotDesign {
 
-    /// Phase 1 punch-list FIX 9: page-level background gradient previously
-    /// hard-coded inside `JotDesignCatalog.swift`. Lives on the design
-    /// namespace so any page chrome can opt into the same surface without
-    /// re-deriving the stops.
+    /// Phase 1 punch-list FIX 9: page-level background gradient. Lives on
+    /// the design namespace so any page chrome can opt into the same
+    /// surface without re-deriving the stops.
     ///
     /// Two-stop light-grey gradient — top `#F5F5F5`, bottom `#E0E0E0` —
     /// matching the mockup's page background.
@@ -445,10 +462,13 @@ enum JotDesign {
 /// module API. Callers go through `JotDesign.Surface.modifier(...)` or the
 /// `GlassCard` wrapper view instead of touching `SurfaceModifier` directly.
 fileprivate struct SurfaceModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
     let tier: JotDesign.Surface
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
+        let isDark = colorScheme == .dark
         switch tier {
         case .regular:
             content
@@ -460,7 +480,9 @@ fileprivate struct SurfaceModifier: ViewModifier {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
                 )
-                .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 4)
+                // Drop shadow in dark — invisible on dark wallpaper and just
+                // adds murk. `.glassEffect` already provides the elevation cue.
+                .shadow(color: Color.black.opacity(isDark ? 0 : 0.06), radius: 4, x: 0, y: 4)
         case .heavy:
             // iOS 26 Glass has no `.thick` accessor — the heavier feel comes from
             // a stronger border + deeper shadow on top of `.regular` glass.
@@ -473,16 +495,26 @@ fileprivate struct SurfaceModifier: ViewModifier {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
                 )
-                .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 8)
+                .shadow(color: Color.black.opacity(isDark ? 0 : 0.08), radius: 12, x: 0, y: 8)
         case .key:
+            // The `.key` "key-cap" tier is hand-rolled (not `.glassEffect`) so
+            // its gradient stops + chrome need explicit dark variants.
+            //   Light: white-opacity gradient (the floating glass button look)
+            //   Dark:  thin frosted-white-on-dark-wallpaper feel — much lower
+            //          alpha so the dark wallpaper bleeds through and the
+            //          button reads as glass instead of as a solid white pill.
+            let keyTopOpacity: Double = isDark ? 0.12 : 0.92
+            let keyBottomOpacity: Double = isDark ? 0.06 : 0.78
+            let keyHairline = isDark ? Color.white.opacity(0.16) : Color.black.opacity(0.08)
+            let keyHighlight = isDark ? Color.white.opacity(0.22) : Color.white.opacity(0.7)
             content
                 .background(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(0.92),
-                                    Color.white.opacity(0.78)
+                                    Color.white.opacity(keyTopOpacity),
+                                    Color.white.opacity(keyBottomOpacity)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -491,17 +523,17 @@ fileprivate struct SurfaceModifier: ViewModifier {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+                        .strokeBorder(keyHairline, lineWidth: 0.5)
                 )
                 .overlay(
                     // 1pt top inset highlight
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .inset(by: 0.5)
-                        .stroke(Color.white.opacity(0.7), lineWidth: 0.5)
+                        .stroke(keyHighlight, lineWidth: 0.5)
                         .blendMode(.plusLighter)
                         .allowsHitTesting(false)
                 )
-                .shadow(color: Color.black.opacity(0.12), radius: 1, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(isDark ? 0 : 0.12), radius: 1, x: 0, y: 1)
         case .keyDim:
             content
                 .background(
@@ -529,18 +561,259 @@ fileprivate struct SurfaceModifier: ViewModifier {
 // MARK: - Active rewrite model display name
 
 extension JotDesign {
-    /// Plan §11 — single source for the rewrite-model name surfaced in UI.
-    /// Backend currently ships Phi-4 mini; mockup names "Gemma 4 2B". Keep the
-    /// UI honest with the active provider until the backend swaps.
-    static let activeRewriteModelDisplayName = "Phi-4 mini"
+    /// Single source for the rewrite-model name surfaced in UI.
+    ///
+    /// Resolves from `LLMClientFactory.shared.currentProvider` (main app
+    /// only) so every surface — Settings model strip, Switch model picker,
+    /// AI offer wizard step, transcript-detail attribution line, rewrite
+    /// picker subline, edit-prompt test sheet footer, download pitch sheet —
+    /// stays honest with the active provider without each call site doing
+    /// its own switch.
+    ///
+    /// `JotDesign.swift` is compiled into BOTH the main app and the
+    /// `JotKeyboard` extension. `LLMClientFactory` lives only in the main
+    /// app (`JOT_APP_HOST`-gated), so the keyboard branch uses a static
+    /// fallback. The keyboard never renders model-name strings — it
+    /// URL-bounces to the main app for rewrite — so the fallback exists
+    /// only to keep the symbol resolvable inside the extension's
+    /// compilation unit.
+    ///
+    /// Wrapped in `@MainActor` because `LLMClientFactory` is MainActor-isolated.
+    /// SwiftUI views are already MainActor-isolated so no `await` is needed
+    /// at call sites; the body is a synchronous getter.
+    @MainActor
+    static var activeRewriteModelDisplayName: String {
+        #if JOT_APP_HOST
+        return LLMClientFactory.shared.currentProvider.displayName
+        #else
+        // Keyboard extension fallback — never rendered, see doc above.
+        return "Qwen 3.5 4B"
+        #endif
+    }
 
-    /// Plan §6.3 / §10 — single source for the user-facing on-disk size of
-    /// the active rewrite model. Surfaced in the download pitch sheet, the
-    /// AI Rewrite settings page, and the download banner. Update here when
-    /// the active provider's download size changes; all surfaces follow.
-    static let activeRewriteModelSize: String = "2.4 GB"
+    /// Single source for the user-facing on-disk size of the active rewrite
+    /// model. Surfaced in the download pitch sheet, the AI Rewrite settings
+    /// page, the wizard's AI offer step, and the Help screen.
+    ///
+    /// Resolves from the active provider — Qwen 3.5 4B is ~2.5 GB at 4-bit,
+    /// Phi-4-mini at 4-bit is ~2.4 GB. Update the per-provider value on
+    /// `LLMProvider.displaySize`, not here.
+    @MainActor
+    static var activeRewriteModelSize: String {
+        #if JOT_APP_HOST
+        return LLMClientFactory.shared.currentProvider.displaySize
+        #else
+        // Keyboard extension fallback — never rendered, see displayName doc.
+        return "2.5 GB"
+        #endif
+    }
+}
 
-    /// Numeric form of `activeRewriteModelSize` used for byte-progress
-    /// math in the download banner ("0.9 of 2.4 GB").
-    static let activeRewriteModelSizeGB: Double = 2.4
+// MARK: - v0.9 Color tokens
+
+extension Color {
+    /// `#FF6B57` — top stop for coral action gradients in the v0.9 app redesign.
+    static let jotCoralTop = Color(red: 0xFF / 255, green: 0x6B / 255, blue: 0x57 / 255)
+
+    /// `#E0533F` — bottom stop for coral action gradients in the v0.9 app redesign.
+    static let jotCoralBottom = Color(red: 0xE0 / 255, green: 0x53 / 255, blue: 0x3F / 255)
+
+    /// `#1A8CFF` — top stop for the blue accent. Used by the keyboard Dictate pill AND the Recents page accents (sparkline, LATEST tag, Dictate FAB, avatar tint, Jot mark). Not used elsewhere in the app — Settings/AI/Wizard remain coral.
+    static let jotBlueTop = Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255)
+
+    /// `#0064CC` — bottom stop for the blue accent gradient. Same usage scope as `jotBlueTop`.
+    static let jotBlueBottom = Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
+
+    /// Page wallpaper base color — adapts for dark mode. Designer spec
+    /// (`design_handoff_jot_ux/design/screens.jsx:377`): dark base is
+    /// `#15171C` (the same value as `jotPageInk` in light mode — intentional
+    /// brand symmetry, the dark page literally reads as inverted-ink).
+    ///   - light: `#D1D3DA`
+    ///   - dark:  `#15171C`
+    static let jotPageBase = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0x15 / 255, green: 0x17 / 255, blue: 0x1C / 255, alpha: 1.0)
+            : UIColor(red: 0xD1 / 255, green: 0xD3 / 255, blue: 0xDA / 255, alpha: 1.0)
+    })
+
+    /// Primary text color for v0.9 page content.
+    ///   - light: `#15171C`
+    ///   - dark:  `rgba(255,255,255,0.96)`
+    static let jotPageInk = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.96)
+            : UIColor(red: 0x15 / 255, green: 0x17 / 255, blue: 0x1C / 255, alpha: 1.0)
+    })
+
+    /// Secondary text color for v0.9 page rows and captions.
+    ///   - light: `rgba(60,60,67,0.72)`
+    ///   - dark:  `rgba(255,255,255,0.62)`
+    static let jotPageInkSecondary = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.62)
+            : UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.72)
+    })
+
+    /// Caption and section-label color for v0.9 page chrome.
+    ///   - light: `rgba(60,60,67,0.62)`
+    ///   - dark:  `rgba(255,255,255,0.46)`
+    static let jotPageInkCaption = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.46)
+            : UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.62)
+    })
+
+    /// Row divider color inside v0.9 cards.
+    ///   - light: `rgba(60,60,67,0.10)`
+    ///   - dark:  `rgba(255,255,255,0.10)`
+    static let jotPageSeparator = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.10)
+            : UIColor(red: 60 / 255, green: 60 / 255, blue: 67 / 255, alpha: 0.10)
+    })
+
+
+    /// `#E0173B` — live recording dot color for v0.9 recording affordances.
+    static let jotRecordingDot = Color(red: 0xE0 / 255, green: 0x17 / 255, blue: 0x3B / 255)
+
+    /// `rgba(224,23,59,0.18)` — soft halo behind the v0.9 live recording dot.
+    static let jotRecordingHalo = Color(red: 0xE0 / 255, green: 0x17 / 255, blue: 0x3B / 255).opacity(0.18)
+}
+
+// MARK: - v0.9 Semantic icon tokens
+
+extension JotDesign {
+    struct JotSemanticIcon {
+        private init() {}
+
+        /// `#1A8CFF` — Settings/Wizard Speech Model row icon top color.
+        static let speechModel = Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255)
+
+        /// `#1573D1` — Settings/Wizard Speech Model row icon shaded bottom color.
+        static let speechModelShaded = Color(red: 0x15 / 255, green: 0x73 / 255, blue: 0xD1 / 255)
+
+        /// `#1FCED1` — Settings/Wizard Vocabulary row icon top color.
+        static let vocabulary = Color(red: 0x1F / 255, green: 0xCE / 255, blue: 0xD1 / 255)
+
+        /// `#19A9AB` — Settings/Wizard Vocabulary row icon shaded bottom color.
+        static let vocabularyShaded = Color(red: 0x19 / 255, green: 0xA9 / 255, blue: 0xAB / 255)
+
+        /// `#FF6B57` — Settings/Wizard AI row icon top color.
+        static let ai = Color(red: 0xFF / 255, green: 0x6B / 255, blue: 0x57 / 255)
+
+        /// `#D15847` — Settings/Wizard AI row icon shaded bottom color.
+        static let aiShaded = Color(red: 0xD1 / 255, green: 0x58 / 255, blue: 0x47 / 255)
+
+        /// `#34C759` — Settings/Wizard Privacy On-Device row icon top color.
+        static let privacyOnDevice = Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255)
+
+        /// `#2BA349` — Settings/Wizard Privacy On-Device row icon shaded bottom color.
+        static let privacyOnDeviceShaded = Color(red: 0x2B / 255, green: 0xA3 / 255, blue: 0x49 / 255)
+
+        /// `#7C5CFF` — Settings/Wizard Full Access row icon top color.
+        static let privacyFullAccess = Color(red: 0x7C / 255, green: 0x5C / 255, blue: 0xFF / 255)
+
+        /// `#664BD1` — Settings/Wizard Full Access row icon shaded bottom color.
+        static let privacyFullAccessShaded = Color(red: 0x66 / 255, green: 0x4B / 255, blue: 0xD1 / 255)
+
+        /// `#FF9A33` — Settings/Wizard Mic Ready row icon top color.
+        static let privacyMicReady = Color(red: 0xFF / 255, green: 0x9A / 255, blue: 0x33 / 255)
+
+        /// `#D17E2A` — Settings/Wizard Mic Ready row icon shaded bottom color.
+        static let privacyMicReadyShaded = Color(red: 0xD1 / 255, green: 0x7E / 255, blue: 0x2A / 255)
+
+        /// `#1FCED1` — Settings/Wizard Help & Support row icon top color.
+        static let helpSupport = Color(red: 0x1F / 255, green: 0xCE / 255, blue: 0xD1 / 255)
+
+        /// `#19A9AB` — Settings/Wizard Help & Support row icon shaded bottom color.
+        static let helpSupportShaded = Color(red: 0x19 / 255, green: 0xA9 / 255, blue: 0xAB / 255)
+
+        /// `#1A8CFF` — Settings/Wizard Re-run Wizard row icon top color.
+        static let rerunWizard = Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255)
+
+        /// `#1573D1` — Settings/Wizard Re-run Wizard row icon shaded bottom color.
+        static let rerunWizardShaded = Color(red: 0x15 / 255, green: 0x73 / 255, blue: 0xD1 / 255)
+
+        /// `#7C5CFF` — Settings/Wizard Send Feedback row icon top color.
+        static let sendFeedback = Color(red: 0x7C / 255, green: 0x5C / 255, blue: 0xFF / 255)
+
+        /// `#664BD1` — Settings/Wizard Send Feedback row icon shaded bottom color.
+        static let sendFeedbackShaded = Color(red: 0x66 / 255, green: 0x4B / 255, blue: 0xD1 / 255)
+
+        /// `#8B8E96` — Settings/Wizard Version row icon top color.
+        static let version = Color(red: 0x8B / 255, green: 0x8E / 255, blue: 0x96 / 255)
+
+        /// `#72747B` — Settings/Wizard Version row icon shaded bottom color.
+        static let versionShaded = Color(red: 0x72 / 255, green: 0x74 / 255, blue: 0x7B / 255)
+
+        /// `#34C759` — Settings/Wizard Donations row icon top color.
+        static let donations = Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255)
+
+        /// `#2BA349` — Settings/Wizard Donations row icon shaded bottom color.
+        static let donationsShaded = Color(red: 0x2B / 255, green: 0xA3 / 255, blue: 0x49 / 255)
+
+        /// `#7C5CFF` — Settings/Wizard Privacy Policy row icon top color.
+        static let privacyPolicy = Color(red: 0x7C / 255, green: 0x5C / 255, blue: 0xFF / 255)
+
+        /// `#664BD1` — Settings/Wizard Privacy Policy row icon shaded bottom color.
+        static let privacyPolicyShaded = Color(red: 0x66 / 255, green: 0x4B / 255, blue: 0xD1 / 255)
+
+        /// `#FF4F6B` — Settings/Wizard Acknowledgements row icon top color.
+        static let acknowledgements = Color(red: 0xFF / 255, green: 0x4F / 255, blue: 0x6B / 255)
+
+        /// `#D14158` — Settings/Wizard Acknowledgements row icon shaded bottom color.
+        static let acknowledgementsShaded = Color(red: 0xD1 / 255, green: 0x41 / 255, blue: 0x58 / 255)
+    }
+}
+
+// MARK: - v0.9 Typography tokens
+
+extension JotType {
+    /// New York-style system serif display face for v0.9 hero titles; apply `.tracking(-1.6)` at the call site.
+    static func displaySerif(_ size: CGFloat) -> Font {
+        Font.system(size: size, weight: .regular, design: .serif).italic()
+    }
+
+    /// 11pt bold section label face for v0.9 chrome. Per spec: apply
+    /// `.textCase(.uppercase)` (or `String.uppercased()`) and `.tracking(1.5)`
+    /// at the call site, and render in `Color.jotPageInkCaption`
+    /// (`rgba(60,60,67,0.62)`) — the spec's "caption" / section-label color.
+    static let sectionLabel = Font.system(size: 11, weight: .bold)
+
+    /// 15pt medium row title face for v0.9 cards; apply `.tracking(-0.2)` at the call site.
+    static let rowTitle = Font.system(size: 15, weight: .medium)
+
+    /// 12.5pt regular row subtitle face for v0.9 card secondary text.
+    static let rowSub = Font.system(size: 12.5, weight: .regular)
+
+    /// 12.5pt regular monospaced editor face for v0.9 prompt editors; apply `.lineSpacing(1.6)` at the call site.
+    static let monoEditor = Font.system(size: 12.5, weight: .regular, design: .monospaced)
+}
+
+// MARK: - v0.9 Spacing tokens
+
+extension JotDesign.Spacing {
+    /// 16pt — horizontal padding inside v0.9 cards.
+    static let cardPaddingH: CGFloat = 16
+
+    /// 14pt — vertical padding inside v0.9 cards.
+    static let cardPaddingV: CGFloat = 14
+
+    /// 18pt — v0.9 card corner radius; keeps legacy `cardRadius` unchanged.
+    static let cardRadiusV09: CGFloat = 18
+
+    /// 18pt — horizontal page gutter for v0.9 screens.
+    static let pageGutter: CGFloat = 18
+
+    /// 18pt — v0.9 vertical section gap; keeps legacy `sectionGap` unchanged.
+    static let sectionGapV09: CGFloat = 18
+
+    /// 30pt — standard row icon tile size for v0.9 settings and wizard rows.
+    static let tileRowSize: CGFloat = 30
+
+    /// 84pt — hero icon tile size for v0.9 wizard hero moments.
+    static let tileHeroSize: CGFloat = 84
+
+    /// 999pt — fully rounded pill radius for v0.9 buttons and status pills.
+    static let pillRadius: CGFloat = 999
 }

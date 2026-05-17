@@ -5,7 +5,7 @@
 //  Phase 3 of the UX overhaul — editorial home Dictate FAB.
 //  See: Jot/tmp/ux-overhaul-plan.md §5.1 (Mockup 07).
 //
-//  Floating coral-red pill button anchored to the bottom-center of the
+//  Floating blue gradient pill button anchored to the bottom-center of the
 //  editorial home. ~200pt × 64pt with a mic icon + "Dictate" label.
 //  Invokes the caller-supplied tap action — in v1 the home flips a state
 //  binding that drives `.navigationDestination(isPresented:)` so that the
@@ -13,9 +13,9 @@
 //  destination and a recording in flight never causes a double-push.
 //
 //  The FAB is sized well above the 44pt HIG floor (64pt tall), so glass
-//  blur is fine here — we layer a coral-red gradient on top of the surface
+//  blur is fine here — we layer a blue gradient on top of the surface
 //  rather than relying on the `.regular` glass tier (which would dilute
-//  the brand accent). The result reads as a solid-coral CTA with a soft
+//  the brand accent). The result reads as a blue gradient CTA with a soft
 //  glass halo, matching the mockup.
 //
 
@@ -51,8 +51,8 @@ struct DictateFAB: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.jotAccent,
-                                Color.jotAccent.opacity(0.92)
+                                Color.jotBlueTop,
+                                Color.jotBlueBottom
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -63,7 +63,7 @@ struct DictateFAB: View {
                 Capsule(style: .continuous)
                     .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
             )
-            .shadow(color: Color.jotAccent.opacity(0.35), radius: 18, x: 0, y: 10)
+            .shadow(color: Color.jotBlueTop.opacity(0.35), radius: 18, x: 0, y: 10)
             .shadow(color: Color.black.opacity(0.10), radius: 4, x: 0, y: 2)
             .scaleEffect(isPressed ? 0.97 : 1.0)
             .animation(

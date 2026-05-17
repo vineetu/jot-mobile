@@ -14,7 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CURRENT_PROJECT_VERSION: "1"
-    MARKETING_VERSION: "0.6"
+    MARKETING_VERSION: "0.9.3"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -67,6 +67,44 @@ targets:
       # bundles the 72pt opsz-keyed statics; UIAppFonts in
       # Resources/Info.plist registers them at runtime.
       - path: Resources/Fonts
+        buildPhase: resources
+      # Bundled Parakeet speech models (~530 MB):
+      #   - parakeet-tdt-ctc-110m/        TDT-CTC 110M (default batch transcriber)
+      #   - parakeet-ctc-110m-coreml/     CTC aux (vocabulary biasing + CtcHead.mlmodelc)
+      #   - parakeet-eou-streaming/320ms/ EOU 120M (streaming live caption)
+      # Shipped as a FOLDER REFERENCE (type: folder) so each `.mlmodelc`
+      # ships as-is — they're already-compiled CoreML packages that must
+      # NOT be re-processed by the asset compiler. Without `type: folder`,
+      # Xcode would flatten the `.mlmodelc` directory or attempt to
+      # recompile the CoreML packages, breaking the bundle.
+      # FluidAudio's load APIs (`AsrModels.load(from:)`,
+      # `StreamingEouAsrManager.loadModels(modelDir:)`,
+      # `CtcModels.loadDirect(from:)`) accept directory URLs and find
+      # these subtrees by relative path, so no first-launch download is
+      # needed for the default dictation flow (App Review 4.2.3(ii)).
+      - path: Resources/Models
+        type: folder
+        buildPhase: resources
+      # Bundled disfluency-cleanup tagger (Rocholl 6x96 BERT, ~3.6 MB INT8
+      # CoreML + 226 KB WordPiece vocab). Off by default; users opt in via
+      # Settings → Speech Model → "Clean up filler words". The mlpackage
+      # lives OUTSIDE `Resources/Models/` so it isn't swallowed by the
+      # Parakeet folder reference above — that reference ships its tree as
+      # raw files (correct for `.mlmodelc`), but our `.mlpackage` needs the
+      # asset compiler's CoreML build phase to materialize an `.mlmodelc`
+      # at build time. `file.mlpackage` triggers that pipeline; a folder
+      # reference would not.
+      #
+      # Shipped to both the main app target and the keyboard appex even
+      # though only the main app runs cleanup today: `DictationPipeline`
+      # (main-app-only) is the single site that invokes the tagger. The
+      # keyboard URL-bounces dictation requests into the main app, which
+      # cleans + publishes the result back via clipboard. Bundling to the
+      # keyboard preserves future flexibility (in-extension cleanup) at a
+      # ~3.6 MB cost, well inside the 60 MB extension ceiling.
+      - path: Resources/DisfluencyCleanup/disfluency_rocholl6x96.mlpackage
+        type: file.mlpackage
+      - path: Resources/DisfluencyCleanup/vocab.txt
         buildPhase: resources
     info:
       path: Resources/Info.plist
@@ -170,9 +208,9 @@ targets:
       # is added here.
       #
       # Phase 2 reviewer FIX 3: explicit per-file inclusion instead of
-      # the full `App/Design` directory. DictateFAB, ActionBar, and
-      # JotDesignCatalog are main-app-only — they don't belong in the
-      # 60MB extension envelope. The keyboard pulls in only:
+      # the full `App/Design` directory. DictateFAB and ActionBar are
+      # main-app-only — they don't belong in the 60MB extension
+      # envelope. The keyboard pulls in only:
       #   - JotDesign.swift (tokens + Color/Font extensions)
       #   - Components/GlassCard.swift, IconBox.swift, SectionLabel.swift
       #   - Components/RowChevron.swift, StatusPill.swift
@@ -188,6 +226,16 @@ targets:
       # process resolves the Font.custom(...) PostScript names. Otherwise
       # SwiftUI silently falls back to system serif inside the keyboard.
       - path: Resources/Fonts
+        buildPhase: resources
+      # Bundled disfluency-cleanup tagger — same files the main app ships.
+      # The keyboard never invokes the tagger in this build (DictationPipeline
+      # is main-app-only), but the bundle membership is mirrored so future
+      # in-extension cleanup is a wiring change, not a packaging change.
+      # ~3.6 MB INT8 mlpackage + 226 KB vocab keeps the appex well inside
+      # the 60 MB extension ceiling.
+      - path: Resources/DisfluencyCleanup/disfluency_rocholl6x96.mlpackage
+        type: file.mlpackage
+      - path: Resources/DisfluencyCleanup/vocab.txt
         buildPhase: resources
     info:
       path: Resources/Keyboard-Info.plist

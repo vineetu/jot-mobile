@@ -18,17 +18,22 @@ struct WelcomeStep: View {
             header: WizardHeader(style: .core(current: 0), onClose: onClose)
         ) {
             VStack(spacing: 20) {
-                Spacer(minLength: 90)
+                Spacer(minLength: 72)
 
-                Text("Jot")
-                    .font(.custom(JotType.frauncesSemiBold, size: 80))
-                    .foregroundStyle(Color.jotInk)
-                    .tracking(-3.0)
+                IconTile(
+                    systemImage: "sparkles",
+                    tint: Color.jotCoralTop,
+                    shaded: Color.jotCoralBottom,
+                    size: JotDesign.Spacing.tileHeroSize
+                )
+                .accessibilityHidden(true)
+
+                WizardItalicTitle(text: "Welcome to Jot.", size: 38)
                     .accessibilityAddTraits(.isHeader)
 
                 Text("Voice transcription,\non your iPhone.")
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .font(JotType.displaySerif(17))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
                     .padding(.top, 4)

@@ -14,15 +14,17 @@ import SwiftUI
 /// - Hero coral `IconBox(symbol: "wand.and.stars", size: 72)`.
 /// - Headline "Add AI to Jot" in `JotType.editorialBody` (Fraunces).
 /// - 2-sentence body that names the model + download size honestly.
-/// - Primary coral-gradient "Download · 2.4 GB" pill.
+/// - Primary coral-gradient "Download · <size>" pill.
 /// - Secondary text "Maybe later".
 ///
-/// ## Size string
+/// ## Size + name strings
 ///
-/// Hard-coded "2.4 GB" until a richer `JotDesign.activeRewriteModelSize`
-/// constant lands (plan §6.3). The same number is repeated in
-/// `AIRewriteSettingsView` — both surfaces should be updated together if
-/// the active provider's download size changes.
+/// Model name and download size resolve from
+/// `JotDesign.activeRewriteModelDisplayName` /
+/// `JotDesign.activeRewriteModelSize`, which routes through
+/// `LLMClientFactory.shared.currentProvider`. The same single source
+/// drives the AI Rewrite settings page, the wizard's AI offer step,
+/// and the Help screen — switch provider and every surface updates.
 ///
 /// Sheet detent: `.height(460)` so the hero + headline + pitch + CTA all
 /// land comfortably above the safe area on small devices.
@@ -30,7 +32,7 @@ struct DownloadPitchSheet: View {
 
     /// Model display name shown in the pitch body. Caller passes
     /// `JotDesign.activeRewriteModelDisplayName` so the sheet stays honest
-    /// with the active provider (plan §11).
+    /// with the active provider.
     let modelDisplayName: String
 
     /// Fires when the user taps "Download". Caller is expected to invoke
@@ -42,10 +44,13 @@ struct DownloadPitchSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Shared size string. Hoisted to `JotDesign.activeRewriteModelSize`
-    /// so the pitch sheet, settings page, and download banner all read
-    /// the same source — update there to change every surface at once.
-    private static let downloadSizeCopy = JotDesign.activeRewriteModelSize
+    /// Resolved download size for the active provider. Read inside the
+    /// view body so MainActor isolation makes `JotDesign.activeRewriteModelSize`
+    /// addressable. (Previously a `static let`, which can't read a
+    /// MainActor-isolated property — keep this as an instance accessor.)
+    private var downloadSizeCopy: String {
+        JotDesign.activeRewriteModelSize
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -142,7 +147,7 @@ struct DownloadPitchSheet: View {
     /// prompt is the polish-without-shortening one (see
     /// `SavedPrompt.defaultRewrite`).
     private var pitchBody: String {
-        "\(modelDisplayName) runs on your iPhone to polish dictation and shape it into bullet points or other rewrites — fully offline, no accounts. The first download is about \(Self.downloadSizeCopy) over Wi-Fi."
+        "\(modelDisplayName) runs on your iPhone to polish dictation and shape it into bullet points or other rewrites — fully offline, no accounts. The first download is about \(downloadSizeCopy) over Wi-Fi."
     }
 
     // MARK: - Download CTA
@@ -155,7 +160,7 @@ struct DownloadPitchSheet: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 16, weight: .semibold))
-                Text("Download · \(Self.downloadSizeCopy)")
+                Text("Download · \(downloadSizeCopy)")
                     .font(.system(size: 16, weight: .semibold))
             }
             .foregroundStyle(Color.white)
@@ -182,7 +187,7 @@ struct DownloadPitchSheet: View {
             .shadow(color: Color.jotAccent.opacity(0.30), radius: 8, x: 0, y: 4)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Download \(modelDisplayName), \(Self.downloadSizeCopy)")
+        .accessibilityLabel("Download \(modelDisplayName), \(downloadSizeCopy)")
         .accessibilityAddTraits(.isButton)
     }
 }
@@ -192,7 +197,7 @@ struct DownloadPitchSheet: View {
         .ignoresSafeArea()
         .sheet(isPresented: .constant(true)) {
             DownloadPitchSheet(
-                modelDisplayName: "Phi-4 mini",
+                modelDisplayName: "Qwen 3.5 4B",
                 onDownload: {}
             )
         }

@@ -107,7 +107,7 @@ final class TranscriptionService {
         switch AppGroup.speechModelVariant {
         case "tdtCtc110m": return .tdtCtc110m
         case "parakeetV2": return .v2
-        default: return .v2
+        default: return .tdtCtc110m
         }
     }
 
@@ -243,6 +243,25 @@ final class TranscriptionService {
     }
 
     func purgeAndReload() async {
+        // Dev/QA path retained for symmetry with the v2 cache-purge flow.
+        // The TDT-CTC 110M weights now ship inside the IPA — the bundle is
+        // read-only, so there's nothing to remove. We cancel any in-flight
+        // prepare task and re-prime `modelState` from the bundle's presence
+        // (effectively a no-op refresh that surfaces a clear .failed state
+        // if iOS app thinning unexpectedly stripped the resources).
+        // Mirror of StreamingTranscriptionService.purgeAndReload() guard.
+        if Self.selectedVersion == .tdtCtc110m {
+            prepareTask?.cancel()
+            prepareTask = nil
+            prepareGeneration += 1
+            manager = nil
+
+            log.notice("purgeAndReload no-op — TDT-CTC 110M weights are bundled and read-only")
+            modelState = .notLoaded
+            warmUp()
+            return
+        }
+
         // Reclaim any orphaned .purging-* dirs from prior crashed purges before
         // we create another one.
         Self.sweepOrphanedPurgingDirs()
@@ -505,9 +524,19 @@ final class TranscriptionService {
         // files we don't need (only `CtcHead` is actually consumed),
         // but disabling that requires forking FluidAudio.
         if standIn == nil && !Self.modelsExistOnDiskForSelectedVariant() {
-            throw TranscriptionError.loadFailed(
-                "The selected speech model isn't downloaded yet. Open Settings → Speech model and tap Download."
-            )
+            // Branch on the active variant: the bundled TDT-CTC 110M has no
+            // download path (weights ship in the IPA), so a "tap Download"
+            // CTA is impossible. The only recovery is a reinstall. Mirrors
+            // StreamingTranscriptionService.swift:364 for consistency. The
+            // v2 (600M opt-in) variant keeps the Settings → Download CTA.
+            let message: String
+            switch Self.selectedVersion {
+            case .tdtCtc110m:
+                message = "The bundled speech model couldn't be found. Reinstall Jot from the App Store."
+            default:
+                message = "The selected speech model isn't downloaded yet. Open Settings → Speech model and tap Download."
+            }
+            throw TranscriptionError.loadFailed(message)
         }
         let inferenceStartedAt = Date()
         let prepareStartedAt = Date()
@@ -558,6 +587,21 @@ final class TranscriptionService {
                         "vocabulary rescore failed — falling back to raw: \(error.localizedDescription, privacy: .public)"
                     )
                 }
+            }
+
+            // Paragraph segmentation — runs after rescore so paragraph
+            // breaks are applied to the user-visible (rescored) text.
+            // The segmenter falls back to `transcriptText` unchanged on
+            // any degenerate input (no timings, single word, word-count
+            // drift from rescore), so this is always safe to call.
+            // Single source of truth: every batch caller (hero, keyboard
+            // URL-bounce, wizard W5, Shortcuts intent) goes through this
+            // method, so they all get paragraph segmentation for free.
+            if let timings = result.tokenTimings {
+                transcriptText = ParagraphSegmenter.segment(
+                    rescoredText: transcriptText,
+                    tokenTimings: timings
+                )
             }
             return transcriptText
         } catch {
@@ -800,16 +844,63 @@ final class TranscriptionService {
         }
     }
 
+    /// Resolve the per-variant model directory for FluidAudio's
+    /// `AsrModels.load(from:)`.
+    ///
+    /// For the **bundled** TDT-CTC 110M variant we point at the
+    /// `Resources/Models/Parakeet/parakeet-tdt-ctc-110m` folder reference
+    /// inside the app bundle. FluidAudio's loader expects the directory
+    /// whose parent contains the repo's `folderName` — our bundle layout
+    /// is `<Bundle>/Models/Parakeet/parakeet-tdt-ctc-110m/`, so the
+    /// parent `<Bundle>/Models/Parakeet/` also contains the sibling
+    /// `parakeet-ctc-110m-coreml/` directory the v2 CtcHead fallback
+    /// loads from. Result: no first-launch download for the default
+    /// dictation flow (App Review 4.2.3(ii)).
+    ///
+    /// For the opt-in **Parakeet 0.6B v2** variant the path falls back to
+    /// FluidAudio's default Application Support cache directory — that
+    /// variant remains a Settings-driven download per the locked spec.
+    /// Bundling v2 would add ~440 MB to the IPA for a power-user opt-in.
+    ///
+    /// If the bundle resource ever goes missing (defensive fallback for
+    /// debug builds or stripped IPAs), fall through to the Application
+    /// Support cache — that path can still surface a download CTA in
+    /// Settings.
     private static func modelDirectory() -> URL {
-        MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
+        if selectedVersion == .tdtCtc110m, let bundled = bundledTdtCtc110mDirectory() {
+            return bundled
+        }
+        return MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
+    }
+
+    /// `<Bundle>/Models/Parakeet/parakeet-tdt-ctc-110m/` if present, else nil.
+    /// Resolved by composing `Bundle.main.bundleURL` directly against the
+    /// `Models` folder reference declared in `project.yml`. We don't use
+    /// `Bundle.main.url(forResource:withExtension:subdirectory:)` because
+    /// that API doesn't reliably surface subpaths inside a folder
+    /// reference — `.mlmodelc` directories live under
+    /// `parakeet-tdt-ctc-110m`, but `parakeet-tdt-ctc-110m` itself is
+    /// just a regular directory (not a typed resource), and the
+    /// extension-resolution machinery doesn't always index intermediate
+    /// directory names from folder references.
+    static func bundledTdtCtc110mDirectory() -> URL? {
+        let url = Bundle.main.bundleURL
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent("Parakeet", isDirectory: true)
+            .appendingPathComponent("parakeet-tdt-ctc-110m", isDirectory: true)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     /// Whether the user-selected speech-model variant has its weights
-    /// already cached on disk. Used by the eager warm-up path
-    /// (`JotApp.task`) and the setup wizard's "models on disk" gate to
-    /// avoid silent first-run downloads (Guideline 4.2.3(ii)). Resolves
-    /// the variant from `AppGroup.speechModelVariant` so flipping the
-    /// picker in Settings re-points the disk check at the right repo.
+    /// available — either bundled in the IPA (TDT-CTC 110M) or cached on
+    /// disk in Application Support (Parakeet 0.6B v2 opt-in). Used by the
+    /// eager warm-up path (`JotApp.task`) and any "models available" UI
+    /// gate to avoid silent first-run downloads (Guideline 4.2.3(ii)).
+    /// Resolves the variant from `AppGroup.speechModelVariant`.
+    ///
+    /// For the bundled variant this always returns `true` on a healthy
+    /// install: the `.mlmodelc` resources are part of the app bundle and
+    /// can't be evicted without re-installing the app.
     static func modelsExistOnDiskForSelectedVariant() -> Bool {
         AsrModels.modelsExist(at: modelDirectory(), version: selectedVersion)
     }
@@ -847,6 +938,108 @@ final class TranscriptionService {
             log.notice("Found \(count, privacy: .public) orphaned .purging-* dir(s) under \(parent.path, privacy: .public); deletion dispatched")
         }
         return count
+    }
+
+    /// One-shot migration: reclaim Application Support disk for upgrading
+    /// users from pre-bundle TestFlight builds (0.9.0 / 0.9.1) whose 110M
+    /// weights were downloaded into `~/Library/Application Support/FluidAudio/Models/`.
+    /// Now that the TDT-CTC 110M, EOU streaming, and CTC aux models all
+    /// ship bundled inside the IPA, those Application Support copies are
+    /// ~530 MB of dead weight that the per-variant `sweepOrphanedPurgingDirs`
+    /// can't reach (its `parent` resolves to the read-only bundle path).
+    ///
+    /// Scope:
+    /// - Removes the three legacy 110M-era directories AND any `.purging-*`
+    ///   siblings of them
+    /// - Does NOT touch `parakeet-tdt-0.6b-v2-coreml/` — that's the v2
+    ///   (600M) opt-in cache and a user with that variant downloaded must
+    ///   not lose those weights
+    /// - Gated by `jot.didMigrateLegacyParakeetWeights` so it runs at most
+    ///   once across the app's lifetime
+    /// - Best-effort: log errors, never throw
+    static func sweepLegacyAppSupportWeights() {
+        let migrationKey = "jot.didMigrateLegacyParakeetWeights"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
+
+        let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+        // The legacy default location used by FluidAudio before we moved
+        // these models into the bundle. Resolves to
+        // `~/Library/Application Support/FluidAudio/Models/`.
+        let appSupportRoot = MLModelConfigurationUtils
+            .defaultModelsDirectory(for: .parakeetTdtCtc110m)
+            .deletingLastPathComponent()
+
+        // Folder names match Repo.folderName for the corresponding repos:
+        //   .parakeetTdtCtc110m → "parakeet-tdt-ctc-110m"
+        //   .parakeetCtc110m    → "parakeet-ctc-110m-coreml"
+        //   .parakeetEou320     → "parakeet-eou-streaming/320ms" (the
+        //                         top-level `parakeet-eou-streaming` dir
+        //                         catches every ms variant in one shot)
+        // The v2 (600M) cache is `parakeet-tdt-0.6b-v2` — NOT in
+        // this allowlist, so it is preserved.
+        let legacyNames: Set<String> = [
+            "parakeet-tdt-ctc-110m",
+            "parakeet-ctc-110m-coreml",
+            "parakeet-eou-streaming",
+        ]
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: appSupportRoot.path),
+              let entries = try? fm.contentsOfDirectory(at: appSupportRoot, includingPropertiesForKeys: nil) else {
+            // Nothing on disk — still flip the flag so we don't repeatedly
+            // poll the filesystem on every cold launch.
+            defaults.set(true, forKey: migrationKey)
+            log.info("Legacy Parakeet weights migration: nothing on disk at \(appSupportRoot.path, privacy: .public); flag set")
+            return
+        }
+
+        // Enumerate synchronously so the decision of WHAT to delete is made
+        // on the calling thread (cheap directory listing), then dispatch the
+        // actual `removeItem` loop to a detached utility task. On upgrading
+        // TestFlight users there can be ~530 MB of weights to unlink and
+        // doing it sync on `JotApp.init()` adds 1–3 s of cold-launch lag.
+        var toRemove: [URL] = []
+        for url in entries {
+            let name = url.lastPathComponent
+            // Drop exact-match legacy dirs and any `.purging-*` siblings of them.
+            let isLegacyExact = legacyNames.contains(name)
+            let isLegacyPurging = legacyNames.contains { legacy in
+                name.hasPrefix(legacy + ".purging-")
+            }
+            guard isLegacyExact || isLegacyPurging else { continue }
+            toRemove.append(url)
+        }
+
+        // Flip the gate flag synchronously BEFORE dispatching the delete.
+        // If the detached task is still running on next cold launch, this
+        // guard short-circuits and we never re-attempt the deletion.
+        defaults.set(true, forKey: migrationKey)
+
+        guard !toRemove.isEmpty else {
+            log.info("Legacy Parakeet weights migration: no matching legacy dirs under \(appSupportRoot.path, privacy: .public); flag set")
+            return
+        }
+
+        let parentPath = appSupportRoot.path
+        let targets = toRemove
+        Task.detached(priority: .utility) { @Sendable in
+            let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+            let fm = FileManager.default
+            var removedCount = 0
+            for url in targets {
+                do {
+                    try fm.removeItem(at: url)
+                    removedCount += 1
+                    log.notice("Migration removed legacy Parakeet weight dir at \(url.path, privacy: .public)")
+                } catch {
+                    log.error(
+                        "Migration could not remove legacy dir — directory=\(url.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            log.notice("Legacy Parakeet weights migration complete — removed=\(removedCount, privacy: .public) parent=\(parentPath, privacy: .public)")
+        }
     }
 
     private static func purgingModelDirectory(for modelDir: URL) -> URL {

@@ -230,6 +230,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
+        // [KB-COLLAPSE-DEBUG] One-time static-config snapshot. The
+        // UIInputView.allowsSelfSizing flag is set in loadView() and
+        // never mutated; logging it once at startup tells us whether
+        // self-sizing is the suspect when the collapse height fails to
+        // visibly apply (Symptom 2 — outer envelope stays expanded).
+        let allowsSelfSizing = (self.view as? UIInputView)?.allowsSelfSizing ?? false
+        keyboardLog.log(
+            "[KB-COLLAPSE-DEBUG] viewDidLoad allowsSelfSizing=\(allowsSelfSizing, privacy: .public)"
+        )
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -352,6 +361,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// and does its own cross-fade (the `withAnimation` keyed on
     /// `isCollapsed` inside `KeyboardView.body`).
     func toggleCollapsed() {
+        // [KB-COLLAPSE-DEBUG] Entry log captures the PRE-toggle state plus
+        // the full geometry snapshot. A second toggleCollapsed call within
+        // ~250ms (Symptom 1 — double-tap race) shows up here as two entries
+        // back-to-back with matching `isCollapsed=old` values.
+        logCollapseGeometry(label: "toggleCollapsed entry isCollapsed=\(isCollapsed)")
         isCollapsed.toggle()
         UserDefaults.standard.set(isCollapsed, forKey: "jot.keyboard.collapsed")
         UIAccessibility.post(
@@ -372,11 +386,23 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func applyCollapsedHeight(animated: Bool) {
         guard let constraint = heightConstraint else { return }
         let target: CGFloat = isCollapsed ? Self.collapsedHeight : Self.expandedHeight
+        // [KB-COLLAPSE-DEBUG] Entry: what we are about to ask the
+        // constraint solver for. Compare the post-settle bounds against
+        // `target` to know whether the solver actually honored our pin.
+        logCollapseGeometry(
+            label: "applyCollapsedHeight target=\(Int(target)) animated=\(animated)"
+        )
         constraint.constant = target
 
         let runImmediate = !animated || UIAccessibility.isReduceMotionEnabled
         if runImmediate {
             view.layoutIfNeeded()
+            // [KB-COLLAPSE-DEBUG] Post-layout in the immediate (no-animate)
+            // path so we capture the same moment as the animated branch.
+            logCollapseGeometry(label: "post-layoutIfNeeded (immediate)")
+            DispatchQueue.main.async { [weak self] in
+                self?.logCollapseGeometry(label: "post-settle (next runloop, immediate)")
+            }
             return
         }
         UIView.animate(
@@ -385,7 +411,35 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             options: [.curveEaseInOut, .beginFromCurrentState]
         ) { [weak self] in
             self?.view.layoutIfNeeded()
+            // [KB-COLLAPSE-DEBUG] Inside the animate block, immediately
+            // after `layoutIfNeeded()` — bounds here should reflect the
+            // post-layout state for the in-flight animation pass.
+            self?.logCollapseGeometry(label: "post-layoutIfNeeded")
         }
+        // [KB-COLLAPSE-DEBUG] Schedule a post-settle snapshot on the
+        // NEXT runloop tick (NOT in the animate completion handler — we
+        // want the steady-state value after the system input-view host
+        // gets a chance to re-evaluate intrinsicContentSize / its own
+        // size constraints, which Symptom 2 suggests is the failure
+        // mode for the outer envelope).
+        DispatchQueue.main.async { [weak self] in
+            self?.logCollapseGeometry(label: "post-settle (next runloop)")
+        }
+    }
+
+    /// [KB-COLLAPSE-DEBUG] Single value-capture helper so every log point
+    /// records the same geometry fields. Centralizing the snapshot keeps
+    /// the call sites tiny and guarantees a consistent format for the
+    /// user's Console.app filter. Pure read — no side effects, no
+    /// layout triggers.
+    private func logCollapseGeometry(label: String) {
+        let constraintConstant = heightConstraint?.constant ?? -1
+        let bounds = view.bounds.height
+        let intrinsic = view.intrinsicContentSize.height
+        let hostingHeight = hostingController?.view.bounds.height ?? -1
+        keyboardLog.log(
+            "[KB-COLLAPSE-DEBUG] \(label, privacy: .public) isCollapsed=\(self.isCollapsed, privacy: .public) constraint.constant=\(constraintConstant, privacy: .public) view.bounds.h=\(bounds, privacy: .public) view.intrinsic.h=\(intrinsic, privacy: .public) hosting.bounds.h=\(hostingHeight, privacy: .public)"
+        )
     }
 
     /// Defensive re-application of the height after a rotation /
@@ -398,6 +452,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         with coordinator: UIViewControllerTransitionCoordinator
     ) {
         super.viewWillTransition(to: size, with: coordinator)
+        // [KB-COLLAPSE-DEBUG] viewWillTransition fires on rotation /
+        // trait-collection change. If Symptom 1 (failed maximize) ever
+        // correlates with an unexpected transition right at tap time
+        // (e.g. the system input-view host re-sizing us underneath the
+        // animate block), it should show up here interleaved with the
+        // toggleCollapsed entry log.
+        logCollapseGeometry(label: "viewWillTransition to=\(size.width)x\(size.height)")
         coordinator.animate(alongsideTransition: { [weak self] _ in
             guard let self else { return }
             self.heightConstraint?.constant = self.isCollapsed
@@ -534,7 +595,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onKey: { [weak self] key in self?.handleKeyTap(key) },
             onKeyPressChange: { [weak self] key, pressed in self?.handleKeyPressChange(key, pressed: pressed) },
             onAdvanceToNextInputMode: { [weak self] in self?.advanceToNextInputMode() },
-            onOpenFullAccess: { [weak self] in self?.openHostSettings() },
+            onOpenFullAccess: { [weak self] in self?.openFullAccessPrompt() },
             onStatusBannerRendered: { [weak self] in self?.clearStatusBannerSlot() },
             onOpenHome: { [weak self] in self?.openHostHome() },
             onToggleCollapsed: { [weak self] in self?.toggleCollapsed() },
@@ -1298,14 +1359,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             keyboardLog.notice("Ghost warm-hold projection cleared; expiresAtDelta=\(expiresAtDelta, privacy: .public)s heartbeatAge=\(heartbeatAge, privacy: .public)s; falling through to URL bounce")
         }
 
-        // Wizard W8 short-circuit: if the host app is Jot itself (detected
+        // Wizard W7 short-circuit: if the host app is Jot itself (detected
         // via the App Group foreground heartbeat written by `JotApp` while
         // `scenePhase == .active`), `extensionContext.open(jot://dictate)`
         // would be silently refused by iOS (iOS will not re-launch the
         // already-foreground app via URL scheme), making the Dictate tap
         // appear to do nothing. Post a Darwin notification instead — the
-        // wizard's `SetupWizardView` observes this on W8 and advances to
-        // W9. W7 already verified actual dictation; W8 only verifies the
+        // wizard's `SetupWizardView` observes this on W7 and advances to
+        // W8. W6 already verified actual dictation; W7 only verifies the
         // user can find + tap Dictate in the keyboard.
         //
         // Gated by `hasFullAccess` because App Group reads require it —
@@ -1479,6 +1540,35 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
         guard let url = URL(string: "jot://history") else { return }
         openContainingApp(url)
+    }
+
+    /// Bounces to the main app via `jot://full-access` so the user lands
+    /// on `FullAccessPromptSheet` — an explanatory screen with the
+    /// literal Settings breadcrumb and an "Open Settings" CTA — rather
+    /// than being silently dumped into iOS Settings.
+    ///
+    /// Called when the user taps the locked-state "Enable Full Access"
+    /// pill in either the standard `KeyboardView` or the
+    /// `CollapsedBarView`. The main app's `.onOpenURL` handler in
+    /// `JotApp.swift` recognises the `full-access` host and presents
+    /// the sheet without auto-foregrounding Settings — see that handler
+    /// for rationale.
+    ///
+    /// Falls back to `openHostSettings()` (direct iOS Settings) if the
+    /// URL construction somehow fails or `extensionContext.open` reports
+    /// failure — better to drop the user in raw Settings than to leave
+    /// the tap doing nothing.
+    private func openFullAccessPrompt() {
+        guard let url = URL(string: "jot://full-access") else {
+            openHostSettings()
+            return
+        }
+        extensionContext?.open(url) { [weak self] success in
+            guard !success else { return }
+            Task { @MainActor in
+                self?.openHostSettings()
+            }
+        }
     }
 
     private func openHostSettings() {

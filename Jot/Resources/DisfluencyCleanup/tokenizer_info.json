@@ -1,0 +1,18 @@
+{
+  "max_seq_len": 128,
+  "num_labels": 2,
+  "label_map": {
+    "0": "KEEP",
+    "1": "DELETE"
+  },
+  "vocab_size": 30522,
+  "pad_token": "[PAD]",
+  "pad_token_id": 0,
+  "cls_token": "[CLS]",
+  "cls_token_id": 101,
+  "sep_token": "[SEP]",
+  "sep_token_id": 102,
+  "unk_token": "[UNK]",
+  "unk_token_id": 100,
+  "do_lower_case": true
+}

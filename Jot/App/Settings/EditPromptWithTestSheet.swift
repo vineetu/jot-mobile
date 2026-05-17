@@ -1,23 +1,22 @@
 import SwiftUI
 import SwiftData
 
-/// Phase 5 — Edit prompt with test panel (mockup 19).
+/// Phase 5 (v0.9 redesign) — Edit prompt with inline Try-this-prompt panel.
 ///
-/// Bottom sheet drawer (~660pt / `.large` detent) that shows the prompt
-/// header, the system-prompt text in a glass card, and a coral-bordered
-/// "TEST ON A RECORDING" card. The user can pick any transcript from the
-/// SwiftData store via `Test on · <title>`, then tap "Run again" to fire
-/// `LLMClient.rewrite(text:systemPrompt:)`. Original (italic mono) +
-/// rewritten (Fraunces 13pt) outputs stack vertically. Per plan §14.7 the
-/// run shows a simple spinner — no louder banner.
+/// Bottom sheet drawer (`.large` detent) that lets the user edit an existing
+/// saved prompt or compose a new one (the New-prompt path is owned by
+/// `NewPromptSheet`; this sheet handles editing only). The system-prompt is
+/// the hero — a full-bleed mono editor with a coral blinking caret. The
+/// previous "Test on a recording" card is replaced by a slim "Try this prompt"
+/// footer pill that expands into a coral-bordered result panel after Run.
 ///
-/// "Expand editor →" pushes a full-screen plain text editor for the system
-/// prompt. The full-screen editor edits the in-flight draft; Save on the
-/// header commits the draft back to `SavedPromptStore`.
-///
-/// The seeded `defaultRewrite` / `defaultBulletPoints` rows are fully
-/// editable here — when the user saves their edits, the stable UUID is
-/// preserved so existing references keep resolving.
+/// Behavioral surface preserved from the previous implementation:
+///   - `saveAndDismiss` / `selectTranscript` / `loadMostRecentTranscriptIfNeeded`
+///     / `runTest` / `copyRewritten` are untouched.
+///   - `TranscriptSnapshot` + `TranscriptPickerSheet` + `ExpandedSystemPromptEditor`
+///     are kept at the bottom of the file.
+///   - Stable UUID is preserved on save so existing keyboard/picker references
+///     keep resolving.
 struct EditPromptWithTestSheet: View {
     let prompt: SavedPrompt?
     let onChange: () -> Void
@@ -29,6 +28,7 @@ struct EditPromptWithTestSheet: View {
     @State private var name: String = ""
     @State private var systemPrompt: String = ""
     @State private var showFullScreenEditor: Bool = false
+    @State private var cursorVisible: Bool = true
 
     // MARK: - Test panel state
 
@@ -38,6 +38,7 @@ struct EditPromptWithTestSheet: View {
     @State private var testRewrittenText: String = ""
     @State private var isRunningTest: Bool = false
     @State private var testErrorMessage: String?
+    @State private var elapsedSeconds: Double = 0
     @State private var showTranscriptPicker: Bool = false
 
     private var isEditing: Bool { prompt != nil }
@@ -46,8 +47,6 @@ struct EditPromptWithTestSheet: View {
     private var canSave: Bool { !trimmedName.isEmpty && !trimmedSystemPrompt.isEmpty }
 
     private var headerIconSymbol: String {
-        // Seeded prompts get purpose-specific icons; user-created prompts
-        // get the generic purple list bullet (same as the AI Settings list).
         if prompt?.id == SavedPrompt.defaultBulletPoints.id {
             return "list.bullet"
         }
@@ -55,7 +54,15 @@ struct EditPromptWithTestSheet: View {
     }
 
     private var headerIconTint: Color {
-        prompt?.id == SavedPrompt.defaultBulletPoints.id ? Color.purple : Color.jotAccent
+        prompt?.id == SavedPrompt.defaultBulletPoints.id
+            ? AIV09Tokens.purple
+            : JotDesign.JotSemanticIcon.ai
+    }
+
+    private var headerIconShaded: Color {
+        prompt?.id == SavedPrompt.defaultBulletPoints.id
+            ? AIV09Tokens.purpleShaded
+            : JotDesign.JotSemanticIcon.aiShaded
     }
 
     private var headerSubline: String? {
@@ -65,61 +72,6 @@ struct EditPromptWithTestSheet: View {
         return nil
     }
 
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                JotDesign.background.ignoresSafeArea()
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: JotDesign.Spacing.sectionGap) {
-                        promptHeaderRow
-
-                        systemPromptSection
-
-                        testSection
-                    }
-                    .padding(.horizontal, JotDesign.Spacing.pageMargin)
-                    .padding(.vertical, 16)
-                }
-            }
-            .navigationTitle(displayTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .accessibilityLabel("Cancel editing")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
-                        saveAndDismiss()
-                    }
-                    .tint(.jotAccent)
-                    .disabled(!canSave)
-                    .accessibilityLabel("Save prompt")
-                }
-            }
-            .navigationDestination(isPresented: $showFullScreenEditor) {
-                ExpandedSystemPromptEditor(text: $systemPrompt)
-            }
-            .sheet(isPresented: $showTranscriptPicker) {
-                TranscriptPickerSheet { transcript in
-                    selectTranscript(transcript)
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
-            .onAppear {
-                if let existing = prompt {
-                    name = existing.name
-                    systemPrompt = existing.systemPrompt
-                }
-                loadMostRecentTranscriptIfNeeded()
-            }
-        }
-    }
-
     private var displayTitle: String {
         if let prompt {
             return prompt.name
@@ -127,17 +79,130 @@ struct EditPromptWithTestSheet: View {
         return "New prompt"
     }
 
-    // MARK: - Header row
+    private var hasResultState: Bool {
+        !testRewrittenText.isEmpty || testErrorMessage != nil || isRunningTest
+    }
 
-    private var promptHeaderRow: some View {
-        GlassCard(tier: .regular, padding: 14) {
+    private var slimPreviewText: String {
+        guard !testOriginalText.isEmpty else {
+            return "Pick a recording to try this prompt."
+        }
+        let trimmed = testOriginalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = trimmed.prefix(40)
+        return "on \(testTranscriptTitle) — \u{201C}\(prefix)…\u{201D}"
+    }
+
+    var body: some View {
+        ZStack {
+            WallpaperBackground()
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                dragHandle
+                headerRow
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 12)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        promptHeaderCard
+                        systemPromptEditorCard
+
+                        if hasResultState {
+                            tryResultPanel
+                        } else {
+                            slimTryPill
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+        .sheet(isPresented: $showFullScreenEditor) {
+            NavigationStack {
+                ExpandedSystemPromptEditor(text: $systemPrompt)
+            }
+        }
+        .sheet(isPresented: $showTranscriptPicker) {
+            TranscriptPickerSheet(currentSelectionID: testTranscriptID) { transcript in
+                selectTranscript(transcript)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onAppear {
+            if let existing = prompt {
+                name = existing.name
+                systemPrompt = existing.systemPrompt
+            }
+            loadMostRecentTranscriptIfNeeded()
+            startCursorBlink()
+        }
+    }
+
+    // MARK: - Chrome
+
+    private var dragHandle: some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.jotPageInkSecondary.opacity(0.30))
+            .frame(width: 36, height: 5)
+            .padding(.vertical, 8)
+            .accessibilityHidden(true)
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .center) {
+            Button {
+                dismiss()
+            } label: {
+                Text("Cancel")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.jotPageInk)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background(.regularMaterial, in: Capsule(style: .continuous))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.jotPageInk.opacity(0.06), lineWidth: 0.5)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel editing")
+
+            Spacer()
+
+            Text(displayTitle)
+                .font(.system(size: 17, weight: .semibold))
+                .tracking(-0.3)
+                .foregroundStyle(Color.jotPageInk)
+                .lineLimit(1)
+                .layoutPriority(1)
+
+            Spacer()
+
+            CompactCoralPill(label: "Save", isEnabled: canSave) {
+                saveAndDismiss()
+            }
+        }
+    }
+
+    // MARK: - Prompt header card
+
+    private var promptHeaderCard: some View {
+        LiquidGlassCard(paddingH: 16, paddingV: 14) {
             HStack(spacing: 12) {
-                IconBox(symbol: headerIconSymbol, tint: headerIconTint, size: 40)
+                IconTile(
+                    systemImage: headerIconSymbol,
+                    tint: headerIconTint,
+                    shaded: headerIconShaded,
+                    size: 40
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
                     TextField("Prompt name", text: $name)
-                        .font(.custom(JotType.frauncesSemiBold, size: 16))
-                        .foregroundStyle(Color.jotInk)
+                        .font(.system(size: 19, weight: .medium, design: .serif))
+                        .foregroundStyle(Color.jotPageInk)
                         .textInputAutocapitalization(.words)
                         .onChange(of: name) { _, newValue in
                             if newValue.count > SavedPrompt.nameMaxLength {
@@ -148,213 +213,346 @@ struct EditPromptWithTestSheet: View {
                     if let sub = headerSubline {
                         Text(sub)
                             .font(.system(size: 12))
-                            .foregroundStyle(Color.jotMute)
+                            .foregroundStyle(Color.jotPageInkSecondary)
                     }
                 }
+
                 Spacer()
             }
         }
     }
 
-    // MARK: - System prompt
+    // MARK: - System prompt editor
 
-    private var systemPromptSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("SYSTEM PROMPT")
-                .padding(.horizontal, 4)
+    private var systemPromptEditorCard: some View {
+        LiquidGlassCard(cornerRadius: 18, paddingH: 0, paddingV: 0) {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Text("System prompt")
+                        .font(JotType.sectionLabel)
+                        .tracking(1.5)
+                        .textCase(.uppercase)
+                        .foregroundStyle(Color.jotPageInkCaption)
 
-            GlassCard(tier: .regular, padding: 14) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ZStack(alignment: .bottom) {
-                        ScrollView(.vertical, showsIndicators: false) {
-                            Text(displayedSystemPrompt)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.jotInk)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 2)
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        BlinkingCaret(visible: cursorVisible)
+                            .frame(width: 2, height: 14)
+
+                        Text("\(systemPrompt.count) chars")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.jotPageInkSecondary)
+
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.jotPageInkSecondary.opacity(0.5))
+
+                        Button {
+                            showFullScreenEditor = true
+                        } label: {
+                            Text("Expand")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.jotCoralTop)
                         }
-                        .frame(maxHeight: 130)
-
-                        // Bottom fade to suggest "more text" before the
-                        // Expand-editor affordance. Top stop is `.clear`
-                        // (transparent) and the bottom stop blends into
-                        // the card surface so the bottom of the visible
-                        // text appears to fade out before the link.
-                        LinearGradient(
-                            colors: [
-                                Color.clear,
-                                Color.white.opacity(0.7)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 24)
-                        .allowsHitTesting(false)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Expand editor")
+                        .accessibilityHint("Opens the full-screen system prompt editor")
                     }
-
-                    Button {
-                        showFullScreenEditor = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Expand editor")
-                                .font(.system(size: 14, weight: .semibold))
-                            Image(systemName: "arrow.right")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .foregroundStyle(Color.jotAccent)
-                        .frame(minHeight: 44, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Expand editor")
-                    .accessibilityHint("Opens the full-screen system prompt editor")
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                Divider()
+                    .background(Color.jotPageInkCaption.opacity(0.20))
+
+                TextEditor(text: $systemPrompt)
+                    .font(JotType.monoEditor)
+                    .lineSpacing(1.6)
+                    .scrollContentBackground(.hidden)
+                    .foregroundStyle(Color.jotPageInk)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 220)
+                    .onChange(of: systemPrompt) { _, newValue in
+                        if newValue.count > SavedPrompt.systemPromptMaxLength {
+                            systemPrompt = String(newValue.prefix(SavedPrompt.systemPromptMaxLength))
+                        }
+                    }
+                    .accessibilityLabel("System prompt editor")
             }
         }
     }
 
-    private var displayedSystemPrompt: String {
-        if trimmedSystemPrompt.isEmpty {
-            return "Instruction for the rewrite model…"
-        }
-        return systemPrompt
-    }
+    // MARK: - Try this prompt (slim pill + expanded result panel)
 
-    // MARK: - Test on a recording
-
-    private var testSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("TEST ON A RECORDING")
-                .padding(.horizontal, 4)
-
-            VStack(alignment: .leading, spacing: 14) {
-                // Recording picker row
+    private var slimTryPill: some View {
+        LiquidGlassCard(cornerRadius: 16, paddingH: 14, paddingV: 12) {
+            HStack(spacing: 10) {
                 Button {
                     showTranscriptPicker = true
                 } label: {
-                    HStack(spacing: 8) {
-                        Text("Test on")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Color.jotMute)
-                        Text("·")
-                            .foregroundStyle(Color.jotMute)
-                        Text(testTranscriptTitle)
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(Color.jotInk)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer()
-                        RowChevron()
+                    HStack(spacing: 10) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Color.jotCoralTop)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Try this prompt")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.jotPageInk)
+                            HStack(spacing: 4) {
+                                Text(slimPreviewText)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Color.jotPageInk)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.jotPageInkSecondary)
+                                    .fixedSize()
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Test on \(testTranscriptTitle)")
-                .accessibilityHint("Picks a recording to test the prompt on")
+                .accessibilityLabel("Pick a recording to test on")
+                .accessibilityHint("Opens a list of recent recordings")
 
-                if !testOriginalText.isEmpty {
-                    Divider().opacity(0.4)
-
-                    Text(testOriginalText)
-                        .font(.system(size: 14, design: .monospaced).italic())
-                        .foregroundStyle(Color.jotMute)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .lineLimit(8)
-
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.jotAccent)
-                        Text("Rewrite")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.jotAccent)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if isRunningTest {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Running…")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.jotMute)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if let err = testErrorMessage {
-                        Text(err)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if !testRewrittenText.isEmpty {
-                        Text(testRewrittenText)
-                            .font(.custom(JotType.frauncesRegular, size: 13))
-                            .foregroundStyle(Color.jotInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(12)
-                    } else {
-                        Text("Tap Run again to rewrite this transcript with the current prompt.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.jotMute)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    Divider().opacity(0.4)
-
-                    HStack(spacing: 12) {
-                        Text(JotDesign.activeRewriteModelDisplayName)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.jotMute)
-
-                        Spacer()
-
-                        Button {
-                            runTest()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("Run again")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundStyle(Color.jotAccent)
-                            .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isRunningTest || testTranscriptID == nil || trimmedSystemPrompt.isEmpty)
-                        .accessibilityLabel("Run rewrite again")
-
-                        Button {
-                            copyRewritten()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("Copy")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundStyle(Color.jotAccent)
-                            .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(testRewrittenText.isEmpty)
-                        .accessibilityLabel("Copy rewritten text")
-                    }
+                CompactCoralPill(
+                    label: "Run",
+                    isEnabled: !trimmedSystemPrompt.isEmpty && !testOriginalText.isEmpty
+                ) {
+                    runTest()
                 }
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
-                    .strokeBorder(Color.jotAccent.opacity(0.55), lineWidth: 1)
-            )
-            .shadow(color: Color.jotAccent.opacity(0.10), radius: 6, x: 0, y: 4)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var tryResultPanel: some View {
+        let outerShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        VStack(spacing: 0) {
+            // Header strip
+            HStack(spacing: 8) {
+                Text("Try this prompt")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .tracking(1.5)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Color.jotCoralTop)
+                Text("·")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.jotPageInkSecondary.opacity(0.6))
+                Text(testTranscriptTitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer()
+
+                Button {
+                    dismissResultPanel()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss result panel")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider().background(Color.jotPageInkCaption.opacity(0.20))
+
+            // Body
+            VStack(alignment: .leading, spacing: 12) {
+                resultBeforeBlock
+                resultArrowRow
+                resultAfterBlock
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+
+            Divider().background(Color.jotPageInkCaption.opacity(0.20))
+
+            // Footer
+            HStack(spacing: 10) {
+                Text(JotDesign.activeRewriteModelDisplayName)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                resultActionPills
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+        .background(.regularMaterial, in: outerShape)
+        .overlay(outerShape.strokeBorder(Color.jotCoralTop.opacity(0.45), lineWidth: 1))
+        .clipShape(outerShape)
+        .shadow(color: Color.jotCoralTop.opacity(0.20), radius: 20, x: 0, y: 8)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var resultBeforeBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Before")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.4)
+                .textCase(.uppercase)
+                .foregroundStyle(Color.jotPageInkCaption)
+            Text("\u{201C}\(testOriginalText)\u{201D}")
+                .font(.system(size: 14).italic())
+                .lineSpacing(2)
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .lineLimit(3)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: - Actions
+    private var resultArrowRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.jotCoralTop)
+            Text("Rewrite")
+                .font(.system(size: 10.5, weight: .bold))
+                .tracking(1.6)
+                .textCase(.uppercase)
+                .foregroundStyle(Color.jotCoralTop)
+            Rectangle()
+                .fill(Color.jotCoralTop.opacity(0.18))
+                .frame(height: 1)
+            if !isRunningTest, testErrorMessage == nil, !testRewrittenText.isEmpty {
+                Text(String(format: "%.1fs", elapsedSeconds))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var resultAfterBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("After")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(1.4)
+                .textCase(.uppercase)
+                .foregroundStyle(Color.jotPageInkCaption)
+
+            if isRunningTest {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Running…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                }
+            } else if let err = testErrorMessage {
+                Text(err)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("\u{201C}\(testRewrittenText)\u{201D}")
+                    .font(.system(size: 15, weight: .regular, design: .serif).italic())
+                    .foregroundStyle(Color.jotPageInk)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var resultActionPills: some View {
+        // Both pills are wrapped in fixedSize via parent so they never wrap.
+        HStack(spacing: 8) {
+            Button {
+                copyRewritten()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Copy")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .foregroundStyle(Color.jotPageInk)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule(style: .continuous))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.jotPageInk.opacity(0.06), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(testRewrittenText.isEmpty)
+            .accessibilityLabel("Copy rewritten text")
+
+            Button {
+                runTest()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Run again")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.jotCoralTop, .jotCoralBottom],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                )
+                .shadow(color: Color.jotCoralTop.opacity(0.40), radius: 8, x: 0, y: 4)
+            }
+            .buttonStyle(.plain)
+            .disabled(isRunningTest || trimmedSystemPrompt.isEmpty || testOriginalText.isEmpty)
+            .accessibilityLabel("Run rewrite again")
+        }
+    }
+
+    private func dismissResultPanel() {
+        testRewrittenText = ""
+        testErrorMessage = nil
+        // Leaves testOriginalText / testTranscriptID intact so the next
+        // Run still has a transcript to work with.
+    }
+
+    // MARK: - Cursor blink
+
+    private func startCursorBlink() {
+        // 0.5s on/off — gives the spec's 1s full cycle.
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            Task { @MainActor in
+                cursorVisible.toggle()
+            }
+        }
+    }
+
+    // MARK: - Actions (preserved)
 
     private func saveAndDismiss() {
         guard canSave else { return }
@@ -394,8 +592,6 @@ struct EditPromptWithTestSheet: View {
 
     private func loadMostRecentTranscriptIfNeeded() {
         guard testTranscriptID == nil else { return }
-        // Pre-fill with the most recent transcript so "Run again" works
-        // immediately without forcing the user to drill into the picker.
         if let snapshot = TranscriptPickerSheet.mostRecent() {
             selectTranscript(snapshot)
         }
@@ -406,9 +602,11 @@ struct EditPromptWithTestSheet: View {
         isRunningTest = true
         testErrorMessage = nil
         testRewrittenText = ""
+        elapsedSeconds = 0
 
         let textToRewrite = testOriginalText
         let systemInstruction = trimmedSystemPrompt
+        let startDate = Date()
         Task { @MainActor in
             let client = LLMClientFactory.shared.client()
             do {
@@ -417,6 +615,7 @@ struct EditPromptWithTestSheet: View {
             } catch {
                 testErrorMessage = "Rewrite failed — \(error.localizedDescription)"
             }
+            elapsedSeconds = Date().timeIntervalSince(startDate)
             isRunningTest = false
         }
     }
@@ -429,11 +628,61 @@ struct EditPromptWithTestSheet: View {
     }
 }
 
+// MARK: - Local helper views
+
+/// Compact coral CTA pill used inside the sheet header (Save) and the
+/// slim Try-this-prompt footer (Run). Smaller than the full
+/// `CoralActionButton` so it fits in 36-40pt-tall chrome rows.
+struct CompactCoralPill: View {
+    let label: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.jotCoralTop, .jotCoralBottom],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .opacity(isEnabled ? 1 : 0.45)
+                )
+                .shadow(color: Color.jotCoralTop.opacity(isEnabled ? 0.40 : 0), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(Text(label))
+    }
+}
+
+/// 2x14 blinking coral caret used in the editor toolbar to telegraph an
+/// active editing surface. Decorative — the real iOS caret renders
+/// naturally inside the TextEditor.
+struct BlinkingCaret: View {
+    let visible: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.jotCoralTop)
+            .opacity(visible ? 1 : 0)
+            .animation(.linear(duration: 0.15), value: visible)
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Full-screen system prompt editor
 
-/// Pushed onto the nav stack when the user taps "Expand editor →". A simple
-/// `TextEditor` bound to the parent's `systemPrompt` draft state so edits
-/// flow back automatically.
+/// Pushed via sheet when the user taps "Expand". A simple `TextEditor` bound
+/// to the parent's `systemPrompt` draft state so edits flow back automatically.
 private struct ExpandedSystemPromptEditor: View {
     @Binding var text: String
     @Environment(\.dismiss) private var dismiss
@@ -441,7 +690,8 @@ private struct ExpandedSystemPromptEditor: View {
 
     var body: some View {
         TextEditor(text: $text)
-            .font(.system(size: 13, design: .monospaced))
+            .font(JotType.monoEditor)
+            .lineSpacing(1.6)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .focused($isEditorFocused)
@@ -479,6 +729,7 @@ struct TranscriptSnapshot: Identifiable, Hashable {
 /// Sheet that lists recent transcripts. Tapping a row hands the snapshot
 /// back to the caller. Read-only — does not mutate the SwiftData store.
 private struct TranscriptPickerSheet: View {
+    let currentSelectionID: UUID?
     let onPick: (TranscriptSnapshot) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -498,15 +749,25 @@ private struct TranscriptPickerSheet: View {
                             onPick(snapshot)
                             dismiss()
                         } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(snapshot.title)
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(Color.jotInk)
-                                    .lineLimit(1)
-                                Text(snapshot.text)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Color.jotMute)
-                                    .lineLimit(2)
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(snapshot.title)
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Color.jotPageInk)
+                                        .lineLimit(1)
+                                    Text(snapshot.text)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Color.jotPageInkSecondary)
+                                        .lineLimit(2)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                                if snapshot.id == currentSelectionID {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Color.jotCoralTop)
+                                        .accessibilityHidden(true)
+                                }
                             }
                             .frame(minHeight: 44, alignment: .leading)
                         }
@@ -531,14 +792,10 @@ private struct TranscriptPickerSheet: View {
 
     // MARK: - Static fetch helpers
 
-    /// Returns the most-recently-created transcript as a snapshot, or
-    /// `nil` if the store is empty.
     static func mostRecent() -> TranscriptSnapshot? {
         recent(limit: 1).first
     }
 
-    /// Reads the top `limit` transcripts from SwiftData, newest first,
-    /// and returns them as immutable snapshots.
     @MainActor
     static func recent(limit: Int) -> [TranscriptSnapshot] {
         let context = ModelContext(JotModelContainer.shared)
@@ -558,10 +815,6 @@ private struct TranscriptPickerSheet: View {
     }
 
     private static func snapshotTitle(for row: Transcript) -> String {
-        // Derive a short title from the first sentence / first 48 chars of
-        // the transcript. The SwiftData schema doesn't carry a separate
-        // title field today (per plan §14.4 the serif title slot is hidden
-        // in v1), so we approximate.
         let text = row.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
             return "Recording #\(row.ledgerIndex)"

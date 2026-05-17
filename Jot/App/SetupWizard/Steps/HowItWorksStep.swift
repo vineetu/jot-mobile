@@ -2,7 +2,8 @@
 //  HowItWorksStep.swift
 //  Jot
 //
-//  Phase 6 — wizard panel W6.
+//  Phase 6 — wizard panel W4 (renumbered from W5 after the bundled-Parakeet
+//  ship retired the standalone speech-model download step).
 //  Two-paragraph explanation + the keyboard → coral mic → SWIPE → keyboard
 //  diagram. Caption: "TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED".
 //
@@ -11,28 +12,29 @@ import SwiftUI
 
 struct HowItWorksStep: View {
     let onClose: () -> Void
+    let onBack: () -> Void
     let onAdvance: () -> Void
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .core(current: 5), onClose: onClose)
+            header: WizardHeader(style: .core(current: 3), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 16) {
                 Spacer(minLength: 24)
 
-                WizardTitle(text: "How it works", size: 28)
+                WizardItalicTitle(text: "How it works", size: 30)
                     .padding(.bottom, 6)
 
                 Text("Jot is dictation-only — no QWERTY. Keep your usual keyboard for typing.")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(1.5)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text("Tapping Dictate opens Jot to record (iOS doesn't allow mic access from keyboards). After recording, swipe right along the bottom to return — text is in the field.")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Color(red: 0.357, green: 0.357, blue: 0.396))
+                    .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(1.5)
                     .fixedSize(horizontal: false, vertical: true)

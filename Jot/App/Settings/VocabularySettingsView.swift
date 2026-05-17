@@ -5,9 +5,9 @@ import SwiftUI
 ///
 /// Phase 5 reskin (mockup 16): editorial chrome on top of the same
 /// persistence + boost-model wiring that shipped in commit `197a5b4`.
-/// Sections render inside `GlassCard(.regular)` groups, the title bar
-/// stays the standard nav title, and a floating coral "+ Add term"
-/// FAB at the bottom presents `AddVocabularyTermSheet`.
+/// Sections render inside `GlassCard(.regular)` groups and the title
+/// bar stays the standard nav title. The inline blue "+ Add Term" row
+/// at the bottom of the Terms section is the single add path.
 ///
 /// Preserved exactly from the previous implementation:
 ///   - `VocabularyStore.shared` is the persistence path (file-backed
@@ -30,23 +30,13 @@ enum BoostModelStatus: Equatable {
 struct VocabularySettingsView: View {
     @State private var store = VocabularyStore.shared
     @State private var boostModelStatus: BoostModelStatus = .notDownloaded
-    @State private var showAddSheet: Bool = false
     @FocusState private var focusedID: VocabTerm.ID?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Form {
-                masterToggleSection
-                boostModelSection
-                termsSection
-            }
-            // The floating Add-term FAB hovers over the bottom of the list;
-            // pad the Form so the last row + footer aren't tucked behind
-            // the button on a long list.
-            .safeAreaPadding(.bottom, 80)
-
-            addTermFAB
-                .padding(.bottom, 18)
+        Form {
+            masterToggleSection
+            boostModelSection
+            termsSection
         }
         .navigationTitle("Vocabulary")
         #if os(iOS)
@@ -58,11 +48,6 @@ struct VocabularySettingsView: View {
                     EditButton()
                 }
             }
-        }
-        .sheet(isPresented: $showAddSheet) {
-            AddVocabularyTermSheet()
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
         }
         .onAppear {
             // Re-load from disk in case the user edited the file externally
@@ -133,9 +118,7 @@ struct VocabularySettingsView: View {
                 }
             }
 
-            // Edit-mode inline-add row, preserved for Edit-mode parity with
-            // the previous implementation. The visible floating FAB is the
-            // primary entry, but Edit-button reorder users get this fallback.
+            // Single add path — the visible blue "+ Add Term" row.
             Button {
                 addInlineBlankTerm()
             } label: {
@@ -151,7 +134,7 @@ struct VocabularySettingsView: View {
                 }
             }
         } footer: {
-            Text("Helps Jot recognize names, technical terms, and words it tends to mishear. The list stays on your iPhone.")
+            Text("Helps Jot recognize names, technical terms, and words it tends to mishear. The list stays on your iPhone. Avoid adding terms that sound alike — Jot can only favor one, so the other won't take effect.")
         }
     }
 
@@ -206,9 +189,15 @@ struct VocabularySettingsView: View {
         case .ready:
             return "Parakeet CTC 110M on this iPhone. Boosting runs on the Neural Engine; no audio leaves the device."
         case .downloading:
-            return "≈100 MB from Hugging Face over Wi-Fi. You can keep using Jot while it finishes — boosting activates when it's ready."
+            // Unreachable on a healthy bundled install — the CTC aux model
+            // ships in the IPA. Kept defensively in case the bundle is
+            // stripped and the cache surfaces a transient loading state.
+            return "Loading the bundled vocabulary boost model…"
         case .notDownloaded:
-            return "≈100 MB. Normally downloaded with the speech model — tap if it didn't land."
+            // Unreachable on a healthy bundled install — same as above. If
+            // hit, the only recovery is a reinstall (no HF download path
+            // exists for the bundled variant).
+            return "Bundled vocabulary boost model is missing. Reinstall Jot from the App Store."
         case .failed:
             return "The rest of Jot keeps working — only vocabulary boosting needs this bundle. Retry below; if it still fails, check your internet."
         }
@@ -277,7 +266,7 @@ struct VocabularySettingsView: View {
                 .padding(.top, 16)
             Text("No vocabulary yet.")
                 .font(.subheadline.weight(.medium))
-            Text("Tap + Add term to start.")
+            Text("Tap + Add Term below to start.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 8)
@@ -285,47 +274,6 @@ struct VocabularySettingsView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .listRowBackground(Color.clear)
-    }
-
-    // MARK: - Add-term FAB
-
-    /// Floating coral "+ Add term" button at the bottom of the list. Matches
-    /// the `DictateFAB` shape (smaller — ~140pt wide). Tapping it presents
-    /// the `AddVocabularyTermSheet`.
-    @ViewBuilder
-    private var addTermFAB: some View {
-        Button {
-            showAddSheet = true
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                Text("Add term")
-                    .font(.system(size: 16, weight: .semibold))
-            }
-            .foregroundStyle(Color.white)
-            .frame(minHeight: 48)
-            .padding(.horizontal, 24)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.jotAccent, Color.jotAccent.opacity(0.92)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
-            )
-            .shadow(color: Color.jotAccent.opacity(0.35), radius: 14, x: 0, y: 8)
-            .shadow(color: Color.black.opacity(0.10), radius: 4, x: 0, y: 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Add term")
-        .accessibilityHint("Opens the new-term sheet")
     }
 
     // MARK: - Actions

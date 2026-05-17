@@ -119,6 +119,7 @@ final class RecordingService {
     /// falls back to the URL bounce instead of posting a Darwin
     /// notification to a dead listener.
     private var warmHeartbeatTask: Task<Void, Never>?
+    private var pendingWarmHoldPublish: Bool = false
     // Array rather than Set because `NSObjectProtocol` isn't Hashable.
     // We only ever iterate to remove — semantics are identical.
     private var observers: [NSObjectProtocol] = []
@@ -127,7 +128,6 @@ final class RecordingService {
     private var priorCategory: AVAudioSession.Category?
     private var priorMode: AVAudioSession.Mode?
     private var priorOptions: AVAudioSession.CategoryOptions?
-    private static let warmHoldDuration: TimeInterval = 60
 
     // MARK: - Streaming preview (dual-model-streaming)
     //
@@ -363,6 +363,7 @@ final class RecordingService {
         warmCooldownTask = nil
         warmHeartbeatTask?.cancel()
         warmHeartbeatTask = nil
+        pendingWarmHoldPublish = false
         isWarm = false
         AppGroup.warmHoldExpiresAt = nil
         AppGroup.warmHoldHeartbeat = nil
@@ -530,6 +531,8 @@ final class RecordingService {
     }
 
     private func enterWarmHold() {
+        log.notice("[WARM-HOLD-DEBUG] enterWarmHold called, isPipelineInFlight=\(self.isPipelineInFlight, privacy: .public)")
+
         guard let engine else {
             log.error("Warm-hold entry requested without an engine; fully tearing down.")
             fullyTeardownEngine()
@@ -543,22 +546,42 @@ final class RecordingService {
         // while Jot is not actively recording/transcribing audio.
         engine.pause()
 
-        let expiresAt = Date().addingTimeInterval(Self.warmHoldDuration)
+        // Snapshot the configured duration once at entry; subsequent Settings
+        // changes must NOT resize this in-flight warm window.
+        let duration = AppGroup.warmHoldDurationSeconds
+        let expiresAt = Date().addingTimeInterval(duration)
         isWarm = true
         warmExpiresAt = expiresAt
-        AppGroup.warmHoldExpiresAt = warmExpiresAt
-        // Seed the heartbeat immediately so the keyboard's first liveness
-        // check after enterWarmHold doesn't see a nil/stale value.
-        AppGroup.warmHoldHeartbeat = Date()
         warmCooldownTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .seconds(Self.warmHoldDuration))
+                try await Task.sleep(for: .seconds(duration))
             } catch {
                 return
             }
             guard let self, self.isWarm else { return }
+            self.log.notice("[WARM-HOLD-DEBUG] cooldown timer fired")
             self.exitWarmHold()
         }
+
+        log.info("Warm hold entered; expiresAt=\(expiresAt.timeIntervalSince1970, privacy: .public)")
+
+        if isPipelineInFlight {
+            pendingWarmHoldPublish = true
+            log.notice("[WARM-HOLD-DEBUG] publication deferred until pipeline finishes")
+            return
+        }
+
+        pendingWarmHoldPublish = false
+        publishWarmHoldState()
+    }
+
+    private func publishWarmHoldState() {
+        guard isWarm, let warmExpiresAt else { return }
+
+        AppGroup.warmHoldExpiresAt = warmExpiresAt
+        // Seed the heartbeat immediately so the keyboard's first liveness
+        // check after enterWarmHold doesn't see a nil/stale value.
+        AppGroup.warmHoldHeartbeat = Date()
 
         warmHeartbeatTask?.cancel()
         warmHeartbeatTask = Task { @MainActor [weak self] in
@@ -573,7 +596,7 @@ final class RecordingService {
             }
         }
 
-        log.info("Warm hold entered; expiresAt=\(expiresAt.timeIntervalSince1970, privacy: .public)")
+        log.notice("[WARM-HOLD-DEBUG] warm state published, expiresAt=\(warmExpiresAt.timeIntervalSince1970, privacy: .public)")
     }
 
     private func exitWarmHold() {
@@ -582,6 +605,7 @@ final class RecordingService {
         warmCooldownTask = nil
         warmHeartbeatTask?.cancel()
         warmHeartbeatTask = nil
+        pendingWarmHoldPublish = false
         warmExpiresAt = nil
         AppGroup.warmHoldExpiresAt = nil
         AppGroup.warmHoldHeartbeat = nil
@@ -590,6 +614,7 @@ final class RecordingService {
         fullyTeardownEngine()
 
         if wasWarm {
+            log.notice("[WARM-HOLD-DEBUG] warm hold exited / cooled")
             log.info("Warm hold exited; audio session restored.")
         }
     }
@@ -774,7 +799,12 @@ final class RecordingService {
     }
 
     func markPipelineFinished() {
+        log.notice("[WARM-HOLD-DEBUG] markPipelineFinished, pendingWarmHoldPublish=\(self.pendingWarmHoldPublish, privacy: .public)")
         isPipelineInFlight = false
+        if pendingWarmHoldPublish {
+            pendingWarmHoldPublish = false
+            publishWarmHoldState()
+        }
     }
 
     /// Set `isPipelineInFlight = true` from a non-`stop()` entry point.
@@ -999,7 +1029,7 @@ final class RecordingService {
             }
         }
 
-        // Settings kill-switch: flipping warm hold off during the 60s window
+        // Settings kill-switch: flipping warm hold off during the warm window
         // must cool the engine immediately. Filter to the App Group defaults
         // instance so unrelated process defaults changes do not poke the state
         // machine.

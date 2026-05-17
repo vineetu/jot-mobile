@@ -37,5 +37,8 @@ build-logs/
 # Derived / build scratch (don't track)
 tmp/
 
+# On-device model weights (bundled out-of-band, not in git)
+Jot/Resources/Models/
+
 # Local safety-net stash from the Gemma-experimentation revert.
 .revert-stash/

@@ -1,4 +1,14 @@
 import SwiftUI
+import OSLog
+
+// [KB-COLLAPSE-DEBUG] File-scope logger used only by the diagnostic
+// instrumentation in `expandButton`'s tap handler. Same subsystem /
+// category as the controller's `keyboardLog` so Console.app filters
+// see both streams together.
+private let kbCollapseLog = Logger(
+    subsystem: "com.vineetu.jot.mobile.Jot.Keyboard",
+    category: "keyboard"
+)
 
 /// Phase 2.5 of the UX overhaul — collapsed-keyboard mode.
 ///
@@ -89,6 +99,10 @@ struct CollapsedBarView: View {
     /// track so the simpler always-on variant suffices.
     private var expandButton: some View {
         Button {
+            // [KB-COLLAPSE-DEBUG] Tap-moment marker for Symptom 1 (failed
+            // maximize). Two MAXIMIZE entries within ~250ms here = SwiftUI
+            // delivered the tap twice / double-tap race.
+            kbCollapseLog.log("[KB-COLLAPSE-DEBUG] tap MAXIMIZE")
             feedback.systemClick()
             feedback.selectionTick()
             onToggleCollapsed()

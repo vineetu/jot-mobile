@@ -53,13 +53,21 @@ enum AppGroup {
         static let streamingPartialText = "jot.streaming.partialText"
 
         /// Selected AI rewrite backend. String value matches an
-        /// `LLMProvider` raw value. Currently the only valid value is
-        /// `"phi4"` (Phi-4-mini-instruct-4bit via MLX). Read by the LLM
-        /// factory in the main app to pick which `LLMClient`
-        /// implementation to instantiate. Default (key missing) is
-        /// `"phi4"`. Legacy values (`"qwen"`, `"gemma"`,
-        /// `"appleIntelligence"`) are recognized but treated as `"phi4"`
-        /// by the factory's fallback.
+        /// `LLMProvider` raw value. Valid values:
+        ///   - `"qwen35"` — Qwen 3.5 4B (4-bit) via MLX. **Default** for
+        ///     fresh installs.
+        ///   - `"phi4"` — Phi-4-mini-instruct-4bit via MLX. Alternate /
+        ///     legacy default; preserved for existing TestFlight users who
+        ///     already have Phi-4 weights on-disk.
+        ///
+        /// Read by the LLM factory in the main app to pick which
+        /// `LLMClient` implementation to instantiate. Default resolution
+        /// (key missing) honors migration safety:
+        ///   - If Phi-4 weights are already on-disk, default to `"phi4"`.
+        ///   - Else, default to `"qwen35"`.
+        ///
+        /// Legacy values (`"gemma"`, `"appleIntelligence"`) are recognized
+        /// but treated as the migration default by the factory's fallback.
         static let aiRewriteProvider = "jot.ai.rewriteProvider"
 
         /// User-facing master toggle for the AI Rewrite feature. When `false`
@@ -68,12 +76,23 @@ enum AppGroup {
         /// that opts the device in to the on-device LLM path.
         static let aiRewriteEnabled = "jot.ai.rewriteEnabled"
 
-        /// User-facing master toggle for the 60s warm-hold feature. When
-        /// `false` (default), Jot fully cools after each dictation. Users opt
-        /// in via the wizard step (Phase 2) or Settings toggle (Phase 1).
+        /// User-facing master toggle for the warm-hold feature. When `false`
+        /// (default), Jot fully cools after each dictation. Users opt in via
+        /// the wizard step (Phase 2) or Settings toggle (Phase 1). Duration
+        /// is governed by `warmHoldDurationSeconds`.
         static let warmHoldEnabled = "jot.warmHold.enabled"
+        static let warmHoldDurationSeconds = "jot.warmHold.durationSeconds"
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
+
+        /// User-facing opt-in toggle for the bundled disfluency-cleanup
+        /// tagger ("Clean up filler words" in Settings → Speech Model).
+        /// `false` by default — the cleanup pass runs only when the user
+        /// has explicitly opted in. The cleanup model is bundled in the
+        /// app (no download), runs on-device, and removes filler words
+        /// ("um", "uh") and short false-starts AFTER each dictation. The
+        /// raw transcript is always preserved unchanged in the library.
+        static let disfluencyCleanupEnabled = "jot.disfluencyCleanup.enabled"
 
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
@@ -115,11 +134,27 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
     }
 
-    /// User-facing master toggle for the 60s warm-hold feature. Default
+    /// User-facing opt-in toggle for the on-device disfluency-cleanup pass.
+    /// Default `false` — cleanup never runs unless the user has flipped this
+    /// on in Settings → Speech Model → "Clean up filler words". When `true`,
+    /// `DictationPipeline.completeEndOfRecording` invokes the bundled
+    /// `DisfluencyCleanup` tagger after transcription and publishes the
+    /// cleaned text (while always preserving the raw transcript in the
+    /// ledger). Read by the dictation pipeline on every end-of-recording.
+    ///
+    /// Uses `bool(forKey:)` because the missing-key default is `false`,
+    /// which `UserDefaults.bool(forKey:)` returns naturally.
+    static var disfluencyCleanupEnabled: Bool {
+        get { defaults.bool(forKey: Keys.disfluencyCleanupEnabled) }
+        set { defaults.set(newValue, forKey: Keys.disfluencyCleanupEnabled) }
+    }
+
+    /// User-facing master toggle for the warm-hold feature. Default
     /// `false` (feature off), so users explicitly opt in via the wizard step
     /// (Phase 2) or Settings toggle (Phase 1).
     ///
-    /// When enabled, the audio session stays active for 60s after each
+    /// When enabled, the audio session stays active for the user-configured
+    /// duration (see `warmHoldDurationSeconds`, default 60s) after each
     /// successful dictation so the next dictation skips cold-start latency.
     /// The iOS orange microphone indicator stays on during that window.
     ///
@@ -128,6 +163,27 @@ enum AppGroup {
     static var warmHoldEnabled: Bool {
         get { defaults.bool(forKey: Keys.warmHoldEnabled) }
         set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
+    }
+
+    /// User-configurable warm-hold duration in seconds. Default `60` when
+    /// unset; values are clamped to `[60, 300]` on both read and write.
+    ///
+    /// `RecordingService.enterWarmHold()` reads this once at warm-hold
+    /// entry into a local; subsequent Settings changes do NOT resize an
+    /// in-flight warm window — the new value takes effect on the next
+    /// dictation's warm-hold.
+    static var warmHoldDurationSeconds: TimeInterval {
+        get {
+            guard defaults.object(forKey: Keys.warmHoldDurationSeconds) != nil else {
+                return 60
+            }
+            let raw = defaults.double(forKey: Keys.warmHoldDurationSeconds)
+            return min(max(raw, 60), 300)
+        }
+        set {
+            let clamped = min(max(newValue, 60), 300)
+            defaults.set(clamped, forKey: Keys.warmHoldDurationSeconds)
+        }
     }
 
     /// Wall-clock Date when the current warm-hold window will auto-cool.
@@ -162,13 +218,15 @@ enum AppGroup {
         }
     }
 
-    /// Selected AI rewrite backend. Currently the only valid value is
-    /// `"phi4"` (Phi-4-mini-instruct-4bit via MLX). Legacy values
-    /// (`"qwen"`, `"gemma"`, `"appleIntelligence"`) are recognized but
-    /// treated as `"phi4"` by the factory's fallback. Default (key
-    /// missing) is `"phi4"`.
+    /// Selected AI rewrite backend. Valid values: `"qwen35"` (Qwen 3.5 4B,
+    /// 4-bit via MLX — the **default**) or `"phi4"` (Phi-4-mini-instruct-4bit
+    /// via MLX — alternate/legacy). Legacy values (`"gemma"`,
+    /// `"appleIntelligence"`) are recognized but treated as the migration
+    /// default by `LLMClientFactory`. Default (key missing) is `"qwen35"`
+    /// for fresh installs; `LLMClientFactory.currentProvider` additionally
+    /// honors a Phi-4 on-disk snapshot to keep existing users on Phi-4.
     static var aiRewriteProvider: String {
-        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "phi4" }
+        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "qwen35" }
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
     }
 
@@ -190,7 +248,7 @@ enum AppGroup {
     /// Settings only takes effect on the next dictation start, never
     /// mid-session.
     static var speechModelVariant: String {
-        get { defaults.string(forKey: Keys.speechModelVariant) ?? "parakeetV2" }
+        get { defaults.string(forKey: Keys.speechModelVariant) ?? "tdtCtc110m" }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
     }
 
