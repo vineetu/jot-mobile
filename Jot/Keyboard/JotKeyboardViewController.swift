@@ -249,13 +249,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // keypress feels as crisp as the hundredth (HIG → Playing Haptics).
         feedback.fullAccess = hasFullAccess
         feedback.prepare()
-        // Mirror Full Access state to the App Group so the main app
-        // (specifically the W3 wizard step) can detect it. iOS does not
-        // expose a direct API for the main app to read `hasFullAccess`;
-        // this write is the workaround. Caveat: until the user has
-        // presented the keyboard at least once after enabling FA, the
-        // flag remains false on the app side.
-        AppGroup.keyboardHasFullAccess = hasFullAccess
+        // Note: we DON'T mirror `hasFullAccess` to the App Group. iOS
+        // blocks AppGroup writes when FA is off, so a mirror can only
+        // ever go true → it can't reliably report "FA was turned off".
+        // The main app stays honest by not claiming to know FA state.
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
@@ -1548,51 +1545,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         openContainingApp(url)
     }
 
-    /// Bounces to the main app via `jot://full-access` so the user lands
-    /// on `FullAccessPromptSheet` — an explanatory screen with the
-    /// literal Settings breadcrumb and an "Open Settings" CTA — rather
-    /// than being silently dumped into iOS Settings.
+    /// Opens iOS Settings → Jot's app-settings page via the documented
+    /// public `UIApplication.openSettingsURLString` URL. From there the
+    /// user navigates: General → Keyboard → Keyboards → Jot Keyboard →
+    /// Allow Full Access. More taps than ideal, but it actually works.
     ///
-    /// Called when the user taps the locked-state "Enable Full Access"
-    /// pill in either the standard `KeyboardView` or the
-    /// `CollapsedBarView`. The main app's `.onOpenURL` handler in
-    /// `JotApp.swift` recognises the `full-access` host and presents
-    /// the sheet without auto-foregrounding Settings — see that handler
-    /// for rationale.
-    ///
-    /// Falls back to `openHostSettings()` (direct iOS Settings) if the
-    /// URL construction somehow fails or `extensionContext.open` reports
-    /// failure — better to drop the user in raw Settings than to leave
-    /// the tap doing nothing.
+    /// Why not `prefs:root=General&path=Keyboard` (Apple's QA1924
+    /// keyboard-extension exception)? On iOS 26 it returns `success: true`
+    /// from `extensionContext.open` while iOS silently does nothing —
+    /// the tap appears dead. Verified on-device. The documented public
+    /// URL is the only one that reliably opens Settings.
     private func openFullAccessPrompt() {
-        guard let url = URL(string: "jot://full-access") else {
-            openHostSettings()
-            return
-        }
-        extensionContext?.open(url) { [weak self] success in
-            guard !success else { return }
-            Task { @MainActor in
-                self?.openHostSettings()
-            }
-        }
+        openHostSettings()
     }
 
     private func openHostSettings() {
-        // Always use `UIApplication.openSettingsURLString` (a.k.a. "app-settings:").
-        // This is the documented public URL extensions are guaranteed to be
-        // able to open via `extensionContext.open`, and Apple documents it as
-        // a deep link to the app's custom settings page.
-        //
-        // We previously tried private URLs (`App-prefs:General&path=Keyboard/
-        // KEYBOARDS`) to land closer to the toggle. On iOS 26 those are
-        // silently blocked — `extensionContext.open` still returns
-        // `success: true` (the URL was accepted by the context) but iOS does
-        // nothing. That made the fallback path unreachable and the tap
-        // appear to do nothing. User confirmed broken 2026-04-21.
-        //
-        // Whether the app settings page still exposes a path to "Allow Full
-        // Access" on iOS 26.3.1 needs device verification; see
-        // `tmp/reviews/keyboard-polish.md`.
         openSettingsURL(UIApplication.openSettingsURLString)
     }
 

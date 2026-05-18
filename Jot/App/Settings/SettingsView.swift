@@ -456,29 +456,30 @@ struct SettingsView: View {
         ) {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(spacing: 0) {
-                    settingsIconRow(
-                        systemImage: "iphone",
-                        tint: JotDesign.JotSemanticIcon.privacyOnDevice,
-                        shaded: JotDesign.JotSemanticIcon.privacyOnDeviceShaded,
-                        title: "On-device only",
-                        subline: "Always",
-                        trailing: {
-                            StatusPillV09(label: "Always", tint: .always)
-                        }
-                    )
-
-                    cardDivider
-
-                    settingsIconRow(
-                        systemImage: "lock.shield",
-                        tint: JotDesign.JotSemanticIcon.privacyFullAccess,
-                        shaded: JotDesign.JotSemanticIcon.privacyFullAccessShaded,
-                        title: "Full Access",
-                        subline: "Required for paste",
-                        trailing: {
-                            StatusPillV09(label: "Enabled", tint: .ready)
-                        }
-                    )
+                    // The on-device-only row was deleted — the section
+                    // caption already says "Your words stay on your iPhone."
+                    // and the redundant ALWAYS chip was self-congratulatory
+                    // noise. The Full Access row becomes the first item.
+                    //
+                    // Full Access — tappable Link to iOS Settings (Jot's
+                    // app-settings page). The user navigates from there to
+                    // General → Keyboard → Keyboards → Jot Keyboard →
+                    // Allow Full Access. The subline carries the breadcrumb
+                    // because the deep-link can't go further from the main
+                    // app — `prefs:` URLs are keyboard-extension-only per
+                    // Apple's QA1924, the main app can't open them.
+                    // No status pill: iOS doesn't let us read FA state.
+                    Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
+                        settingsIconRow(
+                            systemImage: "lock.shield",
+                            tint: JotDesign.JotSemanticIcon.privacyFullAccess,
+                            shaded: JotDesign.JotSemanticIcon.privacyFullAccessShaded,
+                            title: "Full Access",
+                            subline: "General → Keyboard → Keyboards → Jot",
+                            trailing: { externalArrow }
+                        )
+                    }
+                    .buttonStyle(.plain)
 
                     cardDivider
                     privacyMicReadyRow
@@ -811,7 +812,7 @@ struct SpeechModelVariantPicker: View {
         .navigationTitle("Variant")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
-            "Re-download all models?",
+            "Re-download?",
             isPresented: $showRedownloadConfirmation,
             titleVisibility: .visible
         ) {
@@ -907,7 +908,7 @@ struct SpeechModelVariantPicker: View {
             // Decouples the action label from the ANE-warmed flag so an
             // un-warmed but installed model still surfaces "Re-download"
             // instead of misleading the user into another full fetch.
-            return speechModelInstalled ? "Re-download all models" : "Download all models"
+            return speechModelInstalled ? "Re-download" : "Download"
         }
     }
 

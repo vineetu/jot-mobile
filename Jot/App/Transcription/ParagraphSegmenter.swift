@@ -145,11 +145,22 @@ enum ParagraphSegmenter {
         for (i, t) in rescoredTokens.enumerated() {
             out.append(String(t))
             guard i < rescoredTokens.count - 1 else { continue }
-            if breakAfterWordIndex.contains(i) {
-                out.append("\n\n")
-            } else {
-                out.append(" ")
-            }
+            // Index-safety guard: even when the raw-word array says "break
+            // after word i", confirm the rescored token at this position
+            // ALSO ends in sentence-final punctuation. If raw and rescored
+            // disagree on where the period attaches (BPE tokenizers often
+            // emit "." as its own ▁-prefixed word, but rescored whitespace-
+            // split packages "." onto the preceding token), the raw word
+            // index can map to a rescored mid-sentence position. Without
+            // this check the paragraph break lands mid-sentence — exactly
+            // the bug users reported. False negatives (missing a break) are
+            // invisible; false positives (wrong-place break) are jarring.
+            let shouldBreak = breakAfterWordIndex.contains(i) && {
+                let trimmed = String(t).trimmingCharacters(in: trailingTrimSet)
+                guard let lastChar = trimmed.last else { return false }
+                return sentenceEnders.contains(lastChar)
+            }()
+            out.append(shouldBreak ? "\n\n" : " ")
         }
 
         var result = out.joined()

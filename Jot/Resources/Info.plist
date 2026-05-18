@@ -35,6 +35,14 @@
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Fraunces-Regular.ttf</string>
+		<string>Fraunces-Medium.ttf</string>
+		<string>Fraunces-Italic.ttf</string>
+		<string>Fraunces-MediumItalic.ttf</string>
+		<string>Fraunces9pt-Italic.ttf</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -56,14 +64,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<key>UIAppFonts</key>
-	<array>
-		<string>Fraunces-Regular.ttf</string>
-		<string>Fraunces-Medium.ttf</string>
-		<string>Fraunces-Italic.ttf</string>
-		<string>Fraunces-MediumItalic.ttf</string>
-		<string>Fraunces9pt-Italic.ttf</string>
 	</array>
 </dict>
 </plist>

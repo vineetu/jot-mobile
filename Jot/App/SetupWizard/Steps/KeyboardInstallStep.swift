@@ -4,13 +4,10 @@
 //
 //  Phase 6 — wizard panel W3 (renumbered from W4 after the bundled-Parakeet
 //  ship retired the standalone speech-model download step).
-//  Sends the user to System Settings to add Jot as a keyboard and enable
-//  Full Access in one trip. Both signals are auto-detected on return:
-//  keyboard installation via `UITextInputMode.activeInputModes`, and Full
-//  Access via the `AppGroup.keyboardHasFullAccess` mirror the keyboard
-//  extension writes on every presentation. Caveat: the FA mirror requires
-//  the user to have presented the Jot keyboard at least once after
-//  enabling Full Access (iOS gives the main app no direct API).
+//  Sends the user to System Settings to add Jot as a keyboard and turn on
+//  Full Access. Only keyboard installation is auto-detected (via
+//  `UITextInputMode.activeInputModes`) — Full Access remains a manual user
+//  attestation because iOS exposes no API for the main app to read it.
 //
 
 import SwiftUI
@@ -20,12 +17,6 @@ struct KeyboardInstallStep: View {
     let onClose: () -> Void
     let onBack: () -> Void
     let onAdvance: () -> Void
-    /// Parent-owned permission for the first-mount auto-skip. The parent
-    /// flips this to `false` after the first forward advance so that
-    /// back-navigation from W4 doesn't re-skip the user forward — the
-    /// pattern mirrors `MicStep.allowsAutoAdvance`. See
-    /// `SetupWizardView.keyboardAutoAdvanceConsumed`.
-    let allowsAutoAdvance: Bool
 
     /// Bundle identifier of the JotKeyboard extension. Used to detect
     /// whether the user has added the keyboard in Settings.
@@ -35,13 +26,6 @@ struct KeyboardInstallStep: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var keyboardInstalled = false
-    @State private var fullAccessGranted = false
-
-    /// Both signals are required to consider setup complete. Either
-    /// missing → show the "Open Keyboard Settings" default state with
-    /// no special-case copy; the user does one trip to Settings and
-    /// returns with both flipped.
-    private var isReady: Bool { keyboardInstalled && fullAccessGranted }
 
     var body: some View {
         WizardPanel(
@@ -57,15 +41,13 @@ struct KeyboardInstallStep: View {
 
                 WizardBody(text: "In Settings, add Jot as a keyboard, then turn on Full Access so dictations can paste into other apps.")
 
-                WizardItalicNote(text: "We'll detect both the keyboard and Full Access when you're back.")
-
                 Spacer(minLength: 16)
             }
         } footer: {
             WizardPrimaryButton(
-                title: isReady ? "Continue" : "Open Keyboard Settings",
+                title: keyboardInstalled ? "Continue" : "Open Keyboard Settings",
                 action: {
-                    if isReady {
+                    if keyboardInstalled {
                         onAdvance()
                     } else {
                         openSettings()
@@ -73,7 +55,12 @@ struct KeyboardInstallStep: View {
                 }
             )
 
-            WizardSecondaryTextButton(title: "I've already done this", action: onAdvance)
+            // Only show the manual escape when we DON'T already see the
+            // keyboard installed — once detected, "Continue" is enough and
+            // the secondary button is redundant noise.
+            if !keyboardInstalled {
+                WizardSecondaryTextButton(title: "I've already done this", action: onAdvance)
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -82,22 +69,11 @@ struct KeyboardInstallStep: View {
         }
         .task {
             refresh()
-            // First-mount-only auto-advance: returning users who already
-            // installed the keyboard and granted Full Access should never
-            // see W3. Gated on `allowsAutoAdvance` (owned by the parent
-            // wizard so back-navigation from W4 doesn't re-skip), and
-            // gated on `.task` (not the scenePhase refresh) so an
-            // in-session Settings round-trip still surfaces the "Jot
-            // keyboard detected → Continue" state rather than silently
-            // jumping the user forward.
-            if allowsAutoAdvance && keyboardInstalled && fullAccessGranted {
-                onAdvance()
-            }
         }
     }
 
     private var titleText: String {
-        isReady ? "Jot keyboard detected" : "Set up Jot Keyboard"
+        keyboardInstalled ? "Jot keyboard detected" : "Set up Jot Keyboard"
     }
 
     // MARK: - Tile
@@ -132,10 +108,6 @@ struct KeyboardInstallStep: View {
         let installed = isKeyboardInstalled()
         if installed != keyboardInstalled {
             keyboardInstalled = installed
-        }
-        let fa = AppGroup.keyboardHasFullAccess
-        if fa != fullAccessGranted {
-            fullAccessGranted = fa
         }
     }
 

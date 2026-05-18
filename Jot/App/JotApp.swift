@@ -22,16 +22,7 @@ struct JotApp: App {
     @State private var autoStartConsumed = false
     @State private var autoStartPendingModelReady = false
 
-    /// Drives the `FullAccessPromptSheet` presentation. Flipped to true
-    /// by the `jot://full-access` branch of `.onOpenURL` — i.e. the
-    /// keyboard's locked-state "Enable Full Access" pill bounced the
-    /// user back into the main app. The sheet explains why Full Access
-    /// is required and provides a deep link into iOS Settings. We do
-    /// NOT auto-foreground Settings on the URL alone — the user gets
-    /// the explanation first.
-    @State private var showFullAccessPrompt = false
-
-    /// Stashed session UUID parsed off the most recent `jot://dictate?session=<uuid>`
+/// Stashed session UUID parsed off the most recent `jot://dictate?session=<uuid>`
     /// URL. Consumed in `triggerAutoStart` immediately before `recording.start()`
     /// so the upcoming pipeline writes carry the keyboard's session ID. Held on
     /// the App (not consumed by the first `triggerAutoStart` turn) so model-not-
@@ -214,15 +205,7 @@ struct JotApp: App {
                 .environment(streamingPartial)
                 .environment(cleanupService)
                 .environment(keyboardRewriteRouter)
-                .sheet(isPresented: $showFullAccessPrompt) {
-                    // Explanatory sheet for `jot://full-access`.
-                    // Presented at the app's root scene so it surfaces
-                    // regardless of which navigation depth the user was
-                    // sitting at when they tapped the keyboard's
-                    // locked-state pill. See `FullAccessPromptSheet`.
-                    FullAccessPromptSheet(isPresented: $showFullAccessPrompt)
-                }
-                .fullScreenCover(isPresented: $showSetupWizard) {
+.fullScreenCover(isPresented: $showSetupWizard) {
                     SetupWizardView {
                         setupCompleted = SetupCompletion.isCompleted
                         showSetupWizard = false
@@ -269,20 +252,7 @@ struct JotApp: App {
                         return
                     }
 
-                    // `jot://full-access` — keyboard's locked-state pill
-                    // tap. The keyboard cannot read Full Access state from
-                    // the main app's process, so we bounce here, show an
-                    // explanatory sheet, and let the user opt into the
-                    // Settings deep link with full context. NOT auto-routed
-                    // to iOS Settings — silent-bounce loses the chance to
-                    // explain WHY Full Access is needed, which is the whole
-                    // point of this intermediate screen.
-                    if url.host == "full-access" {
-                        showFullAccessPrompt = true
-                        return
-                    }
-
-                    // Explicit user intent — bypass the once-per-session gate.
+// Explicit user intent — bypass the once-per-session gate.
                     autoStartConsumed = false
                     // v7 auto-paste: parse `?session=<uuid>` off the keyboard's
                     // launch URL. Stashed onto App state (not consumed by the

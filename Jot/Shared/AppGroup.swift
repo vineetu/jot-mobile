@@ -113,15 +113,6 @@ enum AppGroup {
         /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
-
-        /// Last-known value of `UIInputViewController.hasFullAccess`,
-        /// written by the keyboard extension on every `viewWillAppear`.
-        /// iOS gives the main app no direct API to read Full Access state,
-        /// so the keyboard mirrors its own `hasFullAccess` here for the
-        /// wizard's W3 detection to consult. Caveat: the flag is `false`
-        /// until the user has presented the Jot keyboard at least once
-        /// after enabling Full Access.
-        static let keyboardFullAccess = "jot.keyboard.fullAccess"
     }
 
     /// User-facing master toggle for AI Rewrite. Default `false` (feature
@@ -265,14 +256,4 @@ enum AppGroup {
         return Date().timeIntervalSince(last) < 2.5
     }
 
-    /// Mirror of the keyboard extension's `hasFullAccess`. Written by the
-    /// keyboard on every `viewWillAppear`; read by the wizard's W3 step
-    /// so the main app can detect whether Full Access has been granted.
-    /// `false` until the user has presented the Jot keyboard at least
-    /// once after enabling Full Access — there is no way around this
-    /// caveat on iOS (the main app can't read `hasFullAccess` directly).
-    static var keyboardHasFullAccess: Bool {
-        get { defaults.bool(forKey: Keys.keyboardFullAccess) }
-        set { defaults.set(newValue, forKey: Keys.keyboardFullAccess) }
-    }
 }

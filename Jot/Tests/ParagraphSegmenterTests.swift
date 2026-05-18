@@ -87,6 +87,41 @@ final class ParagraphSegmenterTests: XCTestCase {
         XCTAssertEqual(out, rescored)
     }
 
+    /// Raw words and rescored tokens differ in where punctuation attaches:
+    /// raw treats `.` as a standalone word (Parakeet BPE convention), so the
+    /// break-after-period index maps to a mid-sentence position in the
+    /// rescored array where `.` is glued to the preceding word. The index-
+    /// safety guard must drop the break when the rescored token at that
+    /// position doesn't actually end in sentence-final punctuation.
+    func testMidSentenceBreakDroppedWhenRescoredDisagrees() {
+        // Raw words: ["Hello", ".", "How", "are", "you", "?"] (6 words,
+        // 4 alpha + 2 standalone punct). Pause >1.6s sits between the
+        // period and "How" — the raw rule says "break after index 1".
+        let words = [
+            ParagraphSegmenter.Word(text: "Hello", start: 0.0, end: 0.4),
+            ParagraphSegmenter.Word(text: ".",     start: 0.4, end: 0.5),
+            ParagraphSegmenter.Word(text: "How",   start: 2.5, end: 2.7),
+            ParagraphSegmenter.Word(text: "are",   start: 2.7, end: 2.9),
+            ParagraphSegmenter.Word(text: "you",   start: 2.9, end: 3.2),
+            ParagraphSegmenter.Word(text: "?",     start: 3.2, end: 3.3)
+        ]
+        // Rescored splits to: ["Hello.", "How", "are", "you?"] — 4 tokens.
+        // Drift |6-4|=2, tolerance = max(1, 6*0.05) = 1 → would normally
+        // bail. Bump words count to 20+ alpha to push tolerance over 2,
+        // so we exercise the rescored-token verification path.
+        let alpha = (0..<20).map { i in
+            ParagraphSegmenter.Word(text: "x\(i)", start: 4.0 + 0.1*Double(i), end: 4.1 + 0.1*Double(i))
+        }
+        let allWords = words + alpha
+        let rescored = "Hello. How are you? " + (0..<20).map { "x\($0)" }.joined(separator: " ")
+        let out = ParagraphSegmenter.apply(breaks: allWords, to: rescored)
+        // breakAfterWordIndex = {1} (after the standalone "."). In the
+        // rescored array, index 1 = "How" (no period). The guard must
+        // drop this break — output should match input exactly (no \n\n).
+        XCTAssertFalse(out.contains("\n\n"), "Mid-sentence break leaked through index misalignment")
+        XCTAssertEqual(out, rescored)
+    }
+
     // MARK: - reassembleWords
 
     /// Three BPE tokens reassemble into two words at the `▁` boundary

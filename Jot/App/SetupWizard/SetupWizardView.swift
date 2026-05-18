@@ -17,9 +17,9 @@
 //  Backend wiring is preserved end-to-end:
 //    - W2 mic permission → `AVAudioApplication.requestRecordPermission`
 //    - W3 keyboard setup → Settings deep-link + scene-active detection
-//                          via `UITextInputMode.activeInputModes` AND
-//                          `AppGroup.keyboardHasFullAccess` (mirror
-//                          written by the keyboard extension).
+//                          via `UITextInputMode.activeInputModes`. Full
+//                          Access is a manual user attestation (iOS does
+//                          not expose its state to the main app).
 //    - W5 keyboard test  → polls `ClipboardHandoff.readFresh()` for a
 //                          fresh handoff newer than W5 entry.
 //    - W6 warm hold      → writes `AppGroup.warmHoldEnabled`.
@@ -75,12 +75,6 @@ struct SetupWizardView: View {
     /// fallback.
     @State private var dictateTapObserver: CrossProcessNotification.Observer?
     @State private var micAutoAdvanceConsumed = false
-    /// Same one-shot pattern as `micAutoAdvanceConsumed`: W3's auto-skip
-    /// must fire AT MOST ONCE per wizard session. After the first forward
-    /// advance from W3, this flips to true so back-navigation from W4
-    /// lands on a fully-rendered W3 instead of silently re-skipping the
-    /// user. The "I've already done this" button is the manual escape.
-    @State private var keyboardAutoAdvanceConsumed = false
 
     var body: some View {
         Group {
@@ -105,8 +99,7 @@ struct SetupWizardView: View {
                 KeyboardInstallStep(
                     onClose: closeAndComplete,
                     onBack: goBack,
-                    onAdvance: { advance(to: .howItWorks) },
-                    allowsAutoAdvance: !keyboardAutoAdvanceConsumed
+                    onAdvance: { advance(to: .howItWorks) }
                 )
 
             case .howItWorks:
@@ -220,9 +213,6 @@ struct SetupWizardView: View {
         let previous = step
         if previous == .microphone {
             micAutoAdvanceConsumed = true
-        }
-        if previous == .keyboardInstall {
-            keyboardAutoAdvanceConsumed = true
         }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
             history.append(previous)

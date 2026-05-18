@@ -7,7 +7,7 @@
 //  Single lead sentence + the keyboard → origami-crane → SWIPE → keyboard
 //  flow diagram (scaled up ~1.7× to anchor the panel, with the Jot brand
 //  crane in the middle position replacing the coral mic glyph).
-//  Caption: "TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED".
+//  Caption: "TAP DICTATE → SWIPE BACK → STOP → TEXT PASTED".
 //
 
 import SwiftUI
@@ -27,7 +27,7 @@ struct HowItWorksStep: View {
                 WizardItalicTitle(text: "How it works", size: 30)
                     .padding(.bottom, 2)
 
-                Text("iOS doesn't let keyboards use the mic. Tap to open Jot, record, then swipe back to your keyboard when done.")
+                Text("Tap Dictate, swipe back to your app, then stop from the keyboard.")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
@@ -39,7 +39,7 @@ struct HowItWorksStep: View {
                     .padding(.top, 24)
                     .padding(.bottom, 4)
 
-                Text("TAP DICTATE → RECORD IN JOT → SWIPE BACK → TEXT PASTED")
+                Text("TAP DICTATE → SWIPE BACK → STOP → TEXT PASTED")
                     .font(.system(size: 10, weight: .regular))
                     .foregroundStyle(Color.jotMute)
                     .tracking(0.8)
