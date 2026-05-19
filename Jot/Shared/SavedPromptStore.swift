@@ -54,8 +54,7 @@ enum SavedPromptStore {
     }
 
     /// If the persisted list is empty (or absent), seed it with the bundled
-    /// defaults: `SavedPrompt.defaultRewrite` and `SavedPrompt.defaultBulletPoints`
-    /// (plan §6.1 — both rows appear in the rewrite-picker mockup).
+    /// defaults: Articulate, Action Items, Email (see `SavedPrompt.allDefaults`).
     ///
     /// No-op when at least one row is present — the seeded defaults are
     /// ordinary data, not sticky baselines, so users who delete them never
@@ -64,10 +63,7 @@ enum SavedPromptStore {
     /// the persisted list untouched.
     static func seedIfNeeded() {
         guard all().isEmpty else { return }
-        save([
-            SavedPrompt.defaultRewrite,
-            SavedPrompt.defaultBulletPoints
-        ])
+        save(SavedPrompt.allDefaults)
     }
 
     /// Append a new prompt. Caller supplies the `SavedPrompt` (id, createdAt,

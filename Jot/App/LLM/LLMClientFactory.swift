@@ -105,6 +105,17 @@ final class LLMClientFactory {
         return fresh
     }
 
+    /// Synchronous "are weights for the current provider on disk?" probe.
+    /// Reads the HF cache for the active provider — no network, no model
+    /// load. Used by AI Settings and the wizard AI Offer step to suppress
+    /// the "Download" CTA when the model is already on-device.
+    var currentProviderWeightsOnDisk: Bool {
+        switch currentProvider {
+        case .qwen35: return Qwen35Client.snapshotPresentOnDisk()
+        case .phi4:   return Phi4Client.snapshotPresentOnDisk()
+        }
+    }
+
     private func build(provider: LLMProvider) -> any LLMClient {
         switch provider {
         case .qwen35:

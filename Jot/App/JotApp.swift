@@ -1,4 +1,5 @@
 @preconcurrency import AVFAudio
+import Combine
 import SwiftUI
 import SwiftData
 import os.log
@@ -21,6 +22,21 @@ struct JotApp: App {
     @State private var setupCompleted = SetupCompletion.isCompleted
     @State private var autoStartConsumed = false
     @State private var autoStartPendingModelReady = false
+    @State private var autoStartPendingSetupComplete = false
+    @State private var autoStartPendingPipelineFinish = false
+    @State private var autoStartPipelineDrainTimeoutTask: Task<Void, Never>?
+    @State private var autoStartMicPermissionRequestInFlight = false
+    /// User-facing message for a failed dictate auto-start (mic busy,
+    /// session error, etc.) Set from the catch path in `triggerAutoStart`
+    /// so the foregrounded main app can show an alert — the existing
+    /// `AppGroup.lastDictationStatusMessage` is only read by the keyboard,
+    /// so without this the user lands on the home screen with no signal
+    /// that the dictation they just tapped didn't actually start.
+    @State private var dictateAutoStartError: String?
+
+    private static let warmResumeFallbackNotification = Notification.Name(
+        "com.vineetu.jot.mobile.warm-resume-fallback-requested"
+    )
 
 /// Stashed session UUID parsed off the most recent `jot://dictate?session=<uuid>`
     /// URL. Consumed in `triggerAutoStart` immediately before `recording.start()`
@@ -70,26 +86,24 @@ struct JotApp: App {
                     await DictationActivityCoordinator.shared.start(startedAt: startedAt)
                     lifecycleLog.info("Warm resume requested from keyboard; recording started")
                 } catch {
-                    // Bug fix for "keyboard Dictate sometimes no-ops, takes
-                    // 3-4 taps". The warm-resume fast path is fire-and-
-                    // forget from the keyboard's side. If start() throws
-                    // for ANY reason — pipeline still publishing the prior
-                    // dictation tail (.alreadyRunning), cooldown timer
-                    // raced our snapshot, engine activation failed, etc.
-                    // — the keyboard keeps retrying the same dead fast
-                    // path because its cached warmHoldExpiresAt/heartbeat
-                    // still look fresh. Clear those AppGroup keys so the
-                    // keyboard's NEXT tap falls through to the URL-bounce
-                    // slow path, which actually works. Without this, the
-                    // user sees 3-4 dead taps until the heartbeat
-                    // naturally ages out (~4s of staleness).
+                    // The warm-resume fast path is fire-and-forget from the
+                    // keyboard's side. If start() throws, clear the stale
+                    // warm projection AND route back through the guarded
+                    // auto-start state machine instead of losing the tap.
                     AppGroup.warmHoldExpiresAt = nil
                     AppGroup.warmHoldHeartbeat = nil
+                    let fallbackReason = "warm resume failed: \(Self.describeAutoStartError(error))"
+                    lifecycleLog.notice("AUTOSTART: guard=warm-resume-start action=defer reason=\(fallbackReason, privacy: .public); cleared warm-hold cache")
                     if case RecordingService.RecordingError.alreadyRunning = error {
-                        lifecycleLog.info("Warm resume requested from keyboard but recording is already running or pipeline is in flight — cleared warm-hold cache so next keyboard tap takes the URL-bounce path")
+                        lifecycleLog.debug("Warm resume fallback continuing after alreadyRunning")
                     } else {
-                        lifecycleLog.error("Warm resume requested from keyboard failed: \(error.localizedDescription, privacy: .public) — cleared warm-hold cache so next keyboard tap takes the URL-bounce path")
+                        lifecycleLog.error("Warm resume requested from keyboard failed: \(Self.describeAutoStartError(error), privacy: .public)")
                     }
+                    NotificationCenter.default.post(
+                        name: Self.warmResumeFallbackNotification,
+                        object: nil,
+                        userInfo: ["reason": fallbackReason]
+                    )
                 }
             }
         }
@@ -229,6 +243,20 @@ struct JotApp: App {
                 .onAppear {
                     presentSetupIfNeeded()
                 }
+                .alert(
+                    "Couldn't start recording",
+                    isPresented: Binding(
+                        get: { dictateAutoStartError != nil },
+                        set: { if !$0 { dictateAutoStartError = nil } }
+                    ),
+                    presenting: dictateAutoStartError
+                ) { _ in
+                    Button("OK", role: .cancel) {
+                        dictateAutoStartError = nil
+                    }
+                } message: { message in
+                    Text(message)
+                }
                 .onOpenURL { url in
                     guard url.scheme == "jot" else { return }
                     // Branch on host: `jot://rewrite` is the keyboard's
@@ -252,6 +280,23 @@ struct JotApp: App {
                         return
                     }
 
+                    // `jot://transcript?id=<uuid>` — keyboard's row-trailing
+                    // "open in app" affordance. Brings the main app to the
+                    // foreground and pushes the transcript detail view for
+                    // the given id. No dictation auto-start. Route via the
+                    // shared router so ContentView's `.onChange` observer
+                    // appends to `navPath`; same bridge the rewrite handoff
+                    // uses, just for a "view" instead of a "rewrite" intent.
+                    if url.host == "transcript" {
+                        if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                           let idParam = comps.queryItems?.first(where: { $0.name == "id" })?.value,
+                           let id = UUID(uuidString: idParam) {
+                            keyboardRewriteRouter.setPendingOpenTranscript(id: id)
+                        }
+                        return
+                    }
+
+
 // Explicit user intent — bypass the once-per-session gate.
                     autoStartConsumed = false
                     // v7 auto-paste: parse `?session=<uuid>` off the keyboard's
@@ -267,12 +312,27 @@ struct JotApp: App {
                     }
                     triggerAutoStart(reason: "url open: \(url.absoluteString)")
                 }
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: Self.warmResumeFallbackNotification
+                    )
+                ) { notification in
+                    let fallbackReason = notification.userInfo?["reason"] as? String
+                        ?? "warm resume fallback requested"
+                    triggerAutoStart(reason: fallbackReason)
+                }
                 .onChange(of: setupRerunTrigger.requestID) { _, _ in
                     setupCompleted = false
                     showSetupWizard = true
                 }
                 .onChange(of: setupCompleted) { _, completed in
                     if completed {
+                        if autoStartPendingSetupComplete {
+                            autoStartPendingSetupComplete = false
+                            lifecycleLog.notice("AUTOSTART: guard=setup action=continue reason=setup completed, retrying")
+                            triggerAutoStart(reason: "setup completed, retrying")
+                            return
+                        }
                         // Land the user on the home view after finishing
                         // setup rather than auto-starting a recording —
                         // dropping straight into the hero record screen
@@ -310,7 +370,16 @@ struct JotApp: App {
                 .onChange(of: transcriptionService.modelState) { _, newState in
                     guard newState == .ready, autoStartPendingModelReady else { return }
                     autoStartPendingModelReady = false
+                    lifecycleLog.notice("AUTOSTART: guard=model-ready action=continue reason=model became ready, retrying")
                     triggerAutoStart(reason: "model became ready")
+                }
+                .onChange(of: recordingService.isPipelineInFlight) { _, inFlight in
+                    guard !inFlight, autoStartPendingPipelineFinish else { return }
+                    autoStartPipelineDrainTimeoutTask?.cancel()
+                    autoStartPipelineDrainTimeoutTask = nil
+                    autoStartPendingPipelineFinish = false
+                    lifecycleLog.notice("AUTOSTART: guard=pipeline action=continue reason=pipeline drained, retrying")
+                    triggerAutoStart(reason: "pipeline drained, retrying")
                 }
                 // Eager Parakeet preload. `.task` fires on first scene
                 // activation — earliest post-init hook without blocking launch,
@@ -516,6 +585,125 @@ struct JotApp: App {
         // path is untouched by this change).
     }
 
+    private static func describeAutoStartError(_ error: Error) -> String {
+        if let description = (error as? LocalizedError)?.errorDescription {
+            return description
+        }
+        return error.localizedDescription
+    }
+
+    private func logAutoStartGuard(
+        _ guardName: String,
+        action: String,
+        reason: String
+    ) {
+        lifecycleLog.notice("AUTOSTART: guard=\(guardName, privacy: .public) action=\(action, privacy: .public) reason=\(reason, privacy: .public)")
+    }
+
+    private func surfaceAutoStartBanner(
+        _ message: String,
+        guardName: String,
+        action: String = "banner",
+        reason: String,
+        clearPendingIntent: Bool = true
+    ) {
+        logAutoStartGuard(guardName, action: action, reason: reason)
+        AppGroup.lastDictationStatusMessage = message
+        if clearPendingIntent {
+            pendingKeyboardSessionID = nil
+            ClipboardHandoff.clearPendingPasteSession()
+        }
+    }
+
+    private func queueAutoStartUntilSetupCompletes(reason: String) {
+        autoStartPendingSetupComplete = true
+        setupCompleted = false
+        showSetupWizard = true
+        AppGroup.lastDictationStatusMessage = "Finish Jot setup to start dictation"
+        logAutoStartGuard(
+            "setup",
+            action: "defer",
+            reason: "setup incomplete; queued pending dictate intent from \(reason)"
+        )
+    }
+
+    private func requestMicPermissionAndRetry(reason: String) {
+        guard !autoStartMicPermissionRequestInFlight else {
+            logAutoStartGuard(
+                "mic-permission",
+                action: "defer",
+                reason: "permission request already in flight; keeping pending dictate intent"
+            )
+            return
+        }
+
+        autoStartMicPermissionRequestInFlight = true
+        logAutoStartGuard(
+            "mic-permission",
+            action: "defer",
+            reason: "permission undetermined; requesting live microphone permission for \(reason)"
+        )
+
+        Task { @MainActor in
+            let granted = await AVAudioApplication.requestRecordPermission()
+            autoStartMicPermissionRequestInFlight = false
+            if granted {
+                logAutoStartGuard(
+                    "mic-permission",
+                    action: "continue",
+                    reason: "permission granted, retrying"
+                )
+                triggerAutoStart(reason: "microphone permission granted, retrying")
+            } else {
+                surfaceAutoStartBanner(
+                    "Tap to grant mic access in Settings",
+                    guardName: "mic-permission",
+                    action: "deny",
+                    reason: "permission denied after request; surfaced settings banner"
+                )
+            }
+        }
+    }
+
+    private func deferAutoStartUntilPipelineDrains(reason: String) {
+        autoStartPendingPipelineFinish = true
+        autoStartPipelineDrainTimeoutTask?.cancel()
+        logAutoStartGuard(
+            "pipeline",
+            action: "defer",
+            reason: "pipeline in flight; queued pending dictate intent from \(reason)"
+        )
+
+        autoStartPipelineDrainTimeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+
+            guard autoStartPendingPipelineFinish else { return }
+            autoStartPipelineDrainTimeoutTask = nil
+
+            if recordingService.isPipelineInFlight {
+                autoStartPendingPipelineFinish = false
+                surfaceAutoStartBanner(
+                    "Still finishing your last dictation - tap again",
+                    guardName: "pipeline",
+                    action: "banner",
+                    reason: "pipeline drain exceeded 5s; cleared pending dictate intent"
+                )
+            } else {
+                autoStartPendingPipelineFinish = false
+                logAutoStartGuard(
+                    "pipeline",
+                    action: "continue",
+                    reason: "pipeline drained before timeout, retrying"
+                )
+                triggerAutoStart(reason: "pipeline drained, retrying")
+            }
+        }
+    }
+
     private func triggerAutoStart(reason: String) {
         // Consume the session gate FIRST. Even if we bail below
         // (model loading, recording in flight, no permission), this
@@ -523,26 +711,86 @@ struct JotApp: App {
         // resume-from-background must not retry.
         autoStartConsumed = true
 
-        guard SetupCompletion.isCompleted else { return }
-        guard AVAudioApplication.shared.recordPermission == .granted else { return }
-        guard !recordingService.isRecording else { return }
-        guard !recordingService.isPipelineInFlight else { return }
+        guard SetupCompletion.isCompleted else {
+            queueAutoStartUntilSetupCompletes(reason: reason)
+            return
+        }
+        setupCompleted = true
+
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            break
+        case .undetermined:
+            requestMicPermissionAndRetry(reason: reason)
+            return
+        case .denied:
+            surfaceAutoStartBanner(
+                "Tap to grant mic access in Settings",
+                guardName: "mic-permission",
+                action: "deny",
+                reason: "live permission denied for \(reason)"
+            )
+            return
+        @unknown default:
+            surfaceAutoStartBanner(
+                "Couldn't check mic access - tap again",
+                guardName: "mic-permission",
+                action: "banner",
+                reason: "unknown live permission state for \(reason)"
+            )
+            return
+        }
+
+        guard !recordingService.isRecording else {
+            logAutoStartGuard(
+                "isRecording",
+                action: "continue",
+                reason: "recording already active; tap is already satisfied"
+            )
+            return
+        }
+        guard !recordingService.isPipelineInFlight else {
+            deferAutoStartUntilPipelineDrains(reason: reason)
+            return
+        }
 
         guard transcriptionService.modelState == .ready else {
             // Model not loaded yet. Defer to the modelState .onChange
             // observer — it will call back here when ready.
             autoStartPendingModelReady = true
-            lifecycleLog.info("Auto-start deferred — model not ready, reason=\(reason, privacy: .public)")
+            logAutoStartGuard(
+                "model-ready",
+                action: "defer",
+                reason: "model not ready; queued pending dictate intent from \(reason)"
+            )
             return
         }
 
         autoStartPendingModelReady = false
 
         Task { @MainActor in
-            guard !recordingService.isRecording else { return }
-            guard !recordingService.isPipelineInFlight else { return }
+            guard !recordingService.isRecording else {
+                logAutoStartGuard(
+                    "isRecording",
+                    action: "continue",
+                    reason: "recording became active before start; tap is already satisfied"
+                )
+                return
+            }
+            guard !recordingService.isPipelineInFlight else {
+                deferAutoStartUntilPipelineDrains(reason: reason)
+                return
+            }
             do {
-                recordingService.forceStop()
+                if recordingService.isWarm {
+                    logAutoStartGuard(
+                        "warm-hold",
+                        action: "continue",
+                        reason: "warm hold active; preserving hot engine for start"
+                    )
+                } else {
+                    recordingService.forceStop()
+                }
                 // v7 auto-paste: adopt the keyboard's session UUID (stashed
                 // off the launch URL by the `onOpenURL` handler) BEFORE
                 // `start()` so the upcoming pipeline writes carry the
@@ -579,7 +827,27 @@ struct JotApp: App {
                 await DictationActivityCoordinator.shared.start(startedAt: startedAt)
                 do {
                     lifecycleLog.notice("RECORDING START FROM: triggerAutoStart reason=\(reason, privacy: .public)")
-                    try await recordingService.start()
+                    do {
+                        try await recordingService.start()
+                    } catch RecordingService.RecordingError.micUnavailable {
+                        // Cold-launch race: when the keyboard's URL bounce
+                        // wakes a terminated main app, iOS's audio HAL isn't
+                        // fully booted on the first run of the runloop —
+                        // `inputNode.outputFormat(forBus: 0)` reports 0
+                        // channels and our `.micUnavailable` guard throws.
+                        // A single short retry after ~700 ms is enough for
+                        // the HAL to be ready; this also covers transient
+                        // contention where another app held the mic for a
+                        // brief moment and released it. If the second attempt
+                        // also throws, the error propagates out and surfaces
+                        // the alert as a real "mic busy" condition.
+                        lifecycleLog.notice(
+                            "Recording start hit micUnavailable on first attempt (cold-launch HAL race?); retrying once after 700ms"
+                        )
+                        try await Task.sleep(nanoseconds: 700_000_000)
+                        try await recordingService.start()
+                    }
+                    AppGroup.lastDictationStatusMessage = nil
                     lifecycleLog.info("Auto-started recording after \(reason, privacy: .public) session=\(sid, privacy: .public)")
                 } catch {
                     // Recording failed AFTER the LA was requested. Tear down
@@ -590,6 +858,19 @@ struct JotApp: App {
                 }
             } catch {
                 lifecycleLog.error("Auto-start recording failed: \(error.localizedDescription, privacy: .public)")
+                surfaceAutoStartBanner(
+                    "Couldn't start mic - tap again",
+                    guardName: "start",
+                    action: "banner",
+                    reason: "recording start threw: \(Self.describeAutoStartError(error))"
+                )
+                // Foreground user feedback. The keyboard banner above is read
+                // by the keyboard extension on its next presentation; if the
+                // user is currently in the main app (e.g. dictate tap just
+                // launched us), they need their own surface. The alert in
+                // ContentView reads this and clears it on dismiss.
+                dictateAutoStartError = (error as? LocalizedError)?.errorDescription
+                    ?? "Couldn't start recording. Try again."
             }
         }
     }

@@ -28,7 +28,7 @@ struct FeaturedTodaySection: View {
 
             // Rows for the group. The first item gets the FeaturedLatestRow
             // treatment via rowBuilder (which RecentsListCard wires up with
-            // its NavigationLink + context menu + swipe actions); siblings
+            // navigation, context menu, selection, and swipe-reveal actions); siblings
             // render as standard rows.
             ForEach(Array(items.enumerated()), id: \.element.id) { itemIndex, transcript in
                 rowBuilder(transcript)

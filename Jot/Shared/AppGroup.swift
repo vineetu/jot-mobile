@@ -90,7 +90,7 @@ enum AppGroup {
         /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`
         /// for the encoded shape and `Shared/SavedPromptStore.swift` for the
         /// access pattern. Default (key missing) is treated as "empty list"
-        /// by the store, which seeds the bundled `defaultRewrite` entry.
+        /// by the store, which seeds the bundled `SavedPrompt.allDefaults`.
         static let savedPrompts = "jot.ai.savedPrompts"
 
         /// User-selected speech-model variant. Values are FluidAudio

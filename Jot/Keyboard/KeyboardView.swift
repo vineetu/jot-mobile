@@ -90,6 +90,12 @@ struct KeyboardView: View {
     /// auto-start a recording; it just opens the app.
     let onOpenHome: () -> Void
 
+    /// Per-row trailing "open in app" tap on the recents card. Launches
+    /// the containing app and pushes the transcript detail view via
+    /// `jot://transcript?id=<uuid>`. Distinct from `onInsertHistoryEntry`
+    /// (paste-at-cursor on the row body) — the row carries two zones.
+    let onOpenHistoryEntryInApp: (TranscriptHistoryMirror.Entry) -> Void
+
     /// Phase 2.5 — fired by the small chevron-down button in the
     /// standard-mode chrome (and by the collapsed bar's chevron-up).
     /// The controller flips `isCollapsed`, persists it, and mutates the
@@ -255,10 +261,24 @@ struct KeyboardView: View {
                     ? .opacity
                     : .opacity.combined(with: .move(edge: .top))
             )
+        } else if !hasFullAccess {
+            // Replace the (would-be-empty) recents strip with a
+            // breadcrumb that teaches the user how to enable Full Access
+            // manually. We can't reliably open iOS Settings from a custom
+            // keyboard extension on iOS 26, so this teaching surface is
+            // the substitute. Height matches RecentsStrip so the layout
+            // doesn't jump when FA gets turned on.
+            fullAccessInstructions
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .opacity.combined(with: .move(edge: .top))
+                )
         } else {
             RecentsStrip(
                 entries: historyEntries,
                 onInsertEntry: onInsertHistoryEntry,
+                onOpenInApp: onOpenHistoryEntryInApp,
                 onSeeAll: onOpenHome
             )
             .transition(
@@ -267,6 +287,46 @@ struct KeyboardView: View {
                     : .opacity.combined(with: .move(edge: .top))
             )
         }
+    }
+
+    /// Instructional surface shown in place of the recents strip when
+    /// Full Access has not been granted. Walks the user through the
+    /// Settings path to flip Allow Full Access. Visually mirrors the
+    /// recents strip envelope (Liquid Glass card, ~129pt tall) so the
+    /// keyboard chrome stays geometrically stable across the FA toggle.
+    private var fullAccessInstructions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.shield")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("ENABLE FULL ACCESS TO DICTATE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(1.2)
+            }
+            .foregroundStyle(Color.white.opacity(0.66))
+
+            Text("iPhone Settings  →  General  →  Keyboard")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Color.white.opacity(0.92))
+            Text("Keyboards  →  Jot Keyboard  →  Allow Full Access")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Color.white.opacity(0.92))
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 129) // matches RecentsStrip.stripHeight
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .padding(.horizontal, 4)
     }
 
     // MARK: - Action + mic row
@@ -351,14 +411,44 @@ struct KeyboardView: View {
     /// only perceived as disabled. We are fixing the perception, not the
     /// gate logic.
     private var speakButton: some View {
-        Button {
-            feedback.longPressImpact()
+        // No-FA branch is INERT (no Link, no Button) because nothing we
+        // tried to launch from a custom keyboard extension actually opens
+        // the containing app reliably on iOS 26 — `extensionContext.open`
+        // silently no-ops, the responder-chain selector trick is banned
+        // by Apple in iOS 18+, and SwiftUI `Link` was inconsistent in
+        // testing. Instead, the recents strip area (see `topStrip`'s
+        // `fullAccessInstructions` branch) carries the breadcrumb that
+        // teaches the user how to enable Full Access manually. Keeping
+        // the lock-shield + "Enable Full Access" label here gives them
+        // the visual context for WHY the keyboard is in this state.
+        Group {
             if hasFullAccess {
-                onTapToSpeak()
+                Button {
+                    feedback.longPressImpact()
+                    onTapToSpeak()
+                } label: { speakLabel }
             } else {
-                onOpenFullAccess()
+                speakLabel
             }
-        } label: {
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .disabled(hasFullAccess
+                  && (recordingState.isInflightPostRecording
+                      || isStopRequestPending))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isRecording)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isInflightPostRecording)
+        .accessibilityLabel(micAccessibilityLabel)
+        .accessibilityHint(micAccessibilityHint)
+        .accessibilityAddTraits(recordingState.isRecording
+                                ? [.isButton, .startsMediaSession]
+                                : .isButton)
+    }
+
+    @ViewBuilder
+    private var speakLabel: some View {
             Group {
                 if hasFullAccess, recordingState.isRecording {
                     let startedAt = recordingState.startedAt ?? Date()
@@ -427,21 +517,6 @@ struct KeyboardView: View {
             // a wider radius / lower opacity to match the spec's "4px
             // outer halo rgba(0,122,255,0.10)" treatment.
             .shadow(color: speakOuterHalo, radius: 4, x: 0, y: 0)
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .disabled(hasFullAccess
-                  && (recordingState.isInflightPostRecording
-                      || isStopRequestPending))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
-                   value: recordingState.isRecording)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
-                   value: recordingState.isInflightPostRecording)
-        .accessibilityLabel(micAccessibilityLabel)
-        .accessibilityHint(micAccessibilityHint)
-        .accessibilityAddTraits(recordingState.isRecording
-                                ? [.isButton, .startsMediaSession]
-                                : .isButton)
     }
 
     private var actionsButton: some View {

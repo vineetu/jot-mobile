@@ -62,15 +62,8 @@ struct RewritePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showVoicePrompt: Bool = false
 
-    /// Stable id of the bundled default rewrite prompt — used to pick
-    /// the coral wand glyph for the seeded row.
-    private static let defaultRewriteID = SavedPrompt.defaultRewrite.id
-
-    /// Stable id of the bundled bullet-points prompt — used to pick
-    /// the purple `list.bullet` glyph + canon mockup copy. User-created
-    /// prompts also default to the purple list glyph; the id-based branch
-    /// only changes the secondary-line copy.
-    private static let defaultBulletPointsID = SavedPrompt.defaultBulletPoints.id
+    // Bundled default identification now flows through `SavedPrompt.defaultKind`
+    // and the `RowKind` enum below — no per-id constants needed in this view.
 
     var body: some View {
         VStack(spacing: 0) {
@@ -227,46 +220,54 @@ struct RewritePickerSheet: View {
             : UIColor(white: 0.0, alpha: 0.06)
     })
 
-    /// One of three visual kinds for a picker row, keyed by the stable id of
+    /// One of four visual kinds for a picker row, keyed by the stable id of
     /// the seeded defaults. User-created rows fall through to `.userPrompt`
-    /// which renders with the purple list glyph — same as the seeded
-    /// bullet-points row — so the picker stays visually unified for
-    /// list-style prompts while singling out the coral "Rewrite" default.
+    /// which renders with the purple list glyph.
     private enum RowKind {
-        case defaultRewrite
-        case defaultBulletPoints
+        case articulate
+        case actionItems
+        case email
         case userPrompt
 
         var iconSymbol: String {
             switch self {
-            case .defaultRewrite: return "wand.and.stars"
-            case .defaultBulletPoints, .userPrompt: return "list.bullet"
+            case .articulate:  return "wand.and.stars"
+            case .actionItems: return "checklist"
+            case .email:       return "envelope"
+            case .userPrompt:  return "list.bullet"
             }
         }
 
         var iconTint: Color {
             switch self {
-            case .defaultRewrite: return Color.jotAccent
-            case .defaultBulletPoints, .userPrompt: return Color.jotPromptPurple
+            case .articulate:  return Color.jotAccent
+            case .actionItems: return Color.jotPromptPurple
+            case .email:       return Color.jotSuccess
+            case .userPrompt:  return Color.jotPromptPurple
             }
         }
     }
 
     private func rowKind(for prompt: SavedPrompt) -> RowKind {
-        if prompt.id == Self.defaultRewriteID { return .defaultRewrite }
-        if prompt.id == Self.defaultBulletPointsID { return .defaultBulletPoints }
-        return .userPrompt
+        switch prompt.defaultKind {
+        case .articulate:  return .articulate
+        case .actionItems: return .actionItems
+        case .email:       return .email
+        case nil:          return .userPrompt
+        }
     }
 
-    /// Secondary copy under the prompt name. Seeded defaults carry mockup-canon
-    /// strings; user-created prompts surface a single-line preview of their
+    /// Secondary copy under the prompt name. Seeded defaults carry canon
+    /// one-liners; user-created prompts surface a single-line preview of their
     /// saved system prompt so the picker is self-describing.
     private func rowSecondary(for prompt: SavedPrompt, kind: RowKind) -> String {
         switch kind {
-        case .defaultRewrite:
-            return "Default · polish without shortening"
-        case .defaultBulletPoints:
-            return "Default · one idea per bullet"
+        case .articulate:
+            return "Default · polish dictation, keep voice"
+        case .actionItems:
+            return "Default · extract tasks and deadlines"
+        case .email:
+            return "Default · business email with subject"
         case .userPrompt:
             let cleaned = prompt.systemPrompt
                 .replacingOccurrences(of: "\n", with: " ")
@@ -1009,7 +1010,7 @@ extension Color {
             RewritePickerSheet(
                 wordCount: 52,
                 modelDisplayName: "Qwen 3.5 4B",
-                prompts: [SavedPrompt.defaultRewrite],
+                prompts: [SavedPrompt.defaultArticulate],
                 onPick: { _ in },
                 onNewPrompt: {}
             )

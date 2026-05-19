@@ -602,6 +602,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onOpenFullAccess: { [weak self] in self?.openFullAccessPrompt() },
             onStatusBannerRendered: { [weak self] in self?.clearStatusBannerSlot() },
             onOpenHome: { [weak self] in self?.openHostHome() },
+            onOpenHistoryEntryInApp: { [weak self] entry in self?.openHistoryEntryInApp(entry) },
             onToggleCollapsed: { [weak self] in self?.toggleCollapsed() },
             feedback: feedback
         )
@@ -1482,6 +1483,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         renderRootView()
     }
 
+    private func surfaceDictationStatusBanner(_ message: String) {
+        AppGroup.lastDictationStatusMessage = message
+        setStatusBanner(message)
+        renderRootView()
+    }
+
     /// Opens the keyboard's containing app via custom URL scheme.
     ///
     /// On iOS 18+, the deprecated `openURL:` selector is silently
@@ -1502,12 +1509,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func openContainingApp(_ url: URL) {
         let selector = sel_registerName("openURL:options:completionHandler:")
 
-        let completion: @MainActor @Sendable (Bool) -> Void = { [url] success in
+        let completion: @MainActor @Sendable (Bool) -> Void = { [weak self, url] success in
             if success {
                 keyboardLog.info("Opened containing app for url=\(url.absoluteString, privacy: .public)")
             } else {
                 keyboardLog.error("openURL completion=false for url=\(url.absoluteString, privacy: .public)")
                 ClipboardHandoff.clearPendingPasteSession()
+                self?.surfaceDictationStatusBanner("Couldn't open Jot - tap again")
             }
         }
 
@@ -1528,6 +1536,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
         keyboardLog.error("No UIApplication/UIWindowScene in responder chain for url=\(url.absoluteString, privacy: .public)")
         ClipboardHandoff.clearPendingPasteSession()
+        surfaceDictationStatusBanner("Couldn't open Jot - tap again")
     }
 
     /// "See all" link in the recents card header. Brings the containing
@@ -1545,18 +1554,40 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         openContainingApp(url)
     }
 
-    /// Opens iOS Settings → Jot's app-settings page via the documented
-    /// public `UIApplication.openSettingsURLString` URL. From there the
-    /// user navigates: General → Keyboard → Keyboards → Jot Keyboard →
-    /// Allow Full Access. More taps than ideal, but it actually works.
+    /// Row-trailing "open in app" tap on the recents card. Brings the
+    /// main app to the foreground and pushes the transcript detail view
+    /// via `jot://transcript?id=<uuid>` (handled by `JotApp.onOpenURL`).
+    /// No dictation auto-start — the user wants to read or edit, not
+    /// record. Gated on Full Access for the same reasons as
+    /// `openHostHome()`: without FA, `extensionContext.open` is refused
+    /// and the bounce won't reach the app.
+    private func openHistoryEntryInApp(_ entry: TranscriptHistoryMirror.Entry) {
+        guard hasFullAccess else {
+            openHostSettings()
+            return
+        }
+        guard let url = URL(string: "jot://transcript?id=\(entry.id.uuidString)") else { return }
+        openContainingApp(url)
+    }
+
+    /// Bounces to the Jot main app via `jot://full-access`. The app's URL
+    /// handler immediately opens iOS Settings to Jot's app-settings page
+    /// via `UIApplication.shared.open(openSettingsURLString)` (which only
+    /// works from the main app — from a keyboard extension, that URL
+    /// opens the host app's settings, not Jot's).
     ///
-    /// Why not `prefs:root=General&path=Keyboard` (Apple's QA1924
-    /// keyboard-extension exception)? On iOS 26 it returns `success: true`
-    /// from `extensionContext.open` while iOS silently does nothing —
-    /// the tap appears dead. Verified on-device. The documented public
-    /// URL is the only one that reliably opens Settings.
+    /// Why not `extensionContext.open(openSettingsURLString)` directly?
+    /// From a keyboard extension, `openSettingsURLString` resolves to
+    /// the *host app's* settings page (the app the user is typing in —
+    /// Messages, Safari, etc.), not Jot's. Useless. The URL-bounce is
+    /// the only way to land on Jot's iOS-Settings page from the keyboard.
+    ///
+    /// Requires `jot` in the keyboard extension's `LSApplicationQueriesSchemes`
+    /// (see `project.yml`'s JotKeyboard `info.properties` block). iOS 9+
+    /// blocks extension URL opens for schemes not declared there.
     private func openFullAccessPrompt() {
-        openHostSettings()
+        guard let url = URL(string: "jot://full-access") else { return }
+        extensionContext?.open(url, completionHandler: nil)
     }
 
     private func openHostSettings() {

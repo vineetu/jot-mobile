@@ -18,6 +18,10 @@ struct FeaturedLatestRow: View {
 
                 Spacer(minLength: 8)
 
+                if transcript.cleanedText != nil {
+                    RecentsRewriteBadge()
+                }
+
                 Text(metaText)
                     .font(.system(size: 11, weight: .regular, design: .default))
                     .monospacedDigit()

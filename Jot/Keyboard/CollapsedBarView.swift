@@ -174,14 +174,40 @@ struct CollapsedBarView: View {
     // labels are identical to the standard mode — recording in
     // collapsed mode is a first-class state, not a degraded one.
     private var speakButton: some View {
-        Button {
-            feedback.longPressImpact()
+        // No-FA branch is INERT (no Link, no Button) — nothing we can
+        // call from a keyboard extension reliably opens the containing
+        // app on iOS 26 (see KeyboardView.speakButton docblock for the
+        // full reasoning). The collapsed bar has no recents area to put
+        // instructions in, so the user has to expand the keyboard to
+        // see the breadcrumb. Pill stays as a visual cue.
+        Group {
             if hasFullAccess {
-                onTapToSpeak()
+                Button {
+                    feedback.longPressImpact()
+                    onTapToSpeak()
+                } label: { speakLabel }
             } else {
-                onOpenFullAccess()
+                speakLabel
             }
-        } label: {
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule(style: .continuous))
+        .disabled(hasFullAccess
+                  && (recordingState.isInflightPostRecording
+                      || isStopRequestPending))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isRecording)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isInflightPostRecording)
+        .accessibilityLabel(micAccessibilityLabel)
+        .accessibilityHint(micAccessibilityHint)
+        .accessibilityAddTraits(recordingState.isRecording
+                                ? [.isButton, .startsMediaSession]
+                                : .isButton)
+    }
+
+    @ViewBuilder
+    private var speakLabel: some View {
             Group {
                 if hasFullAccess, recordingState.isRecording {
                     let startedAt = recordingState.startedAt ?? Date()
@@ -237,21 +263,6 @@ struct CollapsedBarView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .background(speakBackground, in: Capsule(style: .continuous))
             .shadow(color: speakShadow, radius: 6, x: 0, y: 2)
-        }
-        .buttonStyle(.plain)
-        .contentShape(Capsule(style: .continuous))
-        .disabled(hasFullAccess
-                  && (recordingState.isInflightPostRecording
-                      || isStopRequestPending))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
-                   value: recordingState.isRecording)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
-                   value: recordingState.isInflightPostRecording)
-        .accessibilityLabel(micAccessibilityLabel)
-        .accessibilityHint(micAccessibilityHint)
-        .accessibilityAddTraits(recordingState.isRecording
-                                ? [.isButton, .startsMediaSession]
-                                : .isButton)
     }
 
     // MARK: - Backgrounds

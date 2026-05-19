@@ -47,29 +47,34 @@ struct EditPromptWithTestSheet: View {
     private var canSave: Bool { !trimmedName.isEmpty && !trimmedSystemPrompt.isEmpty }
 
     private var headerIconSymbol: String {
-        if prompt?.id == SavedPrompt.defaultBulletPoints.id {
-            return "list.bullet"
+        switch prompt?.defaultKind {
+        case .articulate:  return "wand.and.stars"
+        case .actionItems: return "checklist"
+        case .email:       return "envelope"
+        case nil:          return "wand.and.stars"
         }
-        return "wand.and.stars"
     }
 
     private var headerIconTint: Color {
-        prompt?.id == SavedPrompt.defaultBulletPoints.id
-            ? AIV09Tokens.purple
-            : JotDesign.JotSemanticIcon.ai
+        switch prompt?.defaultKind {
+        case .articulate:  return JotDesign.JotSemanticIcon.ai
+        case .actionItems: return AIV09Tokens.purple
+        case .email:       return Color.jotSuccess
+        case nil:          return JotDesign.JotSemanticIcon.ai
+        }
     }
 
     private var headerIconShaded: Color {
-        prompt?.id == SavedPrompt.defaultBulletPoints.id
-            ? AIV09Tokens.purpleShaded
-            : JotDesign.JotSemanticIcon.aiShaded
+        switch prompt?.defaultKind {
+        case .articulate:  return JotDesign.JotSemanticIcon.aiShaded
+        case .actionItems: return AIV09Tokens.purpleShaded
+        case .email:       return Color.jotSuccess.opacity(0.5)
+        case nil:          return JotDesign.JotSemanticIcon.aiShaded
+        }
     }
 
     private var headerSubline: String? {
-        guard let prompt else { return nil }
-        if prompt.id == SavedPrompt.defaultRewrite.id { return "Default prompt" }
-        if prompt.id == SavedPrompt.defaultBulletPoints.id { return "Default prompt" }
-        return nil
+        prompt?.defaultKind != nil ? "Default prompt" : nil
     }
 
     private var displayTitle: String {
@@ -827,7 +832,7 @@ private struct TranscriptPickerSheet: View {
 }
 
 #Preview("Edit") {
-    EditPromptWithTestSheet(prompt: SavedPrompt.defaultRewrite, onChange: {})
+    EditPromptWithTestSheet(prompt: SavedPrompt.defaultArticulate, onChange: {})
 }
 
 #Preview("New") {

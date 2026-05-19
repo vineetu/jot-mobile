@@ -142,12 +142,11 @@ struct DownloadPitchSheet: View {
 
     /// Two-sentence pitch. Names the active model and the download size
     /// honestly so the user can make an informed decision before tapping
-    /// Download. Plan §6.3 calls for ~2 sentences about polish + bullet
-    /// points; the wording leans on "polish" because the seeded default
-    /// prompt is the polish-without-shortening one (see
-    /// `SavedPrompt.defaultRewrite`).
+    /// Download pitch — leads on the three seeded defaults (Articulate, Action
+    /// Items, Email) without naming them so the copy survives future preset
+    /// changes.
     private var pitchBody: String {
-        "\(modelDisplayName) runs on your iPhone to polish dictation and shape it into bullet points or other rewrites — fully offline, no accounts. The first download is about \(downloadSizeCopy) over Wi-Fi."
+        "\(modelDisplayName) runs on your iPhone to articulate dictation, extract action items, or draft emails — fully offline, no accounts. The first download is about \(downloadSizeCopy) over Wi-Fi."
     }
 
     // MARK: - Download CTA

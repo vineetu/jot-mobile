@@ -85,9 +85,23 @@ final class LLMClientUIAdapter {
     init(client: any LLMClient, pollingIntervalMillis: UInt64 = 250) {
         self.client = client
         self.pollingInterval = pollingIntervalMillis * 1_000_000
-        // Kick off an immediate one-shot read so the first SwiftUI render
-        // doesn't see stale `.notReady` before the polling task's first
-        // tick. Detached so we don't block init on the underlying
+        // Synchronously seed `observableStatus` from the concrete client so the
+        // first SwiftUI render doesn't see a stale `.notReady` before the
+        // async polling kicks in. Both Qwen35Client and Phi4Client are
+        // `@MainActor` and seed their own `observableStatus` synchronously in
+        // init from a FileManager probe — so by the time we run here, the
+        // value already reflects on-disk reality (`.evicted` when weights are
+        // present, `.notReady` only when truly absent). Skipping this step
+        // caused the AI Settings + wizard AI step to flash "Not downloaded"
+        // → "Downloading…" briefly before settling on "Ready" on every open.
+        if let qwen = client as? Qwen35Client {
+            self.observableStatus = qwen.observableStatus
+        } else if let phi4 = client as? Phi4Client {
+            self.observableStatus = phi4.observableStatus
+        }
+        // Kick off an immediate one-shot read so the polling task's first
+        // tick doesn't lag any out-of-band changes the client made after our
+        // sync seed above. Detached so we don't block init on the underlying
         // client's actor.
         Task { [weak self] in
             await self?.refreshOnce()

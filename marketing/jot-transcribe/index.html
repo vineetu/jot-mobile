@@ -1,0 +1,1046 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Jot — Dictate, in any app.</title>
+<meta name="description" content="A dictation keyboard for iPhone. Use it in any app. On-device. Editorial." />
+<meta name="theme-color" content="#D1D3DA" />
+
+<meta property="og:title" content="Jot" />
+<meta property="og:description" content="Dictate, in any app. A dictation keyboard for iPhone — on device." />
+<meta property="og:type" content="website" />
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23007AFF'/%3E%3Cpath d='M19 8h2c.55 0 1 .45 1 1v13c0 3-2.5 5.5-5.5 5.5-2.6 0-4.8-1.85-5.3-4.35-.09-.45.27-.85.72-.85h1.4c.36 0 .68.24.77.59A2.5 2.5 0 0 0 16.5 25c1.38 0 2.5-1.12 2.5-2.5V9c0-.55.45-1 1-1z' fill='white'/%3E%3Ccircle cx='9.5' cy='9.5' r='2' fill='white'/%3E%3C/svg%3E" />
+
+<style>
+:root {
+  /* Match the app's "Comfort" palette exactly */
+  --bg-top: #DCDEE3;
+  --bg-mid: #D1D3DA;
+  --bg-bot: #C9CCD3;
+  --ink: #15171C;
+  --ink-2: rgba(60,60,67,0.65);
+  --ink-3: rgba(60,60,67,0.45);
+  --hairline: rgba(15,17,28,0.08);
+  --accent: #007AFF;
+  --accent-2: #0064CC;
+  --accent-soft: rgba(0,122,255,0.12);
+  --accent-shadow: rgba(0,80,200,0.35);
+  --glass: rgba(255,255,255,0.62);
+  --glass-2: rgba(255,255,255,0.55);
+  --glass-border: rgba(15,17,28,0.06);
+  --serif: "New York", "Iowan Old Style", "Charter", Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background:
+    radial-gradient(ellipse 55% 40% at 15% 5%, rgba(0,122,255,0.16), transparent 70%),
+    radial-gradient(ellipse 50% 35% at 95% 30%, rgba(255,200,140,0.14), transparent 70%),
+    radial-gradient(ellipse 60% 50% at 50% 110%, rgba(180,200,240,0.32), transparent 70%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 60%, var(--bg-bot) 100%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--sans);
+  letter-spacing: -0.012em;
+  line-height: 1.42;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+
+/* ---------- Nav ---------- */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0;
+  z-index: 50;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 28px;
+  background: transparent;
+  transition: background 200ms ease, backdrop-filter 200ms ease, border-color 200ms ease;
+  border-bottom: 1px solid transparent;
+}
+.nav.scrolled {
+  background: rgba(220,222,227,0.65);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  border-bottom-color: var(--hairline);
+}
+.brand { display: inline-flex; align-items: center; gap: 9px; }
+.brand-avatar {
+  width: 28px; height: 28px; border-radius: 14px;
+  background: var(--accent);
+  display: grid; place-items: center;
+  color: white; font-weight: 600; font-size: 14px;
+  font-family: var(--serif); font-style: italic;
+}
+.brand-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 21px;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+.nav-cta {
+  font-size: 13px; color: var(--ink-2);
+  padding: 8px 16px; border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 0.5px solid var(--glass-border);
+  font-weight: 500;
+  transition: color 150ms, background 150ms;
+}
+.nav-cta:hover { color: var(--ink); background: rgba(255,255,255,0.85); }
+
+/* ---------- Hero ---------- */
+.hero {
+  position: relative;
+  min-height: calc(100svh - 64px);
+  padding: 110px 32px 64px;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 56px;
+  align-items: center;
+  max-width: 1280px;
+  margin: 0 auto;
+  isolation: isolate;
+}
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--ink-2);
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 0.5px solid var(--glass-border);
+  letter-spacing: 0.02em;
+  font-weight: 500;
+  margin-bottom: 24px;
+}
+.eyebrow .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0,122,255,0.5);
+}
+.hero h1 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(56px, 7.5vw, 108px);
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  color: var(--ink);
+  margin-bottom: 28px;
+}
+.hero h1 .period { color: var(--accent); }
+.hero .lede {
+  font-size: clamp(17px, 1.35vw, 21px);
+  color: var(--ink-2);
+  max-width: 460px;
+  margin-bottom: 36px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.hero-ctas { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.dictate-pill {
+  display: inline-flex; align-items: center; gap: 10px;
+  height: 56px; padding: 0 24px 0 20px;
+  border-radius: 28px;
+  background: linear-gradient(180deg, #1A8CFF 0%, #0064CC 100%);
+  color: white;
+  font-size: 16px; font-weight: 600; letter-spacing: -0.02em;
+  box-shadow:
+    0 8px 24px -6px var(--accent-shadow),
+    0 0 0 0.5px rgba(255,255,255,0.25) inset;
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.dictate-pill:hover { transform: translateY(-1px); box-shadow: 0 12px 28px -6px var(--accent-shadow), 0 0 0 0.5px rgba(255,255,255,0.25) inset; }
+.dictate-pill svg { width: 20px; height: 20px; }
+.ghost-link {
+  font-size: 14px; color: var(--ink-2);
+  padding: 12px 0;
+  transition: color 150ms;
+}
+.ghost-link:hover { color: var(--ink); }
+.ghost-link::after { content: " →"; opacity: 0.5; }
+
+.hero-mock-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+/* ---------- Sections ---------- */
+.section {
+  padding: 96px 32px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.section-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: center;
+}
+.section-grid.reverse { direction: rtl; }
+.section-grid.reverse > * { direction: ltr; }
+.section .label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+.section h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(34px, 4.2vw, 60px);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  margin-bottom: 22px;
+  color: var(--ink);
+}
+.section .body {
+  font-size: 17px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  max-width: 480px;
+  font-weight: 400;
+}
+.section .bullets {
+  list-style: none;
+  margin-top: 26px;
+  display: grid;
+  gap: 12px;
+  max-width: 480px;
+}
+.section .bullets li {
+  display: flex; align-items: start; gap: 10px;
+  font-size: 15px; color: var(--ink-2);
+  line-height: 1.5;
+}
+.section .bullets li::before {
+  content: ""; flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); margin-top: 9px;
+  opacity: 0.7;
+}
+
+.mock-stage {
+  display: grid;
+  place-items: center;
+  position: relative;
+  isolation: isolate;
+}
+
+/* ---------- Privacy band ---------- */
+.privacy-band {
+  padding: 112px 32px;
+  position: relative;
+}
+.privacy-content {
+  max-width: 920px;
+  margin: 0 auto;
+  text-align: center;
+}
+.privacy-content .label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent);
+  margin-bottom: 16px; display: inline-block;
+}
+.privacy-content h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(42px, 5vw, 76px);
+  letter-spacing: -0.035em;
+  line-height: 1.04;
+  margin-bottom: 26px;
+  color: var(--ink);
+}
+.privacy-content .body {
+  font-size: 19px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  max-width: 640px;
+  margin: 0 auto 48px;
+}
+.proof-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  margin-top: 56px;
+  text-align: left;
+}
+.proof {
+  background: var(--glass);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 0.5px solid var(--glass-border);
+  border-radius: 18px;
+  padding: 24px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.6) inset,
+    0 18px 40px -28px rgba(15,17,28,0.20);
+}
+.proof h3 {
+  font-size: 15px; font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 8px;
+  letter-spacing: -0.005em;
+}
+.proof p {
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+/* ---------- Specs strip ---------- */
+.specs {
+  max-width: 1200px;
+  margin: 32px auto 0;
+  padding: 0 32px 80px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+}
+.spec h4 {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  margin-bottom: 10px;
+}
+.spec p { font-size: 15px; color: var(--ink-2); line-height: 1.55; }
+
+/* ---------- Final CTA ---------- */
+.final {
+  padding: 112px 32px 80px;
+  text-align: center;
+  position: relative;
+}
+.final h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(48px, 6vw, 88px);
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+  margin-bottom: 28px;
+  color: var(--ink);
+}
+.final h2 .period { color: var(--accent); }
+.final .lede {
+  font-size: 18px; color: var(--ink-2);
+  max-width: 460px; margin: 0 auto 40px;
+}
+
+/* ---------- Footer ---------- */
+footer {
+  border-top: 0.5px solid var(--hairline);
+  padding: 32px;
+  display: flex; justify-content: space-between; align-items: center;
+  max-width: 1280px; margin: 0 auto;
+  flex-wrap: wrap; gap: 14px;
+  color: var(--ink-3); font-size: 13px;
+}
+footer nav { display: flex; gap: 22px; }
+footer nav a:hover { color: var(--ink-2); }
+
+/* ---------- Phone frame ---------- */
+.phone {
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 390 / 844;
+  background: linear-gradient(180deg, #1a1a1f 0%, #0a0a0e 100%);
+  border-radius: 50px;
+  padding: 9px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.10),
+    0 0 0 1.5px #2c2c34,
+    0 0 0 3px #0a0a0e,
+    0 50px 90px -30px rgba(0,40,80,0.30),
+    0 30px 60px -20px rgba(15,17,28,0.25);
+  position: relative;
+  isolation: isolate;
+}
+.phone-screen {
+  width: 100%; height: 100%;
+  border-radius: 43px;
+  overflow: hidden;
+  position: relative;
+}
+.phone .dynamic-island {
+  position: absolute;
+  top: 19px; left: 50%; transform: translateX(-50%);
+  width: 116px; height: 35px;
+  background: #000;
+  border-radius: 999px;
+  z-index: 10;
+  pointer-events: none;
+}
+.phone-screen svg { display: block; width: 100%; height: 100%; }
+.phone-screen svg text {
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.hero-mock-wrap .phone {
+  max-width: 380px;
+  transform: rotate(-1.2deg);
+  transition: transform 600ms cubic-bezier(.2,.8,.2,1);
+}
+.hero-mock-wrap:hover .phone { transform: rotate(-1.2deg) translateY(-4px); }
+
+/* ---------- Reveal ---------- */
+.reveal { opacity: 0; transform: translateY(24px); transition: opacity 800ms cubic-bezier(.2,.8,.2,1), transform 800ms cubic-bezier(.2,.8,.2,1); }
+.reveal.in { opacity: 1; transform: translateY(0); }
+.reveal.delay-1 { transition-delay: 80ms; }
+.reveal.delay-2 { transition-delay: 160ms; }
+.reveal.delay-3 { transition-delay: 240ms; }
+
+/* ---------- Animations ---------- */
+@keyframes blink-coral {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(1.1); }
+}
+@keyframes blink-caret {
+  0%,49% { opacity: 1; }
+  50%,100% { opacity: 0; }
+}
+.pulse { animation: blink-coral 1.4s ease-in-out infinite; transform-origin: center; }
+.caret { animation: blink-caret 1s steps(1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .caret { animation: none !important; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  html { scroll-behavior: auto; }
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; padding: 96px 22px 56px; text-align: center; gap: 48px; }
+  .hero .lede { margin-left: auto; margin-right: auto; }
+  .hero-ctas { justify-content: center; }
+  .section { padding: 72px 22px; }
+  .section-grid { grid-template-columns: 1fr; gap: 48px; text-align: center; }
+  .section-grid.reverse { direction: ltr; }
+  .section .body, .section .bullets { margin-left: auto; margin-right: auto; }
+  .section .bullets li { justify-content: center; text-align: left; }
+  .privacy-band { padding: 72px 22px; }
+  .proof-grid { grid-template-columns: 1fr; gap: 16px; }
+  .specs { grid-template-columns: repeat(2, 1fr); padding-bottom: 56px; gap: 24px; }
+  .final { padding: 72px 22px 56px; }
+  footer { flex-direction: column; text-align: center; padding: 28px 22px; }
+  .nav { padding: 13px 18px; }
+  .phone, .hero-mock-wrap .phone { max-width: 300px; transform: none; }
+}
+@media (max-width: 480px) { .specs { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<!-- ===== NAV ===== -->
+<header class="nav" id="nav">
+  <a class="brand" href="#top">
+    <span class="brand-avatar">J</span>
+    <span class="brand-name">Jot</span>
+  </a>
+  <a class="nav-cta" href="#download">Get the app</a>
+</header>
+
+<!-- ===== HERO ===== -->
+<section class="hero" id="top">
+  <div>
+    <span class="eyebrow reveal"><span class="dot"></span> Now on iPhone</span>
+    <h1 class="reveal delay-1">Dictate,<br/>in any app<span class="period">.</span></h1>
+    <p class="lede reveal delay-2">A dictation keyboard for iPhone. Open it anywhere you'd type — Messages, Mail, Slack — speak, and it's there. On device. Editorial.</p>
+    <div class="hero-ctas reveal delay-3">
+      <a class="dictate-pill" href="#download" aria-label="Get Jot">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="12" rx="3" fill="white"/>
+          <path d="M6 11a6 6 0 0012 0M12 17v3M9 20.5h6" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span>Get on the App Store</span>
+      </a>
+      <a class="ghost-link" href="#how">See how it works</a>
+    </div>
+  </div>
+
+  <div class="hero-mock-wrap reveal delay-2">
+    <div class="phone">
+      <span class="dynamic-island"></span>
+      <div class="phone-screen">
+        <!-- HERO MOCK: Messages compose + Jot keyboard with Minimize / Dictate / Actions -->
+        <svg viewBox="0 0 390 844" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <linearGradient id="pageBg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#DCDEE3"/>
+              <stop offset="60%" stop-color="#D1D3DA"/>
+              <stop offset="100%" stop-color="#C9CCD3"/>
+            </linearGradient>
+            <linearGradient id="dictateBlue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#1A8CFF"/>
+              <stop offset="100%" stop-color="#0064CC"/>
+            </linearGradient>
+          </defs>
+          <rect width="390" height="844" fill="url(#pageBg)"/>
+
+          <!-- Status bar -->
+          <text x="32" y="36" fill="#0F1115" font-size="16" font-weight="600">9:41</text>
+          <g transform="translate(316,22)" fill="#0F1115">
+            <rect x="0" y="9" width="3" height="4" rx="0.4"/>
+            <rect x="5" y="6" width="3" height="7" rx="0.4"/>
+            <rect x="10" y="3" width="3" height="10" rx="0.4"/>
+            <rect x="15" y="0" width="3" height="13" rx="0.4"/>
+            <path d="M30,8 a8,8 0 0 1 14,0" stroke="#0F1115" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+            <path d="M33,11 a4.5,4.5 0 0 1 8,0" stroke="#0F1115" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+            <circle cx="37" cy="13.5" r="1.4"/>
+            <rect x="50" y="3" width="22" height="10" rx="2.5" fill="none" stroke="#0F1115" stroke-width="0.8" opacity="0.6"/>
+            <rect x="73" y="6" width="1.5" height="4" rx="0.5" opacity="0.6"/>
+            <rect x="52" y="5" width="14" height="6" rx="1" fill="#0F1115"/>
+          </g>
+
+          <!-- iMessage chat above the compose field — one prior bubble -->
+          <g transform="translate(0,60)">
+            <!-- gray incoming bubble -->
+            <g transform="translate(16,8)">
+              <rect width="216" height="36" rx="18" fill="#E5E5EA"/>
+              <text x="14" y="23" fill="#0F1115" font-size="14">Did the demo go ok?</text>
+            </g>
+          </g>
+
+          <!-- Compose field — large iOS style -->
+          <g transform="translate(0,128)">
+            <!-- plus button (white circle) -->
+            <circle cx="32" cy="32" r="20" fill="white" stroke="rgba(0,0,0,0.06)" stroke-width="0.5"/>
+            <path d="M32,22 L32,42 M22,32 L42,32" stroke="#0F1115" stroke-width="2" stroke-linecap="round"/>
+            <!-- text field rounded large pill -->
+            <rect x="62" y="12" width="312" height="40" rx="20" fill="white" stroke="rgba(0,0,0,0.06)" stroke-width="0.5"/>
+            <rect class="caret" x="80" y="22" width="1.6" height="20" fill="#007AFF"/>
+            <text x="88" y="38" fill="#9A9AA0" font-size="15">Text Message · SMS</text>
+            <!-- mic icon (Apple dictation, right side) -->
+            <g transform="translate(346,22)" fill="#9A9AA0">
+              <rect x="6" y="0" width="6" height="12" rx="3"/>
+              <path d="M3,8 a6,6 0 0 0 12,0" stroke="#9A9AA0" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+              <line x1="9" y1="14" x2="9" y2="18" stroke="#9A9AA0" stroke-width="1.4" stroke-linecap="round"/>
+            </g>
+          </g>
+
+          <!-- ===== Jot Keyboard ===== -->
+          <g transform="translate(0,200)">
+            <!-- keyboard background = light gray system keyboard tone -->
+            <rect width="390" height="644" fill="#D1D3DA"/>
+
+            <!-- Recents card -->
+            <g transform="translate(8,12)">
+              <rect width="374" height="190" rx="14" fill="rgba(255,255,255,0.62)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              <!-- header row -->
+              <text x="18" y="26" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="700" letter-spacing="1.4">RECENT</text>
+              <text x="356" y="26" fill="#007AFF" font-size="13" font-weight="500" text-anchor="end">See all ›</text>
+
+              <!-- Row 1 -->
+              <g transform="translate(0,40)">
+                <line x1="14" y1="0" x2="360" y2="0" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+                <text x="18" y="22" fill="rgba(60,60,67,0.55)" font-size="10" font-weight="600">6:35 PM</text>
+                <text x="74" y="22" fill="#15171C" font-size="13">Did the demo go well? Thinking about</text>
+                <text x="74" y="38" fill="#15171C" font-size="13">moving the meeting to tomorrow.</text>
+                <path d="M344,18 L350,24 L344,30" stroke="rgba(60,60,67,0.4)" stroke-width="1.4" fill="none" stroke-linejoin="round"/>
+              </g>
+              <!-- Row 2 -->
+              <g transform="translate(0,90)">
+                <line x1="14" y1="0" x2="360" y2="0" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+                <text x="18" y="22" fill="rgba(60,60,67,0.55)" font-size="10" font-weight="600">6:34 PM</text>
+                <text x="74" y="22" fill="#15171C" font-size="13">Wow this is very slick. The dictation</text>
+                <text x="74" y="38" fill="#15171C" font-size="13">feels instant now.</text>
+                <path d="M344,18 L350,24 L344,30" stroke="rgba(60,60,67,0.4)" stroke-width="1.4" fill="none" stroke-linejoin="round"/>
+              </g>
+              <!-- Row 3 -->
+              <g transform="translate(0,140)">
+                <line x1="14" y1="0" x2="360" y2="0" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+                <text x="18" y="22" fill="rgba(60,60,67,0.55)" font-size="10" font-weight="600">6:33 PM</text>
+                <text x="74" y="22" fill="#15171C" font-size="13">Especially when you're not saving</text>
+                <text x="74" y="38" fill="#15171C" font-size="13">that. And it just keeps going.</text>
+                <path d="M344,18 L350,24 L344,30" stroke="rgba(60,60,67,0.4)" stroke-width="1.4" fill="none" stroke-linejoin="round"/>
+              </g>
+            </g>
+
+            <!-- Three-button row: Minimize / Dictate / Actions -->
+            <g transform="translate(8,218)">
+              <!-- Minimize -->
+              <g>
+                <rect width="112" height="52" rx="14" fill="white" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+                <path d="M28,22 L36,30 L44,22" stroke="#15171C" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                <text x="52" y="32" fill="#15171C" font-size="14" font-weight="500">Minimize</text>
+              </g>
+              <!-- Dictate (BIG blue gradient — the hero element) -->
+              <g transform="translate(126,0)">
+                <rect width="122" height="52" rx="14" fill="url(#dictateBlue)"/>
+                <rect width="122" height="52" rx="14" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="0.5"/>
+                <!-- mic glyph -->
+                <g transform="translate(28,16)" fill="white">
+                  <rect x="0" y="0" width="8" height="14" rx="4"/>
+                  <path d="M-4,10 a8,8 0 0 0 16,0" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+                  <line x1="4" y1="18" x2="4" y2="22" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+                </g>
+                <text x="50" y="32" fill="white" font-size="15" font-weight="600">Dictate</text>
+              </g>
+              <!-- Actions -->
+              <g transform="translate(262,0)">
+                <rect width="112" height="52" rx="14" fill="white" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+                <g transform="translate(20,26)" fill="#15171C">
+                  <circle cx="0" cy="0" r="1.8"/>
+                  <circle cx="6" cy="0" r="1.8"/>
+                  <circle cx="12" cy="0" r="1.8"/>
+                </g>
+                <text x="44" y="32" fill="#15171C" font-size="14" font-weight="500">Actions</text>
+              </g>
+            </g>
+
+            <!-- Symbol keys row -->
+            <g transform="translate(6,286)">
+              <!-- @ . , ? ! ' delete -->
+              <g>
+                <rect x="0"   y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="25" y="28" fill="#15171C" font-size="17" text-anchor="middle">@</text>
+              </g>
+              <g><rect x="56"  y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="81" y="28" fill="#15171C" font-size="17" text-anchor="middle">.</text>
+              </g>
+              <g><rect x="112" y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="137" y="28" fill="#15171C" font-size="17" text-anchor="middle">,</text>
+              </g>
+              <g><rect x="168" y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="193" y="28" fill="#15171C" font-size="17" text-anchor="middle">?</text>
+              </g>
+              <g><rect x="224" y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="249" y="28" fill="#15171C" font-size="17" text-anchor="middle">!</text>
+              </g>
+              <g><rect x="280" y="0" width="50" height="42" rx="6" fill="white"/>
+                <text x="305" y="28" fill="#15171C" font-size="17" text-anchor="middle">'</text>
+              </g>
+              <g><rect x="336" y="0" width="42" height="42" rx="6" fill="#B0B3BC"/>
+                <path d="M348,17 L358,17 L361,21 L358,25 L348,25 L352,21 Z" fill="#15171C" stroke="#15171C" stroke-width="0.5" stroke-linejoin="round"/>
+                <path d="M353,18 L357,24 M357,18 L353,24" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>
+              </g>
+            </g>
+
+            <!-- Space + Return -->
+            <g transform="translate(6,338)">
+              <rect width="296" height="42" rx="6" fill="white"/>
+              <text x="148" y="28" fill="#15171C" font-size="14" text-anchor="middle" font-weight="400">space</text>
+              <rect x="304" y="0" width="74" height="42" rx="6" fill="#B0B3BC"/>
+              <text x="341" y="28" fill="#15171C" font-size="13" text-anchor="middle" font-weight="600">Return</text>
+            </g>
+
+            <!-- Bottom row: globe + mic -->
+            <g transform="translate(0,400)">
+              <g transform="translate(28,12)">
+                <circle cx="14" cy="14" r="12" fill="none" stroke="#15171C" stroke-width="1.6"/>
+                <ellipse cx="14" cy="14" rx="5" ry="12" fill="none" stroke="#15171C" stroke-width="1.2"/>
+                <line x1="2" y1="14" x2="26" y2="14" stroke="#15171C" stroke-width="1.2"/>
+              </g>
+              <g transform="translate(338,12)" fill="#15171C">
+                <rect x="11" y="0" width="6" height="14" rx="3"/>
+                <path d="M8,8 a6,6 0 0 0 12,0" stroke="#15171C" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+                <line x1="14" y1="18" x2="14" y2="22" stroke="#15171C" stroke-width="1.6" stroke-linecap="round"/>
+              </g>
+            </g>
+
+            <!-- Home indicator (over the keyboard's bottom) -->
+            <rect x="120" y="630" width="150" height="5" rx="2.5" fill="#0F1115" opacity="0.4"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== SECTION: The keyboard ===== -->
+<section class="section" id="how">
+  <div class="section-grid">
+    <div class="reveal">
+      <span class="label">The keyboard</span>
+      <h2>One tap.<br/>You're dictating.</h2>
+      <p class="body">Three controls. The blue one starts the mic. The other two get out of your way. Your recent dictations sit one tap above, ready to re-insert.</p>
+      <ul class="bullets">
+        <li>System-wide custom keyboard — works in any text field on iPhone.</li>
+        <li>Recents stay one tap away. Tap to insert, swipe to delete.</li>
+        <li>Tap the open-in-app icon to take a transcript into the main app for AI rewrite.</li>
+      </ul>
+    </div>
+    <div class="mock-stage reveal delay-1">
+      <div class="phone">
+        <span class="dynamic-island"></span>
+        <div class="phone-screen">
+          <!-- RECENTS HOME MOCK — matches the actual Recents. screen exactly -->
+          <svg viewBox="0 0 390 844" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <linearGradient id="recBg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#DCDEE3"/>
+                <stop offset="60%" stop-color="#D1D3DA"/>
+                <stop offset="100%" stop-color="#C9CCD3"/>
+              </linearGradient>
+              <radialGradient id="recAccent" cx="20%" cy="10%" r="60%">
+                <stop offset="0%" stop-color="rgba(0,122,255,0.18)"/>
+                <stop offset="100%" stop-color="rgba(0,122,255,0)"/>
+              </radialGradient>
+              <linearGradient id="dictateBlue2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1A8CFF"/>
+                <stop offset="100%" stop-color="#0064CC"/>
+              </linearGradient>
+            </defs>
+            <rect width="390" height="844" fill="url(#recBg)"/>
+            <rect width="390" height="844" fill="url(#recAccent)"/>
+
+            <!-- Status bar -->
+            <text x="32" y="36" fill="#0F1115" font-size="16" font-weight="600">9:41</text>
+            <g transform="translate(316,22)" fill="#0F1115">
+              <rect x="0" y="9" width="3" height="4"/><rect x="5" y="6" width="3" height="7"/>
+              <rect x="10" y="3" width="3" height="10"/><rect x="15" y="0" width="3" height="13"/>
+              <path d="M30,8 a8,8 0 0 1 14,0" stroke="#0F1115" stroke-width="1.6" fill="none"/>
+              <path d="M33,11 a4.5,4.5 0 0 1 8,0" stroke="#0F1115" stroke-width="1.6" fill="none"/>
+              <circle cx="37" cy="13.5" r="1.4"/>
+              <rect x="50" y="3" width="22" height="10" rx="2.5" fill="none" stroke="#0F1115" stroke-width="0.8" opacity="0.6"/>
+              <rect x="52" y="5" width="14" height="6" rx="1" fill="#0F1115"/>
+            </g>
+
+            <!-- Nav: J avatar + Jot, then ? and JS avatar -->
+            <g transform="translate(18,68)">
+              <circle cx="14" cy="14" r="14" fill="#007AFF"/>
+              <text x="14" y="19" fill="white" font-size="14" font-weight="600" text-anchor="middle">J</text>
+              <text x="36" y="20" fill="rgba(60,60,67,0.85)" font-size="15" font-weight="600">Jot</text>
+            </g>
+            <g transform="translate(308,68)">
+              <circle cx="14" cy="14" r="14" fill="rgba(255,255,255,0.55)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              <text x="14" y="19" fill="#15171C" font-size="14" font-weight="500" text-anchor="middle">?</text>
+              <circle cx="50" cy="14" r="14" fill="rgba(0,122,255,0.12)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              <text x="50" y="19" fill="#007AFF" font-size="12" font-weight="600" text-anchor="middle">JS</text>
+            </g>
+
+            <!-- Editorial italic "Recents." -->
+            <text x="22" y="180" fill="#15171C" font-family="New York, Iowan Old Style, Georgia, serif" font-style="italic" font-size="56" font-weight="400" letter-spacing="-2">Recents<tspan fill="#007AFF">.</tspan></text>
+            <text x="22" y="208" fill="rgba(60,60,67,0.55)" font-size="14">Saturday, May 16</text>
+
+            <!-- Search bar -->
+            <g transform="translate(14,232)">
+              <rect width="362" height="44" rx="22" fill="rgba(255,255,255,0.62)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              <g transform="translate(20,22)" fill="none" stroke="rgba(60,60,67,0.55)" stroke-width="1.8">
+                <circle cx="0" cy="0" r="6"/>
+                <line x1="4.5" y1="4.5" x2="9" y2="9" stroke-linecap="round"/>
+              </g>
+              <text x="44" y="27" fill="rgba(60,60,67,0.55)" font-size="15">Search transcripts</text>
+            </g>
+
+            <!-- Main Liquid Glass card -->
+            <g transform="translate(14,300)">
+              <rect width="362" height="438" rx="20" fill="rgba(255,255,255,0.58)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+
+              <!-- TODAY label -->
+              <text x="18" y="28" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="700" letter-spacing="1.4">TODAY</text>
+
+              <!-- Featured LATEST -->
+              <g transform="translate(0,44)">
+                <rect width="362" height="84" rx="0" fill="rgba(0,122,255,0.06)"/>
+                <text x="18" y="22" fill="#007AFF" font-size="11" font-weight="700" letter-spacing="1.6">LATEST</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">4:04 PM · 1:51</text>
+                <!-- serif italic body with curly quote -->
+                <text x="18" y="50" fill="#15171C" font-family="New York, Iowan Old Style, Georgia, serif" font-style="italic" font-size="16">&#x201C;Three things today — shipped the chrome</text>
+                <text x="18" y="70" fill="#15171C" font-family="New York, Iowan Old Style, Georgia, serif" font-style="italic" font-size="16">change, talked to Priya about onboarding…</text>
+                <line x1="14" y1="84" x2="348" y2="84" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              </g>
+
+              <!-- Row 1 -->
+              <g transform="translate(0,144)">
+                <text x="18" y="22" fill="#15171C" font-size="14">Can you tell me if this actually makes sense?</text>
+                <text x="18" y="40" fill="#15171C" font-size="14">Because you were there for the early call.</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">4:00 PM · 0:17</text>
+                <line x1="14" y1="58" x2="348" y2="58" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              </g>
+              <!-- Row 2 -->
+              <g transform="translate(0,202)">
+                <text x="18" y="22" fill="#15171C" font-size="14">Because that session is over and this is</text>
+                <text x="18" y="40" fill="#15171C" font-size="14">a new session, I feel it might reopen.</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">3:58 PM · 0:30</text>
+                <line x1="14" y1="58" x2="348" y2="58" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              </g>
+              <!-- Row 3 -->
+              <g transform="translate(0,260)">
+                <text x="18" y="22" fill="#15171C" font-size="14">Do you think it's easier to give these</text>
+                <text x="18" y="40" fill="#15171C" font-size="14">screenshots or just tell the agent?</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">3:57 PM · 0:27</text>
+                <line x1="14" y1="58" x2="348" y2="58" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              </g>
+              <!-- Row 4 -->
+              <g transform="translate(0,318)">
+                <text x="18" y="22" fill="#15171C" font-size="14">The original app in light color was done</text>
+                <text x="18" y="40" fill="#15171C" font-size="14">using Claude design and it adapts well.</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">3:54 PM · 0:39</text>
+                <line x1="14" y1="58" x2="348" y2="58" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              </g>
+              <!-- Row 5 -->
+              <g transform="translate(0,376)">
+                <text x="18" y="22" fill="#15171C" font-size="14">Okay, this is great.</text>
+                <text x="344" y="22" fill="rgba(60,60,67,0.55)" font-size="11" font-weight="500" text-anchor="end">3:53 PM · 0:12</text>
+              </g>
+            </g>
+
+            <!-- Floating Dictate pill -->
+            <g transform="translate(135,740)">
+              <rect width="120" height="56" rx="28" fill="url(#dictateBlue2)"/>
+              <rect width="120" height="56" rx="28" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="0.5"/>
+              <g transform="translate(22,18)" fill="white">
+                <rect x="0" y="0" width="8" height="14" rx="4"/>
+                <path d="M-4,10 a8,8 0 0 0 16,0" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+                <line x1="4" y1="18" x2="4" y2="22" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+              </g>
+              <text x="50" y="34" fill="white" font-size="16" font-weight="600">Dictate</text>
+            </g>
+
+            <!-- Home indicator -->
+            <rect x="120" y="822" width="150" height="5" rx="2.5" fill="#15171C" opacity="0.4"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== SECTION: Recording ===== -->
+<section class="section">
+  <div class="section-grid reverse">
+    <div class="reveal">
+      <span class="label">In-app recording</span>
+      <h2>Your voice<br/>becomes letters.</h2>
+      <p class="body">Tap Dictate inside the app and the transcript writes itself in editorial type on a Liquid Glass plate. No buttons in the way of your sentence.</p>
+      <ul class="bullets">
+        <li>Stream-in serif transcript — words land as you say them.</li>
+        <li>Five-minute mic. Switch apps mid-sentence and come back.</li>
+        <li>Tap to insert punctuation. The timer lives inside the stop button.</li>
+      </ul>
+    </div>
+    <div class="mock-stage reveal delay-1">
+      <div class="phone">
+        <span class="dynamic-island"></span>
+        <div class="phone-screen">
+          <!-- RECORDING SCREEN — RecordLetter -->
+          <svg viewBox="0 0 390 844" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <linearGradient id="recBg2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#DCDEE3"/>
+                <stop offset="100%" stop-color="#D1D3DA"/>
+              </linearGradient>
+              <radialGradient id="recTint" cx="15%" cy="5%" r="60%">
+                <stop offset="0%" stop-color="rgba(0,122,255,0.22)"/>
+                <stop offset="100%" stop-color="rgba(0,122,255,0)"/>
+              </radialGradient>
+              <linearGradient id="stopBlue" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1A8CFF"/>
+                <stop offset="100%" stop-color="#0064CC"/>
+              </linearGradient>
+            </defs>
+            <rect width="390" height="844" fill="url(#recBg2)"/>
+            <rect width="390" height="844" fill="url(#recTint)"/>
+            <!-- subtle accent wash -->
+            <rect width="390" height="844" fill="rgba(0,122,255,0.05)"/>
+
+            <!-- Status bar -->
+            <text x="32" y="36" fill="#0F1115" font-size="16" font-weight="600">9:41</text>
+            <g transform="translate(316,22)" fill="#0F1115">
+              <rect x="0" y="9" width="3" height="4"/><rect x="5" y="6" width="3" height="7"/>
+              <rect x="10" y="3" width="3" height="10"/><rect x="15" y="0" width="3" height="13"/>
+              <rect x="50" y="3" width="22" height="10" rx="2.5" fill="none" stroke="#0F1115" stroke-width="0.8" opacity="0.6"/>
+              <rect x="52" y="5" width="14" height="6" rx="1" fill="#0F1115"/>
+            </g>
+
+            <!-- Minimal cancel pill (top right) -->
+            <g transform="translate(310,68)">
+              <rect width="64" height="32" rx="16" fill="rgba(255,255,255,0.62)" stroke="rgba(15,17,28,0.06)" stroke-width="0.5"/>
+              <text x="32" y="21" fill="#15171C" font-size="13" font-weight="600" text-anchor="middle">Cancel</text>
+            </g>
+
+            <!-- Liquid Glass plate with serif transcript -->
+            <g transform="translate(14,118)">
+              <rect width="362" height="540" rx="22" fill="rgba(255,255,255,0.55)" stroke="rgba(255,255,255,0.4)" stroke-width="0.5"/>
+              <!-- transcript serif italic -->
+              <g font-family="New York, Iowan Old Style, Georgia, serif" font-style="italic" font-size="22" fill="#15171C">
+                <text x="24" y="48">three things today shipped</text>
+                <text x="24" y="78">the chrome change talked to</text>
+                <text x="24" y="108">priya about onboarding and</text>
+                <text x="24" y="138">drafted the AI sheet copy</text>
+                <text x="24" y="168">the wizard read is sharper now</text>
+                <text x="24" y="198">and vocab help is actually</text>
+                <text x="24" y="228">pulling its weight</text>
+                <!-- trailing muted -->
+                <text x="24" y="262" fill="rgba(60,60,67,0.55)">for once tomorrow i want to look at</text>
+              </g>
+              <rect class="caret" x="328" y="248" width="2" height="22" fill="#007AFF"/>
+
+              <!-- Waveform ribbon at bottom -->
+              <g transform="translate(31,480)">
+                <!-- 40 bars, taper at right (after cursor) -->
+                <g fill="#007AFF">
+                  <rect x="0"   y="-6"  width="3" height="12" rx="1.5" opacity="0.85"/>
+                  <rect x="7"   y="-9"  width="3" height="18" rx="1.5" opacity="0.85"/>
+                  <rect x="14"  y="-4"  width="3" height="8" rx="1.5" opacity="0.85"/>
+                  <rect x="21"  y="-11" width="3" height="22" rx="1.5" opacity="0.85"/>
+                  <rect x="28"  y="-7"  width="3" height="14" rx="1.5" opacity="0.85"/>
+                  <rect x="35"  y="-13" width="3" height="26" rx="1.5" opacity="0.85"/>
+                  <rect x="42"  y="-5"  width="3" height="10" rx="1.5" opacity="0.85"/>
+                  <rect x="49"  y="-10" width="3" height="20" rx="1.5" opacity="0.85"/>
+                  <rect x="56"  y="-15" width="3" height="30" rx="1.5" opacity="0.85"/>
+                  <rect x="63"  y="-8"  width="3" height="16" rx="1.5" opacity="0.85"/>
+                  <rect x="70"  y="-12" width="3" height="24" rx="1.5" opacity="0.85"/>
+                  <rect x="77"  y="-6"  width="3" height="12" rx="1.5" opacity="0.85"/>
+                  <rect x="84"  y="-14" width="3" height="28" rx="1.5" opacity="0.85"/>
+                  <rect x="91"  y="-9"  width="3" height="18" rx="1.5" opacity="0.85"/>
+                  <rect x="98"  y="-16" width="3" height="32" rx="1.5" opacity="0.85"/>
+                  <rect x="105" y="-7"  width="3" height="14" rx="1.5" opacity="0.85"/>
+                  <rect x="112" y="-11" width="3" height="22" rx="1.5" opacity="0.85"/>
+                  <rect x="119" y="-15" width="3" height="30" rx="1.5" opacity="0.85"/>
+                  <rect x="126" y="-8"  width="3" height="16" rx="1.5" opacity="0.85"/>
+                  <rect x="133" y="-17" width="3" height="34" rx="1.5" opacity="0.85"/>
+                  <rect x="140" y="-12" width="3" height="24" rx="1.5" opacity="0.85"/>
+                  <rect x="147" y="-9"  width="3" height="18" rx="1.5" opacity="0.85"/>
+                  <rect x="154" y="-16" width="3" height="32" rx="1.5" opacity="0.85"/>
+                  <rect x="161" y="-13" width="3" height="26" rx="1.5" opacity="0.85"/>
+                  <rect x="168" y="-10" width="3" height="20" rx="1.5" opacity="0.85"/>
+                  <rect x="175" y="-18" width="3" height="36" rx="1.5" opacity="0.85"/>
+                  <rect x="182" y="-12" width="3" height="24" rx="1.5" opacity="0.85"/>
+                  <rect x="189" y="-9"  width="3" height="18" rx="1.5" opacity="0.85"/>
+                  <!-- cursor line -->
+                  <line x1="195" y1="-20" x2="195" y2="20" stroke="#007AFF" stroke-width="1.5" opacity="0.55"/>
+                  <circle cx="195" cy="0" r="3.5"/>
+                  <!-- taper after cursor -->
+                  <rect x="201" y="-4"  width="3" height="8" rx="1.5" opacity="0.35"/>
+                  <rect x="208" y="-3"  width="3" height="6" rx="1.5" opacity="0.35"/>
+                  <rect x="215" y="-2"  width="3" height="4" rx="1.5" opacity="0.35"/>
+                  <rect x="222" y="-3"  width="3" height="6" rx="1.5" opacity="0.35"/>
+                  <rect x="229" y="-2"  width="3" height="4" rx="1.5" opacity="0.35"/>
+                  <rect x="236" y="-2"  width="3" height="4" rx="1.5" opacity="0.35"/>
+                  <rect x="243" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="250" y="-2"  width="3" height="4" rx="1.5" opacity="0.35"/>
+                  <rect x="257" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="264" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="271" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="278" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="285" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                  <rect x="292" y="-1"  width="3" height="3" rx="1.5" opacity="0.35"/>
+                </g>
+              </g>
+            </g>
+
+            <!-- Stop button -->
+            <g transform="translate(155,750)">
+              <rect width="80" height="64" rx="32" fill="url(#stopBlue)"/>
+              <rect width="80" height="64" rx="32" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="0.5"/>
+              <rect x="30" y="22" width="20" height="20" rx="5" fill="white"/>
+            </g>
+
+            <!-- Home indicator -->
+            <rect x="120" y="822" width="150" height="5" rx="2.5" fill="#15171C" opacity="0.4"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== PRIVACY BAND ===== -->
+<section class="privacy-band" id="privacy">
+  <div class="privacy-content">
+    <span class="label reveal">Privacy</span>
+    <h2 class="reveal delay-1">Nothing leaves<br/>your iPhone<span style="color: var(--accent);">.</span></h2>
+    <p class="body reveal delay-2">Transcription runs on device. AI rewrites run on device. Your voice and your words stay where you put them.</p>
+
+    <div class="proof-grid">
+      <div class="proof reveal delay-1">
+        <h3>Local speech recognition</h3>
+        <p>Apple's on-device speech models and Parakeet 600M handle transcription. Audio never leaves the device.</p>
+      </div>
+      <div class="proof reveal delay-2">
+        <h3>Local AI rewrite</h3>
+        <p>Qwen 3.5 4B runs entirely on iPhone 15 Pro and later. Apple Foundation Models fallback for shorter tasks.</p>
+      </div>
+      <div class="proof reveal delay-3">
+        <h3>No account, no cloud</h3>
+        <p>No sign-in. No server. No third-party SDKs. No analytics that ship your dictations anywhere.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== SPECS ===== -->
+<section class="specs">
+  <div class="spec reveal">
+    <h4>Requires</h4>
+    <p>iOS 26 or later. iPhone with A14 chip or newer.</p>
+  </div>
+  <div class="spec reveal delay-1">
+    <h4>AI rewrite</h4>
+    <p>Optional. iPhone 15 Pro and later. 2.5 GB download.</p>
+  </div>
+  <div class="spec reveal delay-2">
+    <h4>Languages</h4>
+    <p>English at launch. More to follow.</p>
+  </div>
+  <div class="spec reveal delay-3">
+    <h4>Price</h4>
+    <p>Free to download. No subscription.</p>
+  </div>
+</section>
+
+<!-- ===== FINAL CTA ===== -->
+<section class="final" id="download">
+  <h2 class="reveal">Speak<span class="period">.</span><br/>It's typed<span class="period">.</span></h2>
+  <p class="lede reveal delay-1">Jot is on the App Store. Free, no account, on-device.</p>
+  <div class="reveal delay-2" style="display: flex; justify-content: center;">
+    <a class="dictate-pill" href="#" aria-label="Get Jot">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="9" y="3" width="6" height="12" rx="3" fill="white"/>
+        <path d="M6 11a6 6 0 0012 0M12 17v3M9 20.5h6" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span>Get on the App Store</span>
+    </a>
+  </div>
+</section>
+
+<footer>
+  <div class="brand">
+    <span class="brand-avatar">J</span>
+    <span class="brand-name">Jot</span>
+  </div>
+  <nav>
+    <a href="#privacy">Privacy</a>
+    <a href="mailto:vineetu@gmail.com">Support</a>
+    <a href="#download">App Store</a>
+  </nav>
+  <div>&copy; 2026 Jot. Made for iPhone.</div>
+</footer>
+
+<script>
+  const nav = document.getElementById('nav');
+  const onScroll = () => { nav.classList.toggle('scrolled', window.scrollY > 12); };
+  document.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    }
+  }, { threshold: 0.12, rootMargin: '0px 0px -60px 0px' });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+</script>
+
+</body>
+</html>

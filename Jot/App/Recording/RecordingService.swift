@@ -12,6 +12,14 @@ final class RecordingService {
         case converterUnavailable
         case sessionConfiguration(Error)
         case engineStart(Error)
+        /// Another app currently holds the mic (active phone call, Siri,
+        /// another voice app). We use `.mixWithOthers` so `setActive(true)`
+        /// + `engine.start()` both succeed in that state — but
+        /// `inputNode.outputFormat(forBus: 0)` reports 0 channels / 0 Hz
+        /// and the tap produces silence. Detected pre-tap so we can show
+        /// the user a real banner instead of opening the hero with
+        /// "Listening…" and capturing nothing.
+        case micUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -20,6 +28,7 @@ final class RecordingService {
             case .converterUnavailable: return "Could not build the 16 kHz audio converter."
             case .sessionConfiguration(let error): return "Audio session error: \(error.localizedDescription)"
             case .engineStart(let error): return "Audio engine failed to start: \(error.localizedDescription)"
+            case .micUnavailable: return "Microphone is busy — another app is using it. Try again in a moment."
             }
         }
     }
@@ -112,6 +121,9 @@ final class RecordingService {
 
     private var engine: AVAudioEngine?
     private var capture: CaptureContext?
+    private var isCapturingSlice: Bool = false
+    private var isTapInstalled: Bool = false
+    private let tapRouter = AudioTapRouter()
     private var warmCooldownTask: Task<Void, Never>?
     /// Repeating task that refreshes `AppGroup.warmHoldHeartbeat` every
     /// ~1s while warm-hold is active. The keyboard treats a stale
@@ -293,12 +305,12 @@ final class RecordingService {
         }
 
         if isWarm {
-            if let engine {
+            if let engine, engine.isRunning, isTapInstalled {
                 try await startFromWarmHold(engine: engine)
                 return
             }
 
-            log.error("Warm-hold state had no engine; falling back to cold start.")
+            log.error("Warm-hold state had no running tapped engine; falling back to cold start.")
             exitWarmHold()
         }
 
@@ -307,6 +319,21 @@ final class RecordingService {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let hardwareFormat = input.outputFormat(forBus: 0)
+
+        // Mic-availability preflight: with `.mixWithOthers`, configureSession
+        // succeeds even when another app holds the mic exclusively (active
+        // phone call, Siri capturing, another voice-input app). In that
+        // state iOS reports the input bus as 0 channels / 0 Hz — the
+        // engine and tap will install + start without throwing, but every
+        // tap callback delivers silence. Without this guard the upstream
+        // banner mechanism never fires, the hero pushes with "Listening…",
+        // and the user records into a void. Catching it here surfaces a
+        // real error to `triggerAutoStart`'s banner path.
+        guard hardwareFormat.channelCount > 0, hardwareFormat.sampleRate > 0 else {
+            log.error("Mic unavailable on start — input reports channels=\(hardwareFormat.channelCount) sampleRate=\(hardwareFormat.sampleRate)")
+            restoreSession()
+            throw RecordingError.micUnavailable
+        }
 
         guard let converter = AVAudioConverter(from: hardwareFormat, to: Self.target) else {
             restoreSession()
@@ -320,22 +347,22 @@ final class RecordingService {
         // so post-alloc kickoff just constructs the engine + drain task
         // against it.
         let streamingQueue = StreamingBufferQueue()
-        self.streamingQueue = streamingQueue
+        beginSlice(capture: capture, streamingQueue: streamingQueue)
 
-        installTap(on: engine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
+        installTap(on: engine, hardwareFormat: hardwareFormat)
 
         do {
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
+            _ = endActiveSlice()
+            removeTapIfInstalled(from: input)
             restoreSession()
             self.streamingQueue = nil
             throw RecordingError.engineStart(error)
         }
 
         self.engine = engine
-        self.capture = capture
         subscribeSystemObservers(engine: engine)
         let startedAt = Date()
         isRecording = true
@@ -359,6 +386,11 @@ final class RecordingService {
     }
 
     private func startFromWarmHold(engine: AVAudioEngine) async throws {
+        guard engine.isRunning, isTapInstalled else {
+            fullyTeardownEngine()
+            throw RecordingError.notRunning
+        }
+
         warmCooldownTask?.cancel()
         warmCooldownTask = nil
         warmHeartbeatTask?.cancel()
@@ -379,25 +411,12 @@ final class RecordingService {
 
         let capture = CaptureContext(converter: converter, inputFormat: hardwareFormat, target: Self.target, log: log)
 
-        // Pre-allocate the streaming queue BEFORE installTap. Warm resume keeps
-        // the engine instance but each recording still owns a fresh queue.
+        // Warm resume keeps the engine + tap continuously running, but each
+        // slice still owns a fresh capture context and streaming queue.
         let streamingQueue = StreamingBufferQueue()
-        self.streamingQueue = streamingQueue
-
-        installTap(on: engine, hardwareFormat: hardwareFormat, capture: capture, streamingQueue: streamingQueue)
-
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            self.streamingQueue = nil
-            self.capture = nil
-            fullyTeardownEngine()
-            throw RecordingError.engineStart(error)
-        }
+        beginSlice(capture: capture, streamingQueue: streamingQueue)
 
         self.engine = engine
-        self.capture = capture
         subscribeSystemObservers(engine: engine)
         let startedAt = Date()
         isRecording = true
@@ -408,6 +427,33 @@ final class RecordingService {
         Task { [weak self] in
             await self?.kickOffStreamingSession()
         }
+    }
+
+    private func beginSlice(capture: CaptureContext, streamingQueue: StreamingBufferQueue) {
+        self.capture = capture
+        self.streamingQueue = streamingQueue
+        isCapturingSlice = true
+        tapRouter.beginSlice(capture: capture, streamingQueue: streamingQueue)
+    }
+
+    private func endActiveSlice() -> CaptureContext? {
+        isCapturingSlice = false
+        let routedCapture = tapRouter.endSlice()
+        let activeCapture = capture ?? routedCapture
+        capture = nil
+        return activeCapture
+    }
+
+    private func clearActiveSliceRouting() {
+        isCapturingSlice = false
+        _ = tapRouter.endSlice()
+        capture = nil
+    }
+
+    private func removeTapIfInstalled(from input: AVAudioInputNode) {
+        guard isTapInstalled else { return }
+        input.removeTap(onBus: 0)
+        isTapInstalled = false
     }
 
     /// Installs the audio tap on `engine.inputNode` with the canonical Jot
@@ -422,34 +468,27 @@ final class RecordingService {
     /// iOS 26.2). Do not rewrite without preserving the `@Sendable`.
     private func installTap(
         on engine: AVAudioEngine,
-        hardwareFormat: AVAudioFormat,
-        capture: CaptureContext,
-        streamingQueue: StreamingBufferQueue?
+        hardwareFormat: AVAudioFormat
     ) {
         let input = engine.inputNode
         let tapOnce = TapOnceGate()
         let amplitudeGate = AmplitudeGate(intervalMS: 33)
         let appGroupAmplitudeGate = AmplitudeGate(intervalMS: 100)
         let tapLog = log
-        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [capture, tapOnce, amplitudeGate, appGroupAmplitudeGate, tapLog, streamingQueue, weak self] pcm, _ in
+        let router = tapRouter
+        let tapBlock: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = { [router, tapOnce, amplitudeGate, appGroupAmplitudeGate, tapLog, weak self] pcm, _ in
             if tapOnce.fireOnce() {
                 tapLog.debug("[recording] first tap callback on \(Thread.current.description, privacy: .public)")
             }
-            // Single converter pass: `CaptureContext.ingest` does the
-            // conversion + storage append for the batch path AND returns
-            // the converted samples. The streaming fan-out pushes the same
-            // `[Float]` into the FIFO queue for the off-MainActor drain
-            // task to feed FluidAudio. nil return (drain-in-progress, format
-            // mismatch, conversion error) skips the streaming push — exactly
-            // the semantics we want during teardown.
-            let convertedSamples = capture.ingest(pcm)
-            if let convertedSamples, let streamingQueue {
-                streamingQueue.push(convertedSamples)
-            }
+            // Single converter pass when a slice is active: the router sends
+            // the buffer to the current `CaptureContext` and streaming queue.
+            // While warm-held and idle, it drops the buffer before conversion,
+            // storage, amplitude publication, or live-preview fan-out.
+            guard router.route(pcm) else { return }
 
             if amplitudeGate.shouldFire(), let amp = normalizedAmplitude(pcm) {
                 Task { @MainActor in
-                    guard let self, self.isRecording else { return }
+                    guard let self, self.isRecording, self.isCapturingSlice else { return }
                     self.currentAmplitude = amp
                     if appGroupAmplitudeGate.shouldFire() {
                         AmplitudeProjection.write(amplitude: amp)
@@ -458,6 +497,7 @@ final class RecordingService {
             }
         }
         input.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat, block: tapBlock)
+        isTapInstalled = true
     }
 
     func stop() async throws -> [Float] {
@@ -469,17 +509,15 @@ final class RecordingService {
             // tore down the engine internally: the UI still calls stop() and
             // expects whatever samples we collected. Only throw `.notRunning` if
             // we have no capture at all — there was nothing to stop.
-            guard let capture else { throw RecordingError.notRunning }
-
-            if let engine {
-                engine.inputNode.removeTap(onBus: 0)
-            }
+            guard let capture = endActiveSlice() else { throw RecordingError.notRunning }
 
             let samples = capture.drain()
 
             // Streaming teardown — mirrors prototype `DualRecorder.swift:271-291`.
-            // The tap has already been removed; `CaptureContext.drain()` waits
-            // for in-flight tap callbacks to leave the converter/storage path.
+            // Slice capture has already been disabled in the router;
+            // `CaptureContext.drain()` waits for in-flight tap callbacks to
+            // leave the converter/storage path. The engine tap itself stays
+            // installed through warm hold and drops buffers while idle.
             // tearDown then signals EOS, awaits the drain task (bounded by
             // in-flight chunk inference, ~50-200ms typical), promotes the
             // streaming preview to its final snapshot via engine.finish(), then
@@ -487,14 +525,14 @@ final class RecordingService {
             // every-stop policy per spec §2.1).
             await tearDownStreamingSession()
 
-            self.capture = nil
             isRecording = false
             currentAmplitude = nil
             AmplitudeProjection.clear()
 
-            let shouldEnterWarmHold = AppGroup.warmHoldEnabled
-                && !samples.isEmpty
-                && engine != nil
+            let cooldownDuration = warmHoldCooldownDuration()
+            let shouldEnterWarmHold = cooldownDuration > 0
+                && engine?.isRunning == true
+                && isTapInstalled
 
             if !shouldEnterWarmHold {
                 fullyTeardownEngine()
@@ -512,7 +550,7 @@ final class RecordingService {
             let seconds = Double(samples.count) / Self.sampleRate
             log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
             if shouldEnterWarmHold {
-                enterWarmHold()
+                enterWarmHold(duration: cooldownDuration)
             }
             isStopInFlight = false
             return samples
@@ -530,7 +568,16 @@ final class RecordingService {
         }
     }
 
-    private func enterWarmHold() {
+    private func warmHoldCooldownDuration() -> TimeInterval {
+        guard AppGroup.warmHoldEnabled else { return 0 }
+        if let rawDuration = AppGroup.defaults.object(forKey: AppGroup.Keys.warmHoldDurationSeconds) as? NSNumber,
+           rawDuration.doubleValue <= 0 {
+            return 0
+        }
+        return max(0, AppGroup.warmHoldDurationSeconds)
+    }
+
+    private func enterWarmHold(duration: TimeInterval) {
         log.notice("[WARM-HOLD-DEBUG] enterWarmHold called, isPipelineInFlight=\(self.isPipelineInFlight, privacy: .public)")
 
         guard let engine else {
@@ -539,16 +586,15 @@ final class RecordingService {
             return
         }
 
-        warmCooldownTask?.cancel()
-
-        // `stop()` removes the tap before draining capture. Warm hold keeps the
-        // prepared engine and active audio session, but no tap remains installed
-        // while Jot is not actively recording/transcribing audio.
-        engine.pause()
+        guard engine.isRunning, isTapInstalled, !isCapturingSlice else {
+            log.error("Warm-hold entry requested without a running idle tap; fully tearing down.")
+            fullyTeardownEngine()
+            return
+        }
 
         // Snapshot the configured duration once at entry; subsequent Settings
         // changes must NOT resize this in-flight warm window.
-        let duration = AppGroup.warmHoldDurationSeconds
+        warmCooldownTask?.cancel()
         let expiresAt = Date().addingTimeInterval(duration)
         isWarm = true
         warmExpiresAt = expiresAt
@@ -558,7 +604,7 @@ final class RecordingService {
             } catch {
                 return
             }
-            guard let self, self.isWarm else { return }
+            guard let self, self.isWarm, !self.isCapturingSlice else { return }
             self.log.notice("[WARM-HOLD-DEBUG] cooldown timer fired")
             self.exitWarmHold()
         }
@@ -620,7 +666,9 @@ final class RecordingService {
     }
 
     private func fullyTeardownEngine() {
+        clearActiveSliceRouting()
         if let engine {
+            removeTapIfInstalled(from: engine.inputNode)
             engine.stop()
         }
         unsubscribeSystemObservers()
@@ -730,13 +778,13 @@ final class RecordingService {
             return
         }
 
+        clearActiveSliceRouting()
         if let engine {
-            engine.inputNode.removeTap(onBus: 0)
+            removeTapIfInstalled(from: engine.inputNode)
             engine.stop()
         }
         unsubscribeSystemObservers()
         self.engine = nil
-        self.capture = nil
         // Streaming teardown is async but `forceStop` is synchronous (called
         // from background-handler closures with limited wallclock). Hand off
         // to a detached Task — the queue is signaled EOS, the drain task
@@ -1099,7 +1147,7 @@ final class RecordingService {
     }
 
     private func handleWarmHoldDefaultsChange() {
-        guard isWarm, !AppGroup.warmHoldEnabled else { return }
+        guard isWarm, warmHoldCooldownDuration() <= 0 else { return }
         log.notice("Warm hold disabled in Settings — cooling engine")
         exitWarmHold()
     }
@@ -1141,16 +1189,13 @@ final class RecordingService {
         // cut-A-reviewer's BLOCKER #4 closure.
         let snapshotSessionID = currentSessionID
         let snapshotStartedAt = currentRecordingStartedAt ?? Date()
-        let snapshotCapture = self.capture
+        let snapshotCapture = endActiveSlice()
 
         // ===== Teardown phase =====
-        engine.inputNode.removeTap(onBus: 0)
+        removeTapIfInstalled(from: engine.inputNode)
         engine.stop()
         unsubscribeSystemObservers()
         self.engine = nil
-        // Hand the capture ref to the dispatch task; nil ours so the next
-        // start() builds a fresh CaptureContext rather than reusing this one.
-        self.capture = nil
 
         // Streaming teardown — same fire-and-forget shape as `forceStop`.
         // `internalStop` is synchronous (interrupt-observer path) so we
@@ -1243,6 +1288,53 @@ final class RecordingService {
         channels: channelCount,
         interleaved: false
     )!
+}
+
+/// Thread-safe hand-off between the long-lived audio tap and the current
+/// dictation slice. The tap captures this stable object once; `start()` /
+/// `stop()` swap per-slice capture state behind the lock.
+private final class AudioTapRouter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCapturingSlice: Bool = false
+    private var capture: CaptureContext?
+    private var streamingQueue: StreamingBufferQueue?
+
+    func beginSlice(capture: CaptureContext, streamingQueue: StreamingBufferQueue) {
+        lock.lock()
+        self.capture = capture
+        self.streamingQueue = streamingQueue
+        isCapturingSlice = true
+        lock.unlock()
+    }
+
+    @discardableResult
+    func endSlice() -> CaptureContext? {
+        lock.lock()
+        isCapturingSlice = false
+        let activeCapture = capture
+        capture = nil
+        streamingQueue = nil
+        lock.unlock()
+        return activeCapture
+    }
+
+    /// Returns `false` when warm-held and idle so the tap block can do
+    /// literally no per-buffer work beyond the routing check.
+    func route(_ pcm: AVAudioPCMBuffer) -> Bool {
+        lock.lock()
+        guard isCapturingSlice, let capture else {
+            lock.unlock()
+            return false
+        }
+        let streamingQueue = self.streamingQueue
+        lock.unlock()
+
+        let convertedSamples = capture.ingest(pcm)
+        if let convertedSamples, let streamingQueue {
+            streamingQueue.push(convertedSamples)
+        }
+        return true
+    }
 }
 
 /// One-shot gate for the tap-callback diagnostic log.
@@ -1660,6 +1752,7 @@ extension RecordingService.RecordingError: CustomNSError {
     /// - 2: `converterUnavailable`
     /// - 3: `sessionConfiguration(Error)`
     /// - 4: `engineStart(Error)`
+    /// - 5: `micUnavailable`
     public var errorCode: Int {
         switch self {
         case .alreadyRunning: return 0
@@ -1667,6 +1760,7 @@ extension RecordingService.RecordingError: CustomNSError {
         case .converterUnavailable: return 2
         case .sessionConfiguration: return 3
         case .engineStart: return 4
+        case .micUnavailable: return 5
         }
     }
 
@@ -1692,6 +1786,8 @@ extension RecordingService.RecordingError: CustomLocalizedStringResourceConverti
             return "Audio session could not be configured: \(error.localizedDescription)"
         case .engineStart(let error):
             return "Audio engine failed to start: \(error.localizedDescription)"
+        case .micUnavailable:
+            return "Microphone is busy — another app is using it. Try again in a moment."
         }
     }
 }

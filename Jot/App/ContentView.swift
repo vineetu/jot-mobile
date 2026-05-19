@@ -102,6 +102,7 @@ struct ContentView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(RecordingService.self) private var recordingService
     @Environment(KeyboardRewriteRouter.self) private var keyboardRewriteRouter
     @Environment(StreamingPartial.self) private var streamingPartial
@@ -125,9 +126,17 @@ struct ContentView: View {
     /// is presenting Z" crash path.
     @State private var pendingRerunAfterDismiss = false
     @State private var pendingDeletion: Transcript?
+    @State private var isSelectionMode = false
+    @State private var selectedTranscriptIDs: Set<UUID> = []
+    @State private var pendingBulkDeletionIDs: Set<UUID> = []
+    /// Surfaces the "Combine N entries?" confirmation when the user taps
+    /// Combine in the selection toolbar. Non-empty = sheet visible. Cleared
+    /// when the user picks an option or cancels.
+    @State private var pendingCombineIDs: Set<UUID> = []
     @State private var copiedTranscriptID: UUID?
     @State private var copyResetTask: Task<Void, Never>?
     @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
+    @State private var selectionHaptic = UISelectionFeedbackGenerator()
     /// Drives the programmatic push to `RecordingHeroView` when a recording
     /// is in flight that this surface didn't start (URL-bounce case). Bound
     /// via `.navigationDestination(isPresented:)`; cleared when recording
@@ -168,8 +177,10 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: JotDesign.Spacing.sectionGapV09) {
                         RecentsNavBar(
+                            isSelectionMode: isSelectionMode,
                             onSettings: { showSettings = true },
-                            onHelp: { showHelp = true }
+                            onHelp: { showHelp = true },
+                            onCancelSelection: exitSelectionMode
                         )
 
                         heroTitle
@@ -191,8 +202,12 @@ struct ContentView: View {
                             copiedTranscriptID: copiedTranscriptID,
                             isLiveRecording: isLiveRecordingInline,
                             liveStreamingText: streamingPartial.streamingText,
+                            isSelectionMode: $isSelectionMode,
+                            selectedTranscriptIDs: $selectedTranscriptIDs,
+                            navPath: $navPath,
                             onCopy: copy,
-                            onDelete: { pendingDeletion = $0 }
+                            onDelete: { pendingDeletion = $0 },
+                            onEnterSelectionMode: { enterSelectionMode(selecting: $0) }
                         )
                     }
                     .padding(.horizontal, JotDesign.Spacing.pageGutter)
@@ -205,13 +220,13 @@ struct ContentView: View {
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
 
-                // Bottom action zone: while a recording is running with the
-                // hero dismissed, swap the FAB for a "return to recording"
-                // pill. This is the only re-entry path for a user-backgrounded
-                // recording, so it has to stay obvious. Suppressed while the
-                // wizard is presenting — W6's in-wizard mic test sets
-                // `isRecording == true` and we don't want a stray pill leaking
-                // through the wizard overlay or driving a stale timer.
+                // Bottom action zone: selection mode owns the toolbar. Otherwise,
+                // while a recording is running with the hero dismissed, swap the
+                // FAB for a "return to recording" pill. This is the only re-entry
+                // path for a user-backgrounded recording, so it has to stay
+                // obvious. Suppressed while the wizard is presenting — W6's mic
+                // test sets `isRecording == true` and we don't want a stray pill
+                // leaking through the wizard overlay or driving a stale timer.
                 //
                 // Also gated on `userDismissedHeroDuringRecording` — the pill
                 // is ONLY a re-entry affordance for an explicit back-out, not
@@ -220,7 +235,12 @@ struct ContentView: View {
                 // `.onAppear` pushes the hero; without this gate the pill
                 // would flash briefly in that gap. Auto-push paths cover the
                 // "no flag set, recording active" case before any pixel ships.
-                if isLiveRecordingInline {
+                if isSelectionMode {
+                    recentsSelectionToolbar
+                        .padding(.horizontal, JotDesign.Spacing.pageGutter)
+                        .padding(.bottom, 16)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if isLiveRecordingInline {
                     RecordingReturnPill {
                         // Re-enter the hero. Clear the dismissal flag so the
                         // next back-tap arms it fresh, and adopt the running
@@ -245,6 +265,7 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.25), value: recordingService.isRecording)
             .animation(.easeInOut(duration: 0.25), value: showRecordingHero)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSelectionMode)
             .navigationBarHidden(true)
             .navigationDestination(isPresented: $showRecordingHero) {
                 RecordingHeroView(
@@ -254,6 +275,20 @@ struct ContentView: View {
                     },
                     intent: heroIntent
                 )
+            }
+            .navigationDestination(for: UUID.self) { transcriptID in
+                // Programmatic push for Recents row taps. We push the UUID rather
+                // than the @Model object so navPath stays Hashable-safe and we
+                // don't rely on SwiftData identity semantics inside NavigationPath.
+                // Fetch the live model from the @Query result at render time.
+                if let transcript = transcripts.first(where: { $0.id == transcriptID }) {
+                    TranscriptDetailView(
+                        transcript: transcript,
+                        keyboardRewriteIntent: nil
+                    )
+                } else {
+                    EmptyView()
+                }
             }
             .navigationDestination(for: KeyboardRewriteRouter.KeyboardRewriteTarget.self) { target in
                 let fetched = fetchTranscript(byID: target.id)
@@ -302,8 +337,47 @@ struct ContentView: View {
                 pendingDeletion = nil
             }
         }
+        .alert(
+            "Delete \(pendingBulkDeletionIDs.count) items?",
+            isPresented: Binding(
+                get: { !pendingBulkDeletionIDs.isEmpty },
+                set: { if !$0 { pendingBulkDeletionIDs = [] } }
+            )
+        ) {
+            Button("Delete \(pendingBulkDeletionIDs.count)", role: .destructive) {
+                deleteSelectedTranscripts(ids: pendingBulkDeletionIDs)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingBulkDeletionIDs = []
+            }
+        }
+        .confirmationDialog(
+            "Combine \(pendingCombineIDs.count) entries?",
+            isPresented: Binding(
+                get: { !pendingCombineIDs.isEmpty },
+                set: { if !$0 { pendingCombineIDs = [] } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Combine and delete originals", role: .destructive) {
+                let ids = pendingCombineIDs
+                pendingCombineIDs = []
+                combineSelectedTranscripts(ids: ids, deleteOriginals: true)
+            }
+            Button("Combine and keep originals") {
+                let ids = pendingCombineIDs
+                pendingCombineIDs = []
+                combineSelectedTranscripts(ids: ids, deleteOriginals: false)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingCombineIDs = []
+            }
+        } message: {
+            Text("Originals are joined in chronological order with paragraph breaks. Any prior rewrites are dropped.")
+        }
         .onAppear {
             copyHaptic.prepare()
+            selectionHaptic.prepare()
             refreshDonationCardVisibility()
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
@@ -330,6 +404,11 @@ struct ContentView: View {
             guard let newTarget else { return }
             navPath.append(newTarget)
             _ = keyboardRewriteRouter.consumePending()
+        }
+        .onChange(of: keyboardRewriteRouter.pendingOpenTranscriptID) { _, newID in
+            guard let newID else { return }
+            navPath.append(newID)
+            _ = keyboardRewriteRouter.consumePendingOpenTranscript()
         }
         .onDisappear {
             copyResetTask?.cancel()
@@ -378,6 +457,9 @@ struct ContentView: View {
             if phase == .active {
                 refreshDonationCardVisibility()
             }
+        }
+        .onChange(of: visibleTranscriptIDs) { _, visibleIDs in
+            selectedTranscriptIDs.formIntersection(visibleIDs)
         }
     }
 
@@ -512,7 +594,104 @@ struct ContentView: View {
         return groups
     }
 
+    private var visibleTranscriptIDs: Set<UUID> {
+        Set(transcriptGroups.flatMap(\.items).map(\.id))
+    }
+
     // MARK: - Actions
+
+    /// Maximum number of entries that can be combined in one operation.
+    /// Keeps the resulting single transcript from blowing past UI readability
+    /// (long scrolling block) and gives the user a soft prompt to be
+    /// intentional. The picker UX in `recentsSelectionToolbar` disables the
+    /// Combine button beyond this count.
+    private static let combineMaxSelection = 5
+
+    private var recentsSelectionToolbar: some View {
+        HStack(spacing: 12) {
+            Button("Select All") {
+                selectAllVisibleTranscripts()
+            }
+            .font(.system(size: 15, weight: .semibold, design: .default))
+            .foregroundStyle(Color.jotBlueTop)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .disabled(visibleTranscriptIDs.isEmpty)
+
+            Spacer(minLength: 8)
+
+            Button {
+                prepareCombine()
+            } label: {
+                Label("Combine", systemImage: "rectangle.stack.badge.plus")
+                    .labelStyle(.titleAndIcon)
+            }
+            .font(.system(size: 15, weight: .semibold, design: .default))
+            .foregroundStyle(
+                isCombineEnabled
+                    ? Color.jotBlueTop
+                    : Color.jotPageInkSecondary
+            )
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .disabled(!isCombineEnabled)
+            .accessibilityHint("Merge selected entries into one. Up to \(Self.combineMaxSelection).")
+
+            Button("Delete \(selectedTranscriptIDs.count)", role: .destructive) {
+                prepareBulkDelete()
+            }
+            .font(.system(size: 15, weight: .semibold, design: .default))
+            .foregroundStyle(
+                selectedTranscriptIDs.isEmpty
+                    ? Color.jotPageInkSecondary
+                    : Color(.systemRed)
+            )
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .disabled(selectedTranscriptIDs.isEmpty)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .modifier(
+            JotDesign.Surface.heavy.modifier(
+                cornerRadius: JotDesign.Spacing.sheetRadius
+            )
+        )
+    }
+
+    private var isCombineEnabled: Bool {
+        let count = selectedTranscriptIDs.count
+        return count >= 2 && count <= Self.combineMaxSelection
+    }
+
+    private func enterSelectionMode(selecting transcript: Transcript) {
+        selectedTranscriptIDs = [transcript.id]
+        isSelectionMode = true
+        selectionHaptic.selectionChanged()
+        selectionHaptic.prepare()
+    }
+
+    private func exitSelectionMode() {
+        selectedTranscriptIDs = []
+        pendingBulkDeletionIDs = []
+        pendingCombineIDs = []
+        isSelectionMode = false
+    }
+
+    private func selectAllVisibleTranscripts() {
+        selectedTranscriptIDs = visibleTranscriptIDs
+    }
+
+    private func prepareBulkDelete() {
+        guard !selectedTranscriptIDs.isEmpty else { return }
+        pendingBulkDeletionIDs = selectedTranscriptIDs
+    }
+
+    private func prepareCombine() {
+        guard isCombineEnabled else { return }
+        pendingCombineIDs = selectedTranscriptIDs
+    }
 
     /// Fired by `.sheet(onDismiss:)` once SwiftUI has fully torn the
     /// Settings sheet down. Firing `requestRerun()` here (rather than from
@@ -625,11 +804,91 @@ struct ContentView: View {
             // rewritten so its RecentsStrip can drop the deleted row
             // without waiting for the next presentation.
             CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            selectedTranscriptIDs.remove(transcript.id)
             pendingDeletion = nil
         } catch {
             modelContext.rollback()
             contentLog.error("Transcript delete save failed: \(error.localizedDescription, privacy: .public)")
             pendingDeletion = nil
+        }
+    }
+
+    private func deleteSelectedTranscripts(ids: Set<UUID>) {
+        let transcriptsToDelete = transcripts.filter { ids.contains($0.id) }
+        guard !transcriptsToDelete.isEmpty else {
+            pendingBulkDeletionIDs = []
+            selectedTranscriptIDs.subtract(ids)
+            return
+        }
+
+        for transcript in transcriptsToDelete {
+            modelContext.delete(transcript)
+        }
+
+        do {
+            try modelContext.save()
+            TranscriptHistoryMirror.refresh(from: modelContext)
+            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            pendingBulkDeletionIDs = []
+            selectedTranscriptIDs = []
+            isSelectionMode = false
+        } catch {
+            modelContext.rollback()
+            contentLog.error("Transcript bulk delete save failed: \(error.localizedDescription, privacy: .public)")
+            pendingBulkDeletionIDs = []
+        }
+    }
+
+    /// Merge the selected transcripts into a single new entry.
+    ///
+    /// Sources are joined in chronological order (oldest first). For each
+    /// source we use `displayText` — i.e. the AI rewrite if one exists,
+    /// otherwise the raw transcript. The intent: if the user took the time
+    /// to rewrite a source, that polished version is the one worth carrying
+    /// into the merged entry; un-rewritten sources contribute their original
+    /// text. The result is written into the new transcript's `text` field
+    /// (no rewrite of its own), so the combined entry surfaces as a clean
+    /// Original with no Rewrite tab. `TranscriptStore.append` handles fresh
+    /// id, ledger index, mirror refresh, and Darwin notification.
+    ///
+    /// When `deleteOriginals` is true, the source rows are then removed
+    /// in the same SwiftData transaction; otherwise they remain alongside
+    /// the new combined entry. Selection mode exits unconditionally on
+    /// success.
+    private func combineSelectedTranscripts(ids: Set<UUID>, deleteOriginals: Bool) {
+        let sources = transcripts
+            .filter { ids.contains($0.id) }
+            .sorted { $0.createdAt < $1.createdAt }
+        guard sources.count >= 2 else {
+            selectedTranscriptIDs.subtract(ids)
+            return
+        }
+
+        let combinedText = sources
+            .map { $0.displayText.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        guard !combinedText.isEmpty else {
+            selectedTranscriptIDs = []
+            isSelectionMode = false
+            return
+        }
+
+        do {
+            _ = try TranscriptStore.append(raw: combinedText)
+            if deleteOriginals {
+                for transcript in sources {
+                    modelContext.delete(transcript)
+                }
+                try modelContext.save()
+                TranscriptHistoryMirror.refresh(from: modelContext)
+                CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            }
+            selectedTranscriptIDs = []
+            isSelectionMode = false
+        } catch {
+            if deleteOriginals { modelContext.rollback() }
+            contentLog.error("Transcript combine failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

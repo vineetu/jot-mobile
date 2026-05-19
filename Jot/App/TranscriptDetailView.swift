@@ -73,6 +73,7 @@ struct TranscriptDetailView: View {
 
     @State private var selectedTab: DetailTab = .original
     @State private var pendingDeletion = false
+    @State private var pendingDiscardRewrite = false
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
     @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -151,7 +152,9 @@ struct TranscriptDetailView: View {
 
                 sublineRow
 
-                tabSelector
+                if hasRewrite {
+                    tabSelector
+                }
 
                 if rewriteState == .running {
                     runningRewriteCard
@@ -182,16 +185,37 @@ struct TranscriptDetailView: View {
         // disable. Putting the enable here ensures the gesture survives.
         .enableInteractivePopGesture()
         .confirmationDialog(
-            "Delete this entry?",
+            hasRewrite
+                ? "Delete this entry or just the rewrite?"
+                : "Delete this entry?",
             isPresented: $pendingDeletion,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button("Delete this entry", role: .destructive) {
                 delete()
+            }
+            if hasRewrite {
+                Button("Delete rewrite only", role: .destructive) {
+                    discardRewrite()
+                }
             }
             Button("Cancel", role: .cancel) {
                 pendingDeletion = false
             }
+        }
+        .confirmationDialog(
+            "Discard rewrite?",
+            isPresented: $pendingDiscardRewrite,
+            titleVisibility: .visible
+        ) {
+            Button("Discard", role: .destructive) {
+                discardRewrite()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDiscardRewrite = false
+            }
+        } message: {
+            Text("This removes the rewrite and restores the original. The rewrite cannot be recovered.")
         }
         .sheet(isPresented: $showRewritePicker) {
             // Mockup 10 / plan §6.1 — bottom-sheet picker for the user's
@@ -459,8 +483,18 @@ struct TranscriptDetailView: View {
             Text(attributionText)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.jotMute)
+            Spacer(minLength: 8)
+            Button {
+                pendingDiscardRewrite = true
+            } label: {
+                Text("Discard")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(.systemRed))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Discard rewrite")
+            .accessibilityHint("Removes the rewrite and shows the original text")
         }
-        .accessibilityElement(children: .combine)
     }
 
     /// Attribution copy for a freshly-rendered Rewrite tab. When this view
@@ -535,7 +569,7 @@ struct TranscriptDetailView: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.7))
+                .fill(.ultraThinMaterial)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -598,7 +632,9 @@ struct TranscriptDetailView: View {
                 ActionBarItem(
                     systemImage: "trash",
                     label: "Delete",
-                    accessibilityLabel: "Delete transcript"
+                    accessibilityLabel: hasRewrite
+                        ? "Delete options"
+                        : "Delete transcript"
                 ) {
                     pendingDeletion = true
                 }
@@ -805,6 +841,32 @@ struct TranscriptDetailView: View {
         }
     }
 
+    /// Restore the transcript to its pre-rewrite state. Used by both the
+    /// floating X affordance on the Rewrite tab and the "Delete rewrite only"
+    /// option in the trash menu. Cancels any in-flight rewrite, nils
+    /// `cleanedText`, saves SwiftData, refreshes the App Group mirror so the
+    /// keyboard's RecentsStrip reverts to raw text, and bounces the segmented
+    /// control to Original (the tab row hides automatically because
+    /// `hasRewrite` is now false).
+    private func discardRewrite() {
+        activeRewriteTask?.cancel()
+        activeRewriteTask = nil
+        rewriteState = .idle
+        lastRewriteAt = nil
+
+        transcript.cleanedText = nil
+        do {
+            try modelContext.save()
+            TranscriptHistoryMirror.refresh(from: modelContext)
+            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+        } catch {
+            modelContext.rollback()
+            detailLog.error("Discard rewrite save failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        selectedTab = .original
+    }
+
     // MARK: - Rewrite lifecycle
 
     /// Re-syncs the saved-prompts list and the LLM client adapter.
@@ -845,7 +907,20 @@ struct TranscriptDetailView: View {
             rewriteState = .error("Transcript is empty.")
             return
         }
-        guard isMagicEnabled else { return }
+        // Correctness-only guards. Do NOT re-check `isMagicEnabled` here:
+        // the picker has already been presented (so the user clearly
+        // intended a rewrite), and `isMagicEnabled` would falsely block
+        // the very first run when `presentRewritePicker`'s own
+        // `clientAdapter?.warm()` kick has flipped the live status to
+        // `.loading` between picker-open and prompt-pick. The downstream
+        // `LLMClient.rewrite(...)` call joins any in-flight warm, so a
+        // mid-load status is fine — the request just blocks briefly on
+        // the first token. (Without this fix the first tap after install
+        // silently returned and the menu closed; only the second tap,
+        // once `.ready` had been reached, would actually rewrite.)
+        guard AppGroup.aiRewriteEnabled else { return }
+        guard rewriteState != .running else { return }
+        guard !keyboardRewriteInFlight else { return }
 
         activeRewriteTask?.cancel()
         rewriteState = .running

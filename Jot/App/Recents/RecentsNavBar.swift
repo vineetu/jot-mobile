@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct RecentsNavBar: View {
+    let isSelectionMode: Bool
     let onSettings: () -> Void
     let onHelp: () -> Void
+    let onCancelSelection: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -49,8 +51,29 @@ struct RecentsNavBar: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
                 .accessibilityHint("Opens Settings")
+
+                if isSelectionMode {
+                    cancelSelectionButton
+                }
             }
         }
+    }
+
+    private var cancelSelectionButton: some View {
+        Button {
+            onCancelSelection()
+        } label: {
+            Text("Cancel")
+                .font(.system(size: 15, weight: .semibold, design: .default))
+                .foregroundStyle(Color.jotBlueTop)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.horizontal, 6)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Cancel selection")
     }
 
     private func glassIconButton(

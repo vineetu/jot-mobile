@@ -20,6 +20,11 @@ struct AIOfferStep: View {
 
     @State private var didKickOff = false
     @State private var kickoffTask: Task<Void, Never>?
+    /// Synchronously probed at view-construction time so the CTA text +
+    /// body copy reflect on-disk reality from the first frame — no flash
+    /// of "Download · 2.5 GB" for users who already have the model. See
+    /// `LLMClientFactory.currentProviderWeightsOnDisk` for the probe.
+    private let weightsOnDisk: Bool = LLMClientFactory.shared.currentProviderWeightsOnDisk
 
     var body: some View {
         WizardPanel(
@@ -51,11 +56,13 @@ struct AIOfferStep: View {
             }
         } footer: {
             WizardPrimaryButton(
-                title: "Download · \(JotDesign.activeRewriteModelSize)",
+                title: primaryCTATitle,
                 isDisabled: didKickOff,
                 action: kickOffWarm
             )
-            WizardSecondaryTextButton(title: "Skip", action: onComplete)
+            if !weightsOnDisk {
+                WizardSecondaryTextButton(title: "Skip", action: onComplete)
+            }
         }
         .onDisappear {
             kickoffTask?.cancel()
@@ -64,7 +71,14 @@ struct AIOfferStep: View {
     }
 
     private var bodyCopy: String {
-        "Polish dictations and convert prose to bullets. \(JotDesign.activeRewriteModelDisplayName) runs on your iPhone — about \(JotDesign.activeRewriteModelSize)."
+        if weightsOnDisk {
+            return "Polish dictations and convert prose to bullets. \(JotDesign.activeRewriteModelDisplayName) is already on this iPhone."
+        }
+        return "Polish dictations and convert prose to bullets. \(JotDesign.activeRewriteModelDisplayName) runs on your iPhone — about \(JotDesign.activeRewriteModelSize)."
+    }
+
+    private var primaryCTATitle: String {
+        weightsOnDisk ? "Continue" : "Download · \(JotDesign.activeRewriteModelSize)"
     }
 
     private var experimentalChip: some View {

@@ -32,6 +32,13 @@ struct RecentsStrip: View {
     let entries: [TranscriptHistoryMirror.Entry]
     let onInsertEntry: (TranscriptHistoryMirror.Entry) -> Void
 
+    /// Fired when the user taps the row-trailing "open in app" button.
+    /// Caller is expected to bounce to `jot://transcript?id=<uuid>` so
+    /// the main app pushes the transcript detail view. Distinct from
+    /// `onInsertEntry` (paste-at-cursor) so the row carries two clear
+    /// affordances: paste on the body, open in app on the trailing icon.
+    let onOpenInApp: (TranscriptHistoryMirror.Entry) -> Void
+
     /// "See all" header link — routes to `jot://history` via the
     /// keyboard controller (see `openHostHome()`).
     let onSeeAll: () -> Void
@@ -181,48 +188,89 @@ struct RecentsStrip: View {
 
     // MARK: - Row
 
-    /// Single recents row — mono timestamp + soft-navy body + trailing
-    /// `chevron.right` glyph. Body color is `jotKeyboardStreamText`
-    /// (`#3C5A99`) per spec.
+    /// Single recents row, split into two independently-tappable zones:
+    ///
+    /// - **Body zone** (timestamp + transcript text + optional sparkles):
+    ///   paste-at-cursor. Visually dominant — this is the primary action.
+    /// - **Trailing zone** (`arrow.up.forward.app` button): open the
+    ///   transcript detail view in the main app. Distinct hit region with
+    ///   its own padding so a careless brush against the right edge doesn't
+    ///   accidentally bounce the user out of the host app when they meant
+    ///   to paste.
+    ///
+    /// Apple's `arrow.up.forward.app` SF Symbol is the canonical "open
+    /// this in its own app" glyph (used in Messages link previews, Mail
+    /// detail handoffs, etc.). Deliberately NOT a coral `sparkles` — the
+    /// affordance is "view the transcript in Jot", not "do AI". The icon
+    /// uses `jotKeyboardAccent` (the blue accent the rest of the keyboard
+    /// already treats as the actionable color), so it reads as the row's
+    /// secondary CTA without competing with the body for visual weight.
     private func normalRow(entry: TranscriptHistoryMirror.Entry) -> some View {
-        Button {
-            onInsertEntry(entry)
-        } label: {
-            HStack(alignment: .center, spacing: 8) {
-                Text(entry.createdAt.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 9.5, design: .monospaced))
-                    // v2 retheme: adaptive mute so the time stamp reads
-                    // correctly on the dark glass card (where the prior
-                    // `.jotMute` was too dark to be legible).
-                    .foregroundStyle(Color.jotKeyboardTimeMute)
-                    .lineLimit(1)
-                    .frame(width: 52, alignment: .leading)
+        HStack(spacing: 0) {
+            Button {
+                onInsertEntry(entry)
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(entry.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        // v2 retheme: adaptive mute so the time stamp reads
+                        // correctly on the dark glass card (where the prior
+                        // `.jotMute` was too dark to be legible).
+                        .foregroundStyle(Color.jotKeyboardTimeMute)
+                        .lineLimit(1)
+                        .frame(width: 52, alignment: .leading)
 
-                Text(entry.text)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(Color.jotKeyboardStreamText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    Text(entry.text)
+                        .font(.system(size: 12.5, weight: .regular))
+                        .foregroundStyle(Color.jotKeyboardStreamText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    // v2 retheme: adaptive chevron color follows the
-                    // time-mute token so the trailing affordance stays
-                    // legible on both light + dark glass.
-                    .foregroundStyle(Color.jotKeyboardTimeMute)
+                    if entry.hasRewrite {
+                        // Single coral `sparkles` glyph signals "this entry was
+                        // AI-rewritten" — same affordance the main app's home
+                        // rows use, kept identical here so the visual language
+                        // stays consistent across surfaces. Static coral; reads
+                        // on both light + dark glass.
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Color.jotCoralTop)
+                            .padding(.trailing, 2)
+                            .accessibilityLabel("Rewritten")
+                    }
+                }
+                .padding(.leading, 4)
+                .padding(.trailing, 6)
+                .frame(maxWidth: .infinity, minHeight: Self.rowVisualHeight, alignment: .leading)
+                .padding(.vertical, Self.rowVerticalPad)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 4)
-            .frame(minHeight: Self.rowVisualHeight)
-            .padding(.vertical, Self.rowVerticalPad)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(entry.createdAt.formatted(date: .omitted, time: .shortened))
+            .accessibilityValue(entry.text)
+            .accessibilityHint("Pastes this transcript")
+            .accessibilityAddTraits(.isButton)
+
+            Button {
+                onOpenInApp(entry)
+            } label: {
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.jotKeyboardAccent)
+                    // Hit zone is intentionally wider than the glyph so the
+                    // button is reachable on a cramped strip without
+                    // shrinking the body's pasteable area more than needed.
+                    .frame(width: 32, height: Self.rowVisualHeight)
+                    .padding(.vertical, Self.rowVerticalPad)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open in Jot")
+            .accessibilityHint("Opens this transcript in the Jot app")
+            .accessibilityAddTraits(.isButton)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(entry.createdAt.formatted(date: .omitted, time: .shortened))
-        .accessibilityValue(entry.text)
-        .accessibilityHint("Inserts this transcript")
-        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: - Surface

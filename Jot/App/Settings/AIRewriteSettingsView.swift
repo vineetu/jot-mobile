@@ -525,7 +525,7 @@ struct AIRewriteSettingsView: View {
     }
 
     private func isBuiltinSample(_ p: SavedPrompt) -> Bool {
-        p.id == SavedPrompt.defaultRewrite.id || p.id == SavedPrompt.defaultBulletPoints.id
+        p.defaultKind != nil
     }
 
     // MARK: - New prompt CTA
@@ -615,48 +615,62 @@ private struct PromptRowV09: View {
     let onTap: () -> Void
 
     private var isBuiltin: Bool {
-        prompt.id == SavedPrompt.defaultRewrite.id
-            || prompt.id == SavedPrompt.defaultBulletPoints.id
+        prompt.defaultKind != nil
     }
 
     private var iconSymbol: String {
-        if prompt.id == SavedPrompt.defaultRewrite.id { return "wand.and.stars" }
-        return "list.bullet"
+        switch prompt.defaultKind {
+        case .articulate:  return "wand.and.stars"
+        case .actionItems: return "checklist"
+        case .email:       return "envelope"
+        case nil:          return "list.bullet"
+        }
     }
 
     private var iconTint: Color {
-        if prompt.id == SavedPrompt.defaultRewrite.id { return JotDesign.JotSemanticIcon.ai }
-        return AIV09Tokens.purple
+        switch prompt.defaultKind {
+        case .articulate:  return JotDesign.JotSemanticIcon.ai
+        case .actionItems: return AIV09Tokens.purple
+        case .email:       return Color.jotSuccess
+        case nil:          return AIV09Tokens.purple
+        }
     }
 
     private var iconShaded: Color {
-        if prompt.id == SavedPrompt.defaultRewrite.id { return JotDesign.JotSemanticIcon.aiShaded }
-        return AIV09Tokens.purpleShaded
+        switch prompt.defaultKind {
+        case .articulate:  return JotDesign.JotSemanticIcon.aiShaded
+        case .actionItems: return AIV09Tokens.purpleShaded
+        case .email:       return Color.jotSuccess.opacity(0.5)
+        case nil:          return AIV09Tokens.purpleShaded
+        }
     }
 
     private var description: String {
-        if prompt.id == SavedPrompt.defaultRewrite.id {
-            return "Polish without shortening · sentence-by-sentence"
+        switch prompt.defaultKind {
+        case .articulate:  return "Polish dictation · keep voice"
+        case .actionItems: return "Extract tasks · assignees · deadlines"
+        case .email:       return "Business email · BLUF · subject line"
+        case nil:
+            // For user prompts, render the trimmed first line of the system prompt.
+            let firstLine = prompt.systemPrompt
+                .split(whereSeparator: { $0.isNewline })
+                .first
+                .map(String.init) ?? prompt.systemPrompt
+            return firstLine
         }
-        if prompt.id == SavedPrompt.defaultBulletPoints.id {
-            return "Reformat into a clean list · keep voice"
-        }
-        // For user prompts, render the trimmed first line of the system prompt.
-        let firstLine = prompt.systemPrompt
-            .split(whereSeparator: { $0.isNewline })
-            .first
-            .map(String.init) ?? prompt.systemPrompt
-        return firstLine
     }
 
     private var beforeText: String? {
-        if prompt.id == SavedPrompt.defaultRewrite.id {
+        switch prompt.defaultKind {
+        case .articulate:
             return "yo can you hear me testing the new mic gating on the keyboard"
+        case .actionItems:
+            return "ok so vineet you take the design ship by friday priya followup with legal monday i'll write the launch post next week"
+        case .email:
+            return "draft email to sarah pushing the deadline to next friday because design isn't done yet"
+        case nil:
+            return nil
         }
-        if prompt.id == SavedPrompt.defaultBulletPoints.id {
-            return "three things today shipped the chrome change talked to priya about onboarding drafted the ai sheet copy"
-        }
-        return nil
     }
 
     var body: some View {
@@ -769,20 +783,30 @@ private struct PromptRowV09: View {
 
     @ViewBuilder
     private func afterContent() -> some View {
-        if prompt.id == SavedPrompt.defaultRewrite.id {
+        switch prompt.defaultKind {
+        case .articulate:
             Text("Yo, can you hear me? Testing the new mic gating on the keyboard.")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.jotPageInk)
                 .fixedSize(horizontal: false, vertical: true)
-        } else if prompt.id == SavedPrompt.defaultBulletPoints.id {
+        case .actionItems:
             VStack(alignment: .leading, spacing: 1) {
-                Text("• Shipped the chrome change")
-                Text("• Talked to Priya about onboarding")
-                Text("• Drafted the AI sheet copy")
+                Text("• Vineet — ship design by Friday")
+                Text("• Priya — follow up with legal Monday")
+                Text("• Me — write launch post next week")
             }
             .font(.system(size: 13))
             .foregroundStyle(Color.jotPageInk)
-        } else {
+        case .email:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Subject: Deadline push to next Friday")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Hi Sarah, I'd like to push the deadline to next Friday — design isn't done yet. Thanks.")
+                    .font(.system(size: 13))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(Color.jotPageInk)
+        case nil:
             EmptyView()
         }
     }

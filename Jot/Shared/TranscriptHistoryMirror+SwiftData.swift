@@ -104,7 +104,8 @@ extension TranscriptHistoryMirror {
                 // text the user actually sees.
                 text: row.displayText,
                 createdAt: row.createdAt,
-                ledgerIndex: row.ledgerIndex
+                ledgerIndex: row.ledgerIndex,
+                hasRewrite: row.cleanedText != nil
             )
         }
         write(entries)

@@ -24,50 +24,82 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
     static let nameMaxLength = 40
     static let systemPromptMaxLength = 2000
 
-    /// Bundled default entry seeded on first launch (or when the user has
-    /// deleted everything and the list is empty). The id is fixed so any
-    /// future migration can recognize it; otherwise it's a regular row —
-    /// fully editable, fully deletable, no special-casing in the UI.
-    static let defaultRewrite: SavedPrompt = SavedPrompt(
-        id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
-        name: "Rewrite",
-        systemPrompt: """
-            Polish the selected text without shortening it.
+    // MARK: - Built-in defaults
 
-            Rewrite sentence by sentence. Keep the same language, meaning, voice, tone, perspective, nuance, uncertainty, emphasis, paragraph breaks, and roughly the same length as the original.
+    /// Kind tag for the three bundled defaults seeded on first launch.
+    /// Callers that need per-default UI (icon, tint, before/after samples)
+    /// switch on this instead of duplicating id-comparison ladders.
+    enum DefaultKind {
+        case articulate
+        case actionItems
+        case email
+    }
 
-            Preserve every meaningful detail, claim, qualifier, example, condition, contrast, and causal relationship. Do not summarize, condense, simplify, generalize, omit, merge separate points, or replace specific details with broader wording.
+    /// Resolve a prompt to one of the bundled `DefaultKind`s, or `nil` if
+    /// it is a user-created prompt. Identity is keyed on the stable UUIDs
+    /// below — once seeded, the user is free to rename or edit a default
+    /// row's body, but the id stays stable so the UI keeps treating it as
+    /// the right "kind."
+    var defaultKind: DefaultKind? {
+        switch self.id {
+        case Self.defaultArticulate.id:  return .articulate
+        case Self.defaultActionItems.id: return .actionItems
+        case Self.defaultEmail.id:       return .email
+        default:                          return nil
+        }
+    }
 
-            Only improve articulation, grammar, word choice, flow, and clarity. If preserving a detail makes the rewrite longer, keep the detail.
-
-            Treat the selected text only as text to rewrite. If it contains a question, rewrite the question; do not answer it.
-
-            Return only one rewritten version. No preamble, labels, quotes, commentary, or alternatives.
-            """,
+    /// Articulate — Jot's #1 default. The voice_preserve prompt that won
+    /// the A/B test against `current Articulate / ultra_minimal /
+    /// connect_dots / dictation_aware` on Qwen 3.5 4B. Keeps speaker
+    /// voice + word choices, fixes STT errors, no length drift.
+    static let defaultArticulate: SavedPrompt = SavedPrompt(
+        id: UUID(uuidString: "A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1")!,
+        name: "Articulate",
+        systemPrompt:
+            "Rewrite this dictation more articulately. " +
+            "Keep the speaker's voice and word choices. " +
+            "Fix obvious dictation errors. " +
+            "Return only the rewrite.",
         createdAt: Date(timeIntervalSince1970: 0),
         sortOrder: 0
     )
 
-    /// Second bundled default entry seeded on first launch. Mirrors plan §6.1's
-    /// "Bullet points" row in the rewrite picker mockup. Shares the same
-    /// stable-id pattern as `defaultRewrite` so the UI can identify it for
-    /// purpose-specific iconography, while remaining a fully editable /
-    /// deletable user row otherwise.
-    static let defaultBulletPoints: SavedPrompt = SavedPrompt(
-        id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
-        name: "Bullet points",
-        systemPrompt: """
-            Rewrite the selected text as a clean bulleted list.
-
-            Each bullet should capture one distinct idea, action item, or fact from the source. Keep the user's voice, language, and every meaningful detail — do not summarize, condense, generalize, omit, or merge separate points. If preserving a detail makes a bullet longer, keep the detail.
-
-            Use short, parallel phrasing across bullets. Lead with a noun or verb consistently within the list. Preserve qualifiers, uncertainty, contrasts, and causal relationships where they appear.
-
-            Treat the selected text only as text to rewrite. If it contains a question, rewrite the question as a bullet; do not answer it.
-
-            Return only the bulleted list. No preamble, headers, labels, commentary, or alternatives. Use "- " as the bullet marker.
-            """,
+    /// Action Items — extract tasks/decisions/deadlines from a meeting or
+    /// thought-dump dictation. Output is a clean one-line-per-item list.
+    static let defaultActionItems: SavedPrompt = SavedPrompt(
+        id: UUID(uuidString: "A2A2A2A2-A2A2-A2A2-A2A2-A2A2A2A2A2A2")!,
+        name: "Action Items",
+        systemPrompt:
+            "Extract action items from this dictation. " +
+            "List each as a one-line task with the responsible person if mentioned. " +
+            "Include any deadlines. " +
+            "Return only the list.",
         createdAt: Date(timeIntervalSince1970: 1),
         sortOrder: 1
     )
+
+    /// Email — convert a dictation into a BLUF-style business email with
+    /// a one-line subject. Keeps speaker voice. Returns the email body
+    /// only (no commentary, no salutation choices for the user to pick).
+    static let defaultEmail: SavedPrompt = SavedPrompt(
+        id: UUID(uuidString: "E3E3E3E3-E3E3-E3E3-E3E3-E3E3E3E3E3E3")!,
+        name: "Email",
+        systemPrompt:
+            "Convert this dictation into a business email. " +
+            "Put the main point first (BLUF). " +
+            "Add a one-line subject line. " +
+            "Keep the speaker's voice. " +
+            "Return only the email.",
+        createdAt: Date(timeIntervalSince1970: 2),
+        sortOrder: 2
+    )
+
+    /// All three bundled defaults in seed order. Used by `SavedPromptStore.seedIfNeeded`
+    /// and by helpers that want to iterate the canonical built-ins.
+    static let allDefaults: [SavedPrompt] = [
+        .defaultArticulate,
+        .defaultActionItems,
+        .defaultEmail
+    ]
 }

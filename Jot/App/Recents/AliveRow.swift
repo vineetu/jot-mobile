@@ -21,13 +21,18 @@ struct AliveRow: View {
                 }
             }
 
-            Text(metadataText)
-                .font(.system(size: 11, weight: .medium, design: .default))
-                .monospacedDigit()
-                .foregroundStyle(Color.jotPageInkSecondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .padding(.top, 2)
+            HStack(spacing: 4) {
+                if transcript.cleanedText != nil {
+                    RecentsRewriteBadge()
+                }
+                Text(metadataText)
+                    .font(.system(size: 11, weight: .medium, design: .default))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .padding(.top, 2)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -53,5 +58,20 @@ struct RecentsCopiedBadge: View {
         }
         .foregroundStyle(Color.jotSuccessInk)
         .accessibilityLabel("Copied")
+    }
+}
+
+/// Tiny coral sparkles glyph that flags a transcript as having been
+/// AI-rewritten. Used in the home Recents rows ([`AliveRow`],
+/// [`FeaturedLatestRow`]) and the keyboard Recents strip. The single static
+/// coral tint (`Color.jotCoralTop`) reads on both light and dark surfaces;
+/// it matches the AI iconography used in Settings + Wizard so the visual
+/// language stays consistent across surfaces.
+struct RecentsRewriteBadge: View {
+    var body: some View {
+        Image(systemName: "sparkles")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Color.jotCoralTop)
+            .accessibilityLabel("Rewritten")
     }
 }

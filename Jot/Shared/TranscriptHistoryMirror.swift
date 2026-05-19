@@ -50,12 +50,39 @@ public enum TranscriptHistoryMirror {
         public let createdAt: Date
         /// Stable user-visible ledger number (`#NNNN` chip in the main app).
         public let ledgerIndex: Int
+        /// `true` when the source transcript has an AI rewrite
+        /// (`cleanedText != nil`). Drives the small sparkles affordance in
+        /// the keyboard recents row. Optional + default-false at decode
+        /// time so a stale on-disk mirror written by an older build still
+        /// decodes — the next `refresh(from:)` overwrites with the real
+        /// value.
+        public let hasRewrite: Bool
 
-        public init(id: UUID, text: String, createdAt: Date, ledgerIndex: Int) {
+        public init(
+            id: UUID,
+            text: String,
+            createdAt: Date,
+            ledgerIndex: Int,
+            hasRewrite: Bool = false
+        ) {
             self.id = id
             self.text = text
             self.createdAt = createdAt
             self.ledgerIndex = ledgerIndex
+            self.hasRewrite = hasRewrite
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, text, createdAt, ledgerIndex, hasRewrite
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try c.decode(UUID.self, forKey: .id)
+            self.text = try c.decode(String.self, forKey: .text)
+            self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+            self.ledgerIndex = try c.decode(Int.self, forKey: .ledgerIndex)
+            self.hasRewrite = try c.decodeIfPresent(Bool.self, forKey: .hasRewrite) ?? false
         }
     }
 
