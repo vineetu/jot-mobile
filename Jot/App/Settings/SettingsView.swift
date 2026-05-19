@@ -603,13 +603,15 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    Link(destination: URL(string: "mailto:jottranscribe@gmail.com?subject=Jot%20iOS%20Feedback")!) {
+                    NavigationLink {
+                        FeedbackView()
+                    } label: {
                         settingsIconRow(
                             systemImage: "envelope",
                             tint: JotDesign.JotSemanticIcon.sendFeedback,
                             shaded: JotDesign.JotSemanticIcon.sendFeedbackShaded,
                             title: "Send feedback",
-                            trailing: { externalArrow }
+                            trailing: { RowChevron() }
                         )
                     }
                     .buttonStyle(.plain)

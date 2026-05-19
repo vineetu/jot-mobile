@@ -252,26 +252,24 @@ struct HelpView: View {
     private var contactSection: some View {
         editorialSection(title: "Contact") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Found a bug or have a feature idea? Email us — we read every message.")
+                Text("Found a bug or have a feature idea? Tell us — we read every message.")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.jotPageInkSecondary)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Button {
-                    if let url = URL(string: "mailto:jottranscribe@gmail.com?subject=Jot%20iOS%20Feedback") {
-                        openURL(url)
-                    }
+                NavigationLink {
+                    FeedbackView()
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "envelope")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.jotAccent)
-                        Text("jottranscribe@gmail.com")
+                        Text("Send feedback")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(Color.jotAccent)
                         Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right")
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.jotAccent.opacity(0.7))
                     }
@@ -279,7 +277,7 @@ struct HelpView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Email feedback at jottranscribe@gmail.com")
+                .accessibilityLabel("Send feedback")
             }
         }
     }
