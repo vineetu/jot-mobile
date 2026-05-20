@@ -101,6 +101,7 @@
   - [9.4 Privacy Explainer](#9-4-privacy-explainer)
   - [9.5 Collapsible Troubleshooting](#9-5-collapsible-troubleshooting)
   - [9.6 Feedback Contact](#9-6-feedback-contact)
+  - [9.7 Use Cases](#9-7-use-cases)
 - [10. System Integrations](#10-system-integrations)
   - [10.1 Shortcuts: Transcribe Audio with Jot](#10-1-shortcuts-transcribe-audio-with-jot)
   - [10.2 Action Button Shortcut](#10-2-action-button-shortcut)
@@ -449,6 +450,9 @@ A Troubleshooting section in Help contains collapsible Q&A entries addressing th
 
 ### 9.6 Feedback Contact
 A Contact section at the bottom of the Help screen provides a Send feedback button that opens an in-app feedback form. The form is a single text field with a Send button; the app version and platform are attached automatically. The user stays inside Jot — no Mail handoff. After sending, the screen confirms with the feedback ID; on rate-limit or server errors the message is shown inline so the user can try again. The same form is reachable from Settings → About → Send feedback (see [§6.5 About](#6-5-about--support)).
+
+### 9.7 Use Cases
+A "What it's for" section appears as the first section of the Help screen (above [§9.2 Getting Started Guide](#9-2-getting-started-guide)) and frames Jot in three user-situation stories rather than feature claims. **Speak instead of typing, in any app** describes globe-switching to the Jot keyboard and dictating directly into the current text field. **Keep going when life interrupts** describes the [warm-hold microphone](#5-12-warm-hold) staying ready for up to five minutes across app switches and incoming calls, with continuous saves so partial dictations survive interruptions. **Polish what you said into what you meant** describes the three built-in [AI Rewrite](#7-ai-rewrite) prompts (Articulate, Action Items, Email) plus the ability to write a custom prompt once and reuse it on any transcript. Each story is a short paragraph under a small bold subhead, with the AI prompt names highlighted inline.
 
 ---
 

@@ -45,6 +45,7 @@ struct HelpView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     hero
+                    useCasesSection
                     gettingStartedSection
                     aiRewriteSection
                     privacySection
@@ -103,6 +104,56 @@ struct HelpView: View {
                 .foregroundStyle(Color.jotMute)
         }
         .padding(.top, 4)
+    }
+
+    // MARK: - What it's for (use cases)
+
+    private var useCasesSection: some View {
+        editorialSection(title: "What it's for") {
+            VStack(alignment: .leading, spacing: 22) {
+                useCase(
+                    "Speak instead of typing, in any app",
+                    Text("You're in Messages, Mail, Slack, your browser — anywhere you'd normally type. Tap the globe key on your iPhone keyboard to switch to Jot, tap Dictate, and speak. Your voice goes straight into the text field you're already in.")
+                )
+
+                useCase(
+                    "Keep going when life interrupts",
+                    Text("You're dictating a thought, and your phone rings. Or you need to check Calendar mid-sentence. Or someone hands you something. Jump out, come back — Jot's microphone stays warm for up to five minutes, ready to pick up where you left off. What you'd already said is saved as you said it, so even if the call drops everything, the part you'd already dictated is safe and waiting in the text field.")
+                )
+
+                useCase(
+                    "Polish what you said into what you meant",
+                    Text("You dictated something — a long meandering thought, a list of things to do, the bones of an email. Open it in Jot and tap one of the built-in prompts: ")
+                        + Text("Articulate").fontWeight(.semibold)
+                        + Text(" cleans up the prose, ")
+                        + Text("Action Items").fontWeight(.semibold)
+                        + Text(" pulls out the tasks, ")
+                        + Text("Email").fontWeight(.semibold)
+                        + Text(" formats it for sending. Or write your own prompt once and reuse it — \u{201C}Turn this into bullet points,\u{201D} \u{201C}Translate to French,\u{201D} \u{201C}Make it sound more formal\u{201D} — and run it on any transcript with a tap.")
+                )
+            }
+        }
+    }
+
+    /// Use-case entry: a small bold title followed by a body paragraph.
+    /// Body is a `Text` so callers can compose inline-bold runs (for proper
+    /// names like Articulate / Action Items / Email) without dropping out
+    /// to AttributedString.
+    @ViewBuilder
+    private func useCase(_ title: String, _ body: Text) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.jotInk)
+                .fixedSize(horizontal: false, vertical: true)
+
+            body
+                .font(.system(size: 15))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     // MARK: - Getting started
