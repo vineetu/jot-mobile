@@ -607,6 +607,10 @@ final class TranscriptionService {
             // removed tokens don't change pause-measurement decisions.
             // This is a fast regex sweep that always runs on every transcript.
             transcriptText = FillerWordCleaner.clean(transcriptText)
+            // Normalize spelled numbers to digits (AP-style + idioms +
+            // time-of-day). Always on. Runs LAST in the pipeline so it
+            // sees the cleaned, segmented text.
+            transcriptText = NumberNormalizer.normalize(transcriptText)
             return transcriptText
         } catch {
             let inferenceEndedAt = Date()

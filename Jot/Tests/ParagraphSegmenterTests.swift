@@ -10,14 +10,19 @@ final class ParagraphSegmenterTests: XCTestCase {
     // MARK: - apply(breaks:to:) — the four cases from the spec
 
     /// (a) Sentence-final punctuation + pause > threshold → insert
-    /// `\n\n` between the two words.
+    /// `\n\n` between the two words. Padded with 9 filler words so the
+    /// v2 "no break before word 10" cap doesn't suppress this case.
     func testPeriodLongPauseBreaks() {
-        let words = [
-            ParagraphSegmenter.Word(text: "Hello.", start: 0.0, end: 0.5),
-            ParagraphSegmenter.Word(text: "World.", start: 2.5, end: 3.0)
+        let filler = (0..<9).map { i in
+            ParagraphSegmenter.Word(text: "w\(i)", start: Double(i) * 0.1, end: Double(i) * 0.1 + 0.05)
+        }
+        let words = filler + [
+            ParagraphSegmenter.Word(text: "Hello.", start: 0.95, end: 1.0),
+            ParagraphSegmenter.Word(text: "World.", start: 2.6, end: 3.0)
         ]
-        let out = ParagraphSegmenter.apply(breaks: words, to: "Hello. World.")
-        XCTAssertEqual(out, "Hello.\n\nWorld.")
+        let prefix = (0..<9).map { "w\($0)" }.joined(separator: " ")
+        let out = ParagraphSegmenter.apply(breaks: words, to: "\(prefix) Hello. World.")
+        XCTAssertEqual(out, "\(prefix) Hello.\n\nWorld.")
     }
 
     /// (b) Sentence-final punctuation but pause below threshold →
@@ -44,14 +49,19 @@ final class ParagraphSegmenterTests: XCTestCase {
 
     /// (d) Sentence-final punctuation followed by a closing quote +
     /// long pause → break still fires (trailing-quote trim is
-    /// applied before the sentence-ender check).
+    /// applied before the sentence-ender check). Padded with 9 filler
+    /// words to clear the v2 "no break before word 10" cap.
     func testQuotePeriodLongPauseBreaks() {
-        let words = [
-            ParagraphSegmenter.Word(text: "said.\"", start: 0.0, end: 0.5),
-            ParagraphSegmenter.Word(text: "Then", start: 2.5, end: 3.0)
+        let filler = (0..<9).map { i in
+            ParagraphSegmenter.Word(text: "w\(i)", start: Double(i) * 0.1, end: Double(i) * 0.1 + 0.05)
+        }
+        let words = filler + [
+            ParagraphSegmenter.Word(text: "said.\"", start: 0.95, end: 1.0),
+            ParagraphSegmenter.Word(text: "Then", start: 2.6, end: 3.0)
         ]
-        let out = ParagraphSegmenter.apply(breaks: words, to: "said.\" Then")
-        XCTAssertEqual(out, "said.\"\n\nThen")
+        let prefix = (0..<9).map { "w\($0)" }.joined(separator: " ")
+        let out = ParagraphSegmenter.apply(breaks: words, to: "\(prefix) said.\" Then")
+        XCTAssertEqual(out, "\(prefix) said.\"\n\nThen")
     }
 
     // MARK: - safety guards
@@ -147,5 +157,150 @@ final class ParagraphSegmenterTests: XCTestCase {
     func testReassembleEmptyTokens() {
         let out = ParagraphSegmenter.reassembleWords(from: [])
         XCTAssertEqual(out, [])
+    }
+
+    // MARK: - v2 discourse-marker fast path
+
+    /// Helper — builds 10 filler words (indices 0..9) with tiny gaps,
+    /// then a sentence-final word at index 10 ending at `t`, then the
+    /// `next` word(s) starting after a `gap` second pause.
+    private func discourseFixture(
+        terminal: String = "There.",
+        nextWords: [String],
+        gap: TimeInterval
+    ) -> (words: [ParagraphSegmenter.Word], text: String) {
+        // 10 filler words at indices 0..9. The terminal sentence-final
+        // word lands at index 10 so the break candidate would be
+        // "after index 10" — i.e. i = 10, which clears cap (1)
+        // (i >= 9). i+1 = 11 is the first marker word.
+        var words: [ParagraphSegmenter.Word] = []
+        for i in 0..<10 {
+            words.append(ParagraphSegmenter.Word(
+                text: "w\(i)",
+                start: Double(i) * 0.1,
+                end: Double(i) * 0.1 + 0.05
+            ))
+        }
+        let terminalEnd = 1.05
+        words.append(ParagraphSegmenter.Word(text: terminal, start: 1.0, end: terminalEnd))
+        var t = terminalEnd + gap
+        for w in nextWords {
+            words.append(ParagraphSegmenter.Word(text: w, start: t, end: t + 0.1))
+            t += 0.2
+        }
+        let prefix = (0..<10).map { "w\($0)" }.joined(separator: " ")
+        let text = "\(prefix) \(terminal) " + nextWords.joined(separator: " ")
+        return (words, text)
+    }
+
+    /// 1. Sentence-final + 1.1s pause + "So" → break (discourse fast path).
+    func testDiscourseMarkerSoBreaks() {
+        let (words, text) = discourseFixture(nextWords: ["So", "yeah."], gap: 1.1)
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertTrue(out.contains("There.\n\nSo"), "Expected break before 'So', got: \(out)")
+    }
+
+    /// 2. "However," with trailing comma → marker match still fires.
+    func testDiscourseMarkerHoweverWithCommaBreaks() {
+        let (words, text) = discourseFixture(nextWords: ["However,", "wait."], gap: 1.1)
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertTrue(out.contains("There.\n\nHowever,"), "Expected break before 'However,', got: \(out)")
+    }
+
+    /// 3. "and then" two-word marker → break.
+    func testDiscourseMarkerAndThenBreaks() {
+        let (words, text) = discourseFixture(nextWords: ["and", "then", "we"], gap: 1.1)
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertTrue(out.contains("There.\n\nand"), "Expected break before 'and then', got: \(out)")
+    }
+
+    /// 4. "OKAY" and "Now" — case-insensitive matching.
+    func testDiscourseMarkerCaseInsensitive() {
+        let (words, text) = discourseFixture(nextWords: ["OKAY", "go."], gap: 1.1)
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertTrue(out.contains("There.\n\nOKAY"), "Expected break before 'OKAY', got: \(out)")
+    }
+
+    /// 5. 1.1s pause + sentence-final + "the" (NOT a marker) → no break.
+    /// Pause is below the 1.4s primary threshold so primary rule
+    /// shouldn't fire; discourse fast path shouldn't fire either.
+    func testNoDiscourseMarkerNoFastPath() {
+        let (words, text) = discourseFixture(nextWords: ["the", "rest."], gap: 1.1)
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertFalse(out.contains("\n\n"), "Unexpected break in: \(out)")
+        XCTAssertEqual(out, text)
+    }
+
+    // MARK: - v2 safety caps
+
+    /// 6. Long sentence-final pause at word index 3 → cap (1) suppresses.
+    func testBreakSuppressedBeforeWord10() {
+        let words = [
+            ParagraphSegmenter.Word(text: "One", start: 0.0, end: 0.1),
+            ParagraphSegmenter.Word(text: "two", start: 0.2, end: 0.3),
+            ParagraphSegmenter.Word(text: "three", start: 0.4, end: 0.5),
+            ParagraphSegmenter.Word(text: "four.", start: 0.6, end: 0.7),
+            // Pause >1.4s after "four." would normally fire primary.
+            ParagraphSegmenter.Word(text: "Five", start: 2.5, end: 2.6),
+            ParagraphSegmenter.Word(text: "six.", start: 2.7, end: 2.8)
+        ]
+        let text = "One two three four. Five six."
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        XCTAssertFalse(out.contains("\n\n"), "Cap (1) should suppress break before word 10, got: \(out)")
+        XCTAssertEqual(out, text)
+    }
+
+    /// 7. Three primary-rule candidates: first at i=10, second at i=14
+    /// (within 8 of first → rejected), third at i=22 (12 from i=10 →
+    /// accepted). Expect exactly two breaks: after i=10 and after i=22.
+    func testTwoCloseBreaksThirdSuppressed() {
+        // 30-word transcript. Sentence-final words at indices 10, 14, 22.
+        // 1.6s pause AFTER each of those words.
+        var words: [ParagraphSegmenter.Word] = []
+        var t: TimeInterval = 0.0
+        let breakIndices: Set<Int> = [10, 14, 22]
+        for i in 0..<30 {
+            let text: String
+            if breakIndices.contains(i) {
+                text = "w\(i)."
+            } else {
+                text = "w\(i)"
+            }
+            let end = t + 0.1
+            words.append(ParagraphSegmenter.Word(text: text, start: t, end: end))
+            // Next word starts after a long pause if this one is a
+            // sentence-final break index, else immediately after.
+            if breakIndices.contains(i) {
+                t = end + 1.6
+            } else {
+                t = end + 0.1
+            }
+        }
+        let text = words.map { $0.text }.joined(separator: " ")
+        let out = ParagraphSegmenter.apply(breaks: words, to: text)
+        // Expect breaks after w10 (i=10 accepted), suppress after w14
+        // (14-10=4 < 8), accept after w22 (22-10=12 >= 8).
+        XCTAssertTrue(out.contains("w10.\n\nw11"), "Expected break after w10., got: \(out)")
+        XCTAssertFalse(out.contains("w14.\n\nw15"), "Cap (2) should suppress break after w14., got: \(out)")
+        XCTAssertTrue(out.contains("w22.\n\nw23"), "Expected break after w22., got: \(out)")
+        // Sanity: exactly two paragraph breaks.
+        XCTAssertEqual(out.components(separatedBy: "\n\n").count - 1, 2)
+    }
+
+    /// 8. Primary rule still fires at >1.4s + sentence-final, when the
+    /// break index clears the safety caps. (Padded so i=9 is the
+    /// sentence-final word — break after i=9 → i+1=10 is the 11th
+    /// word, cap (1) allows it.)
+    func testExistingPrimaryRuleStillWorks() {
+        let filler = (0..<9).map { i in
+            ParagraphSegmenter.Word(text: "w\(i)", start: Double(i) * 0.1, end: Double(i) * 0.1 + 0.05)
+        }
+        let words = filler + [
+            ParagraphSegmenter.Word(text: "Hello.", start: 0.95, end: 1.0),
+            ParagraphSegmenter.Word(text: "World.", start: 2.6, end: 3.0)
+        ]
+        let prefix = (0..<9).map { "w\($0)" }.joined(separator: " ")
+        let out = ParagraphSegmenter.apply(breaks: words, to: "\(prefix) Hello. World.")
+        XCTAssertEqual(out, "\(prefix) Hello.\n\nWorld.")
     }
 }

@@ -6,31 +6,61 @@ import FluidAudio
 /// wizard W5 mic test, Shortcuts intent, etc.). Streaming is NOT covered;
 /// the streaming pipeline never goes through this surface.
 ///
-/// Heuristic (v1, deliberately simple — no discourse-marker rules,
-/// no safety caps):
-///   - For each adjacent word pair, if `next.start - prev.end > 1.6s`
-///     AND prev word ends in `.`, `!`, or `?` (after trimming trailing
-///     quotes/brackets), insert `\n\n` between them.
-///   - Otherwise, the words are joined with a single space.
+/// Heuristic (v2):
+///   - Primary rule: pause `> 1.4s` between adjacent words AND prev
+///     word ends in `.`, `!`, or `?` (after trimming trailing
+///     quotes/brackets) → candidate break.
+///   - Discourse-marker fast path: pause `> 1.0s` AND prev word is
+///     sentence-final (same trim) AND the next word (or "and then"
+///     two-word phrase) matches a known discourse marker
+///     case-insensitively → candidate break.
+///   - Safety caps applied to all candidates in ascending order:
+///     (1) no break before word 10 of the transcript;
+///     (2) no break within 8 words of the previous accepted break.
 ///   - Any accidental consecutive `\n\n\n\n` is collapsed to `\n\n`.
 ///
-/// The output replaces the rescored text only when both the
-/// token-to-word reassembly and the word-index alignment with the
-/// post-rescore text succeed. Any failure mode (degenerate inputs,
-/// reassembly drift, rescore word-count drift > 5%) returns the
-/// rescored text untouched — the segmenter can never regress the
+/// The segmenter still returns the rescored text untouched on
+/// degenerate inputs, reassembly drift, or rescore word-count drift
+/// beyond tolerance — paragraph segmentation can never regress the
 /// user-visible transcription.
 enum ParagraphSegmenter {
 
     /// Pause (seconds) between adjacent words that, combined with a
     /// sentence-final punctuation mark on the prior word, triggers a
     /// paragraph break.
-    static let paragraphPauseThreshold: TimeInterval = 1.6
+    static let paragraphPauseThreshold: TimeInterval = 1.4
+
+    /// Pause (seconds) for the discourse-marker fast path. Shorter than
+    /// the primary threshold because we also require the next word to
+    /// be a known marker ("So", "Okay", "However", "and then", …) on
+    /// top of the sentence-final prior word.
+    static let discourseMarkerPauseThreshold: TimeInterval = 1.0
+
+    /// Hard floor on where the first paragraph break can land. With the
+    /// 10-word warmup the segmenter never carves a one-sentence
+    /// fragment off the start of a transcript.
+    static let minWordsBeforeFirstBreak: Int = 10
+
+    /// Minimum spacing (in raw words) between two accepted paragraph
+    /// breaks. Prevents the segmenter from chopping the transcript
+    /// into many tiny single-sentence paragraphs.
+    static let minWordsBetweenBreaks: Int = 8
 
     /// Punctuation that, when found at the trailing edge of a word
     /// (after trimming closing quotes/brackets), counts as
     /// sentence-final for paragraph-break purposes.
     private static let sentenceEnders: Set<Character> = [".", "!", "?"]
+
+    /// Discourse markers that, when starting the next utterance after
+    /// a sentence-final word and a short pause, indicate a topic shift
+    /// strong enough to justify a paragraph break even though the pause
+    /// is below the primary threshold. Lowercase, exact strings; the
+    /// two-word entry is matched against the next two words joined
+    /// with a single space.
+    private static let discourseMarkers: [String] = [
+        "so", "okay", "alright", "now", "next",
+        "however", "anyway", "but", "and then"
+    ]
 
     /// Characters trimmed off the trailing edge of a word before
     /// checking for sentence-final punctuation. Covers ASCII closing
@@ -110,15 +140,45 @@ enum ParagraphSegmenter {
     static func apply(breaks words: [Word], to text: String) -> String {
         guard words.count > 1 else { return text }
 
-        // Compute break positions on the raw words first.
-        var breakAfterWordIndex: Set<Int> = []
+        // Compute candidate break positions on the raw words first.
+        // Two independent triggers — accept the break if EITHER fires.
+        var candidates: Set<Int> = []
         for i in 0..<(words.count - 1) {
             let gap = words[i + 1].start - words[i].end
-            guard gap > paragraphPauseThreshold else { continue }
+            // Both rules require sentence-final punctuation on the
+            // prior word. Trim once.
             let trimmed = words[i].text.trimmingCharacters(in: trailingTrimSet)
             guard let lastChar = trimmed.last,
                   sentenceEnders.contains(lastChar) else { continue }
+
+            let primary = gap > paragraphPauseThreshold
+            let discourse = gap > discourseMarkerPauseThreshold
+                && nextIsDiscourseMarker(after: i, words: words)
+
+            if primary || discourse {
+                candidates.insert(i)
+            }
+        }
+
+        if candidates.isEmpty { return text }
+
+        // Safety caps: applied in ascending index order so the
+        // "8 words since last accepted break" rule is deterministic.
+        // (1) reject anything with i < minWordsBeforeFirstBreak - 1
+        //     (break-after-word-i sits between words i and i+1; we want
+        //     i+1 to be at least word 11, so i >= 9 i.e. >= 10 - 1).
+        // (2) reject anything within minWordsBetweenBreaks of the
+        //     previous accepted break.
+        let sorted = candidates.sorted()
+        var breakAfterWordIndex: Set<Int> = []
+        var lastAccepted: Int? = nil
+        for i in sorted {
+            if i < minWordsBeforeFirstBreak - 1 { continue }
+            if let last = lastAccepted, i - last < minWordsBetweenBreaks {
+                continue
+            }
             breakAfterWordIndex.insert(i)
+            lastAccepted = i
         }
 
         if breakAfterWordIndex.isEmpty { return text }
@@ -172,6 +232,37 @@ enum ParagraphSegmenter {
     }
 
     // MARK: - Helpers
+
+    /// Returns true if the word(s) immediately following `index` match a
+    /// known discourse marker, case-insensitively, after trimming
+    /// trailing punctuation/quotes off the candidate token(s). Handles
+    /// both single-word markers ("so", "okay", "however", …) and the
+    /// two-word "and then" phrase.
+    private static func nextIsDiscourseMarker(after index: Int, words: [Word]) -> Bool {
+        let nextIndex = index + 1
+        guard nextIndex < words.count else { return false }
+
+        let single = normalizedDiscourseToken(words[nextIndex].text)
+        if discourseMarkers.contains(single) { return true }
+
+        // Two-word lookahead for "and then".
+        let secondIndex = nextIndex + 1
+        if secondIndex < words.count {
+            let pair = "\(single) \(normalizedDiscourseToken(words[secondIndex].text))"
+            if discourseMarkers.contains(pair) { return true }
+        }
+
+        return false
+    }
+
+    /// Lowercase + strip trailing punctuation/quotes for discourse-marker
+    /// comparison. Punctuation stripped is a superset of `trailingTrimSet`
+    /// because markers commonly carry trailing commas ("However,") in
+    /// addition to closing quotes.
+    private static func normalizedDiscourseToken(_ raw: String) -> String {
+        let punct = CharacterSet(charactersIn: ",.!?;:\"')]}»’”")
+        return raw.trimmingCharacters(in: punct).lowercased()
+    }
 
     private static func isWordStartToken(_ raw: String) -> Bool {
         guard let first = raw.first else { return false }
