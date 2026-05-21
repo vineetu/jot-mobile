@@ -128,33 +128,24 @@ struct RecentsListCard: View {
                 toggleSelection(for: transcript)
             }
         } else {
-            SwipeToRevealRow(
-                isSelectionMode: $isSelectionMode,
-                onDelete: { onDelete(transcript) }
-            ) {
-                // Plain content, NO NavigationLink / Button wrapper. Tap navigates
-                // via programmatic NavigationPath append; long-press enters select
-                // mode; horizontal drag (handled by SwipeToRevealRow's gesture)
-                // reveals delete. With no internal Button intercepting touches,
-                // SwiftUI's natural tap-slop + long-press semantics keep gestures
-                // from firing each other: tap with movement = no tap, long hold
-                // with no movement = long-press, brief tap = navigate.
-                rowContent(for: transcript)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        navPath.append(transcript.id)
-                    }
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        onEnterSelectionMode(transcript)
-                    }
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction {
-                        navPath.append(transcript.id)
-                    }
-                    .accessibilityAction(named: Text("Enter selection mode")) {
-                        onEnterSelectionMode(transcript)
-                    }
-            }
+            // No swipe-to-delete: delete is done via long-press → selection
+            // mode → trash button. Keeps row gestures simple and the parent
+            // ScrollView's vertical pan unobstructed.
+            rowContent(for: transcript)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    navPath.append(transcript.id)
+                }
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    onEnterSelectionMode(transcript)
+                }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    navPath.append(transcript.id)
+                }
+                .accessibilityAction(named: Text("Enter selection mode")) {
+                    onEnterSelectionMode(transcript)
+                }
         }
     }
 

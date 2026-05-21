@@ -105,6 +105,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
+    private var streamingLoadingObserver: CrossProcessNotification.Observer?
 
     // MARK: - v7 auto-paste deadline tasks
     //
@@ -230,6 +231,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
+        startObservingStreamingLoading()
         // [KB-COLLAPSE-DEBUG] One-time static-config snapshot. The
         // UIInputView.allowsSelfSizing flag is set in loadView() and
         // never mutated; logging it once at startup tells us whether
@@ -256,8 +258,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
         startObservingStreamingPartial()
+        startObservingStreamingLoading()
         refreshPipelinePhase()
         refreshStreamingPartialFromProjection()
+        refreshStreamingLoadingFromProjection()
         refreshSelectionState()
         // refreshPipelinePhase() already calls flushPendingAutoPasteIfPossible
         // at the bottom; calling it explicitly here is redundant but harmless
@@ -279,6 +283,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         historyMirrorUpdatedObserver = nil
         pipelinePhaseObserver = nil
         streamingPartialObserver = nil
+        streamingLoadingObserver = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
         pendingLaunchDeadlineTask?.cancel()
@@ -567,7 +572,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     private func makeKeyboardView() -> KeyboardView {
-        KeyboardView(
+        // Compose the popover's Copy enabled state once per render:
+        // Full Access is required for clipboard writes from a custom
+        // keyboard, AND there must be a non-empty selection in the host
+        // app's focused field. Read `textDocumentProxy.selectedText`
+        // directly here (rather than relying on `selectedTextSnapshot`,
+        // which fuses before/after context as a fallback) so the row's
+        // enabled state matches what `copyHostSelection()` will actually
+        // be able to read at tap time.
+        let hostHasSelection: Bool = {
+            guard let selected = textDocumentProxy.selectedText else { return false }
+            return !selected.isEmpty
+        }()
+        let popoverCopyEnabled = hasFullAccess && hostHasSelection
+
+        return KeyboardView(
             hasFullAccess: hasFullAccess,
             hasPasteboardContent: hasPasteboardContent,
             recordingState: recordingState,
@@ -588,11 +607,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // it against the SwiftUI `colorScheme` env and the dark
             // path wins if either says dark.
             keyboardAppearance: textDocumentProxy.keyboardAppearance ?? .default,
+            hasSelection: popoverCopyEnabled,
             onCopy: { [weak self] in self?.handleCopyMenuSelection() },
             onPaste: { [weak self] in self?.handlePasteMenuSelection() },
-            onCopyLastDictation: { [weak self] in self?.handleCopyLastDictation() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
             onRedoInsertion: { [weak self] in self?.handleRedoMenuSelection() },
+            onJumpToStart: { [weak self] in self?.handleJumpToStart() },
+            onJumpToEnd: { [weak self] in self?.handleJumpToEnd() },
             onTapToSpeak: { [weak self] in self?.handleMicCTATap() },
             onInsertHistoryEntry: { [weak self] entry in self?.insertHistoryEntry(entry) },
             onInsertText: { [weak self] text in self?.insertHistoryText(text) },
@@ -757,6 +778,47 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleRedoMenuSelection() {
         fireMenuSelectionFeedback()
         redoInsertion()
+    }
+
+    /// Shifts the host caret backward through the focused text field.
+    /// User-facing name is "Move up" because that's what users
+    /// actually observe — each tap moves the caret by approximately one
+    /// host-visible window (~256-1000 chars depending on the host), not
+    /// to the true start of the field.
+    ///
+    /// The intent of the bounded loop below was to converge on the
+    /// actual start by repeatedly walking `documentContextBeforeInput`
+    /// → `adjustTextPosition(-before.count)`. In practice most hosts
+    /// buffer the caret update so the proxy's `documentContextBeforeInput`
+    /// returns the SAME window on the next iteration, and the loop
+    /// short-circuits via the `!before.isEmpty` guard once the proxy
+    /// has refreshed. Net effect on most hosts: one window's worth of
+    /// shift per tap. The 50-iter cap is preserved as a safety net
+    /// against any host where multiple iterations DO advance.
+    ///
+    /// Does not require Full Access — caret moves are a proxy-only
+    /// call. `RECORDING START FROM:`-style breadcrumbs are not
+    /// required here; cursor jumps are not recording events.
+    private func handleJumpToStart() {
+        fireMenuSelectionFeedback()
+        let proxy = textDocumentProxy
+        for _ in 0..<50 {
+            guard let before = proxy.documentContextBeforeInput, !before.isEmpty else { return }
+            proxy.adjustTextPosition(byCharacterOffset: -before.count)
+        }
+    }
+
+    /// Shifts the host caret forward through the focused text field.
+    /// User-facing name is "Move down". See `handleJumpToStart` for the
+    /// bounded-loop rationale and the host-buffering caveat that means
+    /// each tap shifts approximately one window, not to the true end.
+    private func handleJumpToEnd() {
+        fireMenuSelectionFeedback()
+        let proxy = textDocumentProxy
+        for _ in 0..<50 {
+            guard let after = proxy.documentContextAfterInput, !after.isEmpty else { return }
+            proxy.adjustTextPosition(byCharacterOffset: after.count)
+        }
     }
 
     private func fireMenuSelectionFeedback() {
@@ -981,9 +1043,22 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// publish payload in the same call, and they can land in the same wake
     /// window.
     private func flushPendingAutoPasteIfPossible() {
-        guard hasFullAccess,
-              let session = readPendingPasteSession()
-        else { return }
+        // Diagnostics: only log the Full-Access skip when a pending session
+        // exists and is therefore actually being lost. Logging on every
+        // routine refresh (e.g. textDidChange in a non-Full-Access host)
+        // would flood the buffer with noise.
+        guard hasFullAccess else {
+            if let pending = readPendingPasteSession() {
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteSkipNoFullAccess,
+                    message: "No Full Access at flush",
+                    metadata: ["pendingSessionID": pending.id.uuidString]
+                )
+            }
+            return
+        }
+        guard let session = readPendingPasteSession() else { return }
 
         let payload = ClipboardHandoff.readFresh()
         let projection = PipelinePhaseProjection.read()
@@ -999,6 +1074,16 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 let nowDoc = textDocumentProxy.documentIdentifier
                 if nowDoc != claimedDoc {
                     keyboardLog.info("Skipped auto-paste because document identifier changed since tap")
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: .pasteSkipDocumentMismatch,
+                        message: "Doc identifier changed since tap",
+                        metadata: [
+                            "claimedDoc": claimedDoc.uuidString,
+                            "nowDoc": nowDoc.uuidString,
+                            "sessionID": session.id.uuidString
+                        ]
+                    )
                     clearPendingPasteSession()
                     renderRootView()
                     return
@@ -1007,12 +1092,49 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                       let nowKb = textDocumentProxy.keyboardType?.rawValue,
                       nowKb != claimedKbRaw {
                 keyboardLog.info("Skipped auto-paste because keyboard type changed since tap")
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteSkipKeyboardTypeMismatch,
+                    message: "Keyboard type changed since tap",
+                    metadata: [
+                        "claimedKb": String(claimedKbRaw),
+                        "nowKb": String(nowKb),
+                        "sessionID": session.id.uuidString
+                    ]
+                )
+                clearPendingPasteSession()
+                renderRootView()
+                return
+            }
+            // Empty-text diagnostic: an empty payload would no-op inside
+            // `insertTrackedText` and silently fall through the rest of the
+            // happy-path cleanup. Surface it explicitly in the log so a
+            // user reproducing the regression can see "publish landed but
+            // it was empty" as a distinct failure mode from "publish never
+            // landed". Behavior-preserving — same cleanup path runs.
+            if payload.text.isEmpty {
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteSkipEmptyText,
+                    message: "Payload text was empty",
+                    metadata: ["sessionID": session.id.uuidString]
+                )
+                ClipboardHandoff.markConsumed()
                 clearPendingPasteSession()
                 renderRootView()
                 return
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
             insertTrackedText(payload.text)
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .pasteSuccess,
+                message: "Inserted transcript into host",
+                metadata: [
+                    "chars": "\(payload.text.count)",
+                    "sessionID": session.id.uuidString
+                ]
+            )
             // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
             // the keyboard's own state at the moment of insertion so the
             // RecentsStrip's top row can render in the green just-now
@@ -1025,6 +1147,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             hasPasteboardContent = UIPasteboard.general.hasStrings
             renderRootView()
             return
+        }
+
+        // Diagnostics: classify the non-happy-path branches. These splits
+        // mirror the failure modes we want visible in Help → Diagnostics:
+        //   - no payload at all (publish hasn't landed yet, or never will)
+        //   - payload exists but sessionID doesn't match (cross-session race)
+        if payload == nil {
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .pasteSkipNoPayload,
+                message: "Flush ran with no fresh transcript",
+                metadata: ["pendingSessionID": session.id.uuidString]
+            )
+        } else if let payload {
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .pasteSkipSessionMismatch,
+                message: "Payload session ID did not match pending",
+                metadata: [
+                    "payloadSessionID": payload.sessionID?.uuidString ?? "<nil>",
+                    "pendingSessionID": session.id.uuidString
+                ]
+            )
         }
 
         // Sad path: no matching payload. Consult terminal state. The UUID
@@ -1079,6 +1224,31 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
         let text = AppGroup.defaults.string(forKey: AppGroup.Keys.streamingPartialText) ?? ""
         recordingState.updateStreamingPartial(text)
+    }
+
+    // MARK: - Streaming load-state mirror
+
+    /// Mirrors `AppGroup.streamingLoadingVariantLabel` (written by the
+    /// main app's `StreamingTranscriptionService` while the streaming
+    /// graph is ANE-loading) into `recordingState.loadingVariantLabel`,
+    /// which the keyboard's streaming strip reads to render the
+    /// "Loading [variant]…" placeholder in place of the empty-state
+    /// "Listening…" copy.
+    private func startObservingStreamingLoading() {
+        guard streamingLoadingObserver == nil else { return }
+        streamingLoadingObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.streamingLoadingChanged
+        ) { [weak self] in
+            self?.refreshStreamingLoadingFromProjection()
+        }
+    }
+
+    private func refreshStreamingLoadingFromProjection() {
+        guard hasFullAccess else {
+            recordingState.updateLoadingVariantLabel("")
+            return
+        }
+        recordingState.updateLoadingVariantLabel(AppGroup.streamingLoadingVariantLabel)
     }
 
     // MARK: - Pipeline phase observer (v7 auto-paste design)
@@ -1200,20 +1370,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func insertHistoryText(_ text: String) {
         guard !text.isEmpty else { return }
         insertTrackedText(text)
-        renderRootView()
-    }
-
-    /// Copies the most recent transcript to the system clipboard. Backs
-    /// the Actions popover "Copy last" row (Mockup 06 / plan §4.5).
-    /// Sourced from `historyEntries` (a `TranscriptHistoryMirror`
-    /// projection) — NOT from `AppGroup.lastDictation`, which is
-    /// consumed by auto-paste.
-    private func handleCopyLastDictation() {
-        fireMenuSelectionFeedback()
-        guard hasFullAccess else { return }
-        guard let latest = historyEntries.first else { return }
-        UIPasteboard.general.string = latest.text
-        hasPasteboardContent = true
         renderRootView()
     }
 
@@ -1422,6 +1578,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // Stamp the session ID into the URL so the app's `onOpenURL`
             // can `adoptSession(_:)` before recording-start.
             let session = beginPendingPasteSession()
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .sessionStarted,
+                message: "Pending session written at start",
+                metadata: ["sessionID": session.id.uuidString]
+            )
             let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
                 ?? Self.containingAppLaunchURL
             openContainingApp(url)
@@ -1436,7 +1598,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // motivated removing this call is still closed by the
             // `.disabled` modifier on the speak button + `decideMicTap()`
             // returning `.noop` for `stop-pending` / `in-flight` states.
-            let _ = beginPendingPasteSession()
+            let stopSession = beginPendingPasteSession()
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .sessionStopRequested,
+                message: "Pending session written at stop",
+                metadata: ["sessionID": stopSession.id.uuidString]
+            )
             // Set stopRequestPosted BEFORE the post + before any further
             // processing. Cleared inside refreshPipelinePhase when the
             // projection reflects a non-recording phase.
@@ -1767,4 +1935,19 @@ final class KeyboardRecordingState {
     func updateStreamingPartial(_ text: String) {
         streamingPartialText = text
     }
+
+    /// Mirrors `AppGroup.streamingLoadingVariantLabel`. Non-empty
+    /// while the main app's `StreamingTranscriptionService` is
+    /// ANE-loading the streaming graph for the active recording —
+    /// e.g. "Parakeet 110M". Empty when no load is in flight. The
+    /// streaming strip swaps its empty-state "Listening…" placeholder
+    /// for a "Loading [label]…" pair (spinner + serif-italic label)
+    /// whenever this is non-empty. See
+    /// `JotKeyboardViewController.refreshStreamingLoadingFromProjection`.
+    private(set) var loadingVariantLabel: String = ""
+
+    func updateLoadingVariantLabel(_ label: String) {
+        loadingVariantLabel = label
+    }
+
 }

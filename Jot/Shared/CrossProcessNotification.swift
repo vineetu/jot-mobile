@@ -25,6 +25,15 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.streaming-partial-changed"
     )
 
+    /// Posted by the main app's `StreamingTranscriptionService` whenever
+    /// `sessionLoadState` flips (`.idle` ↔ `.loading` ↔ `.ready`).
+    /// Observed by the keyboard extension to re-read
+    /// `AppGroup.streamingLoadingActive` and re-render the streaming
+    /// strip's "Loading [variant]…" placeholder accordingly.
+    static let streamingLoadingChanged = Name(
+        rawValue: "com.vineetu.jot.mobile.streaming-loading-changed"
+    )
+
     /// Posted by the main app AFTER `TranscriptHistoryMirror.refresh(...)`
     /// completes a write to the App Group JSON mirror. Distinct from
     /// `transcriptReady`, which the dictation pipeline posts BEFORE the

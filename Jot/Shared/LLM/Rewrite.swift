@@ -2,7 +2,7 @@ import FoundationModels
 
 // `@Generable` projects this struct into a JSON schema. Both decoding paths use
 // it: Apple Foundation Models drives `LanguageModelSession.respond(...
-// generating: Rewrite.self)`, and `mlx-swift-structured` (Phi-4 backend) hands
+// generating: Rewrite.self)`, and `mlx-swift-structured` (Qwen 3.5 backend) hands
 // the schema to the constrained-decoding sampler so the model literally cannot
 // emit preamble like "Here is the rewritten text:" — only valid JSON matching
 // this shape. The text payload is the rewritten body and nothing else.

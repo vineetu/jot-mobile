@@ -66,19 +66,19 @@ struct AcknowledgementsView: View {
             GlassCard(tier: .regular, padding: 8) {
                 VStack(spacing: 0) {
                     AcknowledgementRow(
-                        title: "Parakeet TDT 0.6B v2",
-                        author: "NVIDIA",
-                        license: "CC-BY 4.0",
-                        version: nil,
-                        url: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml",
-                        showDivider: true
-                    )
-                    AcknowledgementRow(
-                        title: "Parakeet TDT-CTC 110M",
+                        title: "Parakeet 110M",
                         author: "NVIDIA",
                         license: "CC-BY 4.0",
                         version: nil,
                         url: "https://huggingface.co/FluidInference/parakeet-tdt-ctc-110m-coreml",
+                        showDivider: true
+                    )
+                    AcknowledgementRow(
+                        title: "Parakeet 600M",
+                        author: "NVIDIA",
+                        license: "CC-BY 4.0",
+                        version: nil,
+                        url: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml",
                         showDivider: true
                     )
                     AcknowledgementRow(
@@ -95,14 +95,6 @@ struct AcknowledgementsView: View {
                         license: "Apache 2.0",
                         version: nil,
                         url: "https://huggingface.co/Qwen/Qwen3.5-4B",
-                        showDivider: true
-                    )
-                    AcknowledgementRow(
-                        title: "Phi-4 mini",
-                        author: "Microsoft",
-                        license: "MIT",
-                        version: nil,
-                        url: "https://huggingface.co/microsoft/Phi-4-mini-instruct",
                         showDivider: true
                     )
                     AcknowledgementRow(

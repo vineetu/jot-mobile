@@ -35,6 +35,12 @@ enum FillerWordCleaner {
         //    collapse the `\n\n` paragraph boundaries inserted by
         //    `ParagraphSegmenter`. `\b` enforces word boundaries so
         //    `umbrella`, `umpire`, etc. are preserved.
+        //
+        //    Replacement is a SINGLE SPACE (not empty) so that the
+        //    common mid-sentence case "yeah uh okay" produces
+        //    "yeah okay" instead of "yeahokay". Edge cases (filler at
+        //    string start/end, adjacent to `\n\n`, before punctuation)
+        //    are mopped up by steps 2.5, 3, and 4 below.
         let alternation = fillerWords.joined(separator: "|")
         let pattern = "[ \\t]*,?[ \\t]*\\b(?:\(alternation))\\b[ \\t]*,?[ \\t]*"
         var result = text
@@ -47,7 +53,7 @@ enum FillerWordCleaner {
                 in: result,
                 options: [],
                 range: range,
-                withTemplate: ""
+                withTemplate: " "
             )
         }
 
@@ -60,6 +66,31 @@ enum FillerWordCleaner {
                 options: [],
                 range: range,
                 withTemplate: " "
+            )
+        }
+
+        // 2.5. Trim whitespace introduced adjacent to paragraph breaks
+        //      by step 1's single-space replacement. Without this,
+        //      "Hello.\n\num World" → "Hello.\n\n World" (leading space
+        //      inside the new paragraph). Both directions matter:
+        //      "[ \t]+\n\n" catches trailing whitespace before a break;
+        //      "\n\n[ \t]+" catches leading whitespace after a break.
+        if let trimAfterBreak = try? NSRegularExpression(pattern: "\\n\\n[ \\t]+") {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = trimAfterBreak.stringByReplacingMatches(
+                in: result,
+                options: [],
+                range: range,
+                withTemplate: "\n\n"
+            )
+        }
+        if let trimBeforeBreak = try? NSRegularExpression(pattern: "[ \\t]+\\n\\n") {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = trimBeforeBreak.stringByReplacingMatches(
+                in: result,
+                options: [],
+                range: range,
+                withTemplate: "\n\n"
             )
         }
 

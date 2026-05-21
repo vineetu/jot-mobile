@@ -332,6 +332,16 @@ enum DictationPipeline {
                 sessionID: resolvedSessionID,
                 autoCopiedTranscriptID: transcriptID
             )
+            DiagnosticsLog.record(
+                source: "main-app",
+                category: .publishCompleted,
+                message: "Published transcript (fresh)",
+                metadata: [
+                    "sessionID": resolvedSessionID.uuidString,
+                    "chars": "\(publishedText.count)",
+                    "branch": "fresh"
+                ]
+            )
             CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
             updateFollowUpDiscoveryState(
@@ -383,6 +393,16 @@ enum DictationPipeline {
                     transcript: transcript,
                     sessionID: resolvedSessionID,
                     autoCopiedTranscriptID: transcriptID
+                )
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .publishCompleted,
+                    message: "Published transcript (command-cancelled raw)",
+                    metadata: [
+                        "sessionID": resolvedSessionID.uuidString,
+                        "chars": "\(transcript.count)",
+                        "branch": "command-cancelled"
+                    ]
                 )
                 CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
@@ -479,6 +499,16 @@ enum DictationPipeline {
                     sessionID: resolvedSessionID,
                     autoCopiedTranscriptID: transcriptID
                 )
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .publishCompleted,
+                    message: "Published transcript (command result)",
+                    metadata: [
+                        "sessionID": resolvedSessionID.uuidString,
+                        "chars": "\(result.count)",
+                        "branch": "command"
+                    ]
+                )
                 CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
                 let preview = String(result.prefix(60))
@@ -507,6 +537,16 @@ enum DictationPipeline {
                     transcript: transcript,
                     sessionID: resolvedSessionID,
                     autoCopiedTranscriptID: transcriptID
+                )
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .publishCompleted,
+                    message: "Published transcript (command-degraded raw)",
+                    metadata: [
+                        "sessionID": resolvedSessionID.uuidString,
+                        "chars": "\(transcript.count)",
+                        "branch": "command-degraded"
+                    ]
                 )
                 CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 

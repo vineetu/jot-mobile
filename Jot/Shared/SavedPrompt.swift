@@ -49,16 +49,28 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
         }
     }
 
-    /// Articulate — Jot's #1 default. The voice_preserve prompt that won
-    /// the A/B test against `current Articulate / ultra_minimal /
-    /// connect_dots / dictation_aware` on Qwen 3.5 4B. Keeps speaker
-    /// voice + word choices, fixes STT errors, no length drift.
+    /// Articulate — Jot's #1 default. Rewrites the dictation for
+    /// clarity: connects related ideas, removes repeated points, and
+    /// preserves every distinct idea the speaker introduced. Drops the
+    /// earlier voice-fidelity constraint (which capped how much the
+    /// model could reorganize) in favor of idea-fidelity. The
+    /// "do not invent" guardrail keeps Qwen from embellishing.
+    ///
+    /// Seed-only: this copy reaches fresh installs only. Existing
+    /// users keep whatever Articulate prompt is already in their
+    /// `SavedPromptStore` (`seedIfNeeded` short-circuits on a non-empty
+    /// list). If you ever need a forced rollout, gate a migration on a
+    /// `UserDefaults` bool and replace `SavedPrompt` rows whose
+    /// `id == defaultArticulate.id` AND whose stored `systemPrompt`
+    /// matches the previous canonical text.
     static let defaultArticulate: SavedPrompt = SavedPrompt(
         id: UUID(uuidString: "A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1")!,
         name: "Articulate",
         systemPrompt:
-            "Rewrite this dictation more articulately. " +
-            "Keep the speaker's voice and word choices. " +
+            "Rewrite this dictation for clarity. " +
+            "Connect related ideas so they flow logically. " +
+            "Cut repeated points — but keep every distinct idea the speaker mentioned. " +
+            "Do not invent new ideas or details. " +
             "Fix obvious dictation errors. " +
             "Return only the rewrite.",
         createdAt: Date(timeIntervalSince1970: 0),

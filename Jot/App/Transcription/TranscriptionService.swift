@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+@preconcurrency import CoreML
 import FluidAudio
 import Foundation
 import UIKit
@@ -101,13 +102,13 @@ final class TranscriptionService {
     /// `speechModelVariant` accessor. Read at every `ensurePreparing()`
     /// boundary — flipping the variant in Settings only takes effect on
     /// the next dictation start, never mid-session. Unknown / legacy
-    /// values fall back to `.v2` (Parakeet 0.6B v2) so a malformed
-    /// AppGroup write doesn't brick transcription.
+    /// values (including stale `"nemotron0_6b"` tags from prior builds)
+    /// fall back to `.tdtCtc110m` (the bundled default) so a malformed
+    /// AppGroup write can't brick transcription.
     private static var selectedVersion: AsrModelVersion {
-        switch AppGroup.speechModelVariant {
-        case "tdtCtc110m": return .tdtCtc110m
-        case "parakeetV2": return .v2
-        default: return .tdtCtc110m
+        switch SpeechModelVariant.current() {
+        case .tdtCtc110m: return .tdtCtc110m
+        case .parakeetV2: return .v2
         }
     }
 
@@ -115,14 +116,15 @@ final class TranscriptionService {
     /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
     /// the user-facing speech-model identifier in Settings.
     private static var selectedRepo: Repo {
-        switch selectedVersion {
+        switch SpeechModelVariant.current() {
         case .tdtCtc110m: return .parakeetTdtCtc110m
-        default: return .parakeetV2
+        case .parakeetV2: return .parakeetV2
         }
     }
 
     private let standIn: (any TranscriptionStandIn)?
     private var manager: AsrManager?
+
     private var prepareTask: Task<Void, Error>?
     private var prepareGeneration = 0
 
@@ -250,7 +252,7 @@ final class TranscriptionService {
         // (effectively a no-op refresh that surfaces a clear .failed state
         // if iOS app thinning unexpectedly stripped the resources).
         // Mirror of StreamingTranscriptionService.purgeAndReload() guard.
-        if Self.selectedVersion == .tdtCtc110m {
+        if SpeechModelVariant.current() == .tdtCtc110m {
             prepareTask?.cancel()
             prepareTask = nil
             prepareGeneration += 1
@@ -277,17 +279,17 @@ final class TranscriptionService {
             if FileManager.default.fileExists(atPath: modelDir.path) {
                 try FileManager.default.moveItem(at: modelDir, to: purgingDir)
                 log.notice(
-                    "Moved Parakeet model cache aside for purge — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public)"
+                    "Moved speech model cache aside for purge — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public)"
                 )
                 Self.deletePurgedModelDirectory(purgingDir)
             } else {
-                log.info("Parakeet model cache already absent at \(modelDir.path, privacy: .public)")
+                log.info("Speech model cache already absent at \(modelDir.path, privacy: .public)")
             }
         } catch {
             let summary = "Could not move model cache aside for purge: \(error.localizedDescription)"
             modelState = .failed(summary)
             log.error(
-                "Parakeet purge failed — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                "Speech model purge failed — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
             return
         }
@@ -480,9 +482,8 @@ final class TranscriptionService {
     /// and waiting would just chew through the headless budget. Fail fast; let
     /// the user retry once the main-app download finishes.
     private func ensureModelIsDownloadedOrThrow() throws {
-        let directory = Self.modelDirectory()
-        let exists = AsrModels.modelsExist(at: directory, version: Self.selectedVersion)
-        log.info("ensureModelIsDownloadedOrThrow — directory=\(directory.path, privacy: .public) modelsExist=\(exists, privacy: .public)")
+        let exists = Self.modelsExistOnDiskForSelectedVariant()
+        log.info("ensureModelIsDownloadedOrThrow — variant=\(AppGroup.speechModelVariant, privacy: .public) modelsExist=\(exists, privacy: .public)")
         if !exists {
             throw TranscriptionError.loadFailed(
                 "The selected speech-recognition model hasn't been downloaded yet. Open Jot, go to Settings → Speech model and tap Download, then re-run your Shortcut."
@@ -498,9 +499,12 @@ final class TranscriptionService {
         }
     }
 
-    /// Shared tail: ensure model is loaded, then run `AsrManager.transcribe`.
-    /// Callers own the `isTranscribing` flag and the signpost interval — this
-    /// helper is the minimal inference body so it stays testable in isolation.
+    /// Branch on the active variant.
+    ///
+    /// Runs the established batch pass through `AsrManager.transcribe`
+    /// plus the full post-pipeline cleanup (vocabulary rescore +
+    /// paragraph segmentation + filler-word cleanup + number
+    /// normalization).
     private func runInference(on samples: [Float], label: String, audioDurationSeconds: Double) async throws -> String {
         // 4.2.3(ii) consent guard: do NOT silently download a model via
         // the record-then-transcribe path. The Settings "Download" button
@@ -526,9 +530,9 @@ final class TranscriptionService {
         if standIn == nil && !Self.modelsExistOnDiskForSelectedVariant() {
             // Branch on the active variant: the bundled TDT-CTC 110M has no
             // download path (weights ship in the IPA), so a "tap Download"
-            // CTA is impossible. The only recovery is a reinstall. Mirrors
-            // StreamingTranscriptionService.swift:364 for consistency. The
-            // v2 (600M opt-in) variant keeps the Settings → Download CTA.
+            // CTA is impossible. The only recovery is a reinstall. The
+            // Parakeet 600M opt-in variant keeps the Settings → Download
+            // CTA (handled in the default branch).
             let message: String
             switch Self.selectedVersion {
             case .tdtCtc110m:
@@ -555,7 +559,18 @@ final class TranscriptionService {
             "Parakeet inference begin — source=\(label, privacy: .public) startedAt=\(Self.timestamp(inferenceStartedAt), privacy: .public) audioDurationS=\(audioDurationSeconds, privacy: .public) sampleCount=\(samples.count, privacy: .public)"
         )
         do {
-            let result = try await manager.transcribe(samples, source: .microphone)
+            // FluidAudio 0.14.x dropped the `source:` overload in favor of
+            // an `inout TdtDecoderState` carried by the caller. For a
+            // one-shot batch transcribe of a complete recording we hand
+            // the manager a fresh decoder state per call (no streaming
+            // carry-over). Decoder-layer count is version-specific
+            // (1 for `tdtCtc110m`, 2 for v2/v3/tdtJa) and
+            // `AsrModelVersion.decoderLayers` is the SDK's source of
+            // truth. Mirrors the Mac app's `Transcriber.swift`.
+            var decoderState = TdtDecoderState.make(
+                decoderLayers: Self.selectedVersion.decoderLayers
+            )
+            let result = try await manager.transcribe(samples, decoderState: &decoderState)
             let inferenceEndedAt = Date()
             let wallClockMS = Self.elapsedMilliseconds(from: inferenceStartedAt, to: inferenceEndedAt)
             let wallClockRTF = Self.realTimeFactor(elapsedMS: wallClockMS, audioDurationSeconds: result.duration)
@@ -875,7 +890,11 @@ final class TranscriptionService {
     /// Support cache — that path can still surface a download CTA in
     /// Settings.
     private static func modelDirectory() -> URL {
-        if selectedVersion == .tdtCtc110m, let bundled = bundledTdtCtc110mDirectory() {
+        // The bundled TDT-CTC 110M variant points at the IPA's
+        // read-only resource directory; the opt-in Parakeet 600M v2
+        // download lives in Application Support.
+        if SpeechModelVariant.current() == .tdtCtc110m,
+           let bundled = bundledTdtCtc110mDirectory() {
             return bundled
         }
         return MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
@@ -901,10 +920,11 @@ final class TranscriptionService {
 
     /// Whether the user-selected speech-model variant has its weights
     /// available — either bundled in the IPA (TDT-CTC 110M) or cached on
-    /// disk in Application Support (Parakeet 0.6B v2 opt-in). Used by the
-    /// eager warm-up path (`JotApp.task`) and any "models available" UI
-    /// gate to avoid silent first-run downloads (Guideline 4.2.3(ii)).
-    /// Resolves the variant from `AppGroup.speechModelVariant`.
+    /// disk in Application Support (Parakeet 0.6B v2 opt-in). Used by
+    /// the eager warm-up path (`JotApp.task`) and any "models available"
+    /// UI gate to avoid silent first-run downloads (Guideline
+    /// 4.2.3(ii)). Resolves the variant from
+    /// `AppGroup.speechModelVariant`.
     ///
     /// For the bundled variant this always returns `true` on a healthy
     /// install: the `.mlmodelc` resources are part of the app bundle and
@@ -959,9 +979,10 @@ final class TranscriptionService {
     /// Scope:
     /// - Removes the three legacy 110M-era directories AND any `.purging-*`
     ///   siblings of them
-    /// - Does NOT touch `parakeet-tdt-0.6b-v2-coreml/` — that's the v2
-    ///   (600M) opt-in cache and a user with that variant downloaded must
-    ///   not lose those weights
+    /// - Does NOT touch `parakeet-tdt-0.6b-v2-coreml/` — that is the
+    ///   active Parakeet 600M variant's cache; users who already
+    ///   downloaded it should keep those weights so the variant is ready
+    ///   immediately without re-downloading
     /// - Gated by `jot.didMigrateLegacyParakeetWeights` so it runs at most
     ///   once across the app's lifetime
     /// - Best-effort: log errors, never throw
@@ -984,8 +1005,10 @@ final class TranscriptionService {
         //   .parakeetEou320     → "parakeet-eou-streaming/320ms" (the
         //                         top-level `parakeet-eou-streaming` dir
         //                         catches every ms variant in one shot)
-        // The v2 (600M) cache is `parakeet-tdt-0.6b-v2` — NOT in
-        // this allowlist, so it is preserved.
+        // The Parakeet 600M (v2) cache is `parakeet-tdt-0.6b-v2-coreml` —
+        // NOT in this allowlist; the variant is selectable in Settings
+        // again and any cached weights should stay so the user doesn't
+        // pay a fresh download to switch back.
         let legacyNames: Set<String> = [
             "parakeet-tdt-ctc-110m",
             "parakeet-ctc-110m-coreml",
@@ -1216,13 +1239,34 @@ final class TranscriptionService {
     }
 
     private func handleMemoryWarning() {
+        // Surface the memory-pressure event in the in-app diagnostics card
+        // — mirrors the symmetric write in `StreamingTranscriptionService`
+        // so a user reporting "Jot died right after I stopped" can see
+        // the jetSam-precursor warning in Help → Diagnostics. Logged
+        // unconditionally (before the early-return guards below) so a
+        // mid-inference warning is still visible even if we skip
+        // eviction.
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .memoryWarning,
+            message: "batch service received memory warning",
+            metadata: [
+                "variant": "\(SpeechModelVariant.current().rawValue)",
+                "isTranscribing": "\(isTranscribing)",
+                "hasParakeetManager": "\(manager != nil)",
+            ]
+        )
         guard !isTranscribing else {
             log.notice("Memory warning received mid-inference — deferring model eviction")
             return
         }
         guard manager != nil else { return }
-        log.notice("Memory warning — evicting Parakeet (~1.25 GB) to avoid jetsam")
+        log.notice("Memory warning — evicting batch transcriber to avoid jetsam")
         manager = nil
+        // Dropping the actor reference is sufficient — ARC will reclaim
+        // the CoreML graphs. We don't await `cleanup()` here because the
+        // memory-warning hook runs synchronously on MainActor and the
+        // actor's internal cleanup is best-effort under jetsam pressure.
         prepareTask = nil
         modelState = .notLoaded
     }

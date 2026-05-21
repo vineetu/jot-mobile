@@ -4,11 +4,12 @@
 //
 //  Phase 6 — wizard panel W7 (renumbered after the bundled-Parakeet ship
 //  retired the W3 speech-model download step and the W5 in-app try-it
-//  step was dropped).
+//  step was dropped). The former second optional step (vocab seed) was
+//  also retired — vocabulary biasing is now experimental and lives only
+//  in Settings; the only remaining optional follow-on is AI Rewrite.
 //  Green check circle + "You're ready." + an italic note that names the
-//  two optional steps (vocab + AI rewrite). Primary CTA advances to the
-//  first optional step (vocab seed); secondary CTA dismisses and marks
-//  setup complete.
+//  one optional step (AI rewrite). Primary CTA advances to that optional
+//  step; secondary CTA dismisses and marks setup complete.
 //
 
 import SwiftUI
@@ -54,11 +55,12 @@ struct YoureReadyStep: View {
         }
     }
 
-    /// Honest about the two optional steps. Pulls the AI download size
-    /// from the design token so a backend swap propagates here.
+    /// Honest about the one remaining optional step. Pulls the AI
+    /// download size from the design token so a backend swap propagates
+    /// here.
     private var optionalCopy: String {
         let size = JotDesign.activeRewriteModelSize
-        return "Two optional steps make it noticeably better — teaching Jot words you use, and adding AI rewrite. Vocabulary takes a minute. AI is a \(size) download."
+        return "One optional step makes Jot noticeably better — adding AI rewrite. It's a \(size) download."
     }
 
     // MARK: - Tile

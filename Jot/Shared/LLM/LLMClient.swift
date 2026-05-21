@@ -3,10 +3,9 @@ import Foundation
 /// Lifecycle status of an `LLMClient` backend.
 ///
 /// - `notReady`: backend has not been initialized; no weights on disk and not
-///   loaded into memory. (Used by the Phi-4 backend before first download.)
+///   loaded into memory. (Used by the Qwen 3.5 backend before first download.)
 /// - `downloading(fraction:)`: weights are being fetched from a network source
-///   (e.g. Hugging Face hub for Phi-4). System-managed backends like Apple
-///   Foundation Models never enter this state.
+///   (Hugging Face hub).
 /// - `loading`: weights exist locally and are being mapped into memory.
 /// - `ready`: backend is loaded and can accept `rewrite(...)` calls.
 /// - `evicted`: weights are on disk but the in-memory model has been released
@@ -23,7 +22,7 @@ enum LLMClientStatus: Sendable, Equatable {
 
 /// Backend-agnostic contract for the on-device rewrite path.
 ///
-/// Currently the sole conformer is the Phi-4 mini MLX backend. The
+/// Currently the sole conformer is the Qwen 3.5 4B MLX backend. The
 /// protocol is kept in place so the settings UI adapter, the
 /// dispatcher, and tests can substitute fakes without coupling to the
 /// concrete client.

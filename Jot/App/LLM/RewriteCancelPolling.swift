@@ -5,7 +5,7 @@ import Foundation
 ///
 /// ## Why a shared helper
 ///
-/// `Phi4Client` (MLX) needs cancel polling that reads
+/// `Qwen35Client` (MLX) needs cancel polling that reads
 /// `AppGroup.rewriteCancelRequested` on a 50 ms cadence and propagates
 /// a cancel into the inference task on flag flip. The polling helper
 /// is kept backend-agnostic (taking either a parent `Task` or a

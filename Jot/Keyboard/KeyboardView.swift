@@ -70,11 +70,19 @@ struct KeyboardView: View {
     /// `textDocumentProxy.keyboardAppearance`.
     let keyboardAppearance: UIKeyboardAppearance
 
+    /// True iff the host's focused field currently has a non-empty
+    /// selection. Drives the enabled state of the Actions popover's
+    /// Copy row. The controller composes this from
+    /// `hasFullAccess && (textDocumentProxy.selectedText is non-empty)`
+    /// at every render — Copy is disabled when either condition fails.
+    let hasSelection: Bool
+
     let onCopy: () -> Void
     let onPaste: () -> Void
-    let onCopyLastDictation: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
+    let onJumpToStart: () -> Void
+    let onJumpToEnd: () -> Void
     let onTapToSpeak: () -> Void
     let onInsertHistoryEntry: (TranscriptHistoryMirror.Entry) -> Void
     let onInsertText: (String) -> Void
@@ -212,13 +220,15 @@ struct KeyboardView: View {
 
                     ActionsPopover(
                         hasPasteboardContent: hasPasteboardContent,
-                        hasLastDictation: !historyEntries.isEmpty,
+                        hasSelection: hasSelection,
                         canUndo: canUndoLastInsertion,
                         canRedo: canRedoInsertion,
                         onPaste: onPaste,
-                        onCopyLast: onCopyLastDictation,
+                        onCopy: onCopy,
                         onUndo: onUndoLastInsertion,
                         onRedo: onRedoInsertion,
+                        onJumpToStart: onJumpToStart,
+                        onJumpToEnd: onJumpToEnd,
                         onDismiss: { showActionsPopover = false }
                     )
                     .padding(.trailing, 8)
@@ -254,7 +264,10 @@ struct KeyboardView: View {
         if recordingState.isRecording {
             StreamingStrip(
                 partialText: recordingState.streamingPartialText,
-                startedAt: recordingState.startedAt
+                startedAt: recordingState.startedAt,
+                loadingLabel: recordingState.loadingVariantLabel.isEmpty
+                    ? nil
+                    : "Loading \(recordingState.loadingVariantLabel)…"
             )
             .transition(
                 reduceMotion
@@ -534,7 +547,7 @@ struct KeyboardView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Actions")
-        .accessibilityHint("Opens Paste, Copy last, Undo, and Redo actions")
+        .accessibilityHint("Opens Paste, Copy, Undo, Redo, and Move up/down actions")
         .accessibilityAddTraits(.isButton)
     }
 

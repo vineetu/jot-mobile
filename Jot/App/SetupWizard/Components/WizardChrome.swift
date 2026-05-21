@@ -4,8 +4,8 @@
 //
 //  Phase 6 of the UX overhaul — Setup Wizard reskin.
 //
-//  Reusable chrome bits the 10 wizard panels share: the standard v0.9
-//  wallpaper backdrop, progress dot rows (core 8 + optional 2), the top-right
+//  Reusable chrome bits the 8 wizard panels share: the standard v0.9
+//  wallpaper backdrop, progress dot rows (core 7 + optional 1), the top-right
 //  glass close button, the coral primary CTA pill, secondary text
 //  button, the bottom home-indicator bar, and the wizard title/body
 //  typography helpers that every panel uses.
@@ -67,11 +67,14 @@ struct WizardProgressDots: View {
     }
 }
 
-/// 7 muted dots + dash separator + 2 active dots — the Optional Step 1/2
+/// 7 muted dots + dash separator + 1 active dot — the Optional Step
 /// indicator. Mirrors the JSX `WizDotsB` shape (7 muted dots after the
 /// W3 speech-model step and W5 in-app try-it step were both removed).
+/// The former second optional step (vocab seed) was retired when
+/// vocabulary biasing was reclassified as experimental, so only the
+/// AI Rewrite optional step remains.
 struct WizardProgressDotsOptional: View {
-    let current: Int  // 0 or 1
+    let current: Int  // always 0 — only one optional step remains
 
     var body: some View {
         HStack(spacing: 6) {
@@ -84,30 +87,13 @@ struct WizardProgressDotsOptional: View {
                 .fill(Color.jotPageInk.opacity(0.22))
                 .frame(width: 12, height: 1.5)
                 .padding(.horizontal, 3)
-            ForEach(0..<2, id: \.self) { i in
-                optionalDot(for: i)
-            }
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Optional step \(min(current + 1, 2)) of 2")
-    }
-
-    @ViewBuilder
-    private func optionalDot(for index: Int) -> some View {
-        let size: CGFloat = index == current ? 7 : 5
-        if index == current {
+            // Single optional step: render one accent dot.
             Circle()
                 .fill(Color.jotAccent)
-                .frame(width: size, height: size)
-        } else if index < current {
-            Circle()
-                .fill(Color.jotPageInk.opacity(0.22))
-                .frame(width: size, height: size)
-        } else {
-            Circle()
-                .strokeBorder(Color.jotPageInk.opacity(0.22), lineWidth: 1.5)
-                .frame(width: size, height: size)
+                .frame(width: 7, height: 7)
         }
+        .accessibilityElement()
+        .accessibilityLabel("Optional step 1 of 1")
     }
 }
 
@@ -252,7 +238,7 @@ struct WizardPrimaryButton: View {
     }
 }
 
-/// Glass-pill secondary button used by the Optional Step 1 vocab "Done" CTA.
+/// Glass-pill secondary button used by the Optional Step 1 AI rewrite CTA.
 struct WizardGlassButton: View {
     let title: String
     let action: () -> Void

@@ -34,6 +34,7 @@ struct VocabularySettingsView: View {
 
     var body: some View {
         Form {
+            experimentalHeaderSection
             masterToggleSection
             boostModelSection
             termsSection
@@ -69,6 +70,33 @@ struct VocabularySettingsView: View {
             } else {
                 Task { await VocabularyRescorerHolder.shared.unload() }
             }
+        }
+    }
+
+    // MARK: - Experimental header
+
+    /// Top section that surfaces the "EXPERIMENTAL" badge for the
+    /// Vocabulary surface.
+    @ViewBuilder
+    private var experimentalHeaderSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Text("EXPERIMENTAL")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.5)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule().fill(Color.jotMute.opacity(0.15))
+                    )
+                    .foregroundStyle(Color.jotMute)
+                Text("Vocabulary biasing")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         }
     }
 

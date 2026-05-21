@@ -89,6 +89,21 @@ final class StreamingPartial {
         // Force-publish on `isFinal` so the keyboard's volatile→primary
         // visual handoff isn't dropped by the throttle.
         Self.publishProjection(text, force: isFinal)
+        // Diagnostic visibility into whether the streaming engine is
+        // actually emitting partials during recording. The Help →
+        // Diagnostics card surfaces these entries so a user reporting
+        // "no live preview text" can confirm at a glance whether the
+        // FluidAudio manager fired any partials at all.
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .streamingPartialReceived,
+            message: "streaming partial received",
+            metadata: [
+                "length": "\(text.count)",
+                "isFinal": "\(isFinal)",
+                "variant": "\(SpeechModelVariant.current().rawValue)",
+            ]
+        )
     }
 
     /// Clears the session token without touching displayed text. Called BEFORE
@@ -191,7 +206,11 @@ final class StreamingPartial {
 /// drain task is `Task.detached(priority: .userInitiated)` — never `.high`,
 /// which would compete with the audio render thread.
 actor StreamingTranscriptionEngine {
-    private let manager: any StreamingAsrManager
+    /// The streaming manager backing this engine. Owned by this engine
+    /// for the lifetime of the session; released via `cleanup()` in
+    /// `StreamingTranscriptionService.endSession(engine:)` per the
+    /// cleanup-on-every-stop lifecycle policy.
+    let manager: any StreamingAsrManager
     private let queue: StreamingBufferQueue
     private let presenter: StreamingPartial
     private let sessionID: UUID
@@ -285,30 +304,30 @@ actor StreamingTranscriptionEngine {
     /// when its result lands (spec §3.3), but the user gets the
     /// volatile→solid transition in the streaming preview as native polish.
     /// Per prototype `DualRecorder.swift:283-290`.
-    func finish() async {
+    ///
+    /// Returns the finalized text emitted by `manager.finish()`, or `nil`
+    /// if the call threw.
+    @discardableResult
+    func finish() async -> String? {
         do {
             let final = try await manager.finish()
             let presenter = self.presenter
             await MainActor.run { presenter.applyFinalSnapshot(final) }
             log.info("streaming finish — chars=\(final.count, privacy: .public)")
+            return final
         } catch {
             log.error(
                 "streaming finish failed — \(error.localizedDescription, privacy: .public)"
             )
+            return nil
         }
     }
 
     /// Full release of CoreML model references and per-session state per
     /// `StreamingEouAsrManager.swift:428-440`. After this returns, the
-    /// manager (and this engine instance) cannot be used until
-    /// `loadModels()` runs again on the manager — but the host service's
-    /// lifecycle (team-lead Rule 3 cleanup-on-every-stop) is "fresh manager
-    /// per session," so no caller will reuse this engine. The engine
-    /// reference is dropped immediately after.
-    ///
-    /// Called from `StreamingTranscriptionService.endSession(engine:)` on
-    /// every recording stop (spec §2.1 binding 950 MB peak budget on the
-    /// 8GB iPhone 17 base).
+    /// manager cannot be used until `loadModels()` runs again. Called
+    /// from `StreamingTranscriptionService.endSession(engine:)` on
+    /// every recording stop per the cleanup-on-every-stop policy.
     func cleanup() async {
         await manager.cleanup()
     }

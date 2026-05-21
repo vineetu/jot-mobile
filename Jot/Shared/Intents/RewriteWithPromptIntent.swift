@@ -24,7 +24,7 @@ import Foundation
 ///
 /// The keyboard extension target must see this type to instantiate it
 /// (`RewriteWithPromptIntent(promptID: selection:)`). But the body needs to
-/// call into main-app-only code (`LLMClientFactory`, `Phi4Client`, etc.).
+/// call into main-app-only code (`LLMClientFactory`, `Qwen35Client`, etc.).
 /// The fix is the `JOT_APP_HOST` compile flag set on the main-app target
 /// only — the keyboard compiles the `#else` stub, the main-app process
 /// compiles the real `#if JOT_APP_HOST` body.

@@ -8,18 +8,18 @@ import os.log
 /// round-trip. The string raw value is deliberately stable — changing it
 /// would silently flip every existing user back to the default.
 ///
-/// - `.qwen35`: **Default** provider. Qwen 3.5 4B (4-bit) via MLX. The
+/// - `.qwen35`: **The only provider.** Qwen 3.5 4B (4-bit) via MLX. The
 ///   chain-of-thought trace is suppressed at the chat-template layer through
 ///   `additionalContext: ["enable_thinking": false]` — see `Qwen35Client`
 ///   for the full mechanism.
-/// - `.phi4`: Alternate provider. Phi-4-mini-instruct-4bit via MLX
-///   (grammar-constrained JSON output). Preserved as an opt-in for users
-///   who already have it downloaded.
+///
+/// The enum is preserved as a single-case enum so the Switch Model picker
+/// surface still has something to bind against. A future second backend
+/// just adds a case here + a branch in `build(provider:)` /
+/// `currentProviderWeightsOnDisk`.
 enum LLMProvider: String, Sendable, CaseIterable {
-    /// Qwen 3.5 4B (4-bit) via MLX — the **default** rewrite provider.
+    /// Qwen 3.5 4B (4-bit) via MLX — the only rewrite provider.
     case qwen35 = "qwen35"
-    /// Phi-4-mini-instruct-4bit via MLX — an alternate, opt-in provider.
-    case phi4 = "phi4"
 }
 
 /// Owns the singleton `LLMClient` for the main app process.
@@ -49,32 +49,14 @@ final class LLMClientFactory {
 
     /// Currently-selected provider per App Group defaults.
     ///
-    /// ## Default resolution + migration safety
-    ///
-    /// Existing TestFlight users may have downloaded Phi-4 under the previous
-    /// build (when Phi-4 was the only — and therefore default — provider) but
-    /// never explicitly persisted a provider key. Auto-flipping those users
-    /// to Qwen on the first launch of the new build would force a fresh
-    /// ~2.5 GB download for no user-initiated reason. To avoid that:
-    ///
-    /// - If a provider key IS persisted, honor it (user has explicitly
-    ///   chosen, possibly via Settings → Switch model).
-    /// - Else, if Phi-4 weights are already on-disk, default to `.phi4` so
-    ///   the existing-install experience is unchanged.
-    /// - Else (fresh install, no provider key, no Phi-4 weights), default to
-    ///   the new product default: `.qwen35`.
-    ///
-    /// Legacy / unknown raw values (`"gemma"`, `"appleIntelligence"`, etc.)
-    /// fall through to the same disk-probe migration so we don't punish a
-    /// user with cruft from a removed experimental case.
+    /// Legacy / unknown raw values (including `"phi4"` from prior builds)
+    /// resolve to the only remaining provider, `.qwen35`. Phi-4 weights
+    /// from prior installs are purged by a one-shot migration in
+    /// `JotApp` — see `Phi4WeightsPurge` for details.
     var currentProvider: LLMProvider {
         if let raw = AppGroup.defaults.string(forKey: AppGroup.Keys.aiRewriteProvider),
            let provider = LLMProvider(rawValue: raw) {
             return provider
-        }
-        // No persisted provider — apply migration-safety check.
-        if Phi4Client.snapshotPresentOnDisk() {
-            return .phi4
         }
         return .qwen35
     }
@@ -112,21 +94,90 @@ final class LLMClientFactory {
     var currentProviderWeightsOnDisk: Bool {
         switch currentProvider {
         case .qwen35: return Qwen35Client.snapshotPresentOnDisk()
-        case .phi4:   return Phi4Client.snapshotPresentOnDisk()
         }
     }
 
     private func build(provider: LLMProvider) -> any LLMClient {
         switch provider {
         case .qwen35:
-            // Qwen 3.5 4B (4-bit) via MLX. Default since 2026-05.
+            // Qwen 3.5 4B (4-bit) via MLX. The only rewrite backend.
             return Qwen35Client()
-        case .phi4:
-            // Phi-4-mini-instruct-4bit via MLX. Once built, weights stay
-            // resident until the OS reclaims memory under pressure or the
-            // user purges via settings.
-            return Phi4Client()
         }
+    }
+}
+
+// MARK: - One-shot Phi-4 weight purge
+
+/// One-shot migration that reclaims disk for upgrading users from prior
+/// builds that downloaded Phi-4 mini (~2.4 GB) into the HuggingFace cache.
+/// Now that Qwen 3.5 is the sole rewrite backend, those weights are dead
+/// disk. Removes the entire `models--mlx-community--Phi-4-mini-instruct-4bit/`
+/// directory under the HF cache root, gated by a `UserDefaults` flag so it
+/// runs at most once per install.
+///
+/// Best-effort. Never throws — logs and bails on any FS error.
+enum Phi4WeightsPurge {
+    static let migrationKey = "jot.didPurgePhi4Weights"
+
+    static func runIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
+
+        let log = Logger(
+            subsystem: "com.vineetu.jot.mobile.Jot",
+            category: "phi4-purge"
+        )
+
+        let cacheBase = hfHubCacheRoot()
+        let phi4Dir = cacheBase
+            .appendingPathComponent("models--mlx-community--Phi-4-mini-instruct-4bit", isDirectory: true)
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: phi4Dir.path) else {
+            // Nothing on disk — still flip the flag so we don't poll
+            // the filesystem on every cold launch.
+            defaults.set(true, forKey: migrationKey)
+            log.info("Phi-4 purge: nothing on disk at \(phi4Dir.path, privacy: .public); flag set")
+            return
+        }
+
+        // Flip the gate flag BEFORE dispatching the delete so a slow
+        // detached delete that overlaps a next cold launch doesn't
+        // re-attempt deletion.
+        defaults.set(true, forKey: migrationKey)
+
+        Task.detached(priority: .utility) {
+            let log = Logger(
+                subsystem: "com.vineetu.jot.mobile.Jot",
+                category: "phi4-purge"
+            )
+            do {
+                try FileManager.default.removeItem(at: phi4Dir)
+                log.notice("Phi-4 weights purged at \(phi4Dir.path, privacy: .public)")
+            } catch {
+                log.error("Phi-4 purge failed at \(phi4Dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Resolve the HF Hub cache root the same way the previous
+    /// `Phi4Client.snapshotPresentOnDisk` did — honors `HF_HUB_CACHE`,
+    /// then `HF_HOME/hub`, then falls back to the default
+    /// `~/Library/Caches/huggingface/hub`.
+    private static func hfHubCacheRoot() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        func expanded(_ path: String) -> URL {
+            URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        if let hubCache = environment["HF_HUB_CACHE"], !hubCache.isEmpty {
+            return expanded(hubCache)
+        }
+        if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
+            return expanded(hfHome).appendingPathComponent("hub", isDirectory: true)
+        }
+        return URL.cachesDirectory
+            .appendingPathComponent("huggingface", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true)
     }
 }
 
@@ -142,18 +193,15 @@ extension LLMProvider {
     var displayName: String {
         switch self {
         case .qwen35: return "Qwen 3.5 4B"
-        case .phi4: return "Phi-4 mini"
         }
     }
 
     /// User-facing on-disk size string. Surfaced alongside `displayName` in
     /// the same screens — also used for the download CTA copy
-    /// ("Download · 2.5 GB"). Qwen 3.5 4B at 4-bit is approximately 2.5 GB;
-    /// Phi-4-mini-instruct-4bit is approximately 2.4 GB.
+    /// ("Download · 2.5 GB"). Qwen 3.5 4B at 4-bit is approximately 2.5 GB.
     var displaySize: String {
         switch self {
         case .qwen35: return "2.5 GB"
-        case .phi4: return "2.4 GB"
         }
     }
 }

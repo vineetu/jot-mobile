@@ -88,6 +88,7 @@ struct RecordingHeroView: View {
     @Environment(RecordingService.self) private var recordingService
     @Environment(TranscriptionService.self) private var transcriptionService
     @Environment(StreamingPartial.self) private var streamingPartial
+    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -321,16 +322,21 @@ struct RecordingHeroView: View {
     @ViewBuilder
     private var streamingTextArea: some View {
         let text = streamingPartial.streamingText
+        let isLoadingModel = streamingService.sessionLoadState == .loading
         VStack(alignment: .leading, spacing: 0) {
             Group {
                 if text.isEmpty {
-                    Text("Listening…")
-                        .font(.system(size: 26, weight: .regular, design: .serif).italic())
-                        .lineSpacing(8.3)
-                        .tracking(-0.4)
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityHidden(true)
+                    if isLoadingModel {
+                        loadingPlaceholder
+                    } else {
+                        Text("Listening…")
+                            .font(.system(size: 26, weight: .regular, design: .serif).italic())
+                            .lineSpacing(8.3)
+                            .tracking(-0.4)
+                            .foregroundStyle(Color.jotPageInkSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityHidden(true)
+                    }
                 } else {
                     StreamingDictationText(
                         text: text,
@@ -359,10 +365,44 @@ struct RecordingHeroView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             text.isEmpty
-                ? "Recording in progress. Listening."
+                ? (isLoadingModel
+                    ? "Recording in progress. Loading \(SpeechModelVariant.current().displayName)."
+                    : "Recording in progress. Listening.")
                 : "Recording in progress. \(text)"
         )
         .accessibilityFocused($recordingStatusFocused)
+    }
+
+    /// "Loading [variant]…" placeholder rendered in the streaming card
+    /// while `streamingService.sessionLoadState == .loading` — i.e. the
+    /// per-session ANE load of the streaming graph is in flight. Once
+    /// the model lands and either the first partial arrives or
+    /// `sessionLoadState` flips to `.ready`, this gives way to the
+    /// usual "Listening…" / live transcript pair.
+    ///
+    /// Visual contract: identical typography to the "Listening…"
+    /// placeholder (26pt serif italic, `jotPageInkSecondary`) so the
+    /// swap reads as a copy change rather than a layout shift. A small
+    /// monochrome `ProgressView` sits inline to the left so users know
+    /// the placeholder is active work, not idle silence. Light/dark
+    /// adapt through `jotPageInkSecondary`.
+    @ViewBuilder
+    private var loadingPlaceholder: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Color.jotPageInkSecondary)
+                .accessibilityHidden(true)
+
+            Text("Loading \(SpeechModelVariant.current().displayName)…")
+                .font(.system(size: 26, weight: .regular, design: .serif).italic())
+                .lineSpacing(8.3)
+                .tracking(-0.4)
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .transition(.opacity)
     }
 
     // MARK: - Bottom controls

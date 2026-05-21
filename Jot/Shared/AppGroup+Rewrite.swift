@@ -24,7 +24,7 @@ import Foundation
 /// ## Cancellation
 ///
 /// The keyboard sets `rewriteCancelRequested = true` when the user dismisses
-/// the rewrite UI mid-flight. The Phi-4 client's chunk loop (Stage 1+2) polls
+/// the rewrite UI mid-flight. The LLM client's chunk loop (Stage 1+2) polls
 /// this flag between decoded chunks and calls `Task.cancel()` on hit; the
 /// intent then converts the resulting `CancellationError` into a
 /// `rewriteError = "Cancelled"` write.
@@ -32,8 +32,7 @@ import Foundation
 /// All four properties hop through `AppGroup.defaults`, which is documented as
 /// thread-safe but `nonisolated(unsafe)` for Swift 6 strict concurrency in the
 /// base type. Reads from the keyboard are off-MainActor; writes from the
-/// intent are MainActor — matches the existing access pattern for keys like
-/// `aiRewriteEnabled`.
+/// intent are MainActor.
 extension AppGroup {
 
     /// Keys for the rewrite-state slots. Held in a nested `Keys` extension to
@@ -179,7 +178,7 @@ extension AppGroup {
     }
 
     /// Cancel flag set by the keyboard when the user dismisses the rewrite
-    /// UI mid-flight. Polled by the Phi-4 chunk loop (Stage 1+2). The intent
+    /// UI mid-flight. Polled by the LLM chunk loop (Stage 1+2). The intent
     /// resets this to `false` at job start so a stale flag from a previous
     /// run doesn't trip the new job.
     ///
@@ -234,7 +233,7 @@ extension AppGroup {
     }
 
     /// Transient banner string set by the dictation pipeline when a rewrite
-    /// chain falls back to raw paste (Phi-4 timeout, error, etc.). The
+    /// chain falls back to raw paste (LLM timeout, error, etc.). The
     /// keyboard reads it on appearance / on `transcriptReady`, renders an
     /// auto-fading banner over the streaming-preview strip for ~3 seconds,
     /// then clears the slot. `nil` (key absent) means no banner is pending.

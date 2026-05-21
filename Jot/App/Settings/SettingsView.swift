@@ -31,7 +31,7 @@ struct SettingsView: View {
 
     /// LLM adapter for the AI-row's sub-status. Resolved lazily on appear;
     /// `nil` until then. Lives only for the lifetime of the Settings sheet
-    /// so we don't pin Phi-4 weights in memory when the user just glanced
+    /// so we don't pin LLM weights in memory when the user just glanced
     /// at Settings.
     @State private var clientAdapter: LLMClientUIAdapter?
 
@@ -305,23 +305,22 @@ struct SettingsView: View {
 
     private var speechModelDisplayName: String {
         switch speechModelVariant {
-        case "tdtCtc110m": return "Parakeet TDT-CTC 110M"
-        default:           return "Parakeet TDT"
+        case "parakeetV2":   return "Parakeet 600M"
+        default:             return "Parakeet 110M"
         }
     }
 
     private var variantShortName: String {
         switch speechModelVariant {
-        case "tdtCtc110m": return "TDT-CTC 110M"
-        default:           return "Parakeet 600M"
+        case "parakeetV2":   return "Parakeet 600M"
+        default:             return "Parakeet 110M"
         }
     }
 
     private var speechModelLocationCopy: String {
-        // Sentence-form per plan §8 — "About 700 MB" not "1.5 GB".
         switch speechModelVariant {
-        case "tdtCtc110m": return "On your iPhone · about 330 MB"
-        default:           return "On your iPhone · about 700 MB"
+        case "parakeetV2":   return "On your iPhone · about 440 MB"
+        default:             return "On your iPhone · about 330 MB"
         }
     }
 
@@ -343,11 +342,15 @@ struct SettingsView: View {
             && CtcModelCache.shared.isCached
     }
 
+    private var displayedModelState: TranscriptionService.ModelState {
+        transcriptionService.modelState
+    }
+
     @ViewBuilder
     private var speechModelStatusPill: some View {
         // In-progress states win over the on-disk probe: if a download or
         // load is happening right now, surface the live progress chrome.
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading(let fraction):
             StatusPillV09(label: "\(Int((fraction * 100).rounded()))%", tint: .info)
         case .loading:
@@ -442,7 +445,7 @@ struct SettingsView: View {
         case .downloading(let f):  status = "Downloading \(Int((f * 100).rounded()))%"
         case .evicted:             status = "Unloaded"
         case .error:               status = "Error"
-        case .notReady:            status = AppGroup.aiRewriteEnabled ? "Tap to download" : "Off"
+        case .notReady:            status = "Tap to download"
         }
         return "\(modelName) · \(status)"
     }
@@ -764,10 +767,10 @@ struct SpeechModelVariantPicker: View {
         Form {
             Section {
                 Picker(selection: $speechModelVariant) {
-                    Text("Parakeet 600M (more accurate)")
-                        .tag("parakeetV2")
                     Text("Parakeet 110M (lighter, faster)")
                         .tag("tdtCtc110m")
+                    Text("Parakeet 600M (more accurate)")
+                        .tag("parakeetV2")
                 } label: {
                     Label("Variant", systemImage: "waveform.badge.magnifyingglass")
                 }
@@ -775,6 +778,11 @@ struct SpeechModelVariantPicker: View {
                 .onChange(of: speechModelVariant) { _, newValue in
                     AppGroup.speechModelVariant = newValue
                     transcriptionService.handleVariantChange()
+                    // The streaming service also needs to re-evaluate
+                    // disk presence for the new variant; without this
+                    // call the Status pill would lag one navigation
+                    // cycle behind reality after flipping variants.
+                    streamingService.handleVariantChange()
                 }
             } header: {
                 Text("Variant")
@@ -796,9 +804,9 @@ struct SpeechModelVariantPicker: View {
                 // variant — its weights live in the read-only IPA bundle, so
                 // both "Download all models" (nothing to fetch) and
                 // "Re-download all models" (purgeAndReload short-circuits for
-                // the bundled case) are dead-end taps. The v2 (600M) path is
-                // unchanged: its Application Support cache is writable and
-                // re-downloadable.
+                // the bundled case) are dead-end taps. The opt-in 600M v2
+                // download keeps the CTA: its Application Support cache is
+                // writable + re-downloadable.
                 if speechModelVariant != "tdtCtc110m" {
                     Button {
                         handleModelAction()
@@ -860,10 +868,14 @@ struct SpeechModelVariantPicker: View {
         }
     }
 
+    private var displayedModelState: TranscriptionService.ModelState {
+        transcriptionService.modelState
+    }
+
     private var modelStatusText: String {
         // Live-progress states still win — show the actual download/load
         // percent rather than a stale "Ready" pill from a previous session.
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading(let fraction):
             return "Downloading \(Int((fraction * 100).rounded()))%"
         case .loading:
@@ -876,7 +888,7 @@ struct SpeechModelVariantPicker: View {
     }
 
     private var modelStatusSymbol: String {
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading, .loading:
             return "arrow.down.circle.fill"
         case .failed where !speechModelInstalled:
@@ -887,7 +899,7 @@ struct SpeechModelVariantPicker: View {
     }
 
     private var modelStatusColor: Color {
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading, .loading:
             return .accentColor
         case .failed where !speechModelInstalled:
@@ -898,7 +910,7 @@ struct SpeechModelVariantPicker: View {
     }
 
     private var modelActionTitle: String {
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading:
             return "Downloading"
         case .loading:
@@ -915,7 +927,7 @@ struct SpeechModelVariantPicker: View {
     }
 
     private var modelActionDisabled: Bool {
-        switch transcriptionService.modelState {
+        switch displayedModelState {
         case .downloading, .loading:
             return true
         case .notLoaded, .failed, .ready:
@@ -925,8 +937,8 @@ struct SpeechModelVariantPicker: View {
 
     private var sizeFooter: String {
         switch speechModelVariant {
-        case "tdtCtc110m": return "Runs entirely on this iPhone. About 330 MB on disk."
-        default:           return "Runs entirely on this iPhone. About 700 MB on disk."
+        case "parakeetV2":   return "Runs entirely on this iPhone. About 440 MB on disk."
+        default:             return "Runs entirely on this iPhone. About 330 MB on disk."
         }
     }
 }

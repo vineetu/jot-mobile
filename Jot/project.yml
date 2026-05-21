@@ -13,8 +13,8 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    CURRENT_PROJECT_VERSION: "2"
-    MARKETING_VERSION: "0.9.5"
+    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.0"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -22,8 +22,8 @@ settings:
 packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    exactVersion: "0.13.6"
-  # MLX backend stack for the on-device Phi-4-mini rewrite path. Declared
+    exactVersion: "0.14.7"
+  # MLX backend stack for the on-device Qwen 3.5 rewrite path. Declared
   # at the project level so xcodegen emits the package refs, but only the
   # `Jot` target depends on the products — JotKeyboard MUST NOT pull in
   # MLX (60MB extension ceiling; the keyboard URL-bounces to the main app
@@ -79,7 +79,7 @@ targets:
       # Xcode would flatten the `.mlmodelc` directory or attempt to
       # recompile the CoreML packages, breaking the bundle.
       # FluidAudio's load APIs (`AsrModels.load(from:)`,
-      # `StreamingEouAsrManager.loadModels(modelDir:)`,
+      # `StreamingEouAsrManager.loadModels(from:)`,
       # `CtcModels.loadDirect(from:)`) accept directory URLs and find
       # these subtrees by relative path, so no first-launch download is
       # needed for the default dictation flow (App Review 4.2.3(ii)).
@@ -131,7 +131,7 @@ targets:
       - package: FluidAudio
         product: FluidAudio
       - sdk: AppIntents.framework
-      # MLX stack for Phi-4. Main-app-only — extensions stay MLX-free.
+      # MLX stack for Qwen 3.5. Main-app-only — extensions stay MLX-free.
       - package: MLXSwiftLM
         product: MLXLLM
       - package: MLXSwiftLM
@@ -146,7 +146,7 @@ targets:
         product: MLXStructured
       # Apple Foundation Models is linked into the main-app target
       # because `CleanupService` uses `SystemLanguageModel` for non-rewrite
-      # transcript cleanup. It is NOT a rewrite provider — Phi-4-mini on
+      # transcript cleanup. It is NOT a rewrite provider — Qwen 3.5 on
       # MLX is the sole rewrite backend.
       - sdk: FoundationModels.framework
       - target: JotKeyboard
@@ -256,14 +256,14 @@ targets:
           - group.com.vineetu.jot.mobile.shared
     # No `dependencies:` block. The keyboard no longer runs Apple
     # Intelligence rewrite in-process — keyboard rewrite URL-bounces
-    # into the main app, where Phi-4 on MLX handles the call. The
+    # into the main app, where Qwen 3.5 on MLX handles the call. The
     # keyboard target therefore needs zero framework or package
     # dependencies beyond what UIKit / SwiftUI / AppIntents pull in
     # transitively for the `Shared/` sources, and those are linked
     # automatically by xcodebuild without an explicit entry. The MLX
     # stack is NOT linked into the keyboard — it lives in the main-app
-    # target only (the keyboard's 60 MB ceiling can't host the ~2.4 GB
-    # Phi-4 weights anyway). Apple FM remains linked into the main-app
+    # target only (the keyboard's 60 MB ceiling can't host the ~2.5 GB
+    # LLM weights anyway). Apple FM remains linked into the main-app
     # target only (for `CleanupService`).
     settings:
       base:

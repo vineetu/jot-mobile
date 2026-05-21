@@ -21,17 +21,20 @@ struct ActionBarItem: Identifiable {
     let systemImage: String
     let label: String
     let accessibilityLabel: String
+    let isEnabled: Bool
     let action: () -> Void
 
     init(
         systemImage: String,
         label: String,
         accessibilityLabel: String? = nil,
+        isEnabled: Bool = true,
         action: @escaping () -> Void
     ) {
         self.systemImage = systemImage
         self.label = label
         self.accessibilityLabel = accessibilityLabel ?? label
+        self.isEnabled = isEnabled
         self.action = action
     }
 }
@@ -137,6 +140,8 @@ struct ActionBar: View {
             .shadow(color: Color.jotBlueTop.opacity(0.30), radius: 8, x: 0, y: 4)
         }
         .buttonStyle(.plain)
+        .disabled(!item.isEnabled)
+        .opacity(item.isEnabled ? 1.0 : 0.45)
         .accessibilityLabel(item.accessibilityLabel)
         .accessibilityAddTraits(.isButton)
     }

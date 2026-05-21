@@ -52,29 +52,29 @@ enum AppGroup {
         /// no recording is active or no partial has emitted yet.
         static let streamingPartialText = "jot.streaming.partialText"
 
-        /// Selected AI rewrite backend. String value matches an
-        /// `LLMProvider` raw value. Valid values:
-        ///   - `"qwen35"` — Qwen 3.5 4B (4-bit) via MLX. **Default** for
-        ///     fresh installs.
-        ///   - `"phi4"` — Phi-4-mini-instruct-4bit via MLX. Alternate /
-        ///     legacy default; preserved for existing TestFlight users who
-        ///     already have Phi-4 weights on-disk.
-        ///
-        /// Read by the LLM factory in the main app to pick which
-        /// `LLMClient` implementation to instantiate. Default resolution
-        /// (key missing) honors migration safety:
-        ///   - If Phi-4 weights are already on-disk, default to `"phi4"`.
-        ///   - Else, default to `"qwen35"`.
-        ///
-        /// Legacy values (`"gemma"`, `"appleIntelligence"`) are recognized
-        /// but treated as the migration default by the factory's fallback.
-        static let aiRewriteProvider = "jot.ai.rewriteProvider"
+        /// User-visible variant label (e.g. "Parakeet 110M",
+        /// "Parakeet 600M") while `StreamingTranscriptionService` is
+        /// inside the per-session `loadModels(from:)` window — i.e.
+        /// the streaming CoreML graph is being loaded into ANE and is
+        /// not yet ready to consume audio. Empty string when no load
+        /// is in flight. Drives the "Loading [variant]…" placeholder
+        /// rendered by the recording hero and the keyboard's streaming
+        /// strip in place of the usual "Listening…" idle copy. We
+        /// store the resolved display name (not a variant tag) so the
+        /// keyboard extension can render the placeholder without
+        /// linking `SpeechModelVariant` — the enum's owning file
+        /// imports `FluidAudio`, which the 60 MB keyboard target must
+        /// not link.
+        static let streamingLoadingVariantLabel = "jot.streaming.loadingVariantLabel"
 
-        /// User-facing master toggle for the AI Rewrite feature. When `false`
-        /// (default), the keyboard's Magic CTA stays hidden and no LLM weights
-        /// are warmed. Flipping this ON in Settings is the single user gesture
-        /// that opts the device in to the on-device LLM path.
-        static let aiRewriteEnabled = "jot.ai.rewriteEnabled"
+        /// Selected AI rewrite backend. String value matches an
+        /// `LLMProvider` raw value. Currently the only valid value is
+        /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values
+        /// (`"phi4"`, `"gemma"`, `"appleIntelligence"`) are recognized
+        /// but treated as `"qwen35"` by the factory's fallback. The key
+        /// is preserved so the Switch Model picker UI has something to
+        /// bind against when a second backend is added.
+        static let aiRewriteProvider = "jot.ai.rewriteProvider"
 
         /// User-facing master toggle for the warm-hold feature. When `false`
         /// (default), Jot fully cools after each dictation. Users opt in via
@@ -93,13 +93,17 @@ enum AppGroup {
         /// by the store, which seeds the bundled `SavedPrompt.allDefaults`.
         static let savedPrompts = "jot.ai.savedPrompts"
 
-        /// User-selected speech-model variant. Values are FluidAudio
-        /// `Repo` raw values: `"parakeetV2"` (Parakeet TDT 0.6B v2 — the
-        /// current accuracy default) or `"tdtCtc110m"` (the lighter 110M
-        /// hybrid TDT-CTC variant). Read by `TranscriptionService` on
-        /// every `ensurePreparing()` to resolve which model to download
-        /// + load. Default (key missing) is `"parakeetV2"` to preserve
-        /// existing-install behaviour.
+        /// User-selected speech-model variant. Supported values:
+        /// - `"tdtCtc110m"` — Parakeet TDT-CTC 110M (bundled, default).
+        /// - `"parakeetV2"` — Parakeet 0.6B v2 (downloadable opt-in,
+        ///   ~440 MB). Shares the EOU 120M streaming graph with the
+        ///   bundled 110M variant.
+        ///
+        /// Read by `TranscriptionService` and `StreamingTranscriptionService`
+        /// at every session boundary to pick the right model. Unknown /
+        /// legacy values (including `"nemotron0_6b"` from prior builds)
+        /// fall back to the bundled TDT-CTC 110M (no in-place
+        /// rewrite — see the `speechModelVariant` accessor below).
         static let speechModelVariant = "jot.speech.modelVariant"
 
         /// Wall-clock `Date` of the most recent main-app foreground
@@ -113,17 +117,6 @@ enum AppGroup {
         /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
-    }
-
-    /// User-facing master toggle for AI Rewrite. Default `false` (feature
-    /// off) so first-launch behavior matches the locked product default —
-    /// users explicitly opt in via the AI Rewrite settings page.
-    ///
-    /// Uses `bool(forKey:)` because the missing-key default is `false`,
-    /// which `UserDefaults.bool(forKey:)` returns naturally.
-    static var aiRewriteEnabled: Bool {
-        get { defaults.bool(forKey: Keys.aiRewriteEnabled) }
-        set { defaults.set(newValue, forKey: Keys.aiRewriteEnabled) }
     }
 
     /// User-facing master toggle for the warm-hold feature. Default
@@ -195,13 +188,11 @@ enum AppGroup {
         }
     }
 
-    /// Selected AI rewrite backend. Valid values: `"qwen35"` (Qwen 3.5 4B,
-    /// 4-bit via MLX — the **default**) or `"phi4"` (Phi-4-mini-instruct-4bit
-    /// via MLX — alternate/legacy). Legacy values (`"gemma"`,
-    /// `"appleIntelligence"`) are recognized but treated as the migration
-    /// default by `LLMClientFactory`. Default (key missing) is `"qwen35"`
-    /// for fresh installs; `LLMClientFactory.currentProvider` additionally
-    /// honors a Phi-4 on-disk snapshot to keep existing users on Phi-4.
+    /// Selected AI rewrite backend. Currently the only valid value is
+    /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values (`"phi4"`,
+    /// `"gemma"`, `"appleIntelligence"`) are recognized but treated as
+    /// `"qwen35"` by `LLMClientFactory`. Default (key missing) is
+    /// `"qwen35"`.
     static var aiRewriteProvider: String {
         get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "qwen35" }
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
@@ -216,17 +207,43 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.savedPrompts) }
     }
 
-    /// User-selected speech-model variant (raw `String`). `"parakeetV2"`
-    /// is the current Parakeet 0.6B v2 default; `"tdtCtc110m"` is the
-    /// lighter 110M hybrid TDT-CTC alternative.
+    /// User-selected speech-model variant (raw `String`).
+    /// Supported values:
+    /// - `"tdtCtc110m"` (Parakeet TDT-CTC 110M, bundled default)
+    /// - `"parakeetV2"` (Parakeet 0.6B v2, opt-in download)
     ///
-    /// `TranscriptionService` resolves this string to an `AsrModelVersion`
-    /// at every `ensurePreparing()` boundary — flipping the variant in
+    /// `TranscriptionService` and `StreamingTranscriptionService` resolve
+    /// this string at every session boundary — flipping the variant in
     /// Settings only takes effect on the next dictation start, never
     /// mid-session.
+    ///
+    /// Truly unknown values (including stale `"nemotron0_6b"` tags from
+    /// prior builds) fall back to the bundled `"tdtCtc110m"` default so
+    /// a malformed write can't brick transcription. This is the
+    /// auto-migration path for users who had Nemotron selected before
+    /// the rip — first read after upgrade silently routes them back to
+    /// the bundled variant.
     static var speechModelVariant: String {
-        get { defaults.string(forKey: Keys.speechModelVariant) ?? "tdtCtc110m" }
+        get {
+            let stored = defaults.string(forKey: Keys.speechModelVariant)
+            switch stored {
+            case "tdtCtc110m", "parakeetV2":
+                return stored!
+            default:
+                return "tdtCtc110m"
+            }
+        }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
+    }
+
+    /// See `Keys.streamingLoadingVariantLabel` for semantics. Written
+    /// by the main app's `StreamingTranscriptionService` on every
+    /// load-state transition (non-empty while loading, empty when
+    /// idle/ready); read by the keyboard extension to mirror the
+    /// "Loading [variant]…" placeholder.
+    static var streamingLoadingVariantLabel: String {
+        get { defaults.string(forKey: Keys.streamingLoadingVariantLabel) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.streamingLoadingVariantLabel) }
     }
 
     /// Returns `true` when the main Jot app is currently foreground —

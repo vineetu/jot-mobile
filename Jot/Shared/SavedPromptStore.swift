@@ -66,6 +66,35 @@ enum SavedPromptStore {
         save(SavedPrompt.allDefaults)
     }
 
+    /// One-shot, UserDefaults-gated migration that overwrites the
+    /// bundled Articulate prompt's `systemPrompt` (and `name`) with the
+    /// current canonical text. Matched by stable UUID — if the user
+    /// deleted the default Articulate row, this is a no-op. Pre-launch
+    /// only: there are no production users to preserve edits for, so
+    /// the migration intentionally does NOT compare against the
+    /// previous canonical text. After ship, gate any further prompt
+    /// rewrites behind their own one-shot flags.
+    static func migrateArticulatePromptIfNeeded() {
+        let migrationKey = "jot.didMigrateArticulateV2"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
+
+        var current = all()
+        defaults.set(true, forKey: migrationKey)
+        guard let index = current.firstIndex(where: {
+            $0.id == SavedPrompt.defaultArticulate.id
+        }) else {
+            // User deleted Articulate before this build shipped — leave
+            // the list alone, just flip the flag so we don't re-scan
+            // every launch.
+            return
+        }
+        let canonical = SavedPrompt.defaultArticulate
+        current[index].name = canonical.name
+        current[index].systemPrompt = canonical.systemPrompt
+        save(current)
+    }
+
     /// Append a new prompt. Caller supplies the `SavedPrompt` (id, createdAt,
     /// trimmed name/systemPrompt). `sortOrder` is overridden to "after the
     /// current last row" so new entries land at the bottom of the list.

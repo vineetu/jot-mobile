@@ -3,11 +3,27 @@ import SwiftUI
 /// 220pt-wide glass-heavy popover anchored above the bottom-right
 /// Actions button (Mockup 06 / plan §4.5).
 ///
-/// Rows:
-///   - Paste              — `insertText(UIPasteboard.general.string)`
-///   - Copy last          — `UIPasteboard.general.string = lastDictation.text`
-///   - Undo last insertion — controller's undo ledger
-///   - Redo               — controller's redo ledger
+/// Rows (in order):
+///   - Paste                — `insertText(UIPasteboard.general.string)`
+///   - Copy                 — copies the host app's currently-selected
+///                            text to the system clipboard via
+///                            `UITextDocumentProxy.selectedText`. The
+///                            caller composes the enabled flag from
+///                            `hasFullAccess && hasSelection` and passes
+///                            it as `hasSelection`.
+///   - Undo last insertion  — controller's undo ledger
+///   - Redo last insertion  — controller's redo ledger
+///   - Move up              — shifts the cursor backward by approximately
+///                            one host-visible window (~256-1000 chars,
+///                            host-dependent). Multiple taps accumulate.
+///                            Does NOT require Full Access. The internal
+///                            implementation attempts to reach the start
+///                            via a bounded loop but most hosts buffer
+///                            the caret-update and short-circuit after
+///                            one window; this is the honest copy.
+///   - Move down            — shifts the cursor forward by approximately
+///                            one host-visible window. Same caveat as
+///                            Move up. Does NOT require Full Access.
 ///
 /// NO "Clear field" row (plan §13 risk 9 — unreliable in keyboard
 /// extensions).
@@ -18,14 +34,16 @@ import SwiftUI
 /// surface with a `.scale + .opacity` transition.
 struct ActionsPopover: View {
     let hasPasteboardContent: Bool
-    let hasLastDictation: Bool
+    let hasSelection: Bool
     let canUndo: Bool
     let canRedo: Bool
 
     let onPaste: () -> Void
-    let onCopyLast: () -> Void
+    let onCopy: () -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
+    let onJumpToStart: () -> Void
+    let onJumpToEnd: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -43,10 +61,10 @@ struct ActionsPopover: View {
             )
             divider
             row(
-                title: "Copy last",
+                title: "Copy",
                 systemImage: "doc.on.doc",
-                enabled: hasLastDictation,
-                action: handle(onCopyLast)
+                enabled: hasSelection,
+                action: handle(onCopy)
             )
             divider
             row(
@@ -57,10 +75,24 @@ struct ActionsPopover: View {
             )
             divider
             row(
-                title: "Redo",
+                title: "Redo last insertion",
                 systemImage: "arrow.uturn.forward",
                 enabled: canRedo,
                 action: handle(onRedo)
+            )
+            divider
+            row(
+                title: "Move up",
+                systemImage: "arrow.up",
+                enabled: true,
+                action: handle(onJumpToStart)
+            )
+            divider
+            row(
+                title: "Move down",
+                systemImage: "arrow.down",
+                enabled: true,
+                action: handle(onJumpToEnd)
             )
         }
         .frame(width: Self.popoverWidth)

@@ -595,9 +595,9 @@ extension JotDesign {
     /// model. Surfaced in the download pitch sheet, the AI Rewrite settings
     /// page, the wizard's AI offer step, and the Help screen.
     ///
-    /// Resolves from the active provider — Qwen 3.5 4B is ~2.5 GB at 4-bit,
-    /// Phi-4-mini at 4-bit is ~2.4 GB. Update the per-provider value on
-    /// `LLMProvider.displaySize`, not here.
+    /// Resolves from the active provider — Qwen 3.5 4B is ~2.5 GB at
+    /// 4-bit. Update the per-provider value on `LLMProvider.displaySize`,
+    /// not here.
     @MainActor
     static var activeRewriteModelSize: String {
         #if JOT_APP_HOST

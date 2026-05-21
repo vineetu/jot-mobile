@@ -2,17 +2,21 @@
 //  SetupWizardView.swift
 //  Jot
 //
-//  Phase 6 of the UX overhaul — 9-panel setup wizard reskin (7 core +
-//  2 optional). The in-app try-it (formerly W5) was dropped so the
+//  Phase 6 of the UX overhaul — 8-panel setup wizard reskin (7 core +
+//  1 optional). The in-app try-it (formerly W5) was dropped so the
 //  keyboard try-it is the only try-it step — users dictate from the
 //  real keyboard instead of practicing in the wizard first.
 //
-//  Step state machine: a 9-case enum covers seven core and two optional
-//  visual surfaces. The old W3 "Download speech model" panel was retired
-//  earlier (Parakeet ships bundled in the IPA, App Review 4.2.3(ii)).
-//  Each case maps to a small per-step view file under `Steps/`. Shared
-//  chrome (wallpaper, progress dots, close X, primary CTA pill, home
-//  indicator) lives in `Components/WizardChrome.swift`.
+//  Step state machine: an 8-case enum covers seven core and one optional
+//  visual surface. The old W3 "Download speech model" panel was retired
+//  earlier (Parakeet ships bundled in the IPA, App Review 4.2.3(ii)). The
+//  "vocabulary seed" optional step was also retired — the feature stayed
+//  available in Settings → Vocabulary, but it was reclassified as
+//  experimental (it only takes effect on the bundled 110M variant) and
+//  was no longer worth promoting in onboarding. Each case maps to a
+//  small per-step view file under `Steps/`. Shared chrome (wallpaper,
+//  progress dots, close X, primary CTA pill, home indicator) lives in
+//  `Components/WizardChrome.swift`.
 //
 //  Backend wiring is preserved end-to-end:
 //    - W2 mic permission → `AVAudioApplication.requestRecordPermission`
@@ -23,9 +27,7 @@
 //    - W5 keyboard test  → polls `ClipboardHandoff.readFresh()` for a
 //                          fresh handoff newer than W5 entry.
 //    - W6 warm hold      → writes `AppGroup.warmHoldEnabled`.
-//    - Optional Step 1 vocab seed → `VocabularyStore.shared.addBlankTerm()` +
-//                                  `.update(id:text:aliases:)`.
-//    - Optional Step 2 AI offer   → `LLMClientUIAdapter.warm()` against
+//    - Optional Step 1 AI offer   → `LLMClientUIAdapter.warm()` against
 //                                  `LLMClientFactory.shared.client()`.
 //
 //  Setup completion is gated by `SetupCompletion.markCompleted()`, which
@@ -127,16 +129,8 @@ struct SetupWizardView: View {
                 YoureReadyStep(
                     onClose: closeAndComplete,
                     onBack: goBack,
-                    onAdvanceToOptional: { advance(to: .vocabSeed) },
+                    onAdvanceToOptional: { advance(to: .aiOffer) },
                     onSkipOptional: closeAndComplete
-                )
-
-            case .vocabSeed:
-                VocabSeedStep(
-                    onClose: closeAndComplete,
-                    onBack: goBack,
-                    onAdvance: { advance(to: .aiOffer) },
-                    onSkip: closeAndComplete
                 )
 
             case .aiOffer:
@@ -250,11 +244,13 @@ struct SetupWizardView: View {
     }
 }
 
-/// 9-case step machine — one case per core or optional visual surface. Cases are
+/// 8-case step machine — one case per core or optional visual surface. Cases are
 /// ordered to mirror the visual sequence exactly, which keeps the progress-dot
 /// row in lockstep with the step transitions. The old W3 "Download speech
 /// model" case is gone (Parakeet ships bundled in the IPA); the old W5 in-app
 /// try-it case is also gone — users dictate from the real keyboard instead.
+/// The former Optional Step 1 (vocab seed) is gone too — vocabulary biasing
+/// is now an experimental feature in Settings only, not in onboarding.
 private enum SetupStep: Hashable {
     case welcome           // W1
     case microphone        // W2
@@ -263,8 +259,7 @@ private enum SetupStep: Hashable {
     case tryKeyboard       // W5
     case warmHold          // W6
     case youreReady        // W7
-    case vocabSeed         // Optional Step 1
-    case aiOffer           // Optional Step 2
+    case aiOffer           // Optional Step 1
 }
 
 #Preview {

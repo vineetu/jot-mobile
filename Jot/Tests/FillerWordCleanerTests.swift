@@ -71,4 +71,47 @@ final class FillerWordCleanerTests: XCTestCase {
         let out = FillerWordCleaner.clean("Hello world.")
         XCTAssertEqual(out, "Hello world.")
     }
+
+    // MARK: - mid-sentence filler space preservation
+    //
+    // Regression guards for the bug where `[ \t]*` consumed whitespace
+    // on BOTH sides of the filler and the empty replacement template
+    // produced `"yeahokay"` from `"yeah uh okay"`. The fix replaces
+    // with a single space and then trims any artifacts adjacent to
+    // paragraph breaks (step 2.5) and orphan punctuation (step 3).
+
+    /// Filler with a plain word on both sides — must produce a
+    /// single space between the surviving words.
+    func testFillerBetweenWordsLeavesSingleSpace() {
+        let out = FillerWordCleaner.clean("yeah uh okay")
+        XCTAssertEqual(out, "Yeah okay")
+    }
+
+    /// `um` between two words.
+    func testUmBetweenWordsLeavesSingleSpace() {
+        let out = FillerWordCleaner.clean("hello um world")
+        XCTAssertEqual(out, "Hello world")
+    }
+
+    /// Mid-sentence filler in a longer sentence — checks the
+    /// surrounding words don't run together.
+    func testMidSentenceFillerPreservesSpaces() {
+        let out = FillerWordCleaner.clean("this is uh really fast")
+        XCTAssertEqual(out, "This is really fast")
+    }
+
+    /// Two adjacent fillers between words still collapse to a
+    /// single space.
+    func testAdjacentFillersBetweenWordsCollapseToSingleSpace() {
+        let out = FillerWordCleaner.clean("yeah uh um okay")
+        XCTAssertEqual(out, "Yeah okay")
+    }
+
+    /// Paragraph-leading filler must NOT leave a space at the start
+    /// of the new paragraph (step 2.5 cleans this up).
+    func testParagraphLeadingFillerNoLeadingSpace() {
+        let segmented = "Hello.\n\num world."
+        let out = FillerWordCleaner.clean(segmented)
+        XCTAssertEqual(out, "Hello.\n\nWorld.")
+    }
 }

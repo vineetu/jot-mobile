@@ -4,8 +4,10 @@ import SwiftUI
 ///
 /// Re-skinned to match `design_handoff_jot_ux/design/ai.jsx`'s
 /// `AISettingsScreen`. The behavioral surface is unchanged:
-///   - `AppGroup.aiRewriteEnabled` master toggle drives auto-warm.
-///   - `LLMClientUIAdapter` mirrors Phi-4 status for the model strip.
+///   - Download CTA on the model strip is the single on-ramp to AI
+///     Rewrite — no separate master toggle. Tapping Download is what
+///     enables the feature.
+///   - `LLMClientUIAdapter` mirrors Qwen 3.5 status for the model strip.
 ///   - `SavedPromptStore.all()` powers the prompts list, with drag-to-reorder,
 ///     swipe-to-delete, and tap-to-edit flowing into `EditPromptWithTestSheet`.
 ///   - Model status (incl. in-progress download with cancel) lives solely in
@@ -29,7 +31,6 @@ import SwiftUI
 struct AIRewriteSettingsView: View {
 
     @State private var clientAdapter: LLMClientUIAdapter?
-    @State private var aiRewriteEnabled: Bool = AppGroup.aiRewriteEnabled
     @State private var prompts: [SavedPrompt] = []
     @State private var sheet: SheetMode?
     @State private var deletionTarget: SavedPrompt?
@@ -60,33 +61,25 @@ struct AIRewriteSettingsView: View {
                             .padding(.horizontal, 22)
                             .padding(.bottom, 18)
 
-                        masterToggleCard
+                        modelStrip
                             .padding(.horizontal, 14)
-                            .padding(.bottom, 14)
+                            .padding(.bottom, 18)
 
-                        Group {
-                            modelStrip
-                                .padding(.horizontal, 14)
-                                .padding(.bottom, 18)
+                        promptsHeader
+                            .padding(.horizontal, 22)
+                            .padding(.bottom, 8)
 
-                            promptsHeader
-                                .padding(.horizontal, 22)
-                                .padding(.bottom, 8)
+                        promptsCard
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 12)
 
-                            promptsCard
-                                .padding(.horizontal, 14)
-                                .padding(.bottom, 12)
+                        newPromptCTA
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 12)
 
-                            newPromptCTA
-                                .padding(.horizontal, 14)
-                                .padding(.bottom, 12)
-
-                            footerCaption
-                                .padding(.horizontal, 22)
-                                .padding(.bottom, 8)
-                        }
-                        .disabled(!aiRewriteEnabled)
-                        .opacity(aiRewriteEnabled ? 1.0 : 0.5)
+                        footerCaption
+                            .padding(.horizontal, 22)
+                            .padding(.bottom, 8)
 
                         Spacer(minLength: 24)
                     }
@@ -143,29 +136,12 @@ struct AIRewriteSettingsView: View {
             Text("This can't be undone.")
         }
         .onAppear {
-            aiRewriteEnabled = AppGroup.aiRewriteEnabled
             SavedPromptStore.seedIfNeeded()
             reloadPrompts()
             rebuildAdapter()
-            if aiRewriteEnabled,
-               let adapter = clientAdapter,
-               case .notReady = adapter.observableStatus {
-                triggerDownload()
-            }
         }
         .onDisappear {
             clientAdapter?.stop()
-        }
-        .onChange(of: aiRewriteEnabled) { _, newValue in
-            AppGroup.aiRewriteEnabled = newValue
-            if newValue {
-                if let adapter = clientAdapter,
-                   case .notReady = adapter.observableStatus {
-                    triggerDownload()
-                }
-            } else {
-                cancelDownload()
-            }
         }
     }
 
@@ -199,35 +175,6 @@ struct AIRewriteSettingsView: View {
                 .frame(maxWidth: 320, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Master toggle (kept as a small Liquid Glass card above the model strip)
-
-    private var masterToggleCard: some View {
-        LiquidGlassCard(paddingV: 12) {
-            Toggle(isOn: $aiRewriteEnabled) {
-                HStack(spacing: 12) {
-                    IconTile(
-                        systemImage: "wand.and.stars",
-                        tint: JotDesign.JotSemanticIcon.ai,
-                        shaded: JotDesign.JotSemanticIcon.aiShaded,
-                        size: 32
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Enable AI Rewrite")
-                            .font(JotType.rowTitle)
-                            .foregroundStyle(Color.jotPageInk)
-                        Text("Lets the keyboard's Magic button rewrite selected text.")
-                            .font(JotType.rowSub)
-                            .foregroundStyle(Color.jotPageInkSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .tint(.jotCoralTop)
-            .frame(minHeight: 44)
-        }
-        .accessibilityLabel("Enable AI Rewrite")
     }
 
     // MARK: - Compact model strip
@@ -404,17 +351,29 @@ struct AIRewriteSettingsView: View {
             .accessibilityLabel("Download \(JotDesign.activeRewriteModelDisplayName)")
 
         case .downloading(let fraction):
-            HStack(spacing: 10) {
-                ProgressView(value: fraction)
-                    .frame(maxWidth: .infinity)
-                Button(role: .destructive) {
-                    cancelDownload()
-                } label: {
-                    Text("Cancel")
-                        .font(.system(size: 13, weight: .semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    ProgressView(value: fraction)
+                        .frame(maxWidth: .infinity)
+                    Button(role: .destructive) {
+                        cancelDownload()
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                // Foreground-download caveat: iOS suspends URLSession.shared
+                // transfers ~30s after the app backgrounds. Until we ship a
+                // real background URLSession path, this caption sets
+                // expectations honestly so the user doesn't background mid-
+                // download and silently stall. Light/dark via the existing
+                // `jotPageInkSecondary` token.
+                Text("Keep Jot open while the model downloads.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .accessibilityLabel("Keep Jot open while the model downloads — backgrounding the app may pause the download.")
             }
             .frame(minHeight: 44)
 
@@ -830,13 +789,15 @@ private struct DragDotsHandle: View {
 
 // MARK: - Switch model picker
 
-/// Two-row picker for the active rewrite model.
+/// Single-row picker for the active rewrite model.
 ///
-/// Lists Qwen 3.5 4B (default / recommended) and Phi-4 mini (alternate).
-/// Tapping a row persists the selection via `LLMClientFactory.setProvider(_:)`
-/// — the next rewrite call will rebuild the underlying `LLMClient`. The
-/// `onChange` callback fed by the parent view rebuilds its adapter so the
-/// model strip reflects the new provider's download state immediately.
+/// Currently lists only Qwen 3.5 4B (the only backend). The shape is
+/// preserved so adding a second backend just requires a new
+/// `LLMProvider` case + a row here. Tapping a row persists the
+/// selection via `LLMClientFactory.setProvider(_:)` — the next rewrite
+/// call will rebuild the underlying `LLMClient`. The `onChange`
+/// callback fed by the parent view rebuilds its adapter so the model
+/// strip reflects the new provider's download state immediately.
 ///
 /// Each row shows:
 ///   - Provider name + per-provider size.
@@ -873,10 +834,9 @@ private struct SwitchModelPicker: View {
 
                         VStack(spacing: 10) {
                             providerRow(.qwen35, badge: "Default")
-                            providerRow(.phi4, badge: nil)
                         }
 
-                        Text("Picking a different model doesn't start the download — switch, then tap Download on the AI Rewrite screen if you want the new model on your iPhone.")
+                        Text("Qwen 3.5 4B is currently the only rewrite model. More options will appear here as they're added.")
                             .font(.footnote)
                             .foregroundStyle(Color.jotPageInkSecondary)
                             .padding(.horizontal, 4)
@@ -974,7 +934,6 @@ private struct SwitchModelPicker: View {
     private func isSnapshotPresent(for provider: LLMProvider) -> Bool {
         switch provider {
         case .qwen35: return Qwen35Client.snapshotPresentOnDisk()
-        case .phi4: return Phi4Client.snapshotPresentOnDisk()
         }
     }
 }

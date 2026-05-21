@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import os.log
 
 #if !targetEnvironment(simulator)
@@ -13,12 +14,10 @@ import MLXStructured
 
 /// Errors specific to the Qwen 3.5 backend.
 ///
-/// Mirrors `Phi4Error` 1:1 — same error surface so callers (intent dispatcher,
-/// settings UI) can stay backend-agnostic. `malformedOutput` carries the raw
-/// JSON buffer the model produced when decoding into `Rewrite` fails;
-/// grammar-constrained decoding *should* make this impossible (the schema
-/// forbids invalid JSON), but we still surface the buffer rather than silently
-/// throwing a generic decode error.
+/// `malformedOutput` carries the raw JSON buffer the model produced when
+/// decoding into `Rewrite` fails; grammar-constrained decoding *should*
+/// make this impossible (the schema forbids invalid JSON), but we still
+/// surface the buffer rather than silently throwing a generic decode error.
 enum Qwen35Error: Error, Sendable, LocalizedError {
     case malformedOutput(rawBuffer: String)
     case containerNotLoaded
@@ -44,8 +43,7 @@ enum Qwen35Error: Error, Sendable, LocalizedError {
 /// grammar-constrained structured output via the vendored
 /// `mlx-swift-structured` fork.
 ///
-/// This is the **default** rewrite backend per the Qwen integration brief.
-/// Phi-4-mini remains a selectable alternate (see `Phi4Client`).
+/// This is the only rewrite backend.
 ///
 /// ## Why Qwen needs special handling
 ///
@@ -74,9 +72,9 @@ enum Qwen35Error: Error, Sendable, LocalizedError {
 /// `<think></think>` block as part of the *prompt* (not the generation).
 ///
 /// The Mac CLI prototype (see `tmp/qwen-prototype-cli/`) validated this
-/// mechanism end-to-end on the same five real Jot dictations the Phi-4
-/// integration was validated against. Empirical Mac latency: 7.28s mean on
-/// M-series — well under the 10s rewrite budget the keyboard tolerates.
+/// mechanism end-to-end on five real Jot dictations. Empirical Mac
+/// latency: 7.28s mean on M-series — well under the 10s rewrite budget
+/// the keyboard tolerates.
 ///
 /// Concurrency: this class is `@MainActor` to keep `observableStatus` safe to
 /// read from SwiftUI views without an `await`. Inference runs inside
@@ -128,9 +126,7 @@ final class Qwen35Client: LLMClient {
     init() {
         #if !targetEnvironment(simulator)
         // Cap MLX cache so the OS can reclaim memory when other workloads
-        // (Parakeet dictation, Foundation Models) are co-resident. Same value
-        // the Phi-4 prototype validated end-to-end on real iPhone — Qwen
-        // 3.5 4B 4-bit has a comparable memory footprint.
+        // (Parakeet dictation, Foundation Models) are co-resident.
         Memory.cacheLimit = 32 * 1024 * 1024
         #endif
         // Probe the HF hub cache synchronously so an already-downloaded
@@ -204,6 +200,25 @@ final class Qwen35Client: LLMClient {
             return
         }
         observableStatus = .loading
+        // Request a background-grace task while `loadContainer` runs. The
+        // download path inside MLX → swift-transformers' `HubApi` uses
+        // `URLSession.shared` (foreground), so iOS would otherwise
+        // suspend the transfer ~5s after the user backgrounds the app.
+        // `beginBackgroundTask` extends that to ~30s of grace, which is
+        // typically enough to either finish or hand off cleanly. NOT a
+        // replacement for a real background URLSession — that's tracked
+        // as a follow-up — but covers the common "user glances at
+        // notifications during download" case.
+        let bgTaskID = await MainActor.run {
+            UIApplication.shared.beginBackgroundTask(withName: "Qwen35.warm") { }
+        }
+        defer {
+            Task { @MainActor in
+                if bgTaskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskID)
+                }
+            }
+        }
         do {
             // Capture the parent Task so the progress callback (running on
             // the HF downloader's queue, not Swift Concurrency) can poll
@@ -248,11 +263,7 @@ final class Qwen35Client: LLMClient {
     }
 
     /// Public mirror of the on-disk snapshot probe — used by
-    /// `LLMClientFactory` to honor migration safety: existing TestFlight
-    /// users with Phi-4 already downloaded should not be silently flipped
-    /// to a Qwen download, but a user who once downloaded Qwen and then
-    /// uninstalled (or never downloaded anything) should still default to
-    /// Qwen on fresh-install.
+    /// `LLMClientFactory` to gate the "Download" CTA in AI Settings.
     nonisolated static func snapshotPresentOnDisk() -> Bool {
         isQwenSnapshotPresentOnDisk()
     }

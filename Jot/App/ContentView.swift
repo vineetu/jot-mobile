@@ -431,7 +431,9 @@ struct ContentView: View {
         // surface with no underlying capture. See `isWizardPresented`
         // doc above.
         .onChange(of: recordingService.isRecording) { _, isRecording in
-            if isRecording, !isWizardPresented, !userDismissedHeroDuringRecording {
+            if isRecording,
+               !isWizardPresented,
+               !userDismissedHeroDuringRecording {
                 // Auto-nav adoption — never `start()` from this path.
                 heroIntent = .adoptInFlight
                 showRecordingHero = true

@@ -28,7 +28,7 @@ struct AIOfferStep: View {
 
     var body: some View {
         WizardPanel(
-            header: WizardHeader(style: .optional(current: 1), onClose: onClose, onBack: onBack)
+            header: WizardHeader(style: .optional(current: 0), onClose: onClose, onBack: onBack)
         ) {
             VStack(spacing: 22) {
                 Spacer(minLength: 40)
@@ -98,10 +98,10 @@ struct AIOfferStep: View {
         guard !didKickOff else { return }
         didKickOff = true
 
-        // Kick off Phi-4 (or whichever client the factory returns) via the
-        // UI adapter so its `observableStatus` mirror is alive when the
+        // Kick off the active LLM client (Qwen 3.5 4B) via the UI
+        // adapter so its `observableStatus` mirror is alive when the
         // user lands on the AI Rewrite settings row. The download itself
-        // is long-running (~2.4 GB) and we deliberately don't block the
+        // is long-running (~2.5 GB) and we deliberately don't block the
         // wizard on it — the AI Rewrite settings model strip continues
         // the progress UI (download bar + cancel) inline.
         let client = LLMClientFactory.shared.client()

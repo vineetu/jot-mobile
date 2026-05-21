@@ -21,10 +21,10 @@ import os.log
 ///   - Settings views observe `observableStatus` directly — no
 ///     `await` in the view body.
 ///
-/// Currently the only concrete `LLMClient` is `Phi4Client`
-/// (MLX-backed Phi-4-mini-instruct-4bit), but the adapter shape is
-/// preserved so future provider work can swap in without rewriting the
-/// settings UI.
+/// Currently the only concrete `LLMClient` is `Qwen35Client`
+/// (MLX-backed Qwen 3.5 4B 4-bit), but the adapter shape is preserved
+/// so future provider work can swap in without rewriting the settings
+/// UI.
 ///
 /// ## Status mirror semantics
 ///
@@ -87,17 +87,15 @@ final class LLMClientUIAdapter {
         self.pollingInterval = pollingIntervalMillis * 1_000_000
         // Synchronously seed `observableStatus` from the concrete client so the
         // first SwiftUI render doesn't see a stale `.notReady` before the
-        // async polling kicks in. Both Qwen35Client and Phi4Client are
-        // `@MainActor` and seed their own `observableStatus` synchronously in
-        // init from a FileManager probe — so by the time we run here, the
-        // value already reflects on-disk reality (`.evicted` when weights are
+        // async polling kicks in. `Qwen35Client` is `@MainActor` and seeds
+        // its own `observableStatus` synchronously in init from a
+        // FileManager probe — so by the time we run here, the value
+        // already reflects on-disk reality (`.evicted` when weights are
         // present, `.notReady` only when truly absent). Skipping this step
         // caused the AI Settings + wizard AI step to flash "Not downloaded"
         // → "Downloading…" briefly before settling on "Ready" on every open.
         if let qwen = client as? Qwen35Client {
             self.observableStatus = qwen.observableStatus
-        } else if let phi4 = client as? Phi4Client {
-            self.observableStatus = phi4.observableStatus
         }
         // Kick off an immediate one-shot read so the polling task's first
         // tick doesn't lag any out-of-band changes the client made after our
@@ -153,18 +151,14 @@ final class LLMClientUIAdapter {
 
     /// Forward a download/warm cancel into the underlying client.
     ///
-    /// Both `Phi4Client.cancelDownload()` and `Qwen35Client.cancelDownload()`
-    /// halt an in-flight HuggingFace download or load and drop back to
-    /// `.notReady`. The protocol itself doesn't require this method — only
-    /// download-capable backends expose it — so we accept a runtime cast
-    /// and log a no-op for any future client that doesn't implement cancel.
+    /// `Qwen35Client.cancelDownload()` halts an in-flight HuggingFace
+    /// download or load and drops back to `.notReady`. The protocol
+    /// itself doesn't require this method — only download-capable
+    /// backends expose it — so we accept a runtime cast and log a
+    /// no-op for any future client that doesn't implement cancel.
     func cancelDownload() {
         if let qwen = client as? Qwen35Client {
             qwen.cancelDownload()
-            return
-        }
-        if let phi4 = client as? Phi4Client {
-            phi4.cancelDownload()
             return
         }
         log.info("cancelDownload: client \(String(describing: type(of: self.client)), privacy: .public) does not support cancel")
@@ -200,11 +194,11 @@ final class LLMClientUIAdapter {
         Task { await client.evict() }
     }
 
-    /// Drop in-memory state. Phi-4 weights live in the HuggingFace cache
+    /// Drop in-memory state. LLM weights live in the HuggingFace cache
     /// directory managed by the MLX bridge — the client doesn't expose a
     /// disk-purge entry point, so we fall back to a plain `evict()` here.
-    /// The settings UI can hide the "Delete model" affordance for Phi-4
-    /// or surface this as "Free memory" instead.
+    /// The settings UI can hide the "Delete model" affordance or
+    /// surface this as "Free memory" instead.
     func deleteModel() {
         let client = self.client
         Task { await client.evict() }

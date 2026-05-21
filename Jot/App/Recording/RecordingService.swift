@@ -144,15 +144,15 @@ final class RecordingService {
     // MARK: - Streaming preview (dual-model-streaming)
     //
     // Per-recording streaming engine + queue + drain task for the live
-    // partial-transcript preview (FluidAudio `StreamingEouAsrManager`,
-    // Parakeet EOU 120M @ 320ms). Allocated in `start()` via
-    // `kickOffStreamingSession()`; torn down in `stop()`/`internalStop()`/
-    // `forceStop()` via `tearDownStreamingSession()`.
+    // partial-transcript preview (FluidAudio `StreamingEouAsrManager`).
+    // Allocated in `start()` via `kickOffStreamingSession()`; torn down
+    // in `stop()`/`internalStop()`/`forceStop()` via
+    // `tearDownStreamingSession()`.
     //
-    // Cleanup-on-every-stop is binding policy (spec §2.1, team-lead Rule 3):
-    // `endSession(engine:)` calls `engine.cleanup()` which fully releases
-    // the FluidAudio CoreML weights. Next `start()` re-instantiates a fresh
-    // manager via `StreamingTranscriptionService.beginSession`.
+    // Cleanup-on-every-stop is binding policy: `endSession(engine:)`
+    // calls `engine.cleanup()` which fully releases the FluidAudio
+    // CoreML weights. Next `start()` re-instantiates a fresh manager
+    // via `StreamingTranscriptionService.beginSession`.
     //
     // Mirrors prototype `DualRecorder.swift:43-69`.
     private var streamingEngine: StreamingTranscriptionEngine?
@@ -521,8 +521,8 @@ final class RecordingService {
             // tearDown then signals EOS, awaits the drain task (bounded by
             // in-flight chunk inference, ~50-200ms typical), promotes the
             // streaming preview to its final snapshot via engine.finish(), then
-            // releases the FluidAudio manager via engine.cleanup() (cleanup-on-
-            // every-stop policy per spec §2.1).
+            // releases the FluidAudio manager via engine.cleanup()
+            // (cleanup-on-every-stop policy).
             await tearDownStreamingSession()
 
             isRecording = false

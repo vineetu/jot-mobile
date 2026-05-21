@@ -159,6 +159,19 @@ struct JotApp: App {
         // this runs at most once. Does NOT touch the v2 (600M) cache.
         TranscriptionService.sweepLegacyAppSupportWeights()
 
+        // One-shot migration: reclaim ~2.4 GB of HuggingFace cache from
+        // upgrading users who downloaded Phi-4 mini under prior builds.
+        // Now that Qwen 3.5 is the sole rewrite backend, those weights
+        // are dead disk. Gated by a `UserDefaults` flag so this runs at
+        // most once per install.
+        Phi4WeightsPurge.runIfNeeded()
+
+        // One-shot migration: overwrite the bundled Articulate prompt's
+        // copy with the current canonical text (matched by stable UUID).
+        // Pre-launch — no production user edits to preserve. Gated by a
+        // `UserDefaults` flag so this runs at most once per install.
+        SavedPromptStore.migrateArticulatePromptIfNeeded()
+
         // Eager warm-up of the bundled speech models so the wizard's
         // "Try It" panel (W7) doesn't pay the ANE-load + Metal-kernel-JIT
         // tax on the first dictation tap. Both `warmUp()` calls are
@@ -426,11 +439,11 @@ struct JotApp: App {
                     TranscriptHistoryMirror.refresh(
                         from: ModelContext(JotModelContainer.shared)
                     )
-                    // Phi-4 weights are warmed lazily on first rewrite call
-                    // (Phi4Client.rewrite() auto-calls warm() internally).
-                    // No scene-activation pre-warm here — that would impose
-                    // a ~2.4 GB HF cache touch on every app launch even
-                    // when the user isn't about to rewrite.
+                    // LLM weights are warmed lazily on first rewrite call
+                    // (`Qwen35Client.rewrite()` auto-calls `warm()`
+                    // internally). No scene-activation pre-warm here —
+                    // that would impose a ~2.5 GB HF cache touch on every
+                    // app launch even when the user isn't about to rewrite.
                 }
         }
         // Bind the process-wide SwiftData container into the scene so
@@ -949,6 +962,18 @@ private final class CrossProcessRecordingStopCoordinator {
         let resolvedSessionID: UUID = keyboardPending?.id
             ?? recording.currentSessionID
             ?? UUID()
+
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .publishResolved,
+            message: "Resolved session ID before publish",
+            metadata: [
+                "resolvedSessionID": resolvedSessionID.uuidString,
+                "keyboardPendingSessionID": keyboardPending?.id.uuidString ?? "<nil>",
+                "currentSessionID": recording.currentSessionID?.uuidString ?? "<nil>",
+                "controllerPhase": String(describing: controller.currentPhase)
+            ]
+        )
 
         switch controller.currentPhase {
         case .recording:

@@ -81,10 +81,14 @@ struct TranscriptDetailView: View {
 
     // MARK: - Phase 4 sheet state
     //
-    // The Rewrite button now branches on the adapter's status:
-    //   - `.ready`     → present `RewritePickerSheet` (Mockup 10).
-    //   - `.notReady`  → present `DownloadPitchSheet` (Mockup 12).
-    //   - `.downloading` / `.loading` → the action-bar Rewrite pill is
+    // The Transform button now branches on the adapter's status:
+    //   - `.ready`     → present `RewritePickerSheet`.
+    //   - `.evicted`   → kick warm + present `RewritePickerSheet`.
+    //   - `.notReady` / `.downloading` / `.loading` / `.error` OR empty
+    //     prompts → present `AIRewriteSettingsView` as a sheet (single
+    //     canonical setup surface — replaces the earlier
+    //     `DownloadPitchSheet` upsell).
+    //   - `.downloading` / `.loading` → the action-bar Transform pill is
     //     disabled (see `isMagicEnabled`). The legacy in-line "Rewriting…"
     //     card already covers the in-progress rewrite case; the new
     //     download / load progress is surfaced in `AIRewriteSettingsView`'s
@@ -97,7 +101,7 @@ struct TranscriptDetailView: View {
     // the picker fires `startRewrite(...)` which drives that state, and
     // the download sheet fires the adapter's `warm()` flow.
     @State private var showRewritePicker: Bool = false
-    @State private var showDownloadPitch: Bool = false
+    @State private var showAISettings: Bool = false
     @State private var showNewPromptHint: Bool = false
     /// `nil` until `.onAppear` resolves the factory's client. Used to mirror
     /// `LLMClientStatus` synchronously so the Rewrite button can branch
@@ -235,16 +239,16 @@ struct TranscriptDetailView: View {
                 }
             )
         }
-        .sheet(isPresented: $showDownloadPitch) {
-            // Mockup 12 / plan §6.3 — opt-in pitch. Download tap forwards
-            // to the adapter's `warm()` lifecycle; the in-flight banner
-            // surfaces inside `AIRewriteSettingsView` (plan §10.6).
-            DownloadPitchSheet(
-                modelDisplayName: rewriteModelDisplayName,
-                onDownload: {
-                    clientAdapter?.warm()
-                }
-            )
+        .sheet(isPresented: $showAISettings) {
+            // Single canonical setup surface for AI Rewrite. Replaces the
+            // earlier `DownloadPitchSheet` upsell — routing through
+            // Settings means the user sees the same model strip /
+            // progress UI no matter whether they tapped Transform from
+            // the action bar or arrived from Settings directly. Tapping
+            // Download inside the strip drives `LLMClientUIAdapter.warm()`.
+            NavigationStack {
+                AIRewriteSettingsView()
+            }
         }
         .alert(
             "Create a new prompt in Settings",
@@ -624,7 +628,8 @@ struct TranscriptDetailView: View {
             primary: ActionBarItem(
                 systemImage: "sparkles",
                 label: "Transform",
-                accessibilityLabel: rewriteAccessibilityLabel
+                accessibilityLabel: rewriteAccessibilityLabel,
+                isEnabled: isMagicEnabled
             ) {
                 presentRewritePicker()
             },
@@ -656,69 +661,62 @@ struct TranscriptDetailView: View {
         clientAdapter?.observableStatus ?? .notReady
     }
 
-    /// The Rewrite button is interactive whenever the master toggle is
-    /// ON and the LLM is either `.ready` (→ picker), `.notReady`
-    /// (→ download pitch), or `.evicted` (→ kick `warm()` + open picker).
-    /// `.evicted` means the weights are still on disk — just unloaded
-    /// from memory — so the recovery is a fast in-process reload, NOT a
-    /// 2.4 GB re-download. `.downloading` / `.loading` / `.error` stay
-    /// disabled — those are transient or recoverable states with their
-    /// own affordances in Settings. We also disable during an in-flight
-    /// rewrite (`rewriteState == .running`) so the user can't fire a
-    /// second request while one is mid-flight.
+    /// Transform tap is ALWAYS clickable now — what it does depends on
+    /// state. The only hard-disabled cases are:
+    /// 1. A rewrite is already running (don't fire a second request).
+    /// 2. A keyboard-originated rewrite is in flight against this
+    ///    transcript ([§7.x of features.md] explicit-lock).
+    /// Everything else routes through `presentRewritePicker()` which
+    /// branches on `llmStatus` + prompt availability and either opens
+    /// the picker or pushes the user to AI Settings to finish setup.
     private var isMagicEnabled: Bool {
-        guard AppGroup.aiRewriteEnabled else { return false }
-        guard !savedPrompts.isEmpty else { return false }
         guard rewriteState != .running else { return false }
         guard !keyboardRewriteInFlight else { return false }
-        switch llmStatus {
-        case .ready, .notReady, .evicted:
-            return true
-        case .downloading, .loading, .error:
-            return false
-        }
+        return true
     }
 
     private var rewriteAccessibilityLabel: String {
         if rewriteState == .running { return "Rewriting" }
-        if !AppGroup.aiRewriteEnabled {
-            return "Rewrite unavailable — turn on AI rewrite in Settings"
-        }
         if savedPrompts.isEmpty {
-            return "Rewrite unavailable — no saved prompts"
+            return "Set up AI Rewrite in Settings"
         }
         switch llmStatus {
         case .ready:
             return "Rewrite with AI"
         case .notReady:
-            return "Add AI to Jot"
+            return "Download the AI model in Settings"
         case .downloading:
-            return "Rewrite unavailable — AI model is downloading"
+            return "AI model is downloading — open Settings to see progress"
         case .loading:
-            return "Rewrite unavailable — AI model is loading"
+            return "AI model is loading — open Settings to see progress"
         case .evicted:
             // Weights are still on disk; the next tap kicks a fast warm.
             return "Rewrite is loading the AI model — this should be quick"
         case .error:
-            return "Rewrite unavailable — open Settings to retry"
+            return "AI model error — open Settings to retry"
         }
     }
 
-    /// Called by the action-bar Rewrite pill + the top sparkle button +
-    /// the empty-state CTA. Branches on the live LLM status:
-    ///   - `.ready`    → present `RewritePickerSheet` (Mockup 10).
-    ///   - `.evicted`  → kick `warm()` then present the picker. Weights
-    ///                   are still on disk, so this is a fast in-process
-    ///                   reload — NOT a 2.4 GB re-download. The picker
-    ///                   itself is passive; the rewrite path inside
-    ///                   `Phi4Client.rewrite` re-calls `warm()` so picking
-    ///                   a prompt during the warm window is safe.
-    ///   - `.notReady` → present `DownloadPitchSheet` (Mockup 12).
-    /// Other states are pre-gated by `isMagicEnabled`, so this method
-    /// becomes a no-op when the button shouldn't have fired.
+    /// Called by the action-bar Transform + the top sparkle button + the
+    /// empty-state Rewrite card. Branches on the live LLM status:
+    ///   - `.ready`     → present `RewritePickerSheet` (Mockup 10).
+    ///   - `.evicted`   → kick `warm()` then present the picker. Weights
+    ///                    are still on disk, so this is a fast in-process
+    ///                    reload — NOT a re-download. The picker itself
+    ///                    is passive; the rewrite path inside
+    ///                    the LLM client's `rewrite` re-calls `warm()`
+    ///                    so picking a prompt during the warm window is
+    ///                    safe.
+    ///   - `.notReady` / `.downloading` / `.loading` / `.error` OR no
+    ///     saved prompts → present `AIRewriteSettingsView` as a sheet.
+    ///     Single canonical setup surface for everything from
+    ///     downloading the weights to seeding prompts.
     private func presentRewritePicker() {
         guard isMagicEnabled else { return }
-        guard !savedPrompts.isEmpty else { return }
+        if savedPrompts.isEmpty {
+            showAISettings = true
+            return
+        }
         switch llmStatus {
         case .ready:
             showRewritePicker = true
@@ -730,10 +728,8 @@ struct TranscriptDetailView: View {
             // re-download.
             clientAdapter?.warm()
             showRewritePicker = true
-        case .notReady:
-            showDownloadPitch = true
-        case .downloading, .loading, .error:
-            return
+        case .notReady, .downloading, .loading, .error:
+            showAISettings = true
         }
     }
 
@@ -918,7 +914,6 @@ struct TranscriptDetailView: View {
         // the first token. (Without this fix the first tap after install
         // silently returned and the menu closed; only the second tap,
         // once `.ready` had been reached, would actually rewrite.)
-        guard AppGroup.aiRewriteEnabled else { return }
         guard rewriteState != .running else { return }
         guard !keyboardRewriteInFlight else { return }
 

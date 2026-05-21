@@ -30,6 +30,16 @@ struct StreamingStrip: View {
     let partialText: String
     /// Wall-clock start of the active recording.
     let startedAt: Date?
+    /// Pre-composed "Loading [variant]…" copy mirrored from the main
+    /// app's `StreamingTranscriptionService.sessionLoadState`. Non-nil
+    /// only while the streaming graph is in its per-session ANE load
+    /// window. When set AND `partialText` is empty, the pane replaces
+    /// its idle "Listening…" copy with this label + an inline spinner
+    /// so the user sees recording is active but the model hasn't
+    /// started consuming audio yet. Cleared by the controller the
+    /// instant the load completes; the pane re-renders to "Listening…"
+    /// (or the first partial, whichever arrives first).
+    var loadingLabel: String? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -45,6 +55,7 @@ struct StreamingStrip: View {
             header
             StreamingPane(
                 partialText: partialText,
+                loadingLabel: loadingLabel,
                 paneHeight: Self.paneHeight,
                 reduceMotion: reduceMotion
             )
@@ -145,6 +156,10 @@ struct StreamingStrip: View {
 /// content) and for the scroll-up detection that pauses auto-follow.
 private struct StreamingPane: View {
     let partialText: String
+    /// See `StreamingStrip.loadingLabel`. When non-nil and
+    /// `partialText` is empty, the pane renders a spinner +
+    /// label pair instead of the idle "Listening…" placeholder.
+    let loadingLabel: String?
     let paneHeight: CGFloat
     let reduceMotion: Bool
 
@@ -181,14 +196,31 @@ private struct StreamingPane: View {
                         // its height via `.background(GeometryReader { ... })`
                         // so the custom scroll indicator can size itself.
                         VStack(alignment: .leading, spacing: 0) {
-                            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                Text(partialText.isEmpty ? "Listening…" : partialText)
-                                    .font(.system(size: 13, weight: .regular))
-                                    .lineSpacing(13 * 0.55) // ~line-height 1.55
-                                    .foregroundStyle(Color.jotKeyboardStreamText)
-                                    .multilineTextAlignment(.leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                BlinkingCaret(reduceMotion: reduceMotion)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                if partialText.isEmpty, let loadingLabel {
+                                    // Cold-load placeholder: spinner +
+                                    // "Loading [variant]…" copy. Mirrors the
+                                    // hero's loadingPlaceholder so the user sees
+                                    // the same beat in both surfaces.
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .tint(Color.jotKeyboardStreamText)
+                                        .accessibilityHidden(true)
+                                    Text(loadingLabel)
+                                        .font(.system(size: 13, weight: .regular))
+                                        .lineSpacing(13 * 0.55)
+                                        .foregroundStyle(Color.jotKeyboardStreamText)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else {
+                                    Text(partialText.isEmpty ? "Listening…" : partialText)
+                                        .font(.system(size: 13, weight: .regular))
+                                        .lineSpacing(13 * 0.55) // ~line-height 1.55
+                                        .foregroundStyle(Color.jotKeyboardStreamText)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    BlinkingCaret(reduceMotion: reduceMotion)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.bottom, 2)
@@ -320,7 +352,11 @@ private struct StreamingPane: View {
     /// flood the screen reader.
     private var captionAccessibilityLabel: String {
         let tail = String(partialText.suffix(200))
-        return tail.isEmpty ? "Listening for dictation" : "Live transcript: \(tail)"
+        if tail.isEmpty {
+            if let loadingLabel { return loadingLabel }
+            return "Listening for dictation"
+        }
+        return "Live transcript: \(tail)"
     }
 }
 

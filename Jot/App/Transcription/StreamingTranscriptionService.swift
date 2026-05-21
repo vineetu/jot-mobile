@@ -5,39 +5,33 @@ import Foundation
 import UIKit
 import os.log
 
-/// Process-wide owner of the FluidAudio `StreamingEouAsrManager` (Parakeet
-/// EOU 120M @ 320ms) used to drive the live partial-transcript preview
-/// during recording. Mirrors the singleton + warm-up + memory-warning shape
-/// of `TranscriptionService.shared`.
+/// Process-wide owner of the FluidAudio `StreamingEouAsrManager`
+/// (Parakeet EOU 120M @ 320ms) used to drive the live partial-
+/// transcript preview during recording. Mirrors the singleton +
+/// warm-up + memory-warning shape of `TranscriptionService.shared`.
 ///
 /// ## Two callers
 ///
-/// 1. `JotApp` — eager warm-up alongside the batch model on first scene
-///    activation, gated on (a) setup completed and (b) models on disk
-///    (per Guideline 4.2.3(ii) — no silent first-run downloads).
+/// 1. `JotApp` — eager weights-on-disk check alongside the batch model on
+///    first scene activation, gated on (a) setup completed and (b) models
+///    on disk (per Guideline 4.2.3(ii) — no silent first-run downloads).
 /// 2. `RecordingService.start()` / `stop()` — per-recording session
-///    management. `start()` calls `beginSession(presenter:)` to mint a
-///    fresh streaming engine + session UUID; `stop()` calls
+///    management. `start()` calls `beginSession(presenter:queue:)` to mint
+///    a fresh streaming engine + session UUID; `stop()` calls
 ///    `endSession(engine:)` to fully release CoreML weights per the
 ///    lifecycle policy below.
 ///
-/// ## Lifecycle policy (per team-lead Rule 3 + spec §2.1 budget)
+/// ## Lifecycle policy (cleanup-on-every-stop)
 ///
 /// **Cleanup-on-every-stop, lazy-load-on-every-start.** On stop the
 /// FluidAudio manager is fully released via `cleanup()` (per
 /// `StreamingEouAsrManager.swift:428-440` — every CoreML reference + cache
 /// nil-ed). On next `RecordingService.start()` a fresh manager is
-/// instantiated and loaded from disk-cached weights (~200-500ms). Trade-off
-/// accepted: that ~200-500ms hits the cold-start path of the next recording.
-/// Without it, the ~66 MB EOU working memory would stay resident through
-/// the prior pipeline's BATCH inference (~800 MB peak), pushing the in-app
-/// peak from ~950 MB to ~1020 MB — over the 8GB iPhone 17 base's safe
-/// margin per spec §2.1.
-///
-/// Spec §2.1 recommends `streamingManager.cleanup()` on stop by name and
-/// quotes the budget math: *"If we explicitly free EOU before batch
-/// inference (via `streamingManager.cleanup()` on stop): ~800 MB Parakeet
-/// peak + ~150 MB other = ~950 MB."* Adjudicated by team-lead (Rule 3).
+/// instantiated and loaded from disk-cached weights (~200-500ms). The
+/// previous "keep-warm" lifecycle (cache the manager across stops) was
+/// reverted earlier after on-device testing showed it regressed
+/// reliability on the heavier streaming graph that has since been
+/// retired. Per-session load is the reliable shape.
 ///
 /// **Memory warning** (`UIApplication.didReceiveMemoryWarningNotification`):
 /// no service-level manager exists between sessions, so the hook is mostly
@@ -45,25 +39,27 @@ import os.log
 /// manager eviction is the recorder's responsibility — it owns the engine
 /// reference for the active session.
 ///
-/// **`warmUp()` is `ensureWeightsOnDisk` — NOT load-into-RAM.** It downloads
-/// the EOU 320ms weights to FluidAudio's cache directory if absent.
-/// `modelState` transitions: `.notLoaded → .downloading(0..1) → .ready`
-/// where `.ready` means "weights cached on disk", NOT "manager loaded
-/// into ANE."
+/// **`warmUp()` is `ensureWeightsOnDisk` — NOT load-into-RAM.** The EOU
+/// 320ms weights ship bundled inside the IPA, so `warmUp()` is a presence
+/// check; the `.downloading` model state is no longer reachable from this
+/// path. `modelState` transitions: `.notLoaded → .ready` once the
+/// bundled resources resolve. `.ready` here means "weights cached on
+/// disk", NOT "manager loaded into ANE."
 ///
 /// ## warmUp() vs beginSession() vs endSession()
 ///
-/// - `warmUp()` (called by `JotApp.task` + `SetupWizardView`): downloads
-///   weights to disk if absent. Disk-only; no ANE load. Idempotent +
+/// - `warmUp()` (called by `JotApp.task` + `SetupWizardView`): confirms
+///   weights are visible on disk. Disk-only; no ANE load. Idempotent +
 ///   coalescing.
-/// - `beginSession(presenter:)` (called by `RecordingService.start()`):
-///   instantiates a NEW `StreamingEouAsrManager`, calls `loadModels()`
-///   (~200-500ms ANE load from disk-cached weights), constructs an engine
-///   actor, registers the partial callback. Returns engine + queue.
+/// - `beginSession(presenter:queue:)` (called by `RecordingService.start()`):
+///   instantiates a NEW `StreamingEouAsrManager`, calls `loadModels(from:)`
+///   (~200-500ms ANE load from disk-cached weights), allocates a session
+///   UUID, constructs an engine actor, registers the partial callback.
+///   Returns the engine.
 /// - `endSession(engine:)` (called by `RecordingService.stop()` AFTER the
 ///   drain task ends and `engine.finish()` runs): calls `engine.cleanup()`
-///   which calls `manager.cleanup()` — full release. Recorder drops the
-///   engine reference. Next session re-instantiates from scratch.
+///   which calls `manager.cleanup()` — full release. Recorder drops its
+///   reference. Next session re-instantiates from scratch.
 ///
 /// ## Why per-session UUID lives here, not on `RecordingService`
 ///
@@ -84,10 +80,42 @@ final class StreamingTranscriptionService {
         case failed(String)
     }
 
+    /// In-session ANE load state for the streaming manager. Distinct from
+    /// `modelState` (which tracks disk readiness): `sessionLoadState`
+    /// tracks the per-`beginSession(...)` `loadModels(from:)` window.
+    /// Goes `.idle → .loading` at the top of `beginSession`, `.loading
+    /// → .ready` once `loadModels` returns, and back to `.idle` on
+    /// `endSession` or any failure path. The Hero overlay and keyboard
+    /// strip render their "Loading [variant]…" placeholder while this
+    /// is `.loading`. Variant label is resolved at render time from
+    /// `SpeechModelVariant.current()` — the variant cannot change mid-
+    /// session, so a snapshot here would be redundant.
+    enum SessionLoadState: Equatable, Sendable {
+        case idle
+        case loading
+        case ready
+    }
+
     /// Process-wide singleton.
     @MainActor static let shared = StreamingTranscriptionService()
 
     private(set) var modelState: ModelState = .notLoaded
+
+    /// Per-session ANE-load state. See `SessionLoadState` doc above.
+    /// Mirrored to AppGroup (`streamingLoadingVariantLabel`, holding
+    /// the variant displayName while loading and empty otherwise) +
+    /// posted via Darwin (`streamingLoadingChanged`) on every
+    /// transition so the keyboard extension can render the same
+    /// loading placeholder without linking `SpeechModelVariant`.
+    private(set) var sessionLoadState: SessionLoadState = .idle {
+        didSet {
+            guard oldValue != sessionLoadState else { return }
+            AppGroup.streamingLoadingVariantLabel = (sessionLoadState == .loading)
+                ? SpeechModelVariant.current().displayName
+                : ""
+            CrossProcessNotification.post(name: CrossProcessNotification.streamingLoadingChanged)
+        }
+    }
 
     /// Active streaming session token. Minted by `beginSession(...)` per
     /// recording, cleared BEFORE `manager.finish()` per the prototype's
@@ -104,9 +132,9 @@ final class StreamingTranscriptionService {
     /// In-flight `ensureWeightsOnDisk()` task, or nil if no warm-up is
     /// running. Coalescing: concurrent `warmUp()` calls share one task.
     /// Cleared on completion or cancellation. We do NOT cache a loaded
-    /// `StreamingEouAsrManager` here — per the lifecycle policy at the top
-    /// of this file (team-lead Rule 3), a fresh manager is instantiated
-    /// per `beginSession(...)` and fully released on `endSession(engine:)`.
+    /// `StreamingEouAsrManager` here — per the lifecycle policy at the
+    /// top of this file, a fresh manager is instantiated per
+    /// `beginSession(...)` and fully released on `endSession(engine:)`.
     private var prepareTask: Task<Void, Error>?
     private var prepareGeneration = 0
 
@@ -152,6 +180,30 @@ final class StreamingTranscriptionService {
         _ = ensurePreparing()
     }
 
+    /// Called when the user flips Settings → Speech model variant.
+    /// Re-primes `modelState` from the new variant's disk presence so
+    /// the picker's status row updates immediately, and cancels any
+    /// in-flight prepare task so the next `warmUp()` re-evaluates
+    /// against the new variant.
+    ///
+    /// Cleanup-on-every-stop regime: no warm streaming manager exists
+    /// between sessions, so there's nothing to evict at this boundary.
+    /// The next `beginSession` will cold-load the new variant.
+    func handleVariantChange() {
+        prepareTask?.cancel()
+        prepareTask = nil
+        prepareGeneration += 1
+
+        if Self.modelsExistOnDisk() {
+            modelState = .ready
+        } else {
+            modelState = .notLoaded
+        }
+        log.info(
+            "Streaming variant changed — variant=\(AppGroup.speechModelVariant, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
+        )
+    }
+
     /// Dev/QA path retained for symmetry with `TranscriptionService.purgeAndReload()`.
     /// The streaming EOU weights now ship inside the IPA — the bundle is
     /// read-only, so there's nothing to remove. We cancel any in-flight
@@ -171,19 +223,20 @@ final class StreamingTranscriptionService {
 
     /// Mint a fresh streaming session: instantiate a NEW
     /// `StreamingEouAsrManager`, load its weights from disk into ANE
-    /// (~200-500ms), allocate a session UUID, construct the engine actor
-    /// against the caller-supplied queue, register the partial-callback.
-    /// Returns the engine.
+    /// (~200-500ms), allocate a session UUID, construct the engine
+    /// actor against the caller-supplied queue, register the partial
+    /// callback. Returns the engine.
     ///
     /// Returns `nil` if weights aren't on disk or the load fails — caller
     /// (RecordingService) proceeds with batch-only, live preview stays
     /// empty for that session. Live preview is a UX nicety per spec §3.6;
     /// failing it must not interrupt the user's dictation.
     ///
-    /// Per the lifecycle policy at the top of this file (team-lead Rule 3):
-    /// a fresh manager is instantiated and loaded EVERY session. The prior
-    /// session's manager has been fully released via `cleanup()` in
-    /// `endSession(...)`.
+    /// Per the lifecycle policy at the top of this file: a fresh manager
+    /// is instantiated and loaded EVERY session. The prior session's
+    /// manager has been fully released via `cleanup()` in `endSession(...)`.
+    /// Transitions `sessionLoadState` `.idle → .loading → .ready` so
+    /// the recording hero's overlay can render during the in-session load.
     ///
     /// **Queue ownership:** the caller (RecordingService) owns the queue
     /// because the audio-tap closure must capture it synchronously and push
@@ -201,9 +254,8 @@ final class StreamingTranscriptionService {
     /// 3. On stop:
     ///    - `queue.endOfStream()` → `await drainTask.value`
     ///    - `streamingService.clearSessionTokenBeforeFinish(presenter:)`
-    ///    - `await engine.finish()` (writes final via `applyFinalSnapshot`)
-    ///    - `await streamingService.endSession(engine:)` (full cleanup;
-    ///      recorder drops engine ref)
+    ///    - `await engine.finish()`
+    ///    - `await streamingService.endSession(engine:)`
     func beginSession(
         presenter: StreamingPartial,
         queue: StreamingBufferQueue
@@ -211,11 +263,14 @@ final class StreamingTranscriptionService {
         guard let modelDir = Self.bundledStreamingDirectory(),
               Self.modelsExistOnDisk(at: modelDir) else {
             log.notice("beginSession skipped — bundled EOU weights not found in app bundle")
+            sessionLoadState = .idle
             return nil
         }
 
+        sessionLoadState = .loading
+
         // Construct the concrete EOU manager so we can call
-        // `loadModels(modelDir:)` directly against the bundled directory.
+        // `loadModels(from:)` directly against the bundled directory.
         // The protocol's parameterless `loadModels()` would route through
         // `loadModelsFromHuggingFace` and attempt a download into
         // Application Support — bypassing the bundle and re-introducing
@@ -229,11 +284,14 @@ final class StreamingTranscriptionService {
         do {
             // Bundle weights are present (gated above); this is the
             // ~200-500ms ANE load only — no download, no HF Hub touch.
-            try await manager.loadModels(modelDir: modelDir)
+            try await manager.loadModels(from: modelDir)
         } catch {
             log.error("beginSession loadModels failed — \(error.localizedDescription, privacy: .public)")
+            sessionLoadState = .idle
             return nil
         }
+
+        sessionLoadState = .ready
 
         let sessionID = presenter.beginSession()
         currentStreamingSessionID = sessionID
@@ -262,12 +320,16 @@ final class StreamingTranscriptionService {
     /// 3. `streamingService.clearSessionTokenBeforeFinish(presenter:)`
     /// 4. `await engine.finish()` (writes final via `applyFinalSnapshot`,
     ///    bypassing the cleared session-token guard)
-    /// 5. `await streamingService.endSession(engine:)` ← THIS METHOD
-    ///    (calls `engine.cleanup()` for full release; recorder drops
-    ///    its reference)
+    /// 5. `await streamingService.endSession(engine:)`
+    ///    ← THIS METHOD (calls `engine.cleanup()` for full release;
+    ///    recorder drops its reference)
     func endSession(engine: StreamingTranscriptionEngine) async {
+        // Cleanup-on-every-stop: fully release the manager's CoreML
+        // graphs back to the system. Next session re-instantiates from
+        // scratch.
         await engine.cleanup()
         currentStreamingSessionID = nil
+        sessionLoadState = .idle
         log.info("Streaming session ended — manager released")
     }
 
@@ -282,20 +344,17 @@ final class StreamingTranscriptionService {
 
     // MARK: - Disk-existence check (for JotApp eager-warm gate)
 
-    /// `true` iff the EOU 320ms model files are bundled into the app's
-    /// `Resources/Models/Parakeet/parakeet-eou-streaming/320ms/` folder.
-    /// On a healthy install this always returns `true` — the weights
-    /// can't be evicted without re-installing the app, so the
-    /// "models on disk" gate is effectively constant-true for the
-    /// streaming preview.
+    /// `true` iff the bundled streaming weights are present on disk.
+    /// The EOU 320ms model ships inside the IPA, so this is
+    /// constant-true on healthy installs.
     static func modelsExistOnDisk() -> Bool {
         guard let dir = bundledStreamingDirectory() else { return false }
         return modelsExistOnDisk(at: dir)
     }
 
-    /// Per-directory variant used by `beginSession`. Verifies every
-    /// file in `ModelNames.ParakeetEOU.requiredModels` resolves under
-    /// the supplied directory.
+    /// Per-directory variant used by `beginSession`. Verifies every file
+    /// in `ModelNames.ParakeetEOU.requiredModels` resolves under the
+    /// supplied directory.
     static func modelsExistOnDisk(at directory: URL) -> Bool {
         let required = ModelNames.ParakeetEOU.requiredModels
         return required.allSatisfy { name in
@@ -307,7 +366,7 @@ final class StreamingTranscriptionService {
     /// Composed directly from `Bundle.main.bundleURL` — see the note on
     /// `TranscriptionService.bundledTdtCtc110mDirectory` for why we
     /// don't use `Bundle.main.url(forResource:...)`. FluidAudio's
-    /// `StreamingEouAsrManager.loadModels(modelDir:)` reads
+    /// `StreamingEouAsrManager.loadModels(from:)` reads
     /// `streaming_encoder.mlmodelc`, `decoder.mlmodelc`,
     /// `joint_decision.mlmodelc`, and `vocab.json` relative to this URL.
     static func bundledStreamingDirectory() -> URL? {
@@ -348,12 +407,11 @@ final class StreamingTranscriptionService {
         // EOU weights are bundled into the IPA under
         // `Resources/Models/Parakeet/parakeet-eou-streaming/320ms/`,
         // so the "ensure weights on disk" step collapses to a presence
-        // check. No HF download path here — that's the whole point of
-        // the bundled-Parakeet ship.
+        // check — no auto-download is attempted from this warm-up path.
         if Self.modelsExistOnDisk() {
             try checkPrepareGeneration(generation)
             modelState = .ready
-            log.info("Streaming weights resolved from app bundle — modelState=ready")
+            log.info("Streaming weights resolved — modelState=ready")
             return
         }
 
@@ -396,9 +454,9 @@ final class StreamingTranscriptionService {
     /// Memory-warning hook. Per spec §3.6: streaming model evicts FIRST,
     /// before the batch model.
     ///
-    /// In this service's lifecycle (cleanup-on-every-stop per team-lead
-    /// Rule 3, see header doc), no manager is held between sessions —
-    /// there's nothing to nuke at the service level. What we do:
+    /// In this service's lifecycle (cleanup-on-every-stop, see header
+    /// doc), no manager is held between sessions — there's nothing to
+    /// nuke at the service level. What we do:
     /// 1. Cancel any in-flight `prepareTask` (download work).
     /// 2. Clear `currentStreamingSessionID` so any in-flight partial-
     ///    callback emissions from a session-in-progress arrive after the
@@ -414,6 +472,20 @@ final class StreamingTranscriptionService {
     /// `engine.cleanup()` → `manager.cleanup()`.
     private func handleMemoryWarning() async {
         log.notice("Memory warning — clearing streaming session token + cancelling prepare task")
+        // Surface the memory-pressure event in the in-app diagnostics card
+        // so a user reporting "the app crashed seconds after I tapped stop"
+        // can correlate the crash with a jetSam precursor warning. The
+        // log is App Group-shared so the keyboard surface that renders
+        // diagnostics sees this entry on its next presentation.
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .memoryWarning,
+            message: "streaming service received memory warning",
+            metadata: [
+                "variant": "\(SpeechModelVariant.current().rawValue)",
+                "hasSession": "\(currentStreamingSessionID != nil)",
+            ]
+        )
         prepareTask?.cancel()
         prepareTask = nil
         currentStreamingSessionID = nil
