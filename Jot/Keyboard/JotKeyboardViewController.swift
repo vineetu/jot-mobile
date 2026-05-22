@@ -1125,14 +1125,49 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 return
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
+
+            // Probe the host's textDocumentProxy state immediately
+            // BEFORE the insert so we can compare context length after.
+            // `documentContextBeforeInput` is documented as nil when the
+            // proxy has no active connection (e.g., the host's text
+            // field just lost focus, or this keyboard isn't currently
+            // the active input view). When it's nil at insert time,
+            // `insertText(_:)` silently no-ops on the host — but the
+            // call itself returns void and looks indistinguishable from
+            // a successful insert. Logging the before/after delta turns
+            // silent host-side rejection into a visible signal in the
+            // diagnostics card. See features.md §14.3.
+            let beforeContext = textDocumentProxy.documentContextBeforeInput
+            let beforeLen = beforeContext?.count ?? -1
+            let afterContextLenPre = textDocumentProxy.documentContextAfterInput?.count ?? -1
+            let proxyHadContextBefore = (beforeContext != nil)
+
             insertTrackedText(payload.text)
+
+            // Re-read after the insert. On a healthy host the
+            // pre-caret context grows by `payload.text.count`. If it
+            // doesn't grow at all, the host silently rejected the
+            // insert — most commonly because the proxy was disconnected
+            // (Slack's draft-saving compose loses focus mid-flight) or
+            // because iOS gated the call (keyboard not the active
+            // input view at insert time).
+            let afterLen = textDocumentProxy.documentContextBeforeInput?.count ?? -1
+            let contextGrew = (beforeLen >= 0 && afterLen >= 0)
+                ? (afterLen - beforeLen)
+                : -1
+
             DiagnosticsLog.record(
                 source: "keyboard",
                 category: .pasteSuccess,
                 message: "Inserted transcript into host",
                 metadata: [
                     "chars": "\(payload.text.count)",
-                    "sessionID": session.id.uuidString
+                    "sessionID": session.id.uuidString,
+                    "proxyHadContextBefore": "\(proxyHadContextBefore)",
+                    "beforeLen": "\(beforeLen)",
+                    "afterLen": "\(afterLen)",
+                    "afterContextLenPre": "\(afterContextLenPre)",
+                    "contextGrew": "\(contextGrew)",
                 ]
             )
             // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp

@@ -196,22 +196,21 @@ private struct StreamingPane: View {
                         // its height via `.background(GeometryReader { ... })`
                         // so the custom scroll indicator can size itself.
                         VStack(alignment: .leading, spacing: 0) {
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
                                 if partialText.isEmpty, let loadingLabel {
-                                    // Cold-load placeholder: spinner +
-                                    // "Loading [variant]…" copy. Mirrors the
-                                    // hero's loadingPlaceholder so the user sees
-                                    // the same beat in both surfaces.
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .tint(Color.jotKeyboardStreamText)
-                                        .accessibilityHidden(true)
-                                    Text(loadingLabel)
-                                        .font(.system(size: 13, weight: .regular))
-                                        .lineSpacing(13 * 0.55)
-                                        .foregroundStyle(Color.jotKeyboardStreamText)
-                                        .multilineTextAlignment(.leading)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                    // Cold-load placeholder. Earlier shape
+                                    // also had a tiny `controlSize(.mini)`
+                                    // `ProgressView` inline — pulled because
+                                    // an iOS-system dotted-circle at 13pt
+                                    // typography reads as a foreign UI
+                                    // primitive sat next to editorial text.
+                                    // The breathing animation on the text
+                                    // itself carries the "active" signal
+                                    // without the visual clash. Mirrors the
+                                    // hero's loadingPlaceholder for surface
+                                    // consistency.
+                                    KeyboardLoadingText(label: loadingLabel,
+                                                        reduceMotion: reduceMotion)
                                 } else {
                                     Text(partialText.isEmpty ? "Listening…" : partialText)
                                         .font(.system(size: 13, weight: .regular))
@@ -584,5 +583,38 @@ struct AmplitudeMeter: View {
         return RoundedRectangle(cornerRadius: 1, style: .continuous)
             .fill(Color.jotKeyboardAccent.opacity(0.65))
             .frame(width: 2, height: height)
+    }
+}
+
+/// "Loading [variant]…" placeholder for the keyboard's streaming pane.
+/// Same idea as the hero's `LoadingPlaceholderText`: a 1.5s opacity
+/// breathing on the text carries the "active work" signal, without
+/// inserting an iOS-system spinner that visually clashes with the
+/// 13pt streaming text. Reduce Motion skips the animation.
+private struct KeyboardLoadingText: View {
+    let label: String
+    let reduceMotion: Bool
+
+    @State private var dim: Bool = false
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 13, weight: .regular))
+            .lineSpacing(13 * 0.55)
+            .foregroundStyle(Color.jotKeyboardStreamText)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                value: dim
+            )
+            .onAppear {
+                guard !reduceMotion else { return }
+                dim = true
+            }
+            .accessibilityLabel(label)
     }
 }

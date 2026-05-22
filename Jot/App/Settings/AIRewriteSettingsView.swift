@@ -580,6 +580,7 @@ private struct PromptRowV09: View {
     private var iconSymbol: String {
         switch prompt.defaultKind {
         case .articulate:  return "wand.and.stars"
+        case .aiPrompt:    return "text.bubble"
         case .actionItems: return "checklist"
         case .email:       return "envelope"
         case nil:          return "list.bullet"
@@ -589,6 +590,7 @@ private struct PromptRowV09: View {
     private var iconTint: Color {
         switch prompt.defaultKind {
         case .articulate:  return JotDesign.JotSemanticIcon.ai
+        case .aiPrompt:    return AIV09Tokens.teal
         case .actionItems: return AIV09Tokens.purple
         case .email:       return Color.jotSuccess
         case nil:          return AIV09Tokens.purple
@@ -598,6 +600,7 @@ private struct PromptRowV09: View {
     private var iconShaded: Color {
         switch prompt.defaultKind {
         case .articulate:  return JotDesign.JotSemanticIcon.aiShaded
+        case .aiPrompt:    return AIV09Tokens.tealShaded
         case .actionItems: return AIV09Tokens.purpleShaded
         case .email:       return Color.jotSuccess.opacity(0.5)
         case nil:          return AIV09Tokens.purpleShaded
@@ -607,6 +610,7 @@ private struct PromptRowV09: View {
     private var description: String {
         switch prompt.defaultKind {
         case .articulate:  return "Polish dictation · keep voice"
+        case .aiPrompt:    return "Structure for Claude · ChatGPT · etc"
         case .actionItems: return "Extract tasks · assignees · deadlines"
         case .email:       return "Business email · BLUF · subject line"
         case nil:
@@ -623,6 +627,8 @@ private struct PromptRowV09: View {
         switch prompt.defaultKind {
         case .articulate:
             return "yo can you hear me testing the new mic gating on the keyboard"
+        case .aiPrompt:
+            return "uh I'm trying to figure out why my swiftui list does weird animations when I scroll on iOS 18 but not 17 I think it has to do with the new identifiable thing"
         case .actionItems:
             return "ok so vineet you take the design ship by friday priya followup with legal monday i'll write the launch post next week"
         case .email:
@@ -748,6 +754,14 @@ private struct PromptRowV09: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Color.jotPageInk)
                 .fixedSize(horizontal: false, vertical: true)
+        case .aiPrompt:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("**Context:** SwiftUI List shows unexpected animations when scrolling on iOS 18 — works fine on iOS 17. Suspect it's tied to the iOS 18 Identifiable changes.")
+                Text("**Task:** Diagnose the cause and find a fix that works on both iOS 17 and 18.")
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(Color.jotPageInk)
+            .fixedSize(horizontal: false, vertical: true)
         case .actionItems:
             VStack(alignment: .leading, spacing: 1) {
                 Text("• Vineet — ship design by Friday")
@@ -955,6 +969,15 @@ enum AIV09Tokens {
 
     /// `#E0533F` — deep coral foreground for the EXPERIMENTAL chip.
     static let coralDeep = Color(red: 0xE0 / 255, green: 0x53 / 255, blue: 0x3F / 255)
+
+    /// `#33B5A8` — AI-prompt tile top. Teal sits between the
+    /// Articulate blue and the Action Items purple in the palette
+    /// and is distinct from the green Email tile + the reserved
+    /// coral.
+    static let teal = Color(red: 0x33 / 255, green: 0xB5 / 255, blue: 0xA8 / 255)
+
+    /// `#2A968B` — AI-prompt tile shaded bottom.
+    static let tealShaded = Color(red: 0x2A / 255, green: 0x96 / 255, blue: 0x8B / 255)
 }
 
 #Preview {

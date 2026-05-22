@@ -382,27 +382,21 @@ struct RecordingHeroView: View {
     ///
     /// Visual contract: identical typography to the "Listening…"
     /// placeholder (26pt serif italic, `jotPageInkSecondary`) so the
-    /// swap reads as a copy change rather than a layout shift. A small
-    /// monochrome `ProgressView` sits inline to the left so users know
-    /// the placeholder is active work, not idle silence. Light/dark
+    /// swap reads as a copy change rather than a layout shift. The
+    /// earlier `ProgressView` was dropped — its small iOS-system
+    /// dotted-circle clashed with the editorial serif and the
+    /// `.firstTextBaseline` alignment also sat the spinner below the
+    /// glyphs' visual center. A subtle 1.5s opacity breathing on the
+    /// text itself communicates "active work" without inserting a
+    /// foreign UI primitive into the typographic surface. The
+    /// animation is suppressed when Reduce Motion is on. Light / dark
     /// adapt through `jotPageInkSecondary`.
     @ViewBuilder
     private var loadingPlaceholder: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-                .tint(Color.jotPageInkSecondary)
-                .accessibilityHidden(true)
-
-            Text("Loading \(SpeechModelVariant.current().displayName)…")
-                .font(.system(size: 26, weight: .regular, design: .serif).italic())
-                .lineSpacing(8.3)
-                .tracking(-0.4)
-                .foregroundStyle(Color.jotPageInkSecondary)
-                .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .transition(.opacity)
+        LoadingPlaceholderText(variantName: SpeechModelVariant.current().displayName,
+                               reduceMotion: reduceMotion)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .transition(.opacity)
     }
 
     // MARK: - Bottom controls
@@ -812,5 +806,40 @@ private struct StreamingTextHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// "Loading [variant]…" placeholder with a subtle 1.5s opacity breathing
+/// animation so the surface doesn't read as frozen during the in-session
+/// ANE load. Lifted out as a separate view because the breathing
+/// animation needs its own `@State` cycle that wouldn't survive being
+/// inlined inside the parent's `streamingTextArea` `@ViewBuilder`.
+///
+/// `reduceMotion = true` snaps the opacity to full and skips the
+/// animation entirely (still communicates "loading" via the text copy).
+private struct LoadingPlaceholderText: View {
+    let variantName: String
+    let reduceMotion: Bool
+
+    @State private var dim: Bool = false
+
+    var body: some View {
+        Text("Loading \(variantName)…")
+            .font(.system(size: 26, weight: .regular, design: .serif).italic())
+            .lineSpacing(8.3)
+            .tracking(-0.4)
+            .foregroundStyle(Color.jotPageInkSecondary)
+            .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                value: dim
+            )
+            .onAppear {
+                guard !reduceMotion else { return }
+                dim = true
+            }
+            .accessibilityLabel("Loading \(variantName)")
     }
 }

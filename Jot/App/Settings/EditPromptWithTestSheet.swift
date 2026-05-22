@@ -49,6 +49,7 @@ struct EditPromptWithTestSheet: View {
     private var headerIconSymbol: String {
         switch prompt?.defaultKind {
         case .articulate:  return "wand.and.stars"
+        case .aiPrompt:    return "text.bubble"
         case .actionItems: return "checklist"
         case .email:       return "envelope"
         case nil:          return "wand.and.stars"
@@ -58,6 +59,7 @@ struct EditPromptWithTestSheet: View {
     private var headerIconTint: Color {
         switch prompt?.defaultKind {
         case .articulate:  return JotDesign.JotSemanticIcon.ai
+        case .aiPrompt:    return AIV09Tokens.teal
         case .actionItems: return AIV09Tokens.purple
         case .email:       return Color.jotSuccess
         case nil:          return JotDesign.JotSemanticIcon.ai
@@ -67,6 +69,7 @@ struct EditPromptWithTestSheet: View {
     private var headerIconShaded: Color {
         switch prompt?.defaultKind {
         case .articulate:  return JotDesign.JotSemanticIcon.aiShaded
+        case .aiPrompt:    return AIV09Tokens.tealShaded
         case .actionItems: return AIV09Tokens.purpleShaded
         case .email:       return Color.jotSuccess.opacity(0.5)
         case nil:          return JotDesign.JotSemanticIcon.aiShaded

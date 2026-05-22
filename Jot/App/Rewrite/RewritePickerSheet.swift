@@ -203,11 +203,12 @@ struct RewritePickerSheet: View {
             : UIColor(white: 0.0, alpha: 0.06)
     })
 
-    /// One of four visual kinds for a picker row, keyed by the stable id of
+    /// One of five visual kinds for a picker row, keyed by the stable id of
     /// the seeded defaults. User-created rows fall through to `.userPrompt`
     /// which renders with the purple list glyph.
     private enum RowKind {
         case articulate
+        case aiPrompt
         case actionItems
         case email
         case userPrompt
@@ -215,6 +216,7 @@ struct RewritePickerSheet: View {
         var iconSymbol: String {
             switch self {
             case .articulate:  return "wand.and.stars"
+            case .aiPrompt:    return "text.bubble"
             case .actionItems: return "checklist"
             case .email:       return "envelope"
             case .userPrompt:  return "list.bullet"
@@ -224,6 +226,7 @@ struct RewritePickerSheet: View {
         var iconTint: Color {
             switch self {
             case .articulate:  return Color.jotAccent
+            case .aiPrompt:    return Color.jotPromptTeal
             case .actionItems: return Color.jotPromptPurple
             case .email:       return Color.jotSuccess
             case .userPrompt:  return Color.jotPromptPurple
@@ -234,6 +237,7 @@ struct RewritePickerSheet: View {
     private func rowKind(for prompt: SavedPrompt) -> RowKind {
         switch prompt.defaultKind {
         case .articulate:  return .articulate
+        case .aiPrompt:    return .aiPrompt
         case .actionItems: return .actionItems
         case .email:       return .email
         case nil:          return .userPrompt
@@ -247,6 +251,8 @@ struct RewritePickerSheet: View {
         switch kind {
         case .articulate:
             return "Default · polish dictation, keep voice"
+        case .aiPrompt:
+            return "Default · structure for Claude or ChatGPT"
         case .actionItems:
             return "Default · extract tasks and deadlines"
         case .email:
@@ -301,6 +307,11 @@ extension Color {
     /// Phase 1 tokens because nothing else in the system uses it yet;
     /// scoped to this file so the design system stays single-accent.
     fileprivate static let jotPromptPurple = Color(red: 0.55, green: 0.40, blue: 0.90)
+
+    /// Teal tile for the bundled "AI prompt" default. Matches
+    /// `AIV09Tokens.teal` in `AIRewriteSettingsView`. Kept here too
+    /// because RewritePickerSheet doesn't import the AIV09 namespace.
+    fileprivate static let jotPromptTeal = Color(red: 0x33 / 255, green: 0xB5 / 255, blue: 0xA8 / 255)
 }
 
 #Preview {

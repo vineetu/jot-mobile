@@ -26,11 +26,12 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
 
     // MARK: - Built-in defaults
 
-    /// Kind tag for the three bundled defaults seeded on first launch.
+    /// Kind tag for the four bundled defaults seeded on first launch.
     /// Callers that need per-default UI (icon, tint, before/after samples)
     /// switch on this instead of duplicating id-comparison ladders.
     enum DefaultKind {
         case articulate
+        case aiPrompt
         case actionItems
         case email
     }
@@ -43,6 +44,7 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
     var defaultKind: DefaultKind? {
         switch self.id {
         case Self.defaultArticulate.id:  return .articulate
+        case Self.defaultAIPrompt.id:    return .aiPrompt
         case Self.defaultActionItems.id: return .actionItems
         case Self.defaultEmail.id:       return .email
         default:                          return nil
@@ -69,12 +71,44 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
         systemPrompt:
             "Rewrite this dictation for clarity. " +
             "Connect related ideas so they flow logically. " +
+            "Group related ideas into paragraphs — new paragraph = a shift in topic or focus. " +
             "Cut repeated points — but keep every distinct idea the speaker mentioned. " +
             "Do not invent new ideas or details. " +
             "Fix obvious dictation errors. " +
             "Return only the rewrite.",
         createdAt: Date(timeIntervalSince1970: 0),
         sortOrder: 0
+    )
+
+    /// AI prompt — converts a rambling dictation into a clean,
+    /// structured prompt the user can paste into Claude / ChatGPT /
+    /// any other LLM. The shape (Context / Task / Requirements /
+    /// Output) follows Anthropic's "be clear and direct" + long-
+    /// context principles, mapped to markdown sections rather than
+    /// XML tags so the output stays readable + editable for the
+    /// user AND parseable for the receiving assistant. Cross-checked
+    /// against Qwen 3's prompting guidance — Qwen's chat template
+    /// handles wrapping internally, so XML inside user prompts
+    /// would actually confuse it; markdown is the safer producer-
+    /// side choice.
+    static let defaultAIPrompt: SavedPrompt = SavedPrompt(
+        id: UUID(uuidString: "B4B4B4B4-B4B4-B4B4-B4B4-B4B4B4B4B4B4")!,
+        name: "AI prompt",
+        systemPrompt:
+            "Convert this dictation into a clear AI prompt the speaker can paste into Claude or another LLM. " +
+            "Structure the output as: " +
+            "**Context:** what the speaker is working on, has tried, or already knows. " +
+            "**Task:** the specific ask in one clear sentence or short paragraph. " +
+            "**Requirements:** any constraints, preferences, or limits they mentioned. " +
+            "**Output:** desired response format, if specified. " +
+            "Rules: " +
+            "Preserve every concrete detail. Do not invent requirements they didn't state. " +
+            "Omit any section with nothing to say — do not pad with filler. " +
+            "Cut \"um\", \"uh\", restarts, \"you know\", \"like\". Direct written prose inside each section. " +
+            "Put Context first, Task second — assistants work better when background is read before the ask. " +
+            "Return only the structured prompt.",
+        createdAt: Date(timeIntervalSince1970: 1),
+        sortOrder: 1
     )
 
     /// Action Items — extract tasks/decisions/deadlines from a meeting or
@@ -87,8 +121,8 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
             "List each as a one-line task with the responsible person if mentioned. " +
             "Include any deadlines. " +
             "Return only the list.",
-        createdAt: Date(timeIntervalSince1970: 1),
-        sortOrder: 1
+        createdAt: Date(timeIntervalSince1970: 2),
+        sortOrder: 2
     )
 
     /// Email — convert a dictation into a BLUF-style business email with
@@ -103,14 +137,16 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
             "Add a one-line subject line. " +
             "Keep the speaker's voice. " +
             "Return only the email.",
-        createdAt: Date(timeIntervalSince1970: 2),
-        sortOrder: 2
+        createdAt: Date(timeIntervalSince1970: 3),
+        sortOrder: 3
     )
 
-    /// All three bundled defaults in seed order. Used by `SavedPromptStore.seedIfNeeded`
-    /// and by helpers that want to iterate the canonical built-ins.
+    /// All four bundled defaults in seed order. Used by
+    /// `SavedPromptStore.seedIfNeeded` and by helpers that want to
+    /// iterate the canonical built-ins.
     static let allDefaults: [SavedPrompt] = [
         .defaultArticulate,
+        .defaultAIPrompt,
         .defaultActionItems,
         .defaultEmail
     ]

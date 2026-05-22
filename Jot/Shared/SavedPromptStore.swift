@@ -66,32 +66,59 @@ enum SavedPromptStore {
         save(SavedPrompt.allDefaults)
     }
 
-    /// One-shot, UserDefaults-gated migration that overwrites the
-    /// bundled Articulate prompt's `systemPrompt` (and `name`) with the
-    /// current canonical text. Matched by stable UUID — if the user
-    /// deleted the default Articulate row, this is a no-op. Pre-launch
-    /// only: there are no production users to preserve edits for, so
-    /// the migration intentionally does NOT compare against the
-    /// previous canonical text. After ship, gate any further prompt
-    /// rewrites behind their own one-shot flags.
+    /// Force the bundled Articulate prompt's `name` + `systemPrompt`
+    /// to the canonical text **on every launch**. Matched by stable
+    /// UUID; if the user deleted the row, this is a no-op. Pre-launch
+    /// only — no users yet, edits intentionally not preserved.
+    ///
+    /// No UserDefaults flag, no migration gating. Runs every launch so
+    /// a prompt-copy change in `SavedPrompt.defaultArticulate` always
+    /// reaches every device, including ones that ran a previously
+    /// broken build. Cost is negligible: one List read + one List
+    /// write only when the row's existing text differs from canonical.
     static func migrateArticulatePromptIfNeeded() {
-        let migrationKey = "jot.didMigrateArticulateV2"
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: migrationKey) else { return }
-
         var current = all()
-        defaults.set(true, forKey: migrationKey)
         guard let index = current.firstIndex(where: {
             $0.id == SavedPrompt.defaultArticulate.id
         }) else {
-            // User deleted Articulate before this build shipped — leave
-            // the list alone, just flip the flag so we don't re-scan
-            // every launch.
             return
         }
         let canonical = SavedPrompt.defaultArticulate
+        guard current[index].name != canonical.name
+            || current[index].systemPrompt != canonical.systemPrompt
+        else {
+            return
+        }
         current[index].name = canonical.name
         current[index].systemPrompt = canonical.systemPrompt
+        save(current)
+    }
+
+    /// Ensure the "AI prompt" default is present in the prompt list,
+    /// inserted at sortOrder 1 (right after Articulate). Runs **on
+    /// every launch**, matched by stable UUID (`defaultAIPrompt.id`).
+    /// If the row is missing, insert it and shift everything at
+    /// sortOrder ≥ 1 down by one. If it's already present, no-op.
+    ///
+    /// No UserDefaults flag, no migration gating. Pre-launch — no
+    /// users yet, the user delete-then-comes-back-anyway risk is
+    /// accepted in exchange for guaranteeing the prompt always lands.
+    /// Empty-list path is covered by `seedIfNeeded` and the
+    /// already-present guard makes this a no-op on fresh installs.
+    static func migrateAddAIPromptIfNeeded() {
+        var current = all()
+
+        guard !current.isEmpty else { return }
+
+        if current.contains(where: { $0.id == SavedPrompt.defaultAIPrompt.id }) {
+            return
+        }
+
+        for i in current.indices where current[i].sortOrder >= 1 {
+            current[i].sortOrder += 1
+        }
+
+        current.append(SavedPrompt.defaultAIPrompt)
         save(current)
     }
 

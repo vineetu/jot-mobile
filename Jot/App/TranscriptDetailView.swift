@@ -188,6 +188,31 @@ struct TranscriptDetailView: View {
         // a root-level NavigationStack modifier can be undone by that
         // disable. Putting the enable here ensures the gesture survives.
         .enableInteractivePopGesture()
+        // Explicit left-edge swipe-to-back as a safety net. The system
+        // `interactivePopGestureRecognizer` (re-enabled above) gets
+        // swallowed on this view by the scrollable transcript card's
+        // `.textSelection(.enabled)` — SwiftUI's text-selection touch
+        // handler claims edge touches before the navigation controller
+        // sees them. `simultaneousGesture` lets the drag fire alongside
+        // selection without breaking copy/select. Trigger conditions:
+        // - Drag starts within ~30pt of the screen's left edge
+        // - Horizontal translation > 80pt to the right
+        // - Movement is predominantly horizontal (|dx| > 1.5×|dy|) so a
+        //   vertical scroll near the edge doesn't accidentally pop.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20, coordinateSpace: .global)
+                .onEnded { value in
+                    let startX = value.startLocation.x
+                    let dx = value.translation.width
+                    let dy = value.translation.height
+                    let isEdgeStart = startX < 30
+                    let isRightwardSwipe = dx > 80
+                    let isMostlyHorizontal = abs(dx) > 1.5 * abs(dy)
+                    if isEdgeStart && isRightwardSwipe && isMostlyHorizontal {
+                        dismiss()
+                    }
+                }
+        )
         .confirmationDialog(
             hasRewrite
                 ? "Delete this entry or just the rewrite?"

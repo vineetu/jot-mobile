@@ -172,6 +172,13 @@ struct JotApp: App {
         // `UserDefaults` flag so this runs at most once per install.
         SavedPromptStore.migrateArticulatePromptIfNeeded()
 
+        // One-shot migration: insert the new "AI prompt" default into
+        // existing users' prompt lists at sortOrder 1 (after Articulate,
+        // before Action Items). Gated by `jot.didAddAIPromptDefault`.
+        // Fresh installs flow through `seedIfNeeded` which already seeds
+        // the full 4-prompt set.
+        SavedPromptStore.migrateAddAIPromptIfNeeded()
+
         // Eager warm-up of the bundled speech models so the wizard's
         // "Try It" panel (W7) doesn't pay the ANE-load + Metal-kernel-JIT
         // tax on the first dictation tap. Both `warmUp()` calls are
