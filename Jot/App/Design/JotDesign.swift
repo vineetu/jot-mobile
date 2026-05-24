@@ -752,6 +752,13 @@ extension JotDesign {
         /// `#2BA349` — Settings/Wizard Donations row icon shaded bottom color.
         static let donationsShaded = Color(red: 0x2B / 255, green: 0xA3 / 255, blue: 0x49 / 255)
 
+        /// `#007AFF` — Settings Backup row icon top color (iOS system blue,
+        /// the same hue Apple uses for iCloud in their own UI).
+        static let backup = Color(red: 0x00 / 255, green: 0x7A / 255, blue: 0xFF / 255)
+
+        /// `#0064CC` — Settings Backup row icon shaded bottom color.
+        static let backupShaded = Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
+
         /// `#7C5CFF` — Settings/Wizard Privacy Policy row icon top color.
         static let privacyPolicy = Color(red: 0x7C / 255, green: 0x5C / 255, blue: 0xFF / 255)
 

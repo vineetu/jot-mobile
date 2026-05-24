@@ -665,6 +665,27 @@ struct SettingsView: View {
 
                     cardDivider
 
+                    // Backup transparency row. Static copy; we can't detect
+                    // whether the user has iCloud Backup actually enabled
+                    // from inside the app (no public API), so we use neutral
+                    // "if-enabled" phrasing rather than a misleading ✓.
+                    // Data path: SwiftData store + saved prompts + vocab
+                    // live in the App Group container, which iOS Device
+                    // Backup includes. Audio is never stored. The AI
+                    // Rewrite model (~2.5 GB) lives under Library/Caches/
+                    // which iOS unconditionally excludes from backup —
+                    // it re-downloads on first use after restore.
+                    settingsIconRow(
+                        systemImage: "icloud",
+                        tint: JotDesign.JotSemanticIcon.backup,
+                        shaded: JotDesign.JotSemanticIcon.backupShaded,
+                        title: "Backed up with iCloud",
+                        subline: "When iCloud Backup is enabled in iOS Settings",
+                        trailing: { EmptyView() }
+                    )
+
+                    cardDivider
+
                     NavigationLink {
                         AcknowledgementsView()
                     } label: {
