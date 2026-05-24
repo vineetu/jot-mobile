@@ -13,6 +13,17 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.recording-stop-requested"
     )
 
+    /// Posted by the keyboard extension when the user taps the Cancel
+    /// button while a dictation is actively recording. Distinct from
+    /// `stopRequested`: cancel discards the partial transcript and
+    /// publishes a `.failed` pipeline phase, whereas stop commits
+    /// (transcribe + auto-paste). Main-app handler calls
+    /// `RecordingService.shared.forceStop()` — the same mechanism the
+    /// recording-hero's Cancel pill uses.
+    static let cancelRequested = Name(
+        rawValue: "com.vineetu.jot.mobile.recording-cancel-requested"
+    )
+
     static let transcriptReady = Name(
         rawValue: "com.vineetu.jot.mobile.transcript-ready"
     )

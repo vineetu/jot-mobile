@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Local Claude Code state (per-checkout, not for sharing)
+.claude/
+
 # Xcode user / derived artifacts
 *.xcuserstate
 *.xcuserdatad/

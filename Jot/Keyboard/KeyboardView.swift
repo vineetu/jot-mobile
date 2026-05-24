@@ -110,6 +110,23 @@ struct KeyboardView: View {
     /// host view's height constraint.
     let onToggleCollapsed: () -> Void
 
+    /// Fired when the user taps the Actions button to OPEN the popover.
+    /// Lets the controller refresh state that's stale between keyboard
+    /// presentations — currently the clipboard read in `refreshPasteState`,
+    /// which only ran at `viewWillAppear` before, so the Paste row would
+    /// reflect stale clipboard content on subsequent popover opens within
+    /// the same keyboard session. Reading `UIPasteboard` triggers iOS's
+    /// privacy toast, so this fires only on the explicit OPEN edge — not
+    /// on close, not on every key tap.
+    let onActionsTapped: () -> Void
+
+    /// Fired when the user taps the Cancel button while a dictation is
+    /// actively recording. The Cancel button replaces the Actions button
+    /// in the action row during recording; once Stop is tapped (or cancel
+    /// completes), Actions returns. Cancel discards the partial — no
+    /// transcript saved, no auto-paste.
+    let onCancelRecording: () -> Void
+
     let feedback: KeyboardFeedback
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -212,10 +229,18 @@ struct KeyboardView: View {
                 }
 
                 if showActionsPopover {
-                    // Dim catcher behind the popover so a tap outside dismisses.
+                    // Full-frame tap catcher behind the popover. `highPriorityGesture`
+                    // beats the punctuation/space/return Buttons below so taps in
+                    // those areas dismiss the popover instead of silently typing.
+                    // `frame(maxWidth/maxHeight: .infinity)` is explicit because
+                    // `Color.clear` in a `ZStack(alignment: .bottomTrailing)` would
+                    // otherwise size to its content (zero) and only catch a sliver.
                     Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
-                        .onTapGesture { showActionsPopover = false }
+                        .highPriorityGesture(
+                            TapGesture().onEnded { showActionsPopover = false }
+                        )
                         .accessibilityHidden(true)
 
                     ActionsPopover(
@@ -357,12 +382,59 @@ struct KeyboardView: View {
             collapseToggle
             speakButton
                 .frame(maxWidth: .infinity)
-            actionsButton
+            // Cancel replaces Actions during active recording so the user
+            // has a single, predictable abort affordance from the keyboard.
+            // Once Stop is tapped (`isStopRequestPending == true`) Actions
+            // returns — Stop is the commit point, no cancel after that.
+            if recordingState.isRecording && !isStopRequestPending {
+                cancelButton
+            } else {
+                actionsButton
+            }
         }
         // Bug 8 (2026-05-11): action row trimmed from 52 → 48pt — pairs
         // with the dictate button's matching `minHeight: 48` change so
         // the row fits the tighter ~310pt envelope without clipping.
         .frame(minHeight: 48)
+    }
+
+    /// Cancel button shown in place of Actions while a dictation is
+    /// actively recording. Treatment B per the UX plan: glass background
+    /// + red `xmark` icon. Dark-mode mitigations (bumped hairline + glass
+    /// fill opacity) ensure the button reads cleanly on dark chrome.
+    private var cancelButton: some View {
+        Button {
+            feedback.systemClick()
+            feedback.selectionTick()
+            onCancelRecording()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Color.jotRecord)
+                .frame(width: 40, height: 40)
+                .background(.regularMaterial, in: Circle())
+                .overlay(
+                    // Bumped opacity vs. standard `jotKeyboardGlassHairline`
+                    // so the Cancel button has a crisp edge against the
+                    // dark recording chrome. Light: 8% black (vs. token's
+                    // 4%). Dark: 14% white (vs. token's 6%). Per UX plan.
+                    Circle()
+                        .strokeBorder(
+                            Color(uiColor: UIColor { trait in
+                                trait.userInterfaceStyle == .dark
+                                    ? UIColor(white: 1.0, alpha: 0.14)
+                                    : UIColor(white: 0.0, alpha: 0.08)
+                            }),
+                            lineWidth: 0.5
+                        )
+                )
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Cancel recording")
+        .accessibilityHint("Discards what you've said so far")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var collapseToggle: some View {
@@ -536,7 +608,17 @@ struct KeyboardView: View {
         Button {
             feedback.systemClick()
             feedback.selectionTick()
-            showActionsPopover.toggle()
+            // Explicit open/close branch (vs. `.toggle()`). The OPEN edge
+            // fires `onActionsTapped` so the controller refreshes paste
+            // state from the system clipboard — without this, the Paste
+            // row was stuck on whatever clipboard content was present
+            // at last `viewWillAppear`.
+            if showActionsPopover {
+                showActionsPopover = false
+            } else {
+                onActionsTapped()
+                showActionsPopover = true
+            }
         } label: {
             secondaryControlLabel(
                 title: "Actions",

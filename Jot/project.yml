@@ -13,8 +13,8 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
-    CURRENT_PROJECT_VERSION: "4"
-    MARKETING_VERSION: "1.0.1"
+    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "1.0.2"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"

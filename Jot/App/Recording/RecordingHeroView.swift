@@ -145,6 +145,12 @@ struct RecordingHeroView: View {
     // meaningful starting element — the recording status (red dot + timer).
     @AccessibilityFocusState private var recordingStatusFocused: Bool
 
+    /// True while the cold-start "Swipe back to your app" overlay is visible.
+    /// Driven by `.onAppear` (when `intent == .coldStartFromExternalKeyboard`
+    /// AND show count is below the suppression limit). Auto-cleared by a 4s
+    /// timer or by user tap on the overlay itself.
+    @State private var showColdStartNudge: Bool = false
+
     var body: some View {
         ZStack {
             WallpaperBackground(tintOverlay: WallpaperBackground.recordingTint())
@@ -165,7 +171,21 @@ struct RecordingHeroView: View {
                 stopButton
                     .padding(.bottom, 36)
             }
+
+            if showColdStartNudge {
+                ColdStartNudgeOverlay(
+                    onTap: { showColdStartNudge = false }
+                )
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .transition(reduceMotion
+                    ? .opacity
+                    : .move(edge: .top).combined(with: .opacity))
+                .zIndex(1)
+            }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showColdStartNudge)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         // See TranscriptDetailView for rationale — re-apply AFTER hiding
@@ -177,6 +197,7 @@ struct RecordingHeroView: View {
             cancelHaptic.prepare()
             successHaptic.prepare()
             beginRecordingFlow()
+            maybeShowColdStartNudge()
             beginTimerLoop()
             // Move VoiceOver focus to the live transcript card instead of
             // the default first-focusable back chevron, so an auto-pushed hero
@@ -471,18 +492,40 @@ struct RecordingHeroView: View {
             } else {
                 startNewRecording()
             }
-        case .adoptInFlight:
+        case .adoptInFlight, .coldStartFromExternalKeyboard:
+            // Same lifecycle for both — adopt the running session. The
+            // cold-start case additionally surfaces the nudge overlay
+            // via `shouldShowColdStartNudge` (gated on the show-count
+            // limit). NEVER call `start()` from this path.
             if recordingService.isRecording {
                 adoptInFlightRecording()
             } else {
-                // STALE presentation. The parent thinks we're recording,
-                // but nothing is in flight. Don't `start()` (the user
-                // didn't ask for that) — pop back to home. The
-                // `.onChange(of: scenePhase)` and `onDisappear` paths
-                // will handle teardown of any straggling pipeline state.
                 recordingHeroLog.info("Stale hero presentation — popping (no recording, no pipeline)")
                 showRecordingHero = false
             }
+        }
+    }
+
+    /// Decides whether the cold-start nudge overlay should appear on this
+    /// presentation. Conditions:
+    ///   1. Intent is `.coldStartFromExternalKeyboard` (i.e. this Hero
+    ///      was pushed by an auto-nav following a URL-bounce from a
+    ///      third-party keyboard, not the FAB or pill).
+    ///   2. The user has seen the overlay fewer than 7 times across the
+    ///      app's lifetime (UserDefaults `jot.hero.coldStartNudgeShownCount`).
+    /// When both hold, surfaces the overlay and increments the counter.
+    /// The overlay self-dismisses after 4s or on user tap.
+    private func maybeShowColdStartNudge() {
+        guard case .coldStartFromExternalKeyboard = intent else { return }
+        let key = "jot.hero.coldStartNudgeShownCount"
+        let count = UserDefaults.standard.integer(forKey: key)
+        guard count < 7 else { return }
+        UserDefaults.standard.set(count + 1, forKey: key)
+        showColdStartNudge = true
+        // Auto-dismiss after 4s.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            showColdStartNudge = false
         }
     }
 
@@ -841,5 +884,60 @@ private struct LoadingPlaceholderText: View {
                 dim = true
             }
             .accessibilityLabel("Loading \(variantName)")
+    }
+}
+
+/// Temporary "Swipe back to your app" overlay shown at the top of the
+/// Recording Hero on cold-start auto-nav from a third-party keyboard.
+/// Auto-dismisses after 4s; tap to dismiss early. Suppressed after the
+/// user has seen it 7 times (gated by `RecordingHeroView.maybeShowColdStartNudge`).
+///
+/// Visual treatment: glass pill with `chevron.left` accent + headline +
+/// sub-line. Matches the keyboard's Liquid-Glass language; auto-adapts
+/// light/dark via `.regularMaterial` background.
+private struct ColdStartNudgeOverlay: View {
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.jotBlueTop)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Swipe back to your app")
+                        .font(.system(size: 15, weight: .semibold, design: .default))
+                        .foregroundStyle(Color.jotInk)
+                    Text("Your text will paste when you stop")
+                        .font(.system(size: 12, weight: .regular, design: .default))
+                        .foregroundStyle(Color.jotInk.opacity(0.65))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                // Bumped opacity vs. the standard `jotKeyboardGlassHairline`
+                // token so the pill reads crisply on the Recording Hero's
+                // tinted wallpaper in both modes. Same mitigation pattern
+                // as the keyboard Cancel button.
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(
+                        Color(uiColor: UIColor { trait in
+                            trait.userInterfaceStyle == .dark
+                                ? UIColor(white: 1.0, alpha: 0.12)
+                                : UIColor(white: 0.0, alpha: 0.08)
+                        }),
+                        lineWidth: 0.5
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Swipe back to your app. Your text will paste when you stop. Tap to dismiss.")
+        .accessibilityAddTraits(.isButton)
     }
 }

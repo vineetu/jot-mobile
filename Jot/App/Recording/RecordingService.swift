@@ -765,6 +765,56 @@ final class RecordingService {
     /// `com.apple.frontboard.after-life.interrupted` zombie-process state
     /// that breaks subsequent Action Button cold-launches.
     ///
+    /// User-initiated cancel from the keyboard's Cancel button (or any
+    /// future surface that wants "throw away samples but keep the mic
+    /// warm"). Mirrors `stop()` for teardown + warm-hold lifecycle, but
+    /// discards the captured samples instead of returning them and
+    /// publishes `.idle` instead of `.transcribing` (no pipeline to
+    /// flush since we never call into transcription).
+    ///
+    /// Unlike `forceStop()`, this DOES enter warm-hold if enabled — the
+    /// user's mental model is "redo my last dictation," so the mic
+    /// should still be hot for the next tap.
+    func cancel() async {
+        guard !isStopInFlight else {
+            log.notice("Cancel skipped — stop already in flight.")
+            return
+        }
+        isStopInFlight = true
+        defer { isStopInFlight = false }
+
+        guard let capture = endActiveSlice() else {
+            log.notice("Cancel called with no active slice; nothing to discard.")
+            return
+        }
+        let discardCount = capture.drain().count
+
+        await tearDownStreamingSession()
+
+        isRecording = false
+        currentAmplitude = nil
+        AmplitudeProjection.clear()
+
+        let cooldownDuration = warmHoldCooldownDuration()
+        let shouldEnterWarmHold = cooldownDuration > 0
+            && engine?.isRunning == true
+            && isTapInstalled
+
+        if !shouldEnterWarmHold {
+            fullyTeardownEngine()
+        }
+
+        // .idle — no pipeline to flush. Keyboard observes this and flips
+        // its mic CTA back to idle (Cancel button auto-swaps to Actions).
+        publishPipelinePhase(.idle)
+
+        if shouldEnterWarmHold {
+            enterWarmHold(duration: cooldownDuration)
+        }
+
+        log.info("Recording cancelled; \(discardCount, privacy: .public) samples discarded; warm-hold=\(shouldEnterWarmHold, privacy: .public)")
+    }
+
     /// Discards captured samples silently. If the caller needs the samples,
     /// they must call `stop()` on the happy path, not this.
     func forceStop() {

@@ -223,7 +223,7 @@ struct HelpView: View {
                 bulletParagraph(
                     "Jot ships with a built-in AI rewriter. Tap the ",
                     boldRun: "wand",
-                    " icon on any transcript or in the keyboard to clean up filler words, fix grammar, or reformat into bullet points."
+                    " icon on any transcript to clean up filler words, fix grammar, or reformat into bullet points."
                 )
 
                 bulletParagraph(
@@ -528,6 +528,7 @@ struct HelpView: View {
         case .pasteSkipKeyboardTypeMismatch: return ("SKIP/KB", Color.jotAccent)
         case .pasteSkipNoFullAccess: return ("SKIP/FA", Color.jotAccent)
         case .pasteSkipEmptyText: return ("SKIP/EMPTY", Color.jotAccent)
+        case .pasteSkipProxyDisconnected: return ("SKIP/PROXY", Color.jotAccent)
         case .pasteSkipOther: return ("SKIP/?", Color.jotAccent)
         case .streamingPartialReceived: return ("STREAM", Color.jotAccent)
         case .memoryWarning: return ("MEMORY", Color.jotWarning)

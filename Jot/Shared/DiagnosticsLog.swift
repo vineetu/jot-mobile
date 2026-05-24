@@ -40,6 +40,11 @@ enum DiagnosticsCategory: String, Codable {
     case pasteSkipNoFullAccess
     /// Payload text was empty after trimming.
     case pasteSkipEmptyText
+    /// Proxy was disconnected at paste time (`documentContextBeforeInput == nil`).
+    /// Insert would no-op silently; we skip the call and fall back to writing
+    /// the transcript to the system clipboard with a status banner so the user
+    /// knows where to find it. See features.md §14.3.
+    case pasteSkipProxyDisconnected
     /// Unclassified silent-skip branch.
     case pasteSkipOther
     /// Keyboard wrote a new pending paste session at recording start.

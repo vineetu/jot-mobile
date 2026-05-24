@@ -625,8 +625,34 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onOpenHome: { [weak self] in self?.openHostHome() },
             onOpenHistoryEntryInApp: { [weak self] entry in self?.openHistoryEntryInApp(entry) },
             onToggleCollapsed: { [weak self] in self?.toggleCollapsed() },
+            onActionsTapped: { [weak self] in self?.handleActionsTapped() },
+            onCancelRecording: { [weak self] in self?.handleCancelRecording() },
             feedback: feedback
         )
+    }
+
+    /// Called when the Actions popover is about to open. Re-reads the
+    /// system clipboard so the Paste row reflects current content rather
+    /// than whatever was on the clipboard at the most recent
+    /// `viewWillAppear`. Reading `UIPasteboard.general.hasStrings` triggers
+    /// the iOS paste-privacy toast, which is acceptable on a discrete
+    /// user-initiated event (~one toast per Actions open) but would be
+    /// hostile on every keystroke — see `refreshPasteState`'s comment.
+    private func handleActionsTapped() {
+        refreshPasteState()
+        renderRootView()
+    }
+
+    /// Called when the user taps the Cancel button while a dictation is
+    /// actively recording. Posts a Darwin notification; the main app's
+    /// `CrossProcessRecordingStopCoordinator.handleCancelRequested()`
+    /// runs `RecordingService.shared.forceStop()`. The main app's
+    /// resulting `.failed` pipeline phase publish flips this keyboard's
+    /// `recordingState.isRecording` back to false, which auto-swaps the
+    /// Cancel button back to the Actions button.
+    private func handleCancelRecording() {
+        keyboardLog.info("Posted cross-process recording cancel request")
+        CrossProcessNotification.post(name: CrossProcessNotification.cancelRequested)
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -659,6 +685,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         guard !text.isEmpty else { return }
         textDocumentProxy.insertText(text)
         undoLedger.recordInsertion(text)
+        // §14.4-cluster diagnostic: capture the moment of ledger growth.
+        // If a user later reports "I tapped Recents but Undo was disabled,"
+        // we want to see whether (a) this log fired at all (ledger
+        // unrecorded — code path bypassed insertTrackedText) or (b) it
+        // fired but `canUndo` returned false at render time (proxy
+        // buffering means `documentContextBeforeInput` doesn't yet end
+        // with the inserted text — Undo gate needs to re-check after
+        // textDidChange).
+        keyboardLog.info("undo-ledger record insertion chars=\(text.count, privacy: .public) depth=\(self.undoLedger.undoStackDepth, privacy: .public)")
     }
 
     /// Records a just-paste event for the Phase 2 recents-strip just-now
@@ -802,10 +837,27 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleJumpToStart() {
         fireMenuSelectionFeedback()
         let proxy = textDocumentProxy
-        for _ in 0..<50 {
-            guard let before = proxy.documentContextBeforeInput, !before.isEmpty else { return }
-            proxy.adjustTextPosition(byCharacterOffset: -before.count)
+        // Symmetric with handleJumpToEnd. Jump by the LARGER of the
+        // exposed pre-caret context length or 1024 chars per iter — on
+        // hosts that expose only a small windowed context (which is the
+        // common case for the post-caret side and apparently true for
+        // some pre-caret cases too), this guarantees meaningful per-tap
+        // progress. iOS clamps the cursor at document boundaries when
+        // the offset exceeds remaining text, so over-jumping is safe.
+        var moved = 0
+        for i in 0..<50 {
+            guard let before = proxy.documentContextBeforeInput, !before.isEmpty else {
+                keyboardLog.info("move-up iter=\(i, privacy: .public) early-exit reason=empty-before; total-moved=\(moved, privacy: .public)")
+                return
+            }
+            let step = max(before.count, 1024)
+            if i < 5 {
+                keyboardLog.info("move-up iter=\(i, privacy: .public) before.count=\(before.count, privacy: .public) step=\(step, privacy: .public)")
+            }
+            proxy.adjustTextPosition(byCharacterOffset: -step)
+            moved += step
         }
+        keyboardLog.info("move-up completed 50 iters; total-moved=\(moved, privacy: .public)")
     }
 
     /// Shifts the host caret forward through the focused text field.
@@ -815,10 +867,27 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleJumpToEnd() {
         fireMenuSelectionFeedback()
         let proxy = textDocumentProxy
-        for _ in 0..<50 {
-            guard let after = proxy.documentContextAfterInput, !after.isEmpty else { return }
-            proxy.adjustTextPosition(byCharacterOffset: after.count)
+        // Symmetric with handleJumpToStart. `documentContextAfterInput`
+        // is asymmetrically smaller than the pre-caret context on most
+        // hosts (often ~50-100 chars vs. ~1000), so a per-iter step
+        // of `after.count` makes Move down feel sluggish ("10 words per
+        // tap"). Jump by `max(after.count, 1024)` so we make real
+        // progress on hosts with stingy post-caret buffers. iOS clamps
+        // at the document end, so over-jumping is safe.
+        var moved = 0
+        for i in 0..<50 {
+            guard let after = proxy.documentContextAfterInput, !after.isEmpty else {
+                keyboardLog.info("move-down iter=\(i, privacy: .public) early-exit reason=empty-after; total-moved=\(moved, privacy: .public)")
+                return
+            }
+            let step = max(after.count, 1024)
+            if i < 5 {
+                keyboardLog.info("move-down iter=\(i, privacy: .public) after.count=\(after.count, privacy: .public) step=\(step, privacy: .public)")
+            }
+            proxy.adjustTextPosition(byCharacterOffset: step)
+            moved += step
         }
+        keyboardLog.info("move-down completed 50 iters; total-moved=\(moved, privacy: .public)")
     }
 
     private func fireMenuSelectionFeedback() {
@@ -1134,9 +1203,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // the active input view). When it's nil at insert time,
             // `insertText(_:)` silently no-ops on the host — but the
             // call itself returns void and looks indistinguishable from
-            // a successful insert. Logging the before/after delta turns
-            // silent host-side rejection into a visible signal in the
-            // diagnostics card. See features.md §14.3.
+            // a successful insert. See features.md §14.3.
             let beforeContext = textDocumentProxy.documentContextBeforeInput
             let beforeLen = beforeContext?.count ?? -1
             let afterContextLenPre = textDocumentProxy.documentContextAfterInput?.count ?? -1
@@ -1860,6 +1927,9 @@ private final class KeyboardUndoLedger {
         !redoStack.isEmpty
     }
 
+    /// Diagnostic surface: lets the keyboard log the ledger growth.
+    var undoStackDepth: Int { undoStack.count }
+
     func recordInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         undoStack.append(.insertion(text))
@@ -1904,10 +1974,14 @@ private final class KeyboardUndoLedger {
     }
 
     private func undoCandidate(contextBeforeInput: String?) -> Entry? {
+        // Just trust the stack. The proxy-buffered `hasSuffix` check
+        // here was disabling Undo when the inserted text was visibly
+        // there but the proxy hadn't refreshed yet — that was the §14.6
+        // "Undo broken after N inserts" bug. Redo is the recovery path
+        // if Undo ever deletes the wrong text.
         guard let entry = undoStack.last else { return nil }
-        let trailing = entry.trailingTextForUndo
-        guard !trailing.isEmpty else { return nil }
-        guard contextBeforeInput?.hasSuffix(trailing) == true else { return nil }
+        guard !entry.trailingTextForUndo.isEmpty else { return nil }
+        _ = contextBeforeInput  // intentionally unused
         return entry
     }
 }

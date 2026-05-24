@@ -10,6 +10,7 @@ private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", categ
 struct JotApp: App {
     @Environment(\.scenePhase) private var scenePhase
     private let stopRequestObserver: CrossProcessNotification.Observer
+    private let cancelRequestObserver: CrossProcessNotification.Observer
     private let warmResumeObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
@@ -26,6 +27,12 @@ struct JotApp: App {
     @State private var autoStartPendingPipelineFinish = false
     @State private var autoStartPipelineDrainTimeoutTask: Task<Void, Never>?
     @State private var autoStartMicPermissionRequestInFlight = false
+    /// One-shot signal that the next recording-start was triggered by a
+    /// `jot://dictate*` URL bounce from a third-party keyboard. ContentView's
+    /// auto-push reads + clears this so the Hero is presented with the
+    /// `.coldStartFromExternalKeyboard` intent (which surfaces the "Swipe
+    /// back to your app" nudge overlay). Cleared after one Hero presentation.
+    @State private var pendingColdStartHeroNudge: Bool = false
     /// User-facing message for a failed dictate auto-start (mic busy,
     /// session error, etc.) Set from the catch path in `triggerAutoStart`
     /// so the foregrounded main app can show an alert — the existing
@@ -59,6 +66,12 @@ struct JotApp: App {
             name: CrossProcessNotification.stopRequested
         ) {
             CrossProcessRecordingStopCoordinator.shared.handleStopRequested()
+        }
+
+        cancelRequestObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.cancelRequested
+        ) {
+            CrossProcessRecordingStopCoordinator.shared.handleCancelRequested()
         }
 
         warmResumeObserver = CrossProcessNotification.addObserver(
@@ -232,7 +245,10 @@ struct JotApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(isWizardPresented: showSetupWizard)
+            ContentView(
+                isWizardPresented: showSetupWizard,
+                pendingColdStartHeroNudge: $pendingColdStartHeroNudge
+            )
                 .environment(recordingService)
                 .environment(transcriptionService)
                 .environment(streamingService)
@@ -330,6 +346,11 @@ struct JotApp: App {
                        let sid = UUID(uuidString: sessionParam) {
                         pendingKeyboardSessionID = sid
                     }
+                    // Mark this start as a cold-start-from-external-keyboard so
+                    // ContentView's auto-push presents the Hero with the
+                    // "Swipe back to your app" nudge overlay. Flag is one-shot;
+                    // ContentView clears it after consuming.
+                    pendingColdStartHeroNudge = true
                     triggerAutoStart(reason: "url open: \(url.absoluteString)")
                 }
                 .onReceive(
@@ -777,11 +798,24 @@ struct JotApp: App {
         guard transcriptionService.modelState == .ready else {
             // Model not loaded yet. Defer to the modelState .onChange
             // observer — it will call back here when ready.
+            //
+            // Defensive kick: explicitly call `warmUp()` here so the
+            // load is in flight from this moment, not whenever the
+            // scene `.task` block happens to run. Without this kick the
+            // `.task` warmUp + the `.onOpenURL` URL bounce can race,
+            // and on cold-launch via URL the defer below could sit
+            // forever if `.task` hasn't fired yet. `warmUp()` is
+            // idempotent (concurrent calls share one prepare Task per
+            // `TranscriptionService.warmUp` doc), so safe even if
+            // `.task` later calls it again.
+            // See features.md §14.1 and the hypothesis discussion in
+            // docs/plans/bug-cold-start-dictation-race.md.
+            transcriptionService.warmUp()
             autoStartPendingModelReady = true
             logAutoStartGuard(
                 "model-ready",
                 action: "defer",
-                reason: "model not ready; queued pending dictate intent from \(reason)"
+                reason: "model not ready; queued pending dictate intent from \(reason); warmUp() kicked"
             )
             return
         }
@@ -947,6 +981,31 @@ private final class CrossProcessRecordingStopCoordinator {
                 log.error("Cross-process stop request failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Keyboard-initiated cancel. Discards the partial transcript and
+    /// clears the keyboard's pending paste session so no auto-paste lands.
+    /// Uses `RecordingService.cancel()` (not `forceStop`) so the warm-hold
+    /// session is preserved — user's mental model is "redo my last
+    /// dictation," so the mic stays hot for the next tap.
+    func handleCancelRequested() {
+        let recording = RecordingService.shared
+        // Don't fight a stop that's already in flight — if user tapped
+        // Stop then Cancel rapidly, stop wins (the transcript is already
+        // being processed). If neither is active, just clear pending and
+        // publish idle.
+        guard recording.isRecording else {
+            ClipboardHandoff.clearPendingPasteSession()
+            publishIdleProjection()
+            log.info("Cross-process cancel request: no active recording; cleared keyboard pending session.")
+            return
+        }
+
+        ClipboardHandoff.clearPendingPasteSession()
+        Task { @MainActor in
+            await recording.cancel()
+        }
+        log.info("Cross-process cancel: dispatched RecordingService.cancel() — samples discarded, warm-hold preserved if enabled.")
     }
 
     private func stopAndPublish() async throws {

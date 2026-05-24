@@ -184,8 +184,30 @@ final class StreamingPartial {
             return
         }
         lastPublishedAt = now
-        AppGroup.defaults.set(text, forKey: AppGroup.Keys.streamingPartialText)
+        // Cap the published text to the last ~8 KB so a long dictation
+        // doesn't grow the App Group write (and the keyboard's in-process
+        // cached copy) without bound. The keyboard's streaming strip
+        // only shows the tail anyway — older content has scrolled off
+        // the visible window. Defensive against §14.2 memory-pressure
+        // termination (whichever process gets jetsammed); see
+        // docs/plans/bug-keyboard-auto-switch.md.
+        let capped = Self.cappedForCrossProcess(text)
+        AppGroup.defaults.set(capped, forKey: AppGroup.Keys.streamingPartialText)
         CrossProcessNotification.post(name: CrossProcessNotification.streamingPartialChanged)
+    }
+
+    /// Trailing-window cap. ~8 KB == one Mach page, comfortable for the
+    /// keyboard's 60 MB ceiling at any reasonable dictation length.
+    /// Uses `.utf8.count` so emoji-heavy text doesn't blow the byte budget.
+    private static func cappedForCrossProcess(_ text: String) -> String {
+        let maxBytes = 8 * 1024
+        if text.utf8.count <= maxBytes { return text }
+        // Drop from the FRONT, keep the tail (newest content the user sees).
+        var trimmed = text
+        while trimmed.utf8.count > maxBytes, !trimmed.isEmpty {
+            trimmed.removeFirst()
+        }
+        return trimmed
     }
 }
 

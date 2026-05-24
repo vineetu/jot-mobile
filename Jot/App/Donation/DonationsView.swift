@@ -13,6 +13,7 @@ struct DonationsView: View {
     @State private var errorMessage: String?
     @State private var shuffledOrder: [String] = []
     @State private var searchText = ""
+    @State private var selectedCharity: DonationCharity?
 
     var body: some View {
         ZStack {
@@ -49,6 +50,12 @@ struct DonationsView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .enableInteractivePopGesture()
+        .sheet(item: $selectedCharity) { charity in
+            CharityDetailSheet(charity: charity) { amount in
+                openDonation(amount: amount, charity: charity)
+                selectedCharity = nil
+            }
+        }
         .task {
             guard summary == nil else { return }
             loadCachedSummary()
@@ -187,48 +194,76 @@ struct DonationsView: View {
     }
 
     private func charityRow(_ charity: DonationCharity) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(charity.name)
-                    .font(JotType.rowTitle)
-                    .tracking(-0.2)
-                    .foregroundStyle(Color.jotPageInk)
-                    .lineLimit(2)
-
-                Text("\(formatCurrency(charity.totalRaisedUSD)) raised · \(donationCountText(charity.count))")
-                    .font(.system(size: 12, weight: .regular, design: .default))
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .lineLimit(1)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 8) {
-                donationPill(amount: 2, charity: charity)
-                donationPill(amount: 10, charity: charity)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
-    }
-
-    private func donationPill(amount: Int, charity: DonationCharity) -> some View {
         Button {
-            openDonation(amount: amount, charity: charity)
+            selectedCharity = charity
         } label: {
-            Text("$\(amount)")
-                .font(.system(size: 13, weight: .semibold, design: .default))
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
-                .background(Color.jotBlueTop, in: Capsule(style: .continuous))
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
+            HStack(alignment: .top, spacing: 12) {
+                CharityAvatar(charity: charity, size: 40)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(charity.name)
+                        .font(JotType.rowTitle)
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.jotPageInk)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    // Metrics line is suppressed until the charity has
+                    // received its first donation through Jot — a row
+                    // saying "$0 raised · 0 donations" reads worse than
+                    // just the name + description for early state.
+                    if charity.count > 0 || charity.totalRaisedUSD > 0 {
+                        Text("\(formatCurrency(charity.totalRaisedUSD)) raised · \(donationCountText(charity.count))")
+                            .font(.system(size: 12, weight: .regular, design: .default))
+                            .foregroundStyle(Color.jotPageInkSecondary)
+                            .lineLimit(1)
+                    }
+
+                    // Description renders only when the API returns
+                    // one. Some charities ship without (saw
+                    // "techleapindia" in the feed) — those rows stay
+                    // compact. Two-line clamp prevents long
+                    // descriptions from blowing up row height; the
+                    // detail sheet shows the full text.
+                    if let description = charity.description, !description.isEmpty {
+                        Text(description)
+                            .font(.system(size: 12, weight: .regular, design: .default))
+                            .foregroundStyle(Color.jotPageInkSecondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                            .padding(.top, 2)
+                    }
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.jotPageInkSecondary.opacity(0.5))
+                    .padding(.top, 14)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Donate \(amount) dollars to \(charity.name)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(rowAccessibilityLabel(for: charity))
+        .accessibilityHint("Opens details and donation options")
+    }
+
+    private func rowAccessibilityLabel(for charity: DonationCharity) -> String {
+        var parts: [String] = [charity.name]
+        if charity.count > 0 || charity.totalRaisedUSD > 0 {
+            parts.append("\(formatCurrency(charity.totalRaisedUSD)) raised, \(donationCountText(charity.count))")
+        }
+        if let description = charity.description, !description.isEmpty {
+            parts.append(description)
+        }
+        return parts.joined(separator: ". ")
     }
 
     private var loadingState: some View {

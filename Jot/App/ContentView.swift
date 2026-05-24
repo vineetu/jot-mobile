@@ -85,6 +85,13 @@ enum HeroIntent {
     /// presentation is stale and the hero should pop immediately
     /// (NEVER call `start()` from this path).
     case adoptInFlight
+    /// Auto-nav from a third-party keyboard URL bounce (cold-start path).
+    /// Same lifecycle as `.adoptInFlight` — adopt the running session —
+    /// but the hero also surfaces a temporary "Swipe back to your app"
+    /// nudge overlay so the user knows to return to the host where the
+    /// auto-paste will land. Suppressed after the user has seen it 7
+    /// times via `jot.hero.coldStartNudgeShownCount`.
+    case coldStartFromExternalKeyboard
 }
 
 struct ContentView: View {
@@ -99,6 +106,13 @@ struct ContentView: View {
     /// user lands on home post-dismissal with a "Listening" page that
     /// doesn't correspond to any actual capture.
     var isWizardPresented: Bool = false
+
+    /// One-shot signal from `JotApp` that the next recording-start was
+    /// triggered by a `jot://dictate*` URL bounce from a third-party
+    /// keyboard. ContentView's auto-push reads + clears this so the Hero
+    /// is presented with the `.coldStartFromExternalKeyboard` intent and
+    /// the "Swipe back to your app" nudge overlay shows.
+    @Binding var pendingColdStartHeroNudge: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
@@ -396,7 +410,9 @@ struct ContentView: View {
             if recordingService.isRecording,
                !isWizardPresented,
                !userDismissedHeroDuringRecording {
-                heroIntent = .adoptInFlight
+                let isColdStart = pendingColdStartHeroNudge
+                pendingColdStartHeroNudge = false
+                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
                 showRecordingHero = true
             }
         }
@@ -435,7 +451,9 @@ struct ContentView: View {
                !isWizardPresented,
                !userDismissedHeroDuringRecording {
                 // Auto-nav adoption — never `start()` from this path.
-                heroIntent = .adoptInFlight
+                let isColdStart = pendingColdStartHeroNudge
+                pendingColdStartHeroNudge = false
+                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
                 showRecordingHero = true
             } else if !isRecording {
                 // Recording ended (user stopped, cancelled, errored, or the
@@ -985,7 +1003,7 @@ private struct RecordingReturnPill: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(pendingColdStartHeroNudge: .constant(false))
         .environment(RecordingService())
         .environment(KeyboardRewriteRouter())
         .environment(TranscriptionService())
