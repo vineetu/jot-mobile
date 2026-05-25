@@ -540,9 +540,16 @@ The [Setup Wizard](#4-3-keyboard-installation--full-access-w3) explains why Full
 ### 13.4 Transcript Storage
 Transcripts are stored locally on the device. Users can delete individual transcripts via the [swipe or context menu](#1-7-transcript-row-actions) on the home screen or via the Delete action in the [Transcript Detail](#3-5-action-bar) view. There is no active cross-device iCloud sync — each device's library is independent.
 
-**iCloud Device Backup behavior.** When the user has iCloud Backup enabled in iOS Settings, the following are included in their device backup automatically: transcripts (Original + Rewrite), saved AI Rewrite prompts, custom vocabulary, and app preferences. Audio is never written to disk so it can't be part of any backup. The downloaded AI Rewrite model (~2.5 GB) lives in the system Caches directory, which iOS unconditionally excludes from backup — the model re-downloads on first use after restore. The Settings → About card surfaces a static "Backed up with iCloud (when iCloud Backup is enabled in iOS Settings)" row so users can confirm this expectation at a glance.
+**iCloud Device Backup behavior.** When the user has iCloud Backup enabled in iOS Settings, the following are included in their device backup automatically: transcripts (Original + Rewrite), saved AI Rewrite prompts, custom vocabulary, and app preferences. Audio is never written to disk so it can't be part of any backup. Two categories of downloaded model weights are explicitly kept OUT of the backup so they don't bloat it (typical Jot backup size: a few MB, not GB):
+
+- The AI Rewrite model (Qwen 3.5 4B, ~2.5 GB) lives under `Library/Caches/`, which iOS unconditionally excludes from backup. No app code needed.
+- The optional downloaded speech model (Parakeet 600M v2, ~2 GB on disk after CoreML compilation) lives under `Library/Application Support/FluidAudio/` because Application Support is sticky (iOS doesn't evict it under memory pressure — keeps dictation reliable). Application Support IS backed up by default, so Jot explicitly sets `isExcludedFromBackup = true` on the FluidAudio directory at launch.
+
+Both model categories re-download on first use after a restore. The Settings → About card surfaces a static "Backed up with iCloud (when iCloud Backup is enabled in iOS Settings)" row so users can confirm this expectation at a glance.
 
 On restore (full device setup from an iCloud backup → Jot reinstalled), the library returns to the state it was in at the moment the backup was taken. Restoring a single app from the App Store does NOT bring its data back — only full-device "Restore from iCloud Backup" does.
+
+Schema changes carry explicit version migrations (see `docs/schema-migrations.md`), so restoring an old backup on a newer build of Jot loads cleanly via the migration plan. Restoring a backup taken on a newer build onto an older build of Jot is not supported; install the same or newer version.
 
 ### 13.5 No Accounts, No Telemetry, No Analytics
 Settings surfaces the claim: "Your words stay on your iPhone. No accounts, no cloud, no telemetry." The Help screen's Privacy section reiterates this as: "Transcripts are stored locally on your device. Jot has no cloud sync, no analytics, no account."

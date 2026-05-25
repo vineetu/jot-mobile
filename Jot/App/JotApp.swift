@@ -166,6 +166,17 @@ struct JotApp: App {
         // purges. Detached + best-effort, does not block launch.
         TranscriptionService.sweepOrphanedPurgingDirs()
 
+        // Per-launch defensive: exclude FluidAudio's downloaded speech-model
+        // weights from iCloud Device Backup. The weights live at
+        // `Library/Application Support/FluidAudio/Models/` (NOT in Caches/
+        // — deliberate, because Application Support is sticky and the OS
+        // doesn't evict it under memory pressure). Without this flag, the
+        // Parakeet 600M v2 weights (~2 GB on disk after CoreML compilation)
+        // get included in the user's iCloud backup. Idempotent: setting an
+        // already-set flag is a no-op; the call is also a no-op when the
+        // directory doesn't exist (user hasn't downloaded any variant yet).
+        BackupExclusion.excludeFluidAudioModels()
+
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
         // 110M weights cached on disk. Gated by a `UserDefaults` flag so

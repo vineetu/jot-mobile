@@ -47,3 +47,22 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 ## Recording-start instrumentation
 
 Every code path that starts a recording logs `"RECORDING START FROM: <site>"` via `os.log`. When debugging "where did this recording come from" bugs (zombie hero, double-start, etc.), grep Console.app for `RECORDING START FROM:` to triage in one pass. Preserve these log lines on edits.
+
+## Schema discipline — SwiftData store
+
+The SwiftData store lives in the App Group container (cross-process invariant). Schema evolution follows a Flyway-style discipline:
+
+1. Every shape lives in `Jot/Shared/Schema/JotSchemaVN.swift` as an `enum JotSchemaVN: VersionedSchema`. The current version is the highest N.
+2. **Frozen rule.** Once `JotSchemaVN.swift` is in a shipped build, the file is FROZEN. Do not edit it. Add fields by introducing `JotSchemaV(N+1).swift` and appending a `MigrationStage` to `Jot/Shared/Schema/JotMigrationPlan.swift`. Mechanically enforced by `scripts/check-schema-frozen.sh`.
+3. **Every new VN file MUST bump `versionIdentifier`** (e.g. `Schema.Version(2, 0, 0)` for V2). Without a unique identifier, SwiftData cannot distinguish versions and the migration plan corrupts the store.
+4. **After creating a new VN file, run `xcodegen` from `Jot/`** so the Xcode project picks up the new file. The Shared/ glob picks it up automatically once the project regenerates.
+5. The top-level `Transcript` typealias points at the current version (`typealias Transcript = JotSchemaVN.Transcript`). Bump the typealias when a new VN ships.
+6. Pure additive optional fields / new entity types: `.lightweight(...)` stage. Renames, removes, or data transforms: `.custom(...)` with explicit `willMigrate` / `didMigrate` closures.
+7. **Every feature plan that touches `@Model` types MUST include a "Schema impact" section.** Sections:
+   - Does this feature add/remove/rename `@Model` fields, or add new `@Model` entities? Y/N.
+   - If Y: what's the new `JotSchemaVN` look like (diff from prior version)?
+   - What `MigrationStage` traverses V(N-1) → VN — lightweight or custom?
+8. **After each schema change, watch Console.app for `[SCHEMA-FALLBACK]` log lines** on a real-device upgrade test. If that log fires, `JotModelContainer.shared` is using its defensive non-versioned fallback path — the migration is silently broken on that device and must be investigated before merge.
+9. Do NOT open `JotModelContainer.shared` from the keyboard target. The keyboard reads `TranscriptHistoryMirror` JSON, never SwiftData directly (see `AGENTS.md`).
+
+See `docs/schema-migrations.md` for the full add-a-version recipe and rationale. SwiftData lightweight auto-migration is empirically fragile across iOS versions — the explicit VersionedSchema + MigrationPlan is the price paid forward to make every change traceable and reversible.

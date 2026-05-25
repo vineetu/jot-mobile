@@ -45,50 +45,116 @@ import SwiftData
 /// `static let` is safe under strict concurrency. `ModelContext` is **not**
 /// `Sendable` — callers must instantiate a fresh context on `@MainActor` per
 /// append, which is cheap and exactly what `TranscriptStore.append` does.
+#if JOT_APP_HOST
+// JotModelContainer and TranscriptStore are MAIN-APP ONLY. The keyboard
+// extension reads transcript history via `TranscriptHistoryMirror` JSON
+// (Shared/TranscriptHistoryMirror.swift) — NOT SwiftData directly. See
+// AGENTS.md for the cross-process invariant. The #if guard makes the
+// rule mechanical at compile time: a keyboard call site attempting to
+// use these symbols fails the build rather than silently corrupting
+// the store via cross-process access.
+
 @MainActor
 enum JotModelContainer {
-    static let shared: ModelContainer = {
-        do {
-            // Pre-create `Library/Application Support/` inside the App Group
-            // container so SwiftData's `ModelContainer` construction finds
-            // the intermediate directory on first launch. Without this, a
-            // fresh install triggers a ~140-line `CoreData: error: ...
-            // NSCocoaErrorDomain 512 / errno 2 (ENOENT)` storm in the
-            // launch console before CoreData's internal recovery path
-            // creates the missing dir and retries. The store ends up
-            // functional either way — this is pure log-noise reduction.
-            // `withIntermediateDirectories: true` is idempotent on warm
-            // launches (returns immediately if the dir already exists).
-            if let appGroupURL = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: AppGroup.identifier
-            ) {
-                try? FileManager.default.createDirectory(
-                    at: appGroupURL.appendingPathComponent("Library/Application Support"),
-                    withIntermediateDirectories: true
-                )
-            }
+    private static let log = Logger(
+        subsystem: "com.vineetu.jot.mobile.Jot",
+        category: "jot-model-container"
+    )
 
-            let schema = Schema([Transcript.self])
+    static let shared: ModelContainer = {
+        // Pre-create `Library/Application Support/` inside the App Group
+        // container so SwiftData's `ModelContainer` construction finds
+        // the intermediate directory on first launch. Without this, a
+        // fresh install triggers a ~140-line `CoreData: error: ...
+        // NSCocoaErrorDomain 512 / errno 2 (ENOENT)` storm in the
+        // launch console before CoreData's internal recovery path
+        // creates the missing dir and retries. The store ends up
+        // functional either way — this is pure log-noise reduction.
+        // `withIntermediateDirectories: true` is idempotent on warm
+        // launches (returns immediately if the dir already exists).
+        if let appGroupURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: AppGroup.identifier
+        ) {
+            try? FileManager.default.createDirectory(
+                at: appGroupURL.appendingPathComponent("Library/Application Support"),
+                withIntermediateDirectories: true
+            )
+        }
+
+        // First try: VersionedSchema + MigrationPlan (the Flyway-style
+        // foundation introduced 2026-05-24). Future schema changes ship
+        // as new `JotSchemaVN` files + new `MigrationStage`s — see
+        // `JotMigrationPlan.swift` and `docs/schema-migrations.md`.
+        do {
+            let versionedSchema = Schema(versionedSchema: JotSchemaV1.self)
             let config = ModelConfiguration(
                 "JotTranscripts",
-                schema: schema,
-                // Cross-process-reachable SQLite location. See class doc for
-                // why this lives in3 the App Group rather than the main app's
-                // sandbox — short version: future widget/share-extension
-                // readers shouldn't need a second migration to find it.
+                schema: versionedSchema,
+                // Cross-process-reachable SQLite location. The keyboard
+                // extension reads `TranscriptHistoryMirror` JSON (NOT
+                // SwiftData directly), but other extensions or future
+                // widgets may want to read this store; placing it in the
+                // App Group keeps that future option open without a
+                // second migration.
                 groupContainer: .identifier(AppGroup.identifier),
-                // On-device only. We do not sync transcripts anywhere —
-                // keeping the privacy promise symmetric with audio + model
-                // cache, neither of which leave the device.
+                // On-device only. We do not actively sync transcripts to
+                // CloudKit — passive iOS Device Backup is enough.
                 cloudKitDatabase: .none
             )
-            return try ModelContainer(for: schema, configurations: [config])
+            return try ModelContainer(
+                for: versionedSchema,
+                migrationPlan: JotMigrationPlan.self,
+                configurations: [config]
+            )
         } catch {
-            // Failure here means the on-disk store is corrupt or the schema
-            // can't be instantiated. There's no meaningful recovery at
-            // runtime — the ledger is a core surface. Fail loud so build /
-            // test picks it up; in the field this would manifest as a crash
-            // on first launch after a botched migration.
+            // SwiftData refused to load the versioned schema. Most likely
+            // reason: an existing un-versioned store from a pre-foundation
+            // build (1.0.2 build 6 or earlier) can't be auto-stamped to
+            // V1 because the inferred-schema hash drifted (typealias-vs-
+            // class, iOS version differences, Xcode SDK differences).
+            //
+            // Fall back to the original non-versioned init so existing
+            // user data can't be bricked by this foundation PR. We lose
+            // the migration plan's benefit on THIS launch — the store
+            // stays un-versioned and a future build will need to address
+            // the underlying drift — but the user's transcripts load and
+            // the app works normally. A [SCHEMA-FALLBACK] log fires so
+            // we can detect this in field telemetry.
+            //
+            // See `docs/plans/schema-migration-foundation.md` "Edge Cases"
+            // for the full rationale.
+            log.error(
+                "[SCHEMA-FALLBACK] VersionedSchema init failed; falling back to non-versioned schema. error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+
+        do {
+            // Use the top-level `Transcript` typealias (NOT the qualified
+            // `JotSchemaV1.Transcript`) so this fallback matches the
+            // pre-foundation code character-for-character. SwiftData's
+            // entity-name resolution can differ between qualified and
+            // typealiased references on some iOS versions; matching the
+            // prior text exactly minimizes the chance of an entity-name
+            // mismatch against existing on-disk data.
+            let legacySchema = Schema([Transcript.self])
+            let config = ModelConfiguration(
+                "JotTranscripts",
+                schema: legacySchema,
+                groupContainer: .identifier(AppGroup.identifier),
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: legacySchema, configurations: [config])
+            // Flag for telemetry / future migration logic: this device
+            // landed in the fallback path on first launch after the
+            // foundation PR. A subsequent build can read this flag and
+            // take corrective action (e.g. force a one-shot store
+            // rebuild from TranscriptHistoryMirror JSON, or surface a
+            // diagnostic banner).
+            UserDefaults.standard.set(true, forKey: "jot.schema.fallbackActiveSince_v1")
+            return container
+        } catch {
+            // Both paths failed. This is a real corruption — fall through
+            // to fatalError (same behavior as before the foundation PR).
             fatalError("Unable to construct JotModelContainer: \(error)")
         }
     }()
@@ -300,3 +366,5 @@ enum TranscriptStore {
         }
     }
 }
+
+#endif  // JOT_APP_HOST

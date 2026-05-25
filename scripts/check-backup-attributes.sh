@@ -54,7 +54,7 @@ else
 fi
 
 # ---- 3. No surprise backup exclusions on user data paths ------------------
-echo "[3/3] No surprise isExcludedFromBackup calls on user data…"
+echo "[3/4] No surprise isExcludedFromBackup calls on user data…"
 # We do NOT want anyone setting isExcludedFromBackup on the SwiftData store,
 # saved prompts, vocab, or the mirror — those need to be in the backup.
 surprise=$(grep -rln "isExcludedFromBackup" \
@@ -67,6 +67,23 @@ else
     red   "  FAIL — found isExcludedFromBackup in user-data store(s):"
     red   "    $surprise"
     red   "  User data must stay backup-eligible. Remove these flags."
+    fails=$((fails + 1))
+fi
+
+# ---- 4. FluidAudio model weights ARE explicitly excluded ------------------
+echo "[4/4] FluidAudio speech-model weights backup exclusion…"
+# Parakeet weights live at Library/Application Support/FluidAudio/Models/
+# — INCLUDED in iOS Device Backup by default. Without an explicit
+# exclusion, the ~2 GB of 600M v2 weights bloat the user's iCloud backup.
+# `BackupExclusion.excludeFluidAudioModels()` runs per-launch from
+# JotApp.init to set isExcludedFromBackup on the parent directory.
+if grep -q "BackupExclusion.excludeFluidAudioModels" Jot/App/JotApp.swift; then
+    green "  OK — JotApp.init calls BackupExclusion.excludeFluidAudioModels()."
+else
+    red   "  FAIL — JotApp.init no longer calls BackupExclusion.excludeFluidAudioModels()."
+    red   "  Without this per-launch call, downloaded speech model weights"
+    red   "  get included in iCloud Device Backup (the user's backup grows"
+    red   "  by ~2 GB for every variant downloaded). Restore the call."
     fails=$((fails + 1))
 fi
 
