@@ -39,6 +39,7 @@
   - [3.4 Rewrite Attribution](#3-4-rewrite-attribution)
   - [3.5 Action Bar](#3-5-action-bar)
   - [3.6 Rewrite Progress and Cancellation](#3-6-rewrite-progress-and-cancellation)
+  - [3.7 Edit Transcript](#3-7-edit-transcript)
 - [4. Setup Wizard](#4-setup-wizard)
   - [4.1 Welcome (W1)](#4-1-welcome-w1)
   - [4.2 Microphone Permission (W2)](#4-2-microphone-permission-w2)
@@ -121,7 +122,8 @@
   - [13.2 Warm Hold](#13-2-warm-hold)
   - [13.3 Full Access Disclosure](#13-3-full-access-disclosure)
   - [13.4 Transcript Storage](#13-4-transcript-storage)
-  - [13.5 No Accounts, No Telemetry, No Analytics](#13-5-no-accounts-no-telemetry-no-analytics)
+  - [13.5 Rewrite Edit Training Pairs](#13-5-rewrite-edit-training-pairs)
+  - [13.6 No Accounts, No Telemetry, No Analytics](#13-6-no-accounts-no-telemetry-no-analytics)
 - [14. Known Bugs (Unresolved)](#14-known-bugs-unresolved)
   - [14.1 Keyboard-initiated dictation opens Jot but does not start recording](#14-1-keyboard-initiated-dictation-opens-jot-but-does-not-start-recording)
   - [14.2 Keyboard auto-switches back to system keyboard after dictation stop](#14-2-keyboard-auto-switches-back-to-system-keyboard-after-dictation-stop)
@@ -253,10 +255,13 @@ Both the original transcript text and the rewrite text are fully selectable, all
 When a rewrite is present, a small attribution line names the active rewrite model. The label always reflects whichever rewrite model is currently selected in Settings; the UI does not distinguish between [automatic cleanup](#7-1-automatic-cleanup) output and downloaded-model output.
 
 ### 3.5 Action Bar
-A row of actions at the bottom of the detail view provides Copy (copies the currently visible tab's text), Share (opens the iOS share sheet), a "Transform" button (blue pill that triggers [AI Rewrite](#7-ai-rewrite)), and Delete. The Copy button is icon-only — there is no visible text label. After tapping Copy, the icon changes to a checkmark briefly before reverting to the copy icon after approximately 1.3 seconds, confirming the action to the user. The VoiceOver accessibility label updates from "Copy transcript" to "Copied to clipboard" during this window. Tapping Delete shows a "Delete this entry?" confirmation dialog with a destructive "Delete" button and a "Cancel" button before the entry is permanently removed.
+A row of actions at the bottom of the detail view provides Copy (copies the currently visible tab's text), Share (opens the iOS share sheet), a "Transform" button (blue pill that triggers [AI Rewrite](#7-ai-rewrite)), [Edit](#3-7-edit-transcript), and Delete. The Copy button is icon-only — there is no visible text label. After tapping Copy, the icon changes to a checkmark briefly before reverting to the copy icon after approximately 1.3 seconds, confirming the action to the user. The VoiceOver accessibility label updates from "Copy transcript" to "Copied to clipboard" during this window. Tapping Delete shows a "Delete this entry?" confirmation dialog with a destructive "Delete" button and a "Cancel" button before the entry is permanently removed.
 
 ### 3.6 Rewrite Progress and Cancellation
 When a rewrite is actively running, a progress card appears alongside the action bar (the action bar itself remains visible) with a "Rewriting…" indicator and a Cancel button, allowing the user to abort the generation mid-stream.
+
+### 3.7 Edit Transcript
+The Edit pencil in the [action bar](#3-5-action-bar) turns the currently-visible tab into an editable text field with a slim bottom bar offering Cancel and a blue Save (✓) button. The tab pill is hidden while editing — one tab at a time. Editing the **Original** tab overwrites the transcript text in place; the pre-edit speech-model output is not retained (the user's correction becomes the new ground truth). Editing the **Rewrite** tab keeps the model's rewrite frozen as the "before" and saves the user's correction as the "after," so the pair is preserved as a future-improvement training signal (see [§13.5](#13-5-rewrite-edit-training-pairs)). Tapping Transform after an edit generates a fresh rewrite and clears the prior user-edit; tapping the Rewrite tab's Discard affordance clears both the model rewrite and any user edit together. The Edit pill is disabled while a rewrite is mid-flight and while the back chevron is also disabled mid-edit so accidental swipes don't silently lose work.
 
 ---
 
@@ -551,7 +556,10 @@ On restore (full device setup from an iCloud backup → Jot reinstalled), the li
 
 Schema changes carry explicit version migrations (see `docs/schema-migrations.md`), so restoring an old backup on a newer build of Jot loads cleanly via the migration plan. Restoring a backup taken on a newer build onto an older build of Jot is not supported; install the same or newer version.
 
-### 13.5 No Accounts, No Telemetry, No Analytics
+### 13.5 Rewrite Edit Training Pairs
+When the user manually edits the Rewrite tab text via [Edit Transcript](#3-7-edit-transcript), Jot keeps both the model's original rewrite output AND the user's edited version on-device. The pair — what the model produced and what the user changed it to — is preserved as a future-improvement training signal for the on-device rewrite model. Nothing about this pair is uploaded; it stays in the same local store as the rest of the user's transcripts and is included in iCloud Device Backup like other user data. Tapping Transform on a transcript clears any prior user-edit (a stale correction against a fresh model output would be meaningless), and discarding the rewrite clears both halves together.
+
+### 13.6 No Accounts, No Telemetry, No Analytics
 Settings surfaces the claim: "Your words stay on your iPhone. No accounts, no cloud, no telemetry." The Help screen's Privacy section reiterates this as: "Transcripts are stored locally on your device. Jot has no cloud sync, no analytics, no account."
 
 ---

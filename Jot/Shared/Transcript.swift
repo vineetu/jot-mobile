@@ -11,14 +11,20 @@ import SwiftData
 /// `Jot/Shared/Schema/JotSchemaV1.swift`. Computed properties live in
 /// the extension below so they automatically apply to whichever VN is
 /// current.
-typealias Transcript = JotSchemaV1.Transcript
+typealias Transcript = JotSchemaV2.Transcript
 
 extension Transcript {
-    /// Preferred surface text: AI Rewrite cleanup if present, else the raw
-    /// transcript. The always-on regex filler-word sweep is baked into
-    /// `text` at publish time by `FillerWordCleaner`, so there is no
-    /// separate stored field for lexical cleanup.
-    var displayText: String { cleanedText ?? text }
+    /// Preferred surface text. Priority:
+    ///   1. `rewriteUserEdit` — the user's manual correction of the LLM
+    ///      rewrite, if they edited it.
+    ///   2. `cleanedText` — the LLM rewrite output, if cleanup ran.
+    ///   3. `text` — the raw Parakeet transcript (with the always-on regex
+    ///      filler sweep already baked in by the dictation pipeline).
+    ///
+    /// Read by Recents rows, the keyboard history mirror, share + copy
+    /// affordances, and any other consumer that asks "what should the user
+    /// see for this transcript."
+    var displayText: String { rewriteUserEdit ?? cleanedText ?? text }
 
     /// `true` when this transcript was produced by a chained follow-up
     /// command. The Ledger row uses this to swap its eyebrow layout.

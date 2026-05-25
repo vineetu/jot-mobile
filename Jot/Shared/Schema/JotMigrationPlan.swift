@@ -45,14 +45,19 @@ import SwiftData
 ///     the migration needs investigation before merge.
 enum JotMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [JotSchemaV1.self]
-        // Future: append V2.self, V3.self, ... in chronological order.
+        [JotSchemaV1.self, JotSchemaV2.self]
+        // Future: append V3.self, V4.self, ... in chronological order.
     }
 
     static var stages: [MigrationStage] {
-        []
-        // Future: .lightweight(fromVersion: JotSchemaV1.self,
-        //                      toVersion: JotSchemaV2.self),
-        //        etc.
+        [
+            // V1 → V2: additive optional `rewriteUserEdit: String?` on
+            // `Transcript`. `nil` for every pre-existing V1 row on first
+            // V2 read. Lightweight inference handles this case reliably.
+            .lightweight(
+                fromVersion: JotSchemaV1.self,
+                toVersion: JotSchemaV2.self
+            )
+        ]
     }
 }

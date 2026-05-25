@@ -28,6 +28,10 @@ SwiftData's auto-migration ("lightweight" inference) is empirically fragile acro
 - **V1** (`JotSchemaV1.swift`, frozen 2026-05-24, baseline as of Jot 1.0.2 build 6+).
   - `Transcript`: id, text, cleanedText, createdAt, durationSeconds, ledgerIndex, derivedFromID, instruction, supersededAt.
   - Models: `[Transcript]`.
+- **V2** (`JotSchemaV2.swift`, current as of Jot 1.0.2 build 9+, 2026-05-24).
+  - `Transcript`: V1 fields + `rewriteUserEdit: String?` (the user's manual edit to the LLM rewrite — the "after" half of a `(modelOutput, userEdit)` training pair).
+  - Models: `[Transcript]`.
+  - V1 → V2 migration: `.lightweight` (pure additive optional field).
 
 > Future versions append here. **Every PR that ships a new VN must update this list.**
 

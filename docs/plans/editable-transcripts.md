@@ -1,381 +1,238 @@
-# Plan: Editable Transcripts + Auto-Regenerate + Training-Pair Persistence
+# Plan: Editable Transcripts (Simplified)
 
-> **Status:** Requested 2026-05-24. Confirmed scope: editable Original and Rewrite tabs in Transcript Detail; auto-regenerate Rewrite on Original edit (with confirm gate if user-edited Rewrite would be lost); persist `(modelOutput, userEdit)` pairs per Rewrite for future Qwen 3.5 4B fine-tuning.
-> **Size: M-L** (~2-3 days, dominated by SwiftData schema bump + edit-mode UX + auto-regen plumbing).
-
----
-
-## Requirements
-
-### What user can do
-
-- In Transcript Detail, tap **Edit** in the floating ActionBar → both tabs become editable. The currently-visible tab's text turns into a `TextEditor`; keyboard pops up; cursor positioned at end.
-- Tap **Save (✓)** to commit; tap **Cancel** to discard in-progress changes.
-- Editing **Original**:
-  - If a Rewrite exists with **no prior user edits** → on Save, **auto-regenerate** the Rewrite using Articulate (the default prompt). Existing rewrite progress UI surfaces.
-  - If a Rewrite exists with **user edits** → on Save, show a confirm dialog: *"Regenerate rewrite (your edits to the rewrite will be replaced) or keep my edits (rewrite stays as-is)."*
-  - If no Rewrite exists → save persists, nothing to regenerate.
-- Editing **Rewrite**:
-  - On Save, persists `editedRewriteText`. Original/cleanedText untouched. No regeneration.
-  - The (modelOutput = `cleanedText`, userEdit = `editedRewriteText`) pair is now the current training signal.
-- Both edits are local and private. No UI exposes the training-pair data.
-
-### Non-Goals
-
-- Not surfacing edit history to the user (no version timeline, no undo-by-revision UI).
-- Not collecting transcript (speech-model) training data. Edits to Original are corrections, not Parakeet fine-tuning input.
-- Not running fine-tuning on-device. This plan only persists the pair data. A separate future pipeline reads it.
-- Not changing the existing Transform/RewritePicker flow. Auto-regen reuses the same rewrite pipeline; it doesn't replace anything.
-- Not multi-tab edit (can't edit Original and Rewrite simultaneously in one Save). One tab at a time.
-- Not edit during recording (Edit is disabled while a recording is in progress).
+> **Status:** Revised 2026-05-24. Scope simplified — see "What changed" at bottom for the diff from the prior version.
+> **Size: S-M** (~½–1 day, dominated by schema V1→V2 + edit-mode UX in Transcript Detail).
 
 ---
 
-## Design
+## What user can do
 
-### Data model (SwiftData additions) — revised after review
+- In Transcript Detail, tap **Edit** in the floating ActionBar → the currently-visible tab's text turns into a `TextEditor`; keyboard pops up; cursor at end. The other tab is hidden (you edit one tab at a time).
+- Tap **Save (✓)** to commit; tap **Cancel** to discard.
+- **Original tab edit**: in-place overwrite of `transcript.text`. No before/after stored. The pre-edit Parakeet text is gone forever.
+- **Rewrite tab edit**: writes `transcript.rewriteUserEdit`. `transcript.cleanedText` (the LLM's output) stays frozen as the training "before". The pair `(cleanedText, rewriteUserEdit)` is the training signal.
+- Edits are local and private. No UI exposes the training-pair data.
 
-Three new fields on `@Model Transcript`:
+## Non-Goals
 
-```swift
-/// User's manual edit to the Original transcript text. `nil` = no user
-/// edit (the model's transcribed `text` is canonical). Non-nil = user
-/// typed corrections.
-var editedOriginalText: String?
+- **No auto-regenerate** when Original is edited. If the user wants a fresh rewrite they tap Transform like normal.
+- **No confirm dialog** when an edited rewrite would be replaced by a re-Transform. The user knows what they're doing.
+- **No edit history / version timeline.** Last save wins.
+- **No `RewriteTrainingPair` table.** One pair per transcript, inline. If the user re-Transforms, the pair resets — last user-edit-against-current-model-output wins.
+- **No `editedOriginalText` field.** Original edit overwrites `text` directly.
+- **No `lastRewritePromptID` tracking.** Auto-regen doesn't exist, so prompt-id correlation is unnecessary.
+- **No multi-tab edit.** One tab at a time per Save.
+- **No edit during recording** (the Edit affordance is disabled while a recording is in progress).
 
-/// User's manual edit to the current Rewrite (`cleanedText`). `nil` =
-/// no user edit. Non-nil = user typed corrections. Cleared when the
-/// rewrite is regenerated — the prior `(cleanedText, editedRewriteText)`
-/// pair is snapshotted to `rewriteTrainingPairs` first (see below).
-var editedRewriteText: String?
+---
 
-/// Last-used rewrite prompt id for THIS transcript. Auto-regen reuses
-/// it so we don't surprise the user with a different prompt shape (per
-/// review: "user edited because the prior rewrite was wrong; running a
-/// DIFFERENT prompt produces yet another wrong shape"). `nil` for
-/// transcripts whose `cleanedText` came from the cleanup pipeline (Apple
-/// FM) rather than a Transform — those fall back to Articulate on
-/// auto-regen.
-var lastRewritePromptID: UUID?
-```
+## Data model — Schema V2
 
-Plus one new `@Model` for accumulated training pairs (separate table — review correctly flagged that storing the pair inline destroys data on the second Transform):
+Per schema discipline (`Jot/CLAUDE.md` §"Schema discipline"), add a new versioned schema file rather than mutating `JotSchemaV1`.
 
-```swift
-@Model
-final class RewriteTrainingPair {
-    var id: UUID
-    var transcriptID: UUID                   // soft reference, no cascade
-    var modelOutput: String                  // cleanedText at snapshot time
-    var userEdit: String                     // editedRewriteText at snapshot time
-    var promptID: UUID?                      // which prompt produced modelOutput
-    var capturedAt: Date
+### `Jot/Shared/Schema/JotSchemaV2.swift`
 
-    init(transcriptID: UUID, modelOutput: String, userEdit: String,
-         promptID: UUID?, capturedAt: Date = .now) {
-        self.id = UUID()
-        self.transcriptID = transcriptID
-        self.modelOutput = modelOutput
-        self.userEdit = userEdit
-        self.promptID = promptID
-        self.capturedAt = capturedAt
-    }
-}
-```
-
-**Display logic** — narrowly scoped per review (must NOT change `displayText`, which the Recents list / mirror / keyboard consume):
+Copy of `JotSchemaV1.Transcript` with **one new optional field**:
 
 ```swift
-// On Transcript:
-// EXISTING — unchanged. Recents and keyboard continue to render this.
-// Whenever a user edits Original AND a rewrite exists, we ALSO clear
-// cleanedText (and snapshot to RewriteTrainingPair) so displayText stops
-// being a lie. See "Original-edit invalidation" below.
-var displayText: String { cleanedText ?? text }
-
-// NEW — for the detail view's tabs only.
-var displayOriginalText: String { editedOriginalText ?? text }
-var displayRewriteText: String? { editedRewriteText ?? cleanedText }
-```
-
-### Training-pair accumulation (revised)
-
-Per review: storing only the current `(cleanedText, editedRewriteText)` inline destroys data the moment the user re-Transforms. **Fixed:**
-
-- Whenever `cleanedText` is about to be overwritten (auto-regen, manual Transform, etc.) AND `editedRewriteText` is non-nil, **snapshot** the existing `(cleanedText, editedRewriteText, lastRewritePromptID)` into a new `RewriteTrainingPair` row before the overwrite.
-- Then clear `editedRewriteText = nil`, set `cleanedText = newOutput`, set `lastRewritePromptID = newPromptID`.
-- `RewriteTrainingPair` rows accumulate across the transcript's lifetime — every iteration where the user corrected the model is preserved.
-- A future fine-tuning pipeline reads `RewriteTrainingPair` across all transcripts to build the dataset.
-- On `Transcript.delete()`: cascade-delete its `RewriteTrainingPair` rows (manual cascade since we use a soft `transcriptID` reference; do it in `TranscriptStore.delete`).
-
-If user edits the Rewrite AND saves WITHOUT re-Transforming, the current `(cleanedText, editedRewriteText)` is "in-flight" — not yet snapshotted. We treat that as "the live pair" — the fine-tuning pipeline reads both the accumulated `RewriteTrainingPair` rows AND each transcript's current in-flight pair (if `editedRewriteText` is non-nil).
-
-### Original-edit invalidation of `displayText`
-
-Per review's load-bearing finding: if the user edits Original AND a rewrite exists AND we don't invalidate `cleanedText`, then the Recents row continues to render the stale `cleanedText` while the Detail view's Original tab shows the new edit. The Recents row is lying.
-
-**Fix:**
-
-On Save of Original edit (whether or not auto-regen triggers), if `cleanedText` exists:
-1. **Snapshot** the current `(cleanedText, editedRewriteText, lastRewritePromptID)` to `RewriteTrainingPair` if `editedRewriteText` was non-nil (so the user's prior edit isn't lost).
-2. **Clear** `cleanedText = nil` and `editedRewriteText = nil`.
-3. Either trigger auto-regen (which will re-set `cleanedText`) OR — if user picked "Keep my edits" in the confirm dialog — leave both nil and let `displayText` fall back to `text` (which now resolves to `editedOriginalText` on the Detail view; the Recents row will show the un-edited `text` until the next dictation or until we surface a "needs regenerate" indicator).
-
-Wait — that last case is bad. The Recents row would show the un-edited `text` because `displayText = cleanedText ?? text` and `cleanedText` is now nil. The user's edit isn't visible there.
-
-**Revised display logic** to handle this cleanly:
-
-```swift
-// NEW — display priority for cross-surface consumers (Recents, mirror, etc.):
-var displayText: String {
-    editedRewriteText ?? cleanedText ?? editedOriginalText ?? text
-}
-```
-
-This is the corrected `displayText`. Recents row shows: latest user edit to rewrite OR model's rewrite OR latest user edit to original OR raw text. Each successive fallback is "the most recent canonical state we know about."
-
-This change DOES affect existing consumers — keyboard's `RecentsStrip`, ledger BFS, share mirror. Verify each call site renders correctly post-change.
-
-### Cross-process mirror refresh — added per review
-
-After any `editedOriginalText` or `editedRewriteText` save:
-1. `try modelContext.save()`
-2. `TranscriptHistoryMirror.refresh(from: modelContext)`
-3. `CrossProcessNotification.post(name: .historyMirrorUpdated)`
-
-Without these calls, the keyboard's recents strip renders the pre-edit text until the next dictation refreshes the mirror.
-
-### Schema migration — versioned per review
-
-Adding three new fields to `Transcript` (`editedOriginalText`, `editedRewriteText`, `lastRewritePromptID`) PLUS a brand-new `RewriteTrainingPair` `@Model`. Lightweight migration claims for additive optionals are not bulletproof on SwiftData — review correctly flagged that the first production schema change is the riskiest place to assume the happy path.
-
-**Decision:** introduce explicit `VersionedSchema` + `SchemaMigrationPlan` now, as part of this PR.
-
-```swift
-enum JotSchemaV1: VersionedSchema {
-    static var versionIdentifier = Schema.Version(1, 0, 0)
-    static var models: [any PersistentModel.Type] = [TranscriptV1.self]
-    // TranscriptV1 = current shape (text, cleanedText, createdAt, durationSeconds, ledgerIndex, derivedFromID, instruction, supersededAt)
-}
-
 enum JotSchemaV2: VersionedSchema {
-    static var versionIdentifier = Schema.Version(2, 0, 0)
-    static var models: [any PersistentModel.Type] = [Transcript.self, RewriteTrainingPair.self]
-    // Transcript = V1 + editedOriginalText + editedRewriteText + lastRewritePromptID
-}
+    static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
+    static var models: [any PersistentModel.Type] { [JotSchemaV2.Transcript.self] }
 
-enum JotMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] = [JotSchemaV1.self, JotSchemaV2.self]
-    static var stages: [MigrationStage] = [
-        .lightweight(fromVersion: JotSchemaV1.self, toVersion: JotSchemaV2.self)
-    ]
-}
+    @Model
+    final class Transcript {
+        // ... all V1 fields, identical types and order ...
 
-// In TranscriptStore.swift:
-let config = ModelConfiguration(
-    "JotTranscripts",
-    schema: Schema(versionedSchema: JotSchemaV2.self),
-    groupContainer: .identifier(AppGroup.identifier),
-    cloudKitDatabase: .none
-)
-return try ModelContainer(
-    for: Schema(versionedSchema: JotSchemaV2.self),
-    migrationPlan: JotMigrationPlan.self,
-    configurations: [config]
-)
-```
+        /// The user's manual edit to the current Rewrite. `nil` = no user
+        /// edit; the model's `cleanedText` is canonical. Non-nil = user
+        /// typed corrections.
+        ///
+        /// Persisted alongside `cleanedText` (NOT replacing it). The pair
+        /// `(cleanedText, rewriteUserEdit)` is the future-fine-tuning
+        /// training signal: "model produced X, user corrected to Y."
+        ///
+        /// Reset (set to nil) whenever `cleanedText` is overwritten —
+        /// a stale userEdit against a new model output is meaningless.
+        /// Specifically:
+        ///   - On re-Transform → set new cleanedText, nil out rewriteUserEdit.
+        ///   - On Discard rewrite → both nilled.
+        /// `displayText` falls back: `rewriteUserEdit ?? cleanedText ?? text`.
+        var rewriteUserEdit: String?
 
-Lightweight stage suffices because:
-- All `Transcript` additions are optional (nil-default).
-- `RewriteTrainingPair` is a brand-new entity (no migration needed for new entities in SwiftData).
-
-This also lays groundwork for future schema changes; D1's UserDefaults migration runner doesn't help here.
-
-**Backup compatibility:** new fields are still in the same SwiftData store at the same App Group path — backup behavior unchanged.
-
-### Edit-mode UX
-
-**Read mode (current default), no changes to existing layout:**
-
-```
-ActionBar:
-  Leading:  [Copy] [Share]
-  Primary:  Transform (sparkles, blue pill)
-  Trailing: [Edit (pencil)] [Delete]
-```
-
-The new Edit pencil icon is the only addition. Sits next to Delete on the trailing side — both are "modify the entry" actions, fitting semantic group.
-
-**Edit mode (after tapping Edit):**
-
-```
-ActionBar:
-  Leading:  [Cancel (xmark)]
-  Primary:  Save (✓, blue pill — same primary slot as Transform)
-  Trailing: (empty — Delete/Transform don't apply mid-edit)
-```
-
-The text area for the currently-visible tab transforms from `Text` (or whatever rendering view) into a `TextEditor` with the same font/styling. The keyboard pops up. Cursor placed at end of existing text. User can edit freely.
-
-**On tap Save:**
-- Compute whether the text actually changed (avoid no-op writes).
-- If unchanged: just exit edit mode, no save.
-- If changed in Original tab:
-  - Set `transcript.editedOriginalText = newText`.
-  - Decide: trigger auto-regen, OR show confirm dialog, OR skip (no rewrite exists).
-- If changed in Rewrite tab:
-  - Set `transcript.editedRewriteText = newText`.
-  - No regen.
-- Exit edit mode; ActionBar restores to read shape.
-
-**On tap Cancel:**
-- Discard in-progress text changes (revert TextEditor to last-saved state).
-- Exit edit mode; ActionBar restores to read shape.
-- No iOS-native undo prompt; if user accidentally tapped Cancel, the loss is one edit session.
-
-**Edit mode is exclusive to one tab at a time.** Switching tabs while in edit mode either:
-- (a) Auto-saves the current tab's edit then enters edit mode on the other tab; OR
-- (b) Locks the tab switcher while editing (greyed out).
-
-**Recommendation: (b) lock the tab switcher.** Simpler, no surprise auto-save semantics. Switching mid-edit is a niche case.
-
-### Auto-regenerate logic — revised per review
-
-**Auto-regen uses `lastRewritePromptID`, not Articulate-as-default.** Review correctly flagged: user edited the Original because the prior rewrite was wrong; auto-regenerating with a DIFFERENT prompt produces a different-shape wrong rewrite, not what they wanted. Reusing the last prompt preserves their intent.
-
-When user saves an Original edit AND a Rewrite exists:
-
-```swift
-// Pseudocode in TranscriptDetailView's saveOriginalEdit handler
-if transcript.cleanedText != nil {
-    if transcript.editedRewriteText != nil {
-        // Prior edits to the Rewrite would be lost. Confirm first.
-        showRegenConfirmDialog = true
-        // Dialog actions:
-        //   "Regenerate" → snapshot pair into RewriteTrainingPair,
-        //                  clear editedRewriteText + cleanedText,
-        //                  trigger regen with lastRewritePromptID
-        //   "Keep my edits" → snapshot pair into RewriteTrainingPair (still
-        //                     valuable training data even though we're keeping),
-        //                     leave cleanedText + editedRewriteText alone,
-        //                     no regen
-    } else {
-        // No user edits to lose; auto-regen silently.
-        snapshotTrainingPairIfNeeded()  // no-op since editedRewriteText is nil
-        triggerAutoRegen()
+        init(/* same as V1 + rewriteUserEdit: String? = nil */) { ... }
     }
 }
 ```
 
-`triggerAutoRegen`:
-- **Critical fix per review:** the rewrite input is `transcript.displayOriginalText` (the user's edit), not `transcript.text` (the raw model output). The current code at `TranscriptDetailView.swift:776` has `rewriteSourceText: transcript.text` — this MUST be updated to `displayOriginalText`, otherwise auto-regen runs against the un-edited text and the entire feature is a no-op for its headline scenario.
-- Clears `cleanedText = nil` and `editedRewriteText = nil`.
-- Calls the existing Qwen rewrite pipeline with the prompt at `lastRewritePromptID` (resolved from `SavedPromptStore`). If `lastRewritePromptID == nil` (legacy data or cleanup-only output), fall back to Articulate.
-- The existing rewrite progress card (per `features.md §3.6`) surfaces during regen, with Cancel.
-- On completion: `cleanedText = newRewriteOutput`, `lastRewritePromptID = promptID` (re-stamped).
-- After save: refresh mirror + post `historyMirrorUpdated`.
+### Migration: V1 → V2
 
-### Edit-during-recording lockout — revised per review
+`MigrationStage.lightweight(fromVersion: JotSchemaV1.self, toVersion: JotSchemaV2.self)`.
 
-Disable the Edit button (greyed out) while ANY of the following are true:
-- `recordingService.isRecording == true`
-- `isInflightPostRecording` (transcribe / process / cleanup tail)
-- Chained follow-up window is active (within 30s of last dictation finishing) — per `features.md §2.11`. The 30s window is a real concern because a follow-up dictation could arrive WITHOUT a visible recording UI, and if it does, it might mark this transcript as superseded mid-edit.
+Pure additive optional field. SwiftData's lightweight inference handles this case reliably (the field is `nil` for every pre-existing row on first read). No `willMigrate` / `didMigrate` needed.
 
-Accessibility hint: *"Editing is unavailable while a recording is in progress or within 30 seconds of finishing one."*
+### Schema impact summary
 
-**If transcript becomes superseded mid-edit** (chained follow-up arrived): show a confirm-discard dialog *"A follow-up dictation replaced this transcript. Discard your unsaved edits and view the replacement?"* Don't silently lose edits.
-
-### Stale-Rewrite indicator (after "Keep my edits")
-
-If the user chose "Keep my edits" in the confirm dialog, the Rewrite is now technically stale relative to the edited Original. We do NOT show a "stale" badge per `keep it simple` direction. The user knows what they did. If they want to refresh, they re-Transform manually.
+- **Add/remove/rename `@Model` fields?** Add ONE field (`rewriteUserEdit: String?`) to the Transcript entity. No removes, no renames.
+- **Add new `@Model` entities?** No.
+- **MigrationStage:** `.lightweight` V1 → V2.
 
 ---
 
-## Implementation Outline
+## Display + persistence rules
 
-| Step | Where | Size |
-|---|---|---|
-| 1. Add `editedOriginalText`, `editedRewriteText`, `lastRewritePromptID` fields to `Transcript` | `Jot/Shared/Transcript.swift` | XS |
-| 2. New `RewriteTrainingPair` `@Model` (id, transcriptID, modelOutput, userEdit, promptID, capturedAt) | `Jot/Shared/RewriteTrainingPair.swift` (new) | XS |
-| 3. Versioned schema (V1 = current, V2 = new) + SchemaMigrationPlan (lightweight) | `Jot/Shared/TranscriptStore.swift` | S |
-| 4. Update `displayText` to new priority: `editedRewriteText ?? cleanedText ?? editedOriginalText ?? text`. Add `displayOriginalText`, `displayRewriteText` | `Jot/Shared/Transcript.swift` | XS |
-| 5. Audit all `displayText` consumers (Recents row, ledger BFS, keyboard mirror, share extension) to verify no regression | `Jot/App/Recents/`, `Jot/App/TranscriptDetailView.swift`, `Jot/Shared/TranscriptHistoryMirror.swift`, keyboard | S |
-| 6. **CRITICAL FIX:** update `rewriteSourceText` at `TranscriptDetailView.swift:776` to use `transcript.displayOriginalText`, not `transcript.text`. Same for `bodyTextForActiveTab` (line 805) and `sourceWordCount` (line 775) where they feed user-facing surfaces. | `Jot/App/TranscriptDetailView.swift` | S |
-| 7. Cascade-delete `RewriteTrainingPair` rows when a `Transcript` is deleted | `Jot/Shared/TranscriptStore.swift:delete` | XS |
-| 8. Edit mode state in TranscriptDetailView: `@State isEditing: Bool`, `@State editBuffer: String`, `@FocusState editorFocused: Bool` | `Jot/App/TranscriptDetailView.swift` | S |
-| 9. Conditional render: `Text` vs `TextEditor` based on `isEditing` AND `selectedTab` | `Jot/App/TranscriptDetailView.swift` (around line 178) | M |
-| 10. ActionBar swaps between read and edit shapes | `Jot/App/TranscriptDetailView.swift:635` | S |
-| 11. Wire Edit button: enter edit mode, populate `editBuffer` with `displayOriginalText`/`displayRewriteText`, focus | `Jot/App/TranscriptDetailView.swift` | S |
-| 12. Wire Save: write to `editedOriginalText`/`editedRewriteText`, snapshot to `RewriteTrainingPair` if needed, save, refresh mirror, post notification | `Jot/App/TranscriptDetailView.swift` | M |
-| 13. Wire Cancel: discard `editBuffer`, exit edit mode | `Jot/App/TranscriptDetailView.swift` | XS |
-| 14. Auto-regen on Original save: snapshot pair, clear, run Qwen with `lastRewritePromptID` (or Articulate fallback) using `displayOriginalText` as input | `Jot/App/TranscriptDetailView.swift` + existing `Qwen35Client` | M |
-| 15. Confirm dialog UI (regenerate / keep edits) on Original save when `editedRewriteText` non-nil | `Jot/App/TranscriptDetailView.swift` | S |
-| 16. Tab switcher lock while in edit mode | `Jot/App/TranscriptDetailView.swift:379` | XS |
-| 17. Edit button disabled during recording + within 30s follow-up window | `Jot/App/TranscriptDetailView.swift` | XS |
-| 18. Supersession-mid-edit confirm dialog | `Jot/App/TranscriptDetailView.swift` | S |
-| 19. Update `features.md §3` for Edit affordance + edit mode semantics | `Jot/features.md` | S |
-| 20. Tests (manual on-device + simple debug print of training pair count) | manual + small `print` in Save handler | S |
+### `displayText` (used by Recents, share mirror, keyboard RecentsStrip)
 
-**Total size: L** (~3-4 days). Larger than original estimate due to schema versioning, training-pair table, mirror-refresh, `displayText` audit, and the `rewriteSourceText` fix.
+```swift
+var displayText: String { rewriteUserEdit ?? cleanedText ?? text }
+```
 
-### Open implementation decisions
+Priority: user's edited rewrite, then model's rewrite, then raw transcript. This is the text any cross-surface consumer should render.
 
-These ARE NOT optional questions — the implementation needs to pick one each before coding:
+### `hasRewrite` (used by Detail's tab-visibility check)
 
-- **Empty-text save in Original:** allow as a valid edit (persists empty string)? Or treat empty as "revert to model output" (set field to nil)? Default to "allow as valid edit"; user can manually re-type if they want the model's version back.
-- **Back-swipe during edit:** discard silently OR confirm-dismiss? Default: confirm-dismiss if `editBuffer != currentText`. Less surprising.
-- **Auto-save draft on app background:** No, v1 ships without draft persistence. If iOS kills the app mid-edit, the edit is lost. Surface this in copy via a subtle "Tap Save to commit" hint near the Save button (or omit if it feels too much).
+```swift
+// In TranscriptDetailView:
+private var hasRewrite: Bool {
+    if let edit = transcript.rewriteUserEdit, !edit.isEmpty { return true }
+    if let cleaned = transcript.cleanedText, !cleaned.isEmpty { return true }
+    return false
+}
+```
 
----
+The Rewrite tab is reachable as soon as the user has edited it OR the model has produced one.
 
-## Edge Cases
+### `bodyTextForActiveTab` (used by Copy + Share + word count)
 
-- **Empty text after edit.** User clears all text and taps Save. Treatment: allow it. Original becomes empty (rare but possible — user might want to delete content). For Rewrite, treat empty as "I don't want a rewrite" — could set both `cleanedText` and `editedRewriteText` to nil. Confirm with you which behavior you want.
-- **Edit conflicts with chained follow-up.** Per `features.md §2.11`, a follow-up dictation within 30s creates a derived transcript. If the user is editing the parent transcript when a follow-up arrives, the edit-mode lockout (Step 13) suppresses Edit availability during recording, but if the recording lands BEFORE the user enters edit mode, the user could enter edit on a transcript that's about to be marked superseded. Mitigation: on `transcript.supersededAt` becoming non-nil, exit edit mode if active. Surface a banner: *"This transcript was replaced by a follow-up. Edits saved to the original."*
-- **Auto-regen during another rewrite already in flight.** If user is editing transcript A's Original while a different transcript's Transform is already running, the Qwen client serializes — cancel the existing rewrite or queue? **Recommendation:** queue. The auto-regen for A waits for the in-flight rewrite to finish, then runs.
-- **Save fails (SwiftData write error, disk full, etc.).** Surface a banner via existing status-banner mechanism. Keep user in edit mode so they can re-attempt. Don't silently exit edit mode.
-- **User navigates away mid-edit.** Two options:
-  - (a) Discard the in-progress edit (treat back-swipe as Cancel).
-  - (b) Auto-save the in-progress edit (treat back-swipe as Save).
-  - **Recommendation: (a) discard.** Matches the existing iOS pattern (e.g. Notes shows a confirm). Optionally: confirm on back-swipe if there are unsaved changes.
-- **Transcript deleted while in edit mode.** Race: user is editing, another path deletes the transcript. Exit edit mode + dismiss detail view + show "Transcript deleted" toast. Defensive; rare.
-- **Edit Rewrite when no Rewrite exists.** Edit button enabled in Rewrite tab only if `cleanedText` is non-nil. Otherwise hide/disable.
-- **Long transcripts.** `TextEditor` handles them fine; scroll-within-editor works natively.
-- **Voice-over support.** Edit button announced as button; Save button announced as button. TextEditor itself is VoiceOver-readable.
+```swift
+private var bodyTextForActiveTab: String {
+    switch selectedTab {
+    case .original:
+        return transcript.text  // unchanged
+    case .rewrite:
+        return transcript.rewriteUserEdit
+            ?? transcript.cleanedText
+            ?? transcript.text
+    }
+}
+```
 
----
+### Persistence
 
-## Test Plan
+**Original Save:**
+```swift
+transcript.text = trimmedNewText
+try modelContext.save()
+TranscriptHistoryMirror.refresh(from: modelContext)
+CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+```
 
-1. **Fresh install — edit Original.** Dictate something; tap Edit; change text; tap Save. Verify Original tab shows edited text; raw `text` field unchanged.
-2. **Fresh install — edit Rewrite.** Dictate; Transform (manual); tap Edit on Rewrite tab; change; Save. Verify Rewrite shows edited; `cleanedText` field unchanged.
-3. **Auto-regen path.** Dictate, Transform, then edit Original. No prior edit to Rewrite. Save → regen runs silently → new Rewrite appears.
-4. **Confirm-dialog path.** Same as #3 but first edit the Rewrite, then edit the Original. Save Original → dialog appears. Pick "Regenerate" → Rewrite replaced. Repeat, pick "Keep my edits" → Rewrite unchanged.
-5. **Cancel discards.** Enter edit, change text, tap Cancel → text reverts to pre-edit.
-6. **Tab switcher locked.** Enter edit on Original. Try to tap Rewrite tab → no-op. Visual indication (greyed out) that it's locked.
-7. **Edit disabled during recording.** Start a recording (FAB → Hero). Background hero, navigate to detail view → Edit button greyed.
-8. **Schema upgrade.** Install current build (1.0.2 b5) → dictate transcripts → upgrade to this new build → open detail view → verify existing transcripts load and edit fields are nil.
-9. **Training pair preserved.** Edit a Rewrite. Verify `cleanedText` is unchanged in the underlying store, `editedRewriteText` has the user's edit. (Inspect via Xcode's SwiftData debugger or a print.)
-10. **Empty text edit.** Edit and clear all text, Save. Verify behavior matches the decided spec (probably "edit fields stored as empty string, displayText falls back").
-11. **VoiceOver.** Walk through edit mode with VoiceOver on.
-12. **Reduce motion.** No animation regressions.
+**Rewrite Save:**
+```swift
+transcript.rewriteUserEdit = trimmedNewText
+try modelContext.save()
+TranscriptHistoryMirror.refresh(from: modelContext)
+CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+```
+
+**Re-Transform (`startRewrite` + `startKeyboardOriginatedRewrite`):** when `cleanedText = trimmed`, also do `transcript.rewriteUserEdit = nil`. Stale user-edit against new model-output is meaningless.
+
+**Discard rewrite:** existing code nils `cleanedText`; also nil `rewriteUserEdit`.
 
 ---
 
-## Open Questions
+## UX in Transcript Detail
 
-1. **Empty edit handling.** Allow empty save? Or treat empty as "no user edit" (set field to nil, fall back to model output)? **Recommendation:** empty IS a valid user edit; persist as empty string. If user wants to revert to model output, we could add a "Revert to AI version" affordance later.
-2. **Back-swipe during edit.** Discard (current rec) or confirm-prompt? Notes does confirm. Could go either way.
-3. **Auto-regen prompt choice.** Always Articulate (current rec) or remember last-used prompt? Per-transcript prompt tracking is one more schema field but more accurate.
-4. **Should the trained-pair stale-marker show when the user picked "Keep my edits"?** Current rec: no, keep simple. If user behaviour shows confusion in the future, add a subtle "rewrite based on previous original" badge.
-5. **Long-press menu on the displayed text** in read mode — does iOS still surface "Copy / Share / Look Up" etc.? Should still work since we keep `Text` rendering with `.textSelection(.enabled)` in read mode. Just confirm not broken.
+### Entering edit mode
+
+- Add a fifth ActionBar slot: an **Edit** pencil item, placed in the trailing array alongside Delete. New layout: `leading: [Copy, Share], primary: Transform, trailing: [Edit, Delete]`.
+- Tap Edit while on the **Original** tab → that tab's text becomes editable.
+- Tap Edit while on the **Rewrite** tab → that tab's text becomes editable (initial editor value = `rewriteUserEdit ?? cleanedText`).
+- Disabled if recording is in progress (use the same recording-progress source the existing UI uses).
+- Tab switcher pill is hidden during edit (one tab at a time).
+- Original-tab Edit is disabled if `transcript.text` is empty (shouldn't happen, but guard).
+- Rewrite-tab Edit is disabled if there's no rewrite to edit (`!hasRewrite`).
+
+### Edit-mode chrome
+
+While `isEditing == true`:
+- Transcript card body is a `TextEditor` bound to a local `@State var editorText: String`.
+- Bottom ActionBar is replaced by a slim **EditBar** with: `Cancel` (secondary, dismisses edits) on the left, the active tab label centered, and `Save` (primary blue pill, ✓) on the right.
+- Top toolbar's chevron-back is disabled (user must Cancel or Save to leave).
+- Rewrite Transform button is disabled (you can't kick a new rewrite while mid-edit).
+
+### Save / Cancel
+
+- **Save**: trims whitespace. If empty after trim on Original tab → show inline error "Original text can't be empty." (revert? user choice — keep the editor open so they can fix it). If empty on Rewrite tab → treat as discard-of-edit (set `rewriteUserEdit = nil` so it falls back to `cleanedText`).
+- **Cancel**: discard local state, exit edit mode. No persistence.
+
+### Other affordances
+
+- **No undo bar.** Cancel covers in-flight; once Saved, the prior text is gone. (For Original this is intentional — user said "we don't care about the original at all." For Rewrite we don't need it either; the model's `cleanedText` is still there, so they can hit Cancel-Edit-Edit-cycle to restart.)
 
 ---
 
-## Cross-Links
+## Cross-process invariants
 
-- Touches: `Jot/Shared/Transcript.swift` (schema), `Jot/App/TranscriptDetailView.swift` (UX), `Jot/App/Design/Components/ActionBar.swift` (no changes; existing API supports Edit), `Jot/App/LLM/Qwen35Client.swift` (existing rewrite call; reused), `Jot/features.md §3`
-- Related: [icloud-backup-verification.md](./icloud-backup-verification.md) — the schema bump here must stay backup-friendly (additive optionals are inherently fine)
-- Related: [migration-system.md](./migration-system.md) D1 — D1 covers UserDefaults migrations; SwiftData has its own model. This schema bump is the first real test of SwiftData migration in production for Jot.
-- Future: a fine-tuning pipeline that reads `rewriteTrainingPair` across all transcripts to produce a Qwen LoRA — separate effort, not in this plan.
+After ANY Save (Original or Rewrite):
+
+1. `try modelContext.save()`
+2. `TranscriptHistoryMirror.refresh(from: modelContext)` — refresh the JSON the keyboard reads.
+3. `CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)` — wake any live keyboard so its RecentsStrip re-renders.
+
+Without these, the keyboard's recents strip renders the pre-edit text until the next dictation refreshes the mirror.
+
+The mirror's `Entry.text` is `row.displayText`, which now incorporates `rewriteUserEdit` automatically (since we changed `displayText`).
+
+---
+
+## Schema-discipline checklist
+
+Following `Jot/CLAUDE.md` §"Schema discipline":
+
+- [ ] Create `Jot/Shared/Schema/JotSchemaV2.swift` (copy V1 + add field).
+- [ ] Bump `versionIdentifier` in V2 to `Schema.Version(2, 0, 0)`.
+- [ ] Append `JotSchemaV2.self` to `JotMigrationPlan.schemas`.
+- [ ] Append `.lightweight(fromVersion: V1, toVersion: V2)` to `JotMigrationPlan.stages`.
+- [ ] Bump `typealias Transcript = JotSchemaV2.Transcript` in `Jot/Shared/Transcript.swift`.
+- [ ] Update `JotModelContainer.shared` in `TranscriptStore.swift` to `Schema(versionedSchema: JotSchemaV2.self)`.
+- [ ] Run `xcodegen` from `Jot/`.
+- [ ] Update `docs/schema-migrations.md` "Current versions" with V2 entry.
+- [ ] Watch Console.app for `[SCHEMA-FALLBACK]` on the on-device upgrade test.
+- [ ] Do NOT touch `JotSchemaV1.swift` (frozen).
+
+---
+
+## Verification
+
+- **Build clean:** `xcodebuild -workspace … -scheme Jot build`.
+- **Upgrade test:** install current build (V1), dictate ≥1 transcript, install new build (V2), open Detail, verify the transcript loads and the new Edit affordance works. Watch Console.app for `[SCHEMA-FALLBACK]` — it must NOT fire on a real-device upgrade.
+- **Edit Original:** text changes propagate to Recents row, keyboard RecentsStrip after a keyboard re-present, share/copy reflect new text.
+- **Edit Rewrite:** `rewriteUserEdit` written, displayText reflects it everywhere, `cleanedText` left intact (verify via debug query or a follow-up TestFlight assertion).
+- **Re-Transform after edit:** Tap Transform → new cleanedText written, rewriteUserEdit cleared, Rewrite tab now shows new model output (not the prior edit).
+- **Discard Rewrite:** both cleanedText and rewriteUserEdit nilled, tab disappears, Original visible.
+
+---
+
+## features.md updates
+
+- **§7 (Transcript Detail)** — new feature line for "Edit Original" and "Edit Rewrite" + the persistence rule for each.
+- **§13 (Storage)** — note that rewrites the user edits store the (model output, user edit) pair locally as a future-fine-tuning training signal. No remote upload.
+- **§7.x rewrite section** — cross-link to the new edit feature; note that re-Transform clears any prior user-edit-against-the-prior-cleanedText.
+
+---
+
+## What changed from the prior version
+
+Prior plan (committed as `1c90af5`) had:
+- 3 new fields + a new `@Model` (`RewriteTrainingPair`) table with snapshot-on-overwrite machinery.
+- Auto-regenerate-on-Original-edit with confirm gate ("Regenerate vs Keep my edits").
+- `lastRewritePromptID` tracking so auto-regen picked the prior prompt.
+- A revised `displayText` priority chain with FOUR fallbacks (`editedRewriteText ?? cleanedText ?? editedOriginalText ?? text`).
+
+This plan has:
+- 1 new field. No new entity.
+- No auto-regen. No confirm gate.
+- No prompt-id tracking.
+- `displayText` has 3 fallbacks (`rewriteUserEdit ?? cleanedText ?? text`).
+
+The simplification was driven by the user's intent statement: *"On original, we just save as if Parakeet was the original — we don't care. On rewrite, we save what Qwen produced and what the user changed it to. Last edit wins."*
