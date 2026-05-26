@@ -73,6 +73,59 @@ releases_dir="$repo_root/tmp/releases"
 
 mkdir -p "$releases_dir"
 
+# Retention sweep — every run prunes old TestFlight artifacts so the
+# tmp/ directory doesn't grow unbounded. Each build produces an
+# .xcarchive (~1 GB), an export dir with the IPA (~500 MB), an
+# ExportOptions plist (small), and a DerivedData dir (~2.5 GB). After
+# a few cycles that's >20 GB. We keep the most recent JOT_RELEASES_KEEP
+# of each kind (default 3) so rollback is still possible without the
+# IPA refusing to fit on disk.
+#
+# Override the retention count with JOT_RELEASES_KEEP=N before invoking
+# (use 0 to prune everything except what THIS run is about to create).
+prune_old_artifacts() {
+  local keep="${JOT_RELEASES_KEEP:-3}"
+
+  # Args: $1=parent dir, $2=glob pattern (relative to parent), $3=label.
+  # The glob must be SPECIFIC enough that it doesn't collide with
+  # sibling artifact types — e.g. "Jot-*" would match both
+  # `Jot-*.xcarchive` AND `Jot-export-*`, so the keeper count
+  # straddles two artifact families and leaves the wrong things
+  # behind. Use distinct globs per kind.
+  _prune_kind() {
+    local dir="$1"
+    local pattern="$2"
+    local kind="$3"
+
+    if [[ ! -d "$dir" ]]; then return; fi
+
+    # `ls -td` lists matches newest-first by mtime. Anything past the
+    # `keep` count is fair game to delete. nullglob via `2>/dev/null`
+    # absorbs the case where no matches exist.
+    local sorted=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && sorted+=("$line")
+    done < <(eval "ls -td $dir/$pattern 2>/dev/null")
+
+    local i=0
+    for item in "${sorted[@]}"; do
+      i=$((i+1))
+      if (( i > keep )); then
+        echo "  pruning old $kind: $item"
+        rm -rf "$item"
+      fi
+    done
+  }
+
+  echo "Pruning TestFlight artifacts (keeping most recent ${keep} of each)…"
+  _prune_kind "$releases_dir" "Jot-*.xcarchive" "archive"
+  _prune_kind "$releases_dir" "Jot-export-*" "export"
+  _prune_kind "$releases_dir" "ExportOptions-*.plist" "export-options"
+  _prune_kind "$repo_root/tmp" "DerivedData-testflight-*" "derived-data"
+}
+
+prune_old_artifacts
+
 default_marketing_version="$(awk -F'"' '/MARKETING_VERSION:/ { print $2; exit }' "$project_spec")"
 default_build_number="$(awk -F'"' '/CURRENT_PROJECT_VERSION:/ { print $2; exit }' "$project_spec")"
 

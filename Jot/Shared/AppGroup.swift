@@ -85,6 +85,13 @@ enum AppGroup {
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
+        /// Set to `true` when the user is running a foreground "Classify
+        /// now" loop from the Lab dashboard. The BG classifier task
+        /// reads this on `submitIfEnabled()` and bails when set, so the
+        /// two paths don't double-classify (or even worse, race-write)
+        /// the same rows. Foreground clears it in `defer`.
+        static let classifierForegroundInFlight = "jot.classifier.foregroundInFlight"
+
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
         /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`

@@ -177,6 +177,15 @@ struct JotApp: App {
         // directory doesn't exist (user hasn't downloaded any variant yet).
         BackupExclusion.excludeFluidAudioModels()
 
+        // Register the background-classifier BGProcessingTask identifier.
+        // MUST happen during process startup BEFORE any submission — the
+        // BGTaskScheduler refuses to submit a request whose identifier
+        // hasn't been registered. Identifier is also declared in
+        // Info.plist's BGTaskSchedulerPermittedIdentifiers. The task body
+        // only runs work when the Lab toggle `jot.classifier.enabled` is
+        // on; see `TranscriptClassifierTask` for the lifecycle doc.
+        TranscriptClassifierTask.register()
+
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
         // 110M weights cached on disk. Gated by a `UserDefaults` flag so
@@ -411,6 +420,13 @@ struct JotApp: App {
                         startForegroundHeartbeat()
                     } else {
                         stopForegroundHeartbeat()
+                    }
+                    if newPhase == .background {
+                        // Submit a BGProcessingTask request for the
+                        // transcript classifier. No-op when the Lab toggle
+                        // is off or there's nothing to classify. See
+                        // `TranscriptClassifierTask` for lifecycle details.
+                        TranscriptClassifierTask.submitIfEnabled()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes

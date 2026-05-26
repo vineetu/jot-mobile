@@ -77,7 +77,6 @@ struct TranscriptDetailView: View {
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
     @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
-    @State private var showShareSheet = false
 
     // MARK: - Edit-mode state
     //
@@ -96,6 +95,14 @@ struct TranscriptDetailView: View {
     @State private var editTargetTab: DetailTab = .original
     @State private var editError: String?
     @FocusState private var editorFocused: Bool
+
+    /// Mirror of the classifier Lab toggle. Read on appear so the
+    /// category chip in the subline only renders when the user has
+    /// opted into the classifier feature. Public-build users (toggle
+    /// off) never see the chip.
+    @State private var classifierLabEnabled: Bool = AppGroup.defaults.bool(
+        forKey: TranscriptClassifierTask.labKey
+    )
 
     // MARK: - Phase 4 sheet state
     //
@@ -314,12 +321,12 @@ struct TranscriptDetailView: View {
         } message: {
             Text("Add and edit rewrite prompts in Settings → AI Rewrite.")
         }
-        .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [bodyTextForActiveTab])
-        }
         .onAppear {
             copyHaptic.prepare()
             refreshRewriteAvailability()
+            classifierLabEnabled = AppGroup.defaults.bool(
+                forKey: TranscriptClassifierTask.labKey
+            )
             // Default to Rewrite tab when a rewrite already exists — the
             // user almost always cares about their latest pass once they've
             // run one. Falls back to Original when no rewrite is saved.
@@ -335,6 +342,17 @@ struct TranscriptDetailView: View {
             // `client.status` while the detail surface is off-window.
             // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
             clientAdapter?.stop()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            // Pick up Lab-toggle flips that happen while Detail is open
+            // (e.g. user opens Settings sheet, toggles ON, dismisses).
+            // Without this the chip stays hidden until Detail is left
+            // and re-entered, because .onAppear doesn't fire on sheet
+            // dismissal in iOS 17+ when the parent view never lost focus.
+            let newValue = AppGroup.defaults.bool(forKey: TranscriptClassifierTask.labKey)
+            if newValue != classifierLabEnabled {
+                classifierLabEnabled = newValue
+            }
         }
         .task {
             refreshRewriteAvailability()
@@ -388,20 +406,33 @@ struct TranscriptDetailView: View {
 
     private var sublineRow: some View {
         HStack(spacing: 6) {
-            Text(relativeDateText)
-            Text("·")
-                .foregroundStyle(Color.jotMuteWeak)
-            Text(wordCountText)
-            if let durationText {
+            HStack(spacing: 6) {
+                Text(relativeDateText)
                 Text("·")
                     .foregroundStyle(Color.jotMuteWeak)
-                Text(durationText)
+                Text(wordCountText)
+                if let durationText {
+                    Text("·")
+                        .foregroundStyle(Color.jotMuteWeak)
+                    Text(durationText)
+                }
             }
+            .font(.system(size: 13))
+            .foregroundStyle(Color.jotMute)
+            .monospacedDigit()
+            .accessibilityElement(children: .combine)
+
+            // Category chip — only shown when the classifier Lab toggle is
+            // on. Lets the user see what the BG classifier picked AND
+            // override it inline. Hidden during edit mode so the editor
+            // gets clean focus. User overrides are sticky — the classifier
+            // only writes rows where `category == nil`.
+            if classifierLabEnabled && !isEditing {
+                CategoryChip(transcript: transcript, shape: .detailSubline)
+            }
+
+            Spacer(minLength: 0)
         }
-        .font(.system(size: 13))
-        .foregroundStyle(Color.jotMute)
-        .monospacedDigit()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Tab selector
@@ -584,7 +615,11 @@ struct TranscriptDetailView: View {
             Text(attributionText)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.jotMute)
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer(minLength: 8)
+            thumbButton(up: true)
+            thumbButton(up: false)
             Button {
                 pendingDiscardRewrite = true
             } label: {
@@ -596,6 +631,38 @@ struct TranscriptDetailView: View {
             .accessibilityLabel("Discard rewrite")
             .accessibilityHint("Removes the rewrite and shows the original text")
         }
+    }
+
+    /// Single thumbs-up or thumbs-down toggle. Tapping the active glyph
+    /// clears the rating (back to nil); tapping the opposite glyph swaps
+    /// the rating. Light haptic on every tap. Filled SF Symbol when
+    /// active, outlined when inactive.
+    @ViewBuilder
+    private func thumbButton(up: Bool) -> some View {
+        let isActive: Bool = {
+            switch transcript.rewriteUpvoted {
+            case .some(true):  return up
+            case .some(false): return !up
+            default:           return false
+            }
+        }()
+        let symbol = up
+            ? (isActive ? "hand.thumbsup.fill" : "hand.thumbsup")
+            : (isActive ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+        let activeTint: Color = up ? Color.jotBlueTop : Color(.systemRed)
+
+        Button {
+            toggleRewriteRating(up: up)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isActive ? activeTint : Color.jotMute)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(up ? "Rate rewrite good" : "Rate rewrite bad")
+        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 
     /// Attribution copy for a freshly-rendered Rewrite tab. When this view
@@ -708,18 +775,21 @@ struct TranscriptDetailView: View {
         ActionBar(
             leading: [
                 ActionBarItem(
-                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
-                    label: "Copy",
-                    accessibilityLabel: didCopy ? "Copied to clipboard" : "Copy transcript"
+                    systemImage: "trash",
+                    label: "Delete",
+                    accessibilityLabel: hasRewrite
+                        ? "Delete options"
+                        : "Delete transcript"
                 ) {
-                    copy()
+                    pendingDeletion = true
                 },
                 ActionBarItem(
-                    systemImage: "square.and.arrow.up",
-                    label: "Share",
-                    accessibilityLabel: "Share transcript"
+                    systemImage: "pencil",
+                    label: "Edit",
+                    accessibilityLabel: editAccessibilityLabel,
+                    isEnabled: isEditEnabled
                 ) {
-                    showShareSheet = true
+                    beginEdit()
                 }
             ],
             primary: ActionBarItem(
@@ -732,21 +802,11 @@ struct TranscriptDetailView: View {
             },
             trailing: [
                 ActionBarItem(
-                    systemImage: "pencil",
-                    label: "Edit",
-                    accessibilityLabel: editAccessibilityLabel,
-                    isEnabled: isEditEnabled
+                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
+                    label: "Copy",
+                    accessibilityLabel: didCopy ? "Copied to clipboard" : "Copy transcript"
                 ) {
-                    beginEdit()
-                },
-                ActionBarItem(
-                    systemImage: "trash",
-                    label: "Delete",
-                    accessibilityLabel: hasRewrite
-                        ? "Delete options"
-                        : "Delete transcript"
-                ) {
-                    pendingDeletion = true
+                    copy()
                 }
             ]
         )
@@ -779,37 +839,45 @@ struct TranscriptDetailView: View {
     /// which side they're editing without context-switching to the
     /// (now-hidden) tab pill.
     private var editBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Button(action: cancelEdit) {
                 Text("Cancel")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.jotInk)
-                    .frame(minWidth: 80, minHeight: 44)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minHeight: 44)
+                    .padding(.horizontal, 4)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel edit")
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
+            // Center label can shrink/disappear; the side buttons must not.
             Text(editTargetTab == .original ? "Editing Original" : "Editing Rewrite")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.jotMute)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
+                .layoutPriority(-1)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
             Button(action: saveEdit) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                     Text("Save")
                         .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .foregroundStyle(Color.white)
-                .padding(.horizontal, 18)
-                .frame(minHeight: 44)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 40)
                 .background(
                     Capsule(style: .continuous)
                         .fill(Color.jotBlueTop)
@@ -1155,6 +1223,47 @@ struct TranscriptDetailView: View {
         }
     }
 
+    /// Toggle the 👍 / 👎 rating on the current Rewrite. Tap the active
+    /// glyph to clear; tap the opposite glyph to swap. Persists immediately,
+    /// fires a light haptic, and skips the mirror refresh (ratings aren't
+    /// displayed outside the Detail surface, so no cross-process work needed).
+    ///
+    /// Snapshots the prior value before mutation; if `save()` throws,
+    /// explicitly restores the snapshot AFTER `rollback()` so the in-memory
+    /// property doesn't drift from on-disk state. SwiftData's rollback
+    /// usually reverts managed-object property values, but the contract isn't
+    /// rock solid — belt-and-suspenders here is cheap.
+    private func toggleRewriteRating(up: Bool) {
+        let previous = transcript.rewriteUpvoted
+        let next: Bool?
+        switch (previous, up) {
+        case (.some(true), true):   next = nil   // tap 👍 while up → clear
+        case (.some(false), false): next = nil   // tap 👎 while down → clear
+        case (_, true):             next = true  // any other tap on 👍 → up
+        case (_, false):            next = false // any other tap on 👎 → down
+        }
+
+        transcript.rewriteUpvoted = next
+        do {
+            try modelContext.save()
+            copyHaptic.impactOccurred()
+            copyHaptic.prepare()
+            detailLog.info(
+                "Rewrite rating set up=\(up, privacy: .public) next=\(String(describing: next), privacy: .public) transcript=\(transcript.id, privacy: .public)"
+            )
+        } catch {
+            modelContext.rollback()
+            // Belt-and-suspenders: revert the in-memory mutation explicitly
+            // so the thumb glyph re-renders the prior state immediately,
+            // even if SwiftData's rollback didn't restore the managed-object
+            // property.
+            transcript.rewriteUpvoted = previous
+            detailLog.error(
+                "Rewrite rating save FAILED error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     private func delete() {
         activeRewriteTask?.cancel()
         activeRewriteTask = nil
@@ -1189,9 +1298,10 @@ struct TranscriptDetailView: View {
         lastRewriteAt = nil
 
         transcript.cleanedText = nil
-        // A user-edit against a discarded rewrite is meaningless — the
-        // training "before" half is gone. Clear both halves together.
+        // A user-edit OR rating against a discarded rewrite is meaningless
+        // — the training "before" half is gone. Clear all three together.
         transcript.rewriteUserEdit = nil
+        transcript.rewriteUpvoted = nil
         do {
             try modelContext.save()
             TranscriptHistoryMirror.refresh(from: modelContext)
@@ -1276,11 +1386,12 @@ struct TranscriptDetailView: View {
                     return
                 }
                 transcript.cleanedText = trimmed
-                // Stale userEdit against a fresh model output is meaningless;
-                // clear it so the new cleanedText is what the user sees and
-                // future fine-tuning pairs the new model output with any
-                // FUTURE edit (not the one against the prior output).
+                // Stale userEdit OR rating against a fresh model output is
+                // meaningless; clear both so the new cleanedText starts
+                // unrated and any future correction pairs with this new
+                // output (not the one against the prior output).
                 transcript.rewriteUserEdit = nil
+                transcript.rewriteUpvoted = nil
                 do {
                     try modelContext.save()
                     TranscriptHistoryMirror.refresh(from: modelContext)
@@ -1388,9 +1499,10 @@ struct TranscriptDetailView: View {
                     return
                 }
                 transcript.cleanedText = trimmed
-                // Stale userEdit against a fresh model output is meaningless;
-                // see manual-rewrite branch above for rationale.
+                // Stale userEdit + rating against a fresh model output are
+                // meaningless; see manual-rewrite branch above for rationale.
                 transcript.rewriteUserEdit = nil
+                transcript.rewriteUpvoted = nil
                 do {
                     try modelContext.save()
                     TranscriptHistoryMirror.refresh(from: modelContext)
@@ -1472,22 +1584,6 @@ struct TranscriptDetailView: View {
             rewriteState = .idle
         }
     }
-}
-
-// MARK: - Share sheet shim
-
-/// Lightweight `UIActivityViewController` wrapper used by the ActionBar's
-/// Share affordance. The system share sheet handles "copy", "save to files",
-/// "share to messages", etc. — wiring it up here is the cheapest path to a
-/// real Share button on a SwiftUI surface in iOS 26.
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #Preview {

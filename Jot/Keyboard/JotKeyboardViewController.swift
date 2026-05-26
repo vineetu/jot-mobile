@@ -837,20 +837,22 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleJumpToStart() {
         fireMenuSelectionFeedback()
         let proxy = textDocumentProxy
-        // Symmetric with handleJumpToEnd. Jump by the LARGER of the
-        // exposed pre-caret context length or 1024 chars per iter — on
-        // hosts that expose only a small windowed context (which is the
-        // common case for the post-caret side and apparently true for
-        // some pre-caret cases too), this guarantees meaningful per-tap
-        // progress. iOS clamps the cursor at document boundaries when
-        // the offset exceeds remaining text, so over-jumping is safe.
+        // Symmetric with handleJumpToEnd. Jump by EXACT before.count + 1
+        // each iter (with a 64-char floor for stingy hosts). The +1 hits
+        // boundaries cleanly without overshooting into "offset out of
+        // range" territory — Apple's docs say iOS clamps over-range
+        // offsets to the boundary, but in practice WebView-backed hosts
+        // (Slack/Notion-style) silently NO-OP out-of-range offsets,
+        // which is what caused "Move up doesn't move when cursor is
+        // near start." Exact-count + 1 stays in range, hits the
+        // boundary, and the next iter's empty-before guard exits.
         var moved = 0
         for i in 0..<50 {
             guard let before = proxy.documentContextBeforeInput, !before.isEmpty else {
                 keyboardLog.info("move-up iter=\(i, privacy: .public) early-exit reason=empty-before; total-moved=\(moved, privacy: .public)")
                 return
             }
-            let step = max(before.count, 1024)
+            let step = max(before.count + 1, 64)
             if i < 5 {
                 keyboardLog.info("move-up iter=\(i, privacy: .public) before.count=\(before.count, privacy: .public) step=\(step, privacy: .public)")
             }
@@ -867,20 +869,24 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleJumpToEnd() {
         fireMenuSelectionFeedback()
         let proxy = textDocumentProxy
-        // Symmetric with handleJumpToStart. `documentContextAfterInput`
-        // is asymmetrically smaller than the pre-caret context on most
-        // hosts (often ~50-100 chars vs. ~1000), so a per-iter step
-        // of `after.count` makes Move down feel sluggish ("10 words per
-        // tap"). Jump by `max(after.count, 1024)` so we make real
-        // progress on hosts with stingy post-caret buffers. iOS clamps
-        // at the document end, so over-jumping is safe.
+        // Symmetric with handleJumpToStart. Use EXACT after.count + 1
+        // each iter, floored at 64 chars for stingy hosts. The previous
+        // `max(after.count, 1024)` over-jumped past the document end on
+        // some hosts that refuse out-of-range offsets — Move down would
+        // sit still even when there were a few words ahead of the
+        // cursor. Exact-count + 1 hits the end cleanly and the next
+        // iter's empty-after guard exits the loop.
+        //
+        // The 64-char floor still keeps progress fast (~3200 chars per
+        // tap minimum) on hosts where `documentContextAfterInput`
+        // returns a tiny window per iter.
         var moved = 0
         for i in 0..<50 {
             guard let after = proxy.documentContextAfterInput, !after.isEmpty else {
                 keyboardLog.info("move-down iter=\(i, privacy: .public) early-exit reason=empty-after; total-moved=\(moved, privacy: .public)")
                 return
             }
-            let step = max(after.count, 1024)
+            let step = max(after.count + 1, 64)
             if i < 5 {
                 keyboardLog.info("move-down iter=\(i, privacy: .public) after.count=\(after.count, privacy: .public) step=\(step, privacy: .public)")
             }

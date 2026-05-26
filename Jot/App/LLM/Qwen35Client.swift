@@ -257,6 +257,12 @@ final class Qwen35Client: LLMClient {
         #if !targetEnvironment(simulator)
         container = nil
         Memory.clearCache()
+        // Re-apply the cache cap that init() configured. `Memory.clearCache`
+        // wipes the allocator and on at least some MLX versions resets
+        // the limit to default-unbounded, which would defeat eviction
+        // when the next inference grows the cache without a ceiling.
+        // Setting it again is idempotent and cheap.
+        Memory.cacheLimit = 32 * 1024 * 1024
         #endif
         observableStatus = .evicted
         log.info("Qwen 3.5 model evicted")

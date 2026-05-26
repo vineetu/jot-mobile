@@ -64,6 +64,17 @@ enum DiagnosticsCategory: String, Codable {
     /// in-app diagnostics card lets a user attribute a stop-then-crash
     /// trail back to memory pressure.
     case memoryWarning
+    /// Foreground "Classify now" run started — pre-evict + first item
+    /// kicked off. Metadata carries the planned item count.
+    case classifyStart
+    /// Foreground classification run ended (cancelled OR completed).
+    /// Metadata carries processed count + reason (completed / cancelled
+    /// / memoryWarning).
+    case classifyEnd
+    /// Foreground classifier received a memory warning mid-run and is
+    /// aborting + evicting Qwen. Distinct from the transcription-service
+    /// `memoryWarning` so the user can see WHICH subsystem responded.
+    case classifyMemoryWarning
 }
 
 struct DiagnosticsEntry: Codable, Identifiable, Equatable {

@@ -532,6 +532,9 @@ struct HelpView: View {
         case .pasteSkipOther: return ("SKIP/?", Color.jotAccent)
         case .streamingPartialReceived: return ("STREAM", Color.jotAccent)
         case .memoryWarning: return ("MEMORY", Color.jotWarning)
+        case .classifyStart: return ("CLASSIFY/START", Color.jotAccent)
+        case .classifyEnd: return ("CLASSIFY/END", Color.jotAccent)
+        case .classifyMemoryWarning: return ("CLASSIFY/MEM", Color.jotWarning)
         }
     }
 

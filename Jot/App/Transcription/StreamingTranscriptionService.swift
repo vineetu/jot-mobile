@@ -470,6 +470,32 @@ final class StreamingTranscriptionService {
     /// iOS interrupts the audio session anyway. The recorder's existing
     /// teardown path calls `endSession(engine:)` which calls
     /// `engine.cleanup()` → `manager.cleanup()`.
+    /// Proactively shed any preparation state the streaming service is
+    /// holding. Mirrors `handleMemoryWarning` but is invoked explicitly
+    /// by the foreground classifier (Lab "Classify now") so we don't
+    /// leave a partially-prepared streaming engine around while Qwen
+    /// owns memory. No-op if no session is active.
+    ///
+    /// Honors the same "don't touch an active session" guard the memory
+    /// warning handler does — `currentStreamingSessionID == nil` means
+    /// no live engine, so the cancel/clear is safe.
+    func evictForExternalRequest(reason: String) async {
+        guard currentStreamingSessionID == nil else {
+            log.notice("evictForExternalRequest: streaming session active; skipping (reason=\(reason, privacy: .public))")
+            return
+        }
+        guard prepareTask != nil else {
+            log.debug("evictForExternalRequest: nothing to evict (reason=\(reason, privacy: .public))")
+            return
+        }
+        log.notice("evictForExternalRequest: cancelling streaming prepare task (reason=\(reason, privacy: .public))")
+        prepareTask?.cancel()
+        prepareTask = nil
+        if !Self.modelsExistOnDisk() {
+            modelState = .notLoaded
+        }
+    }
+
     private func handleMemoryWarning() async {
         log.notice("Memory warning — clearing streaming session token + cancelling prepare task")
         // Surface the memory-pressure event in the in-app diagnostics card

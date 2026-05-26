@@ -11,7 +11,7 @@ import SwiftData
 /// `Jot/Shared/Schema/JotSchemaV1.swift`. Computed properties live in
 /// the extension below so they automatically apply to whichever VN is
 /// current.
-typealias Transcript = JotSchemaV2.Transcript
+typealias Transcript = JotSchemaV4.Transcript
 
 extension Transcript {
     /// Preferred surface text. Priority:

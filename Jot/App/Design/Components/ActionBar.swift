@@ -103,6 +103,8 @@ struct ActionBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!item.isEnabled)
+        .opacity(item.isEnabled ? 1.0 : 0.45)
         .accessibilityLabel(item.accessibilityLabel)
     }
 

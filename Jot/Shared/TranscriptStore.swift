@@ -86,7 +86,7 @@ enum JotModelContainer {
         // as new `JotSchemaVN` files + new `MigrationStage`s — see
         // `JotMigrationPlan.swift` and `docs/schema-migrations.md`.
         do {
-            let versionedSchema = Schema(versionedSchema: JotSchemaV2.self)
+            let versionedSchema = Schema(versionedSchema: JotSchemaV4.self)
             let config = ModelConfiguration(
                 "JotTranscripts",
                 schema: versionedSchema,
@@ -275,7 +275,15 @@ enum TranscriptStore {
             durationSeconds: duration,
             ledgerIndex: nextLedgerIndex(),
             derivedFromID: derivedFrom,
-            instruction: instruction
+            instruction: instruction,
+            // Editable-transcripts state (V2+) and rating (V3+) start
+            // unset — populated by the Detail surface when the user
+            // edits or rates a rewrite. Category (V4+) starts unset;
+            // the background classifier populates it on the next
+            // BG task fire (gated by the Lab toggle).
+            rewriteUserEdit: nil,
+            rewriteUpvoted: nil,
+            category: nil
         )
         context.insert(transcript)
         do {

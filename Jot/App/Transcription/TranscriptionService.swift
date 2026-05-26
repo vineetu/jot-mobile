@@ -1238,6 +1238,28 @@ final class TranscriptionService {
         }
     }
 
+    /// Proactively drop the Parakeet manager. Used by the foreground
+    /// classifier ("Classify now" in the Lab dashboard) before it kicks
+    /// off Qwen — co-resident Parakeet + Qwen peak around 5 GB and
+    /// trip iOS jetsam. Honors the same `!isTranscribing` guard as
+    /// `handleMemoryWarning` so we never evict during an active dictation.
+    ///
+    /// Re-warms automatically on the next `transcribe()` / `warmUp()`.
+    func evictForExternalRequest(reason: String) {
+        guard !isTranscribing else {
+            log.notice("evictForExternalRequest: deferring — transcription in flight (reason=\(reason, privacy: .public))")
+            return
+        }
+        guard manager != nil else {
+            log.debug("evictForExternalRequest: nothing to evict (reason=\(reason, privacy: .public))")
+            return
+        }
+        log.notice("evictForExternalRequest: dropping batch transcriber (reason=\(reason, privacy: .public))")
+        manager = nil
+        prepareTask = nil
+        modelState = .notLoaded
+    }
+
     private func handleMemoryWarning() {
         // Surface the memory-pressure event in the in-app diagnostics card
         // — mirrors the symmetric write in `StreamingTranscriptionService`
