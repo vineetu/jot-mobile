@@ -253,6 +253,21 @@ enum TranscriptClassifierTask {
             }
 
             let category = await TranscriptClassifier.classify(text: row.text)
+
+            // Re-check cancel AFTER the (long) classify await. The classifier
+            // catches `CancellationError` internally and returns `.general` as
+            // a "safe default" — but if the BG-task expiration handler fired
+            // mid-await and triggered that catch, persisting `.general` would
+            // permanently mis-tag the row (the fetch predicate is
+            // `category == nil`, so a cancelled-substituted `.general` is
+            // never reconsidered). Mirrors the post-await cancel check the
+            // foreground `ClassificationsDashboardView.kickoffClassify` has.
+            if Task.isCancelled {
+                let snapshot = processed
+                log.notice("drainBatch: cancelled post-classify at processed=\(snapshot, privacy: .public)")
+                return snapshot
+            }
+
             row.category = category.rawValue
 
             do {

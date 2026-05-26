@@ -156,13 +156,7 @@ struct HelpView: View {
 
                 useCase(
                     "Polish what you said into what you meant",
-                    Text("You dictated something — a long meandering thought, a list of things to do, the bones of an email. Open it in Jot and tap one of the built-in prompts: ")
-                        + Text("Articulate").fontWeight(.semibold)
-                        + Text(" cleans up the prose, ")
-                        + Text("Action Items").fontWeight(.semibold)
-                        + Text(" pulls out the tasks, ")
-                        + Text("Email").fontWeight(.semibold)
-                        + Text(" formats it for sending. Or write your own prompt once and reuse it — \u{201C}Turn this into bullet points,\u{201D} \u{201C}Translate to French,\u{201D} \u{201C}Make it sound more formal\u{201D} — and run it on any transcript with a tap.")
+                    Text("You dictated something — a long meandering thought, a list of things to do, the bones of an email. Open it in Jot and tap one of the built-in prompts: **Articulate** cleans up the prose, **Action Items** pulls out the tasks, **Email** formats it for sending. Or write your own prompt once and reuse it — \u{201C}Turn this into bullet points,\u{201D} \u{201C}Translate to French,\u{201D} \u{201C}Make it sound more formal\u{201D} — and run it on any transcript with a tap.")
                 )
             }
         }
@@ -655,7 +649,26 @@ struct HelpView: View {
     /// the leading and trailing copy. We hand-roll the bullet chrome (no
     /// `Label` / `List`) so the dot aligns to the first-line baseline of
     /// the body text inside a glass card.
-    @ViewBuilder
+    ///
+    /// Build a single `AttributedString` from `leading + bold(boldRun) + trailing`
+    /// using `inlinePresentationIntent = .stronglyEmphasized` for the bold run.
+    /// Replaces the old `Text + Text + Text` chain which became deprecated
+    /// in iOS 26.
+    private func composedAttributedString(
+        leading: String,
+        boldRun: String?,
+        trailing: String
+    ) -> AttributedString {
+        var result = AttributedString(leading)
+        if let boldRun {
+            var bold = AttributedString(boldRun)
+            bold.inlinePresentationIntent = .stronglyEmphasized
+            result.append(bold)
+        }
+        result.append(AttributedString(trailing))
+        return result
+    }
+
     private func bulletParagraph(
         _ leading: String,
         boldRun: String? = nil,
@@ -667,16 +680,12 @@ struct HelpView: View {
                 .frame(width: 5, height: 5)
                 .padding(.top, 7)
 
-            (
-                Text(leading)
-                + (boldRun.map { Text($0).fontWeight(.semibold) } ?? Text(""))
-                + Text(trailing)
-            )
-            .font(.system(size: 15))
-            .foregroundStyle(Color.jotPageInkSecondary)
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(composedAttributedString(leading: leading, boldRun: boldRun, trailing: trailing))
+                .font(.system(size: 15))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

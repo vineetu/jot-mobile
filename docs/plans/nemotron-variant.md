@@ -1,8 +1,10 @@
-# Plan: Nemotron 0.6B Speech Variant (parked)
+# Plan: Nemotron 0.6B Speech Variant (tested + ripped — too slow on iPhone)
 
-> **Status:** Parked 2026-05-26. Picked up after initial scoping showed the integration is ~1–2 days, not the ~6–8 hours originally estimated. Coming back to this after the classifier work (builds 17–21) stabilizes and we have a clearer signal on whether end-to-end Nemotron is worth the engineering cost.
+> **Status:** Tested in 1.0.2 (22–26) and ripped in (27) on 2026-05-26. Nemotron 0.6B was integrated and dictation worked end-to-end on the bench, but on-device real-time-factor on iPhone was 3–5× slower than real-time, producing a 10–15 second tail after stop. Smaller chunk sizes helped (560ms ≈ 2× faster than 1120ms with negligible accuracy delta — 2.12% vs 1.99% WER per FluidAudio's M2 LibriSpeech bench), but the underlying problem is that Nemotron 0.6B's int8 encoder is too heavy for iPhone's Neural Engine to run faster than mic audio arrives. Build 27 removed the variant and added a one-shot cleanup sweep (`TranscriptionService.sweepNemotronAppSupportWeights`) to reclaim the ~600 MB – 1.1 GB of stale weights from users who downloaded during the TestFlight cycle.
 >
-> **Size: M-L** (~1–2 days). Touches the streaming engine abstraction, the dictation pipeline's batch/streaming split, and the model download UX.
+> **What we'd revisit this for:** a smaller Nemotron variant (the 0.6B is the only size FluidAudio ships today), a different RNNT-streaming model with iPhone-friendlier inference cost, or a future iPhone generation with materially faster ANE for large encoders. Not blocking on any of these.
+>
+> **Implementation notes still worth keeping below** for the next attempt: scope estimate was wrong (we thought 1–2 days, it was actually ~half a day because `StreamingTranscriptionEngine` already takes `any StreamingAsrManager`), Settings download UX patterns, the AppGroup allowlist trap (legacy guard rewrites `nemotron0_6b` to default — must add to allowlist when re-introducing), and the Nemotron disk-existence check (must verify all 6 required files, not just the encoder directory).
 
 ---
 

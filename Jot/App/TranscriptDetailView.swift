@@ -220,7 +220,14 @@ struct TranscriptDetailView: View {
         // the interactive pop gesture when the back button is hidden, and
         // a root-level NavigationStack modifier can be undone by that
         // disable. Putting the enable here ensures the gesture survives.
-        .enableInteractivePopGesture()
+        //
+        // Gate on `!isEditing`: the back chevron and the SwiftUI
+        // simultaneousGesture both refuse to dismiss during edit mode,
+        // but UIKit's `interactivePopGestureRecognizer` lives one layer
+        // below SwiftUI and isn't bound by either guard. Letting it fire
+        // during edit mode would silently pop the view and discard the
+        // user's unsaved TextEditor changes.
+        .enableInteractivePopGesture(isEnabled: !isEditing)
         // Explicit left-edge swipe-to-back as a safety net. The system
         // `interactivePopGestureRecognizer` (re-enabled above) gets
         // swallowed on this view by the scrollable transcript card's

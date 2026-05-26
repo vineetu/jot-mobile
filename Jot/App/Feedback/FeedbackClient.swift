@@ -9,6 +9,11 @@ struct FeedbackPayload: Codable {
     let platform: String
     let version: String
     let message: String
+    /// Base64 data URIs (e.g. `data:image/jpeg;base64,...`). Encoded
+    /// upstream by `FeedbackImageEncoder`. Omitted entirely when empty
+    /// so the server-side request shape stays identical to pre-screenshot
+    /// builds for text-only feedback.
+    let images: [String]?
 }
 
 struct FeedbackResponse: Codable {
@@ -47,12 +52,17 @@ final class FeedbackClient: Sendable {
         self.session = URLSession(configuration: cfg)
     }
 
-    func submit(message: String) async throws -> Int {
+    func submit(message: String, images: [String] = []) async throws -> Int {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw FeedbackError.empty }
 
         let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
-        let payload = FeedbackPayload(platform: "ios", version: version, message: trimmed)
+        let payload = FeedbackPayload(
+            platform: "ios",
+            version: version,
+            message: trimmed,
+            images: images.isEmpty ? nil : images
+        )
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"

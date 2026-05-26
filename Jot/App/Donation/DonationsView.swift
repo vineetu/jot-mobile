@@ -47,9 +47,7 @@ struct DonationsView: View {
                 await refresh()
             }
         }
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
-        .enableInteractivePopGesture()
+        .jotPushedPage()
         .sheet(item: $selectedCharity) { charity in
             CharityDetailSheet(charity: charity) { amount in
                 openDonation(amount: amount, charity: charity)

@@ -1073,6 +1073,48 @@ final class TranscriptionService {
         }
     }
 
+    /// One-shot migration: reclaim Application Support disk for users who
+    /// downloaded Nemotron weights during 1.0.2 (22–26). Nemotron 0.6B was
+    /// on-device-tested and ripped because RTF on iPhone was 3–5x slower
+    /// than real-time, producing 10–15s tails after stop. The weights
+    /// (~564 MB encoder + smaller decoder/joint/preprocessor; ~600 MB for
+    /// 560ms variant, plus another ~600 MB if the user also tried the
+    /// 1120ms variant) sit under
+    /// `Library/Application Support/FluidAudio/Models/nemotron-streaming/`.
+    ///
+    /// Gated by `jot.didCleanupNemotronWeights` so it runs at most once.
+    /// Best-effort + detached so a 1+ GB removeItem doesn't stretch cold
+    /// launch.
+    static func sweepNemotronAppSupportWeights() {
+        let migrationKey = "jot.didCleanupNemotronWeights"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
+
+        let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+        let nemotronRoot = MLModelConfigurationUtils
+            .defaultModelsDirectory(for: .parakeetTdtCtc110m)
+            .deletingLastPathComponent()
+            .appendingPathComponent("nemotron-streaming", isDirectory: true)
+
+        defaults.set(true, forKey: migrationKey)
+
+        guard FileManager.default.fileExists(atPath: nemotronRoot.path) else {
+            log.info("Nemotron cleanup: nothing at \(nemotronRoot.path, privacy: .public); flag set")
+            return
+        }
+
+        let target = nemotronRoot
+        Task.detached(priority: .utility) { @Sendable in
+            let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+            do {
+                try FileManager.default.removeItem(at: target)
+                log.notice("Nemotron cleanup: removed \(target.path, privacy: .public)")
+            } catch {
+                log.error("Nemotron cleanup: \(error.localizedDescription, privacy: .public) target=\(target.path, privacy: .public)")
+            }
+        }
+    }
+
     private static func purgingModelDirectory(for modelDir: URL) -> URL {
         modelDir
             .deletingLastPathComponent()

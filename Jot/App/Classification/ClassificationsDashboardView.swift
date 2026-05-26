@@ -405,6 +405,15 @@ struct ClassificationsDashboardView: View {
                     return
                 }
 
+                // Stickiness guard: the user may have tapped CategoryChip
+                // on this row during the 2-5s classify await and chosen a
+                // category manually. The chip's menu writes via the same
+                // modelContext, so by the time we land here `row.category`
+                // could already be non-nil. Overwriting it would silently
+                // clobber the user's deliberate pick. Mirrors the
+                // `category == nil` predicate that gates the BG drainBatch.
+                guard row.category == nil else { continue }
+
                 row.category = category.rawValue
                 do {
                     try modelContext.save()
