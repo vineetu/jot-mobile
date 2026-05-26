@@ -77,7 +77,32 @@ struct TranscriptDetailView: View {
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
     @State private var copyHaptic = UIImpactFeedbackGenerator(style: .light)
-    @State private var showShareSheet = false
+
+    // MARK: - Edit-mode state
+    //
+    // When `isEditing == true`, the currently-visible tab's transcript card
+    // body becomes a `TextEditor` bound to `editorText`. The bottom
+    // ActionBar swaps to an EditBar (Cancel / Save). The tab pill is
+    // hidden — only one tab is editable at a time.
+    //
+    // `editTargetTab` is captured at edit-start so a user can't tab-switch
+    // mid-edit; we re-enter via Cancel/Save first.
+    //
+    // `editError` surfaces inline copy when Save fails validation (Original
+    // text can't be empty). The editor stays open so the user can fix it.
+    @State private var isEditing = false
+    @State private var editorText: String = ""
+    @State private var editTargetTab: DetailTab = .original
+    @State private var editError: String?
+    @FocusState private var editorFocused: Bool
+
+    /// Mirror of the classifier Lab toggle. Read on appear so the
+    /// category chip in the subline only renders when the user has
+    /// opted into the classifier feature. Public-build users (toggle
+    /// off) never see the chip.
+    @State private var classifierLabEnabled: Bool = AppGroup.defaults.bool(
+        forKey: TranscriptClassifierTask.labKey
+    )
 
     // MARK: - Phase 4 sheet state
     //
@@ -156,11 +181,13 @@ struct TranscriptDetailView: View {
 
                 sublineRow
 
-                if hasRewrite {
+                if hasRewrite && !isEditing {
                     tabSelector
                 }
 
-                if rewriteState == .running {
+                if let editError, isEditing {
+                    editErrorCard(message: editError)
+                } else if rewriteState == .running {
                     runningRewriteCard
                 } else if case .error(let message) = rewriteState {
                     errorCard(message: message)
@@ -169,7 +196,7 @@ struct TranscriptDetailView: View {
                 transcriptCard
                     .frame(maxHeight: .infinity)
 
-                if selectedTab == .rewrite, hasRewrite {
+                if selectedTab == .rewrite, hasRewrite, !isEditing {
                     attributionLine
                         .padding(.horizontal, 4)
                 }
@@ -177,9 +204,15 @@ struct TranscriptDetailView: View {
             .padding(.horizontal, JotDesign.Spacing.pageMargin)
             .padding(.bottom, 100) // leave room for ActionBar
 
-            actionBar
-                .padding(.horizontal, JotDesign.Spacing.pageMargin)
-                .padding(.bottom, 14)
+            Group {
+                if isEditing {
+                    editBar
+                } else {
+                    actionBar
+                }
+            }
+            .padding(.horizontal, JotDesign.Spacing.pageMargin)
+            .padding(.bottom, 14)
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
@@ -187,7 +220,14 @@ struct TranscriptDetailView: View {
         // the interactive pop gesture when the back button is hidden, and
         // a root-level NavigationStack modifier can be undone by that
         // disable. Putting the enable here ensures the gesture survives.
-        .enableInteractivePopGesture()
+        //
+        // Gate on `!isEditing`: the back chevron and the SwiftUI
+        // simultaneousGesture both refuse to dismiss during edit mode,
+        // but UIKit's `interactivePopGestureRecognizer` lives one layer
+        // below SwiftUI and isn't bound by either guard. Letting it fire
+        // during edit mode would silently pop the view and discard the
+        // user's unsaved TextEditor changes.
+        .enableInteractivePopGesture(isEnabled: !isEditing)
         // Explicit left-edge swipe-to-back as a safety net. The system
         // `interactivePopGestureRecognizer` (re-enabled above) gets
         // swallowed on this view by the scrollable transcript card's
@@ -209,6 +249,11 @@ struct TranscriptDetailView: View {
                     let isRightwardSwipe = dx > 80
                     let isMostlyHorizontal = abs(dx) > 1.5 * abs(dy)
                     if isEdgeStart && isRightwardSwipe && isMostlyHorizontal {
+                        // Mirror the back-chevron's edit-mode lockout. A
+                        // swipe-back while editing would silently destroy
+                        // in-flight edits with no confirmation — refuse to
+                        // dismiss, force the user through Cancel/Save.
+                        guard !isEditing else { return }
                         dismiss()
                     }
                 }
@@ -283,12 +328,12 @@ struct TranscriptDetailView: View {
         } message: {
             Text("Add and edit rewrite prompts in Settings → AI Rewrite.")
         }
-        .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [bodyTextForActiveTab])
-        }
         .onAppear {
             copyHaptic.prepare()
             refreshRewriteAvailability()
+            classifierLabEnabled = AppGroup.defaults.bool(
+                forKey: TranscriptClassifierTask.labKey
+            )
             // Default to Rewrite tab when a rewrite already exists — the
             // user almost always cares about their latest pass once they've
             // run one. Falls back to Original when no rewrite is saved.
@@ -305,6 +350,17 @@ struct TranscriptDetailView: View {
             // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
             clientAdapter?.stop()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            // Pick up Lab-toggle flips that happen while Detail is open
+            // (e.g. user opens Settings sheet, toggles ON, dismisses).
+            // Without this the chip stays hidden until Detail is left
+            // and re-entered, because .onAppear doesn't fire on sheet
+            // dismissal in iOS 17+ when the parent view never lost focus.
+            let newValue = AppGroup.defaults.bool(forKey: TranscriptClassifierTask.labKey)
+            if newValue != classifierLabEnabled {
+                classifierLabEnabled = newValue
+            }
+        }
         .task {
             refreshRewriteAvailability()
             if let intent = keyboardRewriteIntent, !didFireKeyboardIntent {
@@ -318,9 +374,13 @@ struct TranscriptDetailView: View {
 
     private var topToolbar: some View {
         HStack(alignment: .center, spacing: 12) {
+            // While editing, the back chevron is disabled so the user must
+            // explicitly Cancel or Save — otherwise a swipe-back would
+            // silently discard their in-flight edits with no confirmation.
             glassCircleButton(
                 systemImage: "chevron.backward",
-                accessibilityLabel: "Back"
+                accessibilityLabel: isEditing ? "Back disabled while editing" : "Back",
+                enabled: !isEditing
             ) {
                 dismiss()
             }
@@ -353,20 +413,33 @@ struct TranscriptDetailView: View {
 
     private var sublineRow: some View {
         HStack(spacing: 6) {
-            Text(relativeDateText)
-            Text("·")
-                .foregroundStyle(Color.jotMuteWeak)
-            Text(wordCountText)
-            if let durationText {
+            HStack(spacing: 6) {
+                Text(relativeDateText)
                 Text("·")
                     .foregroundStyle(Color.jotMuteWeak)
-                Text(durationText)
+                Text(wordCountText)
+                if let durationText {
+                    Text("·")
+                        .foregroundStyle(Color.jotMuteWeak)
+                    Text(durationText)
+                }
             }
+            .font(.system(size: 13))
+            .foregroundStyle(Color.jotMute)
+            .monospacedDigit()
+            .accessibilityElement(children: .combine)
+
+            // Category chip — only shown when the classifier Lab toggle is
+            // on. Lets the user see what the BG classifier picked AND
+            // override it inline. Hidden during edit mode so the editor
+            // gets clean focus. User overrides are sticky — the classifier
+            // only writes rows where `category == nil`.
+            if classifierLabEnabled && !isEditing {
+                CategoryChip(transcript: transcript, shape: .detailSubline)
+            }
+
+            Spacer(minLength: 0)
         }
-        .font(.system(size: 13))
-        .foregroundStyle(Color.jotMute)
-        .monospacedDigit()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Tab selector
@@ -453,34 +526,71 @@ struct TranscriptDetailView: View {
     private var transcriptCard: some View {
         LiquidGlassCard(paddingH: 0, paddingV: 0) {
             Group {
-                switch selectedTab {
-                case .original:
-                    // The published text already has the always-on regex
-                    // filler sweep baked in by the dictation pipeline, so
-                    // just render `transcript.text` directly.
-                    transcriptScrollContent(
-                        text: transcript.text
-                    )
-                case .rewrite:
-                    if let cleaned = transcript.cleanedText, !cleaned.isEmpty {
-                        transcriptScrollContent(text: cleaned)
-                    } else if rewriteState == .running {
-                        // A rewrite is mid-flight — the `runningRewriteCard`
-                        // already surfaces a "Rewriting…" indicator above
-                        // this card. Showing the "No rewrite yet · Tap
-                        // Rewrite" empty state at the same time tells the
-                        // user to do what they just did. Leave the card
-                        // empty until the rewrite lands.
-                        Color.clear
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        rewriteEmptyState
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if isEditing {
+                    transcriptEditor
+                } else {
+                    switch selectedTab {
+                    case .original:
+                        // The published text already has the always-on regex
+                        // filler sweep baked in by the dictation pipeline, so
+                        // just render `transcript.text` directly.
+                        transcriptScrollContent(
+                            text: transcript.text
+                        )
+                    case .rewrite:
+                        // Display priority: user's edit > model's rewrite.
+                        // `cleanedText` stays frozen as the training "before"
+                        // while `rewriteUserEdit` is the user-visible "after".
+                        if let displayed = displayedRewriteText, !displayed.isEmpty {
+                            transcriptScrollContent(text: displayed)
+                        } else if rewriteState == .running {
+                            // A rewrite is mid-flight — the `runningRewriteCard`
+                            // already surfaces a "Rewriting…" indicator above
+                            // this card. Showing the "No rewrite yet · Tap
+                            // Rewrite" empty state at the same time tells the
+                            // user to do what they just did. Leave the card
+                            // empty until the rewrite lands.
+                            Color.clear
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            rewriteEmptyState
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// What the Rewrite tab renders. User's manual edit takes priority over
+    /// the LLM's `cleanedText`. `nil` only when both are absent (or empty).
+    private var displayedRewriteText: String? {
+        if let edit = transcript.rewriteUserEdit, !edit.isEmpty { return edit }
+        if let cleaned = transcript.cleanedText, !cleaned.isEmpty { return cleaned }
+        return nil
+    }
+
+    /// In-card `TextEditor` shown while `isEditing == true`. Bound to the
+    /// local `editorText` `@State`; saves are gated through `saveEdit()`.
+    /// Cancel discards local state.
+    @ViewBuilder
+    private var transcriptEditor: some View {
+        TextEditor(text: $editorText)
+            .font(.system(size: 17, weight: .regular, design: .default))
+            .tracking(-0.1)
+            .lineSpacing(4)
+            .foregroundStyle(Color.jotPageInk)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .focused($editorFocused)
+            .accessibilityLabel(
+                editTargetTab == .original
+                    ? "Edit original transcript"
+                    : "Edit rewrite"
+            )
     }
 
     /// Scrollable body text styled to match Recents row typography (system
@@ -512,7 +622,11 @@ struct TranscriptDetailView: View {
             Text(attributionText)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.jotMute)
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer(minLength: 8)
+            thumbButton(up: true)
+            thumbButton(up: false)
             Button {
                 pendingDiscardRewrite = true
             } label: {
@@ -524,6 +638,38 @@ struct TranscriptDetailView: View {
             .accessibilityLabel("Discard rewrite")
             .accessibilityHint("Removes the rewrite and shows the original text")
         }
+    }
+
+    /// Single thumbs-up or thumbs-down toggle. Tapping the active glyph
+    /// clears the rating (back to nil); tapping the opposite glyph swaps
+    /// the rating. Light haptic on every tap. Filled SF Symbol when
+    /// active, outlined when inactive.
+    @ViewBuilder
+    private func thumbButton(up: Bool) -> some View {
+        let isActive: Bool = {
+            switch transcript.rewriteUpvoted {
+            case .some(true):  return up
+            case .some(false): return !up
+            default:           return false
+            }
+        }()
+        let symbol = up
+            ? (isActive ? "hand.thumbsup.fill" : "hand.thumbsup")
+            : (isActive ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+        let activeTint: Color = up ? Color.jotBlueTop : Color(.systemRed)
+
+        Button {
+            toggleRewriteRating(up: up)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isActive ? activeTint : Color.jotMute)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(up ? "Rate rewrite good" : "Rate rewrite bad")
+        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 
     /// Attribution copy for a freshly-rendered Rewrite tab. When this view
@@ -636,18 +782,21 @@ struct TranscriptDetailView: View {
         ActionBar(
             leading: [
                 ActionBarItem(
-                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
-                    label: "Copy",
-                    accessibilityLabel: didCopy ? "Copied to clipboard" : "Copy transcript"
+                    systemImage: "trash",
+                    label: "Delete",
+                    accessibilityLabel: hasRewrite
+                        ? "Delete options"
+                        : "Delete transcript"
                 ) {
-                    copy()
+                    pendingDeletion = true
                 },
                 ActionBarItem(
-                    systemImage: "square.and.arrow.up",
-                    label: "Share",
-                    accessibilityLabel: "Share transcript"
+                    systemImage: "pencil",
+                    label: "Edit",
+                    accessibilityLabel: editAccessibilityLabel,
+                    isEnabled: isEditEnabled
                 ) {
-                    showShareSheet = true
+                    beginEdit()
                 }
             ],
             primary: ActionBarItem(
@@ -660,21 +809,132 @@ struct TranscriptDetailView: View {
             },
             trailing: [
                 ActionBarItem(
-                    systemImage: "trash",
-                    label: "Delete",
-                    accessibilityLabel: hasRewrite
-                        ? "Delete options"
-                        : "Delete transcript"
+                    systemImage: didCopy ? "checkmark" : "doc.on.doc",
+                    label: "Copy",
+                    accessibilityLabel: didCopy ? "Copied to clipboard" : "Copy transcript"
                 ) {
-                    pendingDeletion = true
+                    copy()
                 }
             ]
+        )
+    }
+
+    /// Edit pill is enabled when there's something on the active tab to
+    /// edit AND no rewrite is mid-flight. Original tab always has `text`
+    /// (empty input is rejected at append time); Rewrite tab requires
+    /// `displayedRewriteText` to be non-nil.
+    private var isEditEnabled: Bool {
+        guard rewriteState != .running else { return false }
+        guard !keyboardRewriteInFlight else { return false }
+        switch selectedTab {
+        case .original: return !transcript.text.isEmpty
+        case .rewrite:  return displayedRewriteText != nil
+        }
+    }
+
+    private var editAccessibilityLabel: String {
+        switch selectedTab {
+        case .original: return "Edit original transcript"
+        case .rewrite:  return "Edit rewrite"
+        }
+    }
+
+    // MARK: - Edit-mode bottom bar
+
+    /// Bottom bar shown while `isEditing == true`. Cancel discards, Save
+    /// commits. The active tab's label is centered so the user can see
+    /// which side they're editing without context-switching to the
+    /// (now-hidden) tab pill.
+    private var editBar: some View {
+        HStack(spacing: 12) {
+            Button(action: cancelEdit) {
+                Text("Cancel")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.jotInk)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minHeight: 44)
+                    .padding(.horizontal, 4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel edit")
+
+            Spacer(minLength: 6)
+
+            // Center label can shrink/disappear; the side buttons must not.
+            Text(editTargetTab == .original ? "Editing Original" : "Editing Rewrite")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.jotMute)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
+                .layoutPriority(-1)
+
+            Spacer(minLength: 6)
+
+            Button(action: saveEdit) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("Save")
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 40)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.jotBlueTop)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Save edit")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(minHeight: 60)
+        .frame(maxWidth: .infinity)
+        .modifier(
+            JotDesign.Surface.heavy.modifier(
+                cornerRadius: JotDesign.Spacing.sheetRadius
+            )
+        )
+    }
+
+    /// Inline warning card shown when Save validation fails (e.g. Original
+    /// text empty). Stays visible until the user types something valid or
+    /// cancels — matches the existing `errorCard` styling.
+    private func editErrorCard(message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Color.jotWarning)
+            Text(message)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.jotInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                editError = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Color.jotMute)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss validation error")
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.jotWarning.opacity(0.10))
         )
     }
 
     // MARK: - Magic gate
 
     private var hasRewrite: Bool {
+        if let edit = transcript.rewriteUserEdit, !edit.isEmpty { return true }
         if let cleaned = transcript.cleanedText, !cleaned.isEmpty { return true }
         return false
     }
@@ -798,16 +1058,18 @@ struct TranscriptDetailView: View {
     /// Body text the share + word-count read from — follows the currently
     /// selected tab so "52 words" matches what the user is looking at.
     /// Original returns `transcript.text` (which already has the always-on
-    /// regex filler sweep baked in by the pipeline). Rewrite returns the AI
-    /// Rewrite output, or — when no rewrite has been produced — falls back
-    /// to the original so Share/Copy on an empty Rewrite tab still does
-    /// something sensible.
+    /// regex filler sweep baked in by the pipeline). Rewrite returns the
+    /// user's edit if present, else the AI Rewrite output, else — when no
+    /// rewrite has been produced — falls back to the original so Share/Copy
+    /// on an empty Rewrite tab still does something sensible.
     private var bodyTextForActiveTab: String {
         switch selectedTab {
         case .original:
             return transcript.text
         case .rewrite:
-            return transcript.cleanedText ?? transcript.text
+            return transcript.rewriteUserEdit
+                ?? transcript.cleanedText
+                ?? transcript.text
         }
     }
 
@@ -820,6 +1082,132 @@ struct TranscriptDetailView: View {
     /// the rewrite picker sheet's subline.
     private var rewriteModelDisplayName: String {
         JotDesign.activeRewriteModelDisplayName
+    }
+
+    // MARK: - Edit lifecycle
+
+    /// Enters edit mode against the currently-selected tab. Captures the
+    /// initial editor value from the tab's display text, hides the tab
+    /// pill, swaps the ActionBar for the EditBar, and focuses the editor.
+    ///
+    /// Initial value source:
+    ///   - Original tab → `transcript.text`.
+    ///   - Rewrite tab  → `transcript.rewriteUserEdit ?? transcript.cleanedText ?? ""`.
+    ///     (The user's prior edit wins; otherwise they start from the
+    ///     model's current rewrite.)
+    private func beginEdit() {
+        guard !isEditing else { return }
+        guard isEditEnabled else { return }
+        editTargetTab = selectedTab
+        switch selectedTab {
+        case .original:
+            editorText = transcript.text
+        case .rewrite:
+            editorText = transcript.rewriteUserEdit
+                ?? transcript.cleanedText
+                ?? ""
+        }
+        editError = nil
+        isEditing = true
+        // Focus on the next runloop so the TextEditor has installed its
+        // text view by the time we ask for first responder. Without the
+        // hop the keyboard occasionally doesn't pop on first tap.
+        DispatchQueue.main.async {
+            editorFocused = true
+        }
+    }
+
+    /// Commits the current `editorText` to the appropriate transcript field
+    /// and exits edit mode. Validation:
+    ///   - Original: rejects empty/whitespace-only input (the user must
+    ///     either type something valid or Cancel — `text` can't be nil and
+    ///     a blank transcript is useless).
+    ///   - Rewrite: empty/whitespace-only is treated as "clear my edit"
+    ///     (set `rewriteUserEdit = nil`, fall back to `cleanedText`).
+    ///
+    /// After persistence, refreshes the keyboard's JSON mirror and posts a
+    /// cross-process notification so a live keyboard re-renders its Recents
+    /// strip immediately. Without these the keyboard shows pre-edit text
+    /// until the next dictation refreshes the mirror.
+    private func saveEdit() {
+        let trimmed = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch editTargetTab {
+        case .original:
+            guard !trimmed.isEmpty else {
+                editError = "Original text can't be empty."
+                return
+            }
+            // No-op if the user hit Save without changing anything.
+            // Skips the SwiftData write + mirror refresh — both are
+            // idempotent but the cross-process notification would wake
+            // the keyboard for nothing.
+            if trimmed == transcript.text {
+                exitEditMode()
+                return
+            }
+            transcript.text = trimmed
+
+        case .rewrite:
+            // Rewrite-tab Save without a model rewrite to back it would
+            // be writing a userEdit with no "before" — refuse and let
+            // the UI direct the user through Transform first.
+            guard transcript.cleanedText != nil else {
+                editError = "Generate a rewrite first."
+                return
+            }
+            if trimmed.isEmpty {
+                // Empty = "clear my edit." Display falls back to cleanedText.
+                if transcript.rewriteUserEdit == nil {
+                    // Already cleared; skip the write.
+                    exitEditMode()
+                    return
+                }
+                transcript.rewriteUserEdit = nil
+            } else {
+                // Skip the write if the user typed nothing new vs. the
+                // current display value (rewriteUserEdit ?? cleanedText).
+                let current = transcript.rewriteUserEdit ?? transcript.cleanedText ?? ""
+                if trimmed == current {
+                    exitEditMode()
+                    return
+                }
+                transcript.rewriteUserEdit = trimmed
+            }
+        }
+
+        do {
+            try modelContext.save()
+            TranscriptHistoryMirror.refresh(from: modelContext)
+            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            detailLog.info(
+                "Transcript edit SAVED tab=\(editTargetTab.rawValue, privacy: .public) chars=\(trimmed.count)"
+            )
+        } catch {
+            modelContext.rollback()
+            editError = "Couldn't save: \(error.localizedDescription)"
+            detailLog.error(
+                "Transcript edit save FAILED tab=\(editTargetTab.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+
+        exitEditMode()
+    }
+
+    /// Discards local edit state without persisting. The transcript fields
+    /// are untouched, so re-entering edit mode shows the unmodified text.
+    private func cancelEdit() {
+        exitEditMode()
+    }
+
+    /// Common exit path for both Save and Cancel. Drops the keyboard,
+    /// clears local edit state, and brings the regular ActionBar back.
+    private func exitEditMode() {
+        editorFocused = false
+        isEditing = false
+        editError = nil
+        editorText = ""
     }
 
     // MARK: - Actions
@@ -839,6 +1227,47 @@ struct TranscriptDetailView: View {
                 return
             }
             didCopy = false
+        }
+    }
+
+    /// Toggle the 👍 / 👎 rating on the current Rewrite. Tap the active
+    /// glyph to clear; tap the opposite glyph to swap. Persists immediately,
+    /// fires a light haptic, and skips the mirror refresh (ratings aren't
+    /// displayed outside the Detail surface, so no cross-process work needed).
+    ///
+    /// Snapshots the prior value before mutation; if `save()` throws,
+    /// explicitly restores the snapshot AFTER `rollback()` so the in-memory
+    /// property doesn't drift from on-disk state. SwiftData's rollback
+    /// usually reverts managed-object property values, but the contract isn't
+    /// rock solid — belt-and-suspenders here is cheap.
+    private func toggleRewriteRating(up: Bool) {
+        let previous = transcript.rewriteUpvoted
+        let next: Bool?
+        switch (previous, up) {
+        case (.some(true), true):   next = nil   // tap 👍 while up → clear
+        case (.some(false), false): next = nil   // tap 👎 while down → clear
+        case (_, true):             next = true  // any other tap on 👍 → up
+        case (_, false):            next = false // any other tap on 👎 → down
+        }
+
+        transcript.rewriteUpvoted = next
+        do {
+            try modelContext.save()
+            copyHaptic.impactOccurred()
+            copyHaptic.prepare()
+            detailLog.info(
+                "Rewrite rating set up=\(up, privacy: .public) next=\(String(describing: next), privacy: .public) transcript=\(transcript.id, privacy: .public)"
+            )
+        } catch {
+            modelContext.rollback()
+            // Belt-and-suspenders: revert the in-memory mutation explicitly
+            // so the thumb glyph re-renders the prior state immediately,
+            // even if SwiftData's rollback didn't restore the managed-object
+            // property.
+            transcript.rewriteUpvoted = previous
+            detailLog.error(
+                "Rewrite rating save FAILED error=\(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 
@@ -876,6 +1305,10 @@ struct TranscriptDetailView: View {
         lastRewriteAt = nil
 
         transcript.cleanedText = nil
+        // A user-edit OR rating against a discarded rewrite is meaningless
+        // — the training "before" half is gone. Clear all three together.
+        transcript.rewriteUserEdit = nil
+        transcript.rewriteUpvoted = nil
         do {
             try modelContext.save()
             TranscriptHistoryMirror.refresh(from: modelContext)
@@ -960,10 +1393,16 @@ struct TranscriptDetailView: View {
                     return
                 }
                 transcript.cleanedText = trimmed
+                // Stale userEdit OR rating against a fresh model output is
+                // meaningless; clear both so the new cleanedText starts
+                // unrated and any future correction pairs with this new
+                // output (not the one against the prior output).
+                transcript.rewriteUserEdit = nil
+                transcript.rewriteUpvoted = nil
                 do {
                     try modelContext.save()
                     TranscriptHistoryMirror.refresh(from: modelContext)
-                    // The keyboard's RecentsStrip renders `cleaned ?? raw`;
+                    // The keyboard's RecentsStrip renders displayText;
                     // notify it that the mirror was rewritten so the new
                     // cleaned text shows up without a presentation cycle.
                     CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
@@ -1001,6 +1440,16 @@ struct TranscriptDetailView: View {
         // compute and on-disk side effects are wasteful.
         guard AppGroup.rewriteJobID == intent.jobID else {
             detailLog.notice("autoFireKeyboardRewrite: jobID slot moved on; skipping")
+            return
+        }
+
+        // If the user is mid-edit, kicking a rewrite would flip the tab
+        // out from under them and clobber `cleanedText` while their local
+        // `editorText` keeps stale. Refuse the intent, surface a keyboard
+        // error so they can re-tap after Save/Cancel.
+        guard !isEditing else {
+            detailLog.notice("autoFireKeyboardRewrite: edit mode active; refusing intent")
+            writeKeyboardError("Finish editing first, then try again", sessionID: intent.sessionID)
             return
         }
 
@@ -1057,10 +1506,14 @@ struct TranscriptDetailView: View {
                     return
                 }
                 transcript.cleanedText = trimmed
+                // Stale userEdit + rating against a fresh model output are
+                // meaningless; see manual-rewrite branch above for rationale.
+                transcript.rewriteUserEdit = nil
+                transcript.rewriteUpvoted = nil
                 do {
                     try modelContext.save()
                     TranscriptHistoryMirror.refresh(from: modelContext)
-                    // The keyboard's RecentsStrip renders `cleaned ?? raw`;
+                    // The keyboard's RecentsStrip renders displayText;
                     // notify it that the mirror was rewritten so the new
                     // cleaned text shows up without a presentation cycle.
                     CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
@@ -1138,22 +1591,6 @@ struct TranscriptDetailView: View {
             rewriteState = .idle
         }
     }
-}
-
-// MARK: - Share sheet shim
-
-/// Lightweight `UIActivityViewController` wrapper used by the ActionBar's
-/// Share affordance. The system share sheet handles "copy", "save to files",
-/// "share to messages", etc. — wiring it up here is the cheapest path to a
-/// real Share button on a SwiftUI surface in iOS 26.
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #Preview {

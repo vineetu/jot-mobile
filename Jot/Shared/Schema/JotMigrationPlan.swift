@@ -45,14 +45,33 @@ import SwiftData
 ///     the migration needs investigation before merge.
 enum JotMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [JotSchemaV1.self]
-        // Future: append V2.self, V3.self, ... in chronological order.
+        [JotSchemaV1.self, JotSchemaV2.self, JotSchemaV3.self, JotSchemaV4.self]
+        // Future: append V5.self, V6.self, ... in chronological order.
     }
 
     static var stages: [MigrationStage] {
-        []
-        // Future: .lightweight(fromVersion: JotSchemaV1.self,
-        //                      toVersion: JotSchemaV2.self),
-        //        etc.
+        [
+            // V1 → V2: additive optional `rewriteUserEdit: String?` on
+            // `Transcript`. `nil` for every pre-existing V1 row on first
+            // V2 read. Lightweight inference handles this case reliably.
+            .lightweight(
+                fromVersion: JotSchemaV1.self,
+                toVersion: JotSchemaV2.self
+            ),
+            // V2 → V3: additive optional `rewriteUpvoted: Bool?` on
+            // `Transcript`. `nil` for every pre-existing V2 row on first
+            // V3 read. Lightweight inference, same shape as V1→V2.
+            .lightweight(
+                fromVersion: JotSchemaV2.self,
+                toVersion: JotSchemaV3.self
+            ),
+            // V3 → V4: additive optional `category: String?` on
+            // `Transcript`. `nil` for every pre-existing V3 row on first
+            // V4 read; classifier picks up the backlog on first BG fire.
+            .lightweight(
+                fromVersion: JotSchemaV3.self,
+                toVersion: JotSchemaV4.self
+            )
+        ]
     }
 }

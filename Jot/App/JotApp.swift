@@ -177,11 +177,28 @@ struct JotApp: App {
         // directory doesn't exist (user hasn't downloaded any variant yet).
         BackupExclusion.excludeFluidAudioModels()
 
+        // Register the background-classifier BGProcessingTask identifier.
+        // MUST happen during process startup BEFORE any submission — the
+        // BGTaskScheduler refuses to submit a request whose identifier
+        // hasn't been registered. Identifier is also declared in
+        // Info.plist's BGTaskSchedulerPermittedIdentifiers. The task body
+        // only runs work when the Lab toggle `jot.classifier.enabled` is
+        // on; see `TranscriptClassifierTask` for the lifecycle doc.
+        TranscriptClassifierTask.register()
+
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
         // 110M weights cached on disk. Gated by a `UserDefaults` flag so
         // this runs at most once. Does NOT touch the v2 (600M) cache.
         TranscriptionService.sweepLegacyAppSupportWeights()
+
+        // One-shot migration: reclaim ~1.1 GB of Nemotron 0.6B weights
+        // (~564 MB for 560ms encoder × possibly two variants if the user
+        // tried both 1120ms + 560ms during 1.0.2 22–26 TestFlight). The
+        // variant was on-device-tested and ripped because Nemotron on
+        // iPhone was 3–5x slower than real-time (10–15s tails after
+        // stop). Gated by a `UserDefaults` flag — runs at most once.
+        TranscriptionService.sweepNemotronAppSupportWeights()
 
         // One-shot migration: reclaim ~2.4 GB of HuggingFace cache from
         // upgrading users who downloaded Phi-4 mini under prior builds.
@@ -251,6 +268,14 @@ struct JotApp: App {
         // could linger for up to 60s and mislead the keyboard into posting Darwin
         // into a dead listener. Clear on launch.
         AppGroup.warmHoldExpiresAt = nil
+        // Classifier mutex stale-clear: the foreground "Classify now" path
+        // sets `classifierForegroundInFlight = true` then clears in its
+        // Task's `defer`. iOS jetsam / force-quit / Swift crash skips
+        // `defer`, so the flag persists in App Group UserDefaults and
+        // permanently blocks `TranscriptClassifierTask.submitIfEnabled()`.
+        // By definition no foreground classify can be in flight before
+        // this process started — clear at cold launch.
+        AppGroup.defaults.set(false, forKey: AppGroup.Keys.classifierForegroundInFlight)
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
 
@@ -411,6 +436,13 @@ struct JotApp: App {
                         startForegroundHeartbeat()
                     } else {
                         stopForegroundHeartbeat()
+                    }
+                    if newPhase == .background {
+                        // Submit a BGProcessingTask request for the
+                        // transcript classifier. No-op when the Lab toggle
+                        // is off or there's nothing to classify. See
+                        // `TranscriptClassifierTask` for lifecycle details.
+                        TranscriptClassifierTask.submitIfEnabled()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes

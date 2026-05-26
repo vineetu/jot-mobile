@@ -35,6 +35,17 @@ struct SettingsView: View {
     /// at Settings.
     @State private var clientAdapter: LLMClientUIAdapter?
 
+    /// Lab toggle: enables the background transcript classifier
+    /// (`TranscriptClassifierTask`). Default false; flipping ON also
+    /// submits a `BGProcessingTaskRequest` so the user doesn't have
+    /// to wait for a backgrounding event to bootstrap the chain.
+    /// Stored in `AppGroup.defaults` for consistency with the other
+    /// cross-process toggles (warmHold, cleanup) even though only the
+    /// main app reads it in v1.
+    @State private var classifierEnabled: Bool = AppGroup.defaults.bool(
+        forKey: TranscriptClassifierTask.labKey
+    )
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
@@ -67,6 +78,19 @@ struct SettingsView: View {
             .onChange(of: warmHoldDurationSeconds) { _, newValue in
                 AppGroup.warmHoldDurationSeconds = newValue
             }
+            .onChange(of: classifierEnabled) { _, newValue in
+                AppGroup.defaults.set(
+                    newValue,
+                    forKey: TranscriptClassifierTask.labKey
+                )
+                // Flipping ON bootstraps the chain — submit a request
+                // immediately so we don't have to wait for the next
+                // app-backgrounding event. submitIfEnabled() is a
+                // no-op when the queue is empty or weights aren't on disk.
+                if newValue {
+                    TranscriptClassifierTask.submitIfEnabled()
+                }
+            }
         }
     }
 
@@ -81,6 +105,7 @@ struct SettingsView: View {
             aiSection
             privacySection
             aboutSection
+            labSection
             settingsFooter
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -742,6 +767,86 @@ struct SettingsView: View {
     private var statsSubline: String {
         let mins = max(0, Int(((DictationStats.todaySeconds * DictationStats.timeSavedMultiplier) / 60).rounded()))
         return "\(mins) min today · \(RecentsFormatting.dictationCountText(DictationStats.totalCount))"
+    }
+
+    // MARK: - LAB FEATURES (experimental)
+
+    /// Bottom-of-Settings section for opt-in experiments. v1 hosts the
+    /// background transcript classifier (see `TranscriptClassifierTask`).
+    /// Default OFF; explicitly labeled "experimental" so a curious user
+    /// can flip it but knows what they're getting into.
+    private var labSection: some View {
+        settingsSection(label: "LAB FEATURES — EXPERIMENTAL", caption: labCaption) {
+            LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                VStack(spacing: 0) {
+                    labClassifierRow
+
+                    // Drill-in to the dashboard only when the classifier
+                    // is on — without categories there's nothing useful
+                    // to show, and the row would just lead to a wall
+                    // of "Unclassified."
+                    if classifierEnabled {
+                        cardDivider
+                        labClassificationsRow
+                    }
+                }
+            }
+        }
+    }
+
+    private var labClassificationsRow: some View {
+        NavigationLink {
+            ClassificationsDashboardView()
+        } label: {
+            settingsIconRow(
+                systemImage: "list.bullet.rectangle",
+                tint: Color.jotBlueTop,
+                shaded: Color.jotBlueBottom.opacity(0.15),
+                title: "View classifications",
+                trailing: { RowChevron() }
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("View classifications")
+        .accessibilityHint("Opens a list of transcripts grouped by category")
+    }
+
+    private var labClassifierRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            IconTile(
+                systemImage: "tag",
+                tint: Color.jotBlueTop,
+                shaded: Color.jotBlueBottom.opacity(0.15)
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Background transcript classifier")
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                Text("Tags each dictation as email/message/note/code/general when your iPhone is charging. On-device only, never uploaded. Currently invisible — used for future personalization research.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $classifierEnabled)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Background transcript classifier")
+                .accessibilityHint("Tags each dictation as email, message, note, code, or general when your iPhone is charging.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var labCaption: String {
+        "Experimental features that may change or disappear in a future build. Off by default."
     }
 
     // MARK: - Misc

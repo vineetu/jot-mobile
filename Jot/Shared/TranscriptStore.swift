@@ -86,7 +86,7 @@ enum JotModelContainer {
         // as new `JotSchemaVN` files + new `MigrationStage`s — see
         // `JotMigrationPlan.swift` and `docs/schema-migrations.md`.
         do {
-            let versionedSchema = Schema(versionedSchema: JotSchemaV1.self)
+            let versionedSchema = Schema(versionedSchema: JotSchemaV4.self)
             let config = ModelConfiguration(
                 "JotTranscripts",
                 schema: versionedSchema,
@@ -129,13 +129,23 @@ enum JotModelContainer {
         }
 
         do {
-            // Use the top-level `Transcript` typealias (NOT the qualified
-            // `JotSchemaV1.Transcript`) so this fallback matches the
-            // pre-foundation code character-for-character. SwiftData's
-            // entity-name resolution can differ between qualified and
-            // typealiased references on some iOS versions; matching the
-            // prior text exactly minimizes the chance of an entity-name
-            // mismatch against existing on-disk data.
+            // Last-resort init via the top-level `Transcript` typealias
+            // (which currently aliases the latest VN). SwiftData uses
+            // lightweight inference instead of the explicit migration
+            // plan here. If lightweight inference happens to handle the
+            // existing on-disk store, the app boots and the user keeps
+            // their data — even though they're outside the versioned
+            // discipline. A future build can try the versioned path
+            // again; if SwiftData stamps the recovered store with a
+            // version on its own, the retry will succeed.
+            //
+            // Tradeoff: this writes latest-VN-shape columns into an
+            // un-versioned store. New fields added in the latest VN
+            // (e.g. V2's `rewriteUserEdit`) DO persist on fallback
+            // devices, so feature behavior isn't silently degraded.
+            // The cost is that an existing fallback store may need
+            // another round of inference (not migration) on a later
+            // schema change.
             let legacySchema = Schema([Transcript.self])
             let config = ModelConfiguration(
                 "JotTranscripts",
@@ -265,7 +275,15 @@ enum TranscriptStore {
             durationSeconds: duration,
             ledgerIndex: nextLedgerIndex(),
             derivedFromID: derivedFrom,
-            instruction: instruction
+            instruction: instruction,
+            // Editable-transcripts state (V2+) and rating (V3+) start
+            // unset — populated by the Detail surface when the user
+            // edits or rates a rewrite. Category (V4+) starts unset;
+            // the background classifier populates it on the next
+            // BG task fire (gated by the Lab toggle).
+            rewriteUserEdit: nil,
+            rewriteUpvoted: nil,
+            category: nil
         )
         context.insert(transcript)
         do {

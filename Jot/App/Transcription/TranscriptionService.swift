@@ -1073,6 +1073,48 @@ final class TranscriptionService {
         }
     }
 
+    /// One-shot migration: reclaim Application Support disk for users who
+    /// downloaded Nemotron weights during 1.0.2 (22–26). Nemotron 0.6B was
+    /// on-device-tested and ripped because RTF on iPhone was 3–5x slower
+    /// than real-time, producing 10–15s tails after stop. The weights
+    /// (~564 MB encoder + smaller decoder/joint/preprocessor; ~600 MB for
+    /// 560ms variant, plus another ~600 MB if the user also tried the
+    /// 1120ms variant) sit under
+    /// `Library/Application Support/FluidAudio/Models/nemotron-streaming/`.
+    ///
+    /// Gated by `jot.didCleanupNemotronWeights` so it runs at most once.
+    /// Best-effort + detached so a 1+ GB removeItem doesn't stretch cold
+    /// launch.
+    static func sweepNemotronAppSupportWeights() {
+        let migrationKey = "jot.didCleanupNemotronWeights"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationKey) else { return }
+
+        let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+        let nemotronRoot = MLModelConfigurationUtils
+            .defaultModelsDirectory(for: .parakeetTdtCtc110m)
+            .deletingLastPathComponent()
+            .appendingPathComponent("nemotron-streaming", isDirectory: true)
+
+        defaults.set(true, forKey: migrationKey)
+
+        guard FileManager.default.fileExists(atPath: nemotronRoot.path) else {
+            log.info("Nemotron cleanup: nothing at \(nemotronRoot.path, privacy: .public); flag set")
+            return
+        }
+
+        let target = nemotronRoot
+        Task.detached(priority: .utility) { @Sendable in
+            let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+            do {
+                try FileManager.default.removeItem(at: target)
+                log.notice("Nemotron cleanup: removed \(target.path, privacy: .public)")
+            } catch {
+                log.error("Nemotron cleanup: \(error.localizedDescription, privacy: .public) target=\(target.path, privacy: .public)")
+            }
+        }
+    }
+
     private static func purgingModelDirectory(for modelDir: URL) -> URL {
         modelDir
             .deletingLastPathComponent()
@@ -1236,6 +1278,28 @@ final class TranscriptionService {
                 self?.handleMemoryWarning()
             }
         }
+    }
+
+    /// Proactively drop the Parakeet manager. Used by the foreground
+    /// classifier ("Classify now" in the Lab dashboard) before it kicks
+    /// off Qwen — co-resident Parakeet + Qwen peak around 5 GB and
+    /// trip iOS jetsam. Honors the same `!isTranscribing` guard as
+    /// `handleMemoryWarning` so we never evict during an active dictation.
+    ///
+    /// Re-warms automatically on the next `transcribe()` / `warmUp()`.
+    func evictForExternalRequest(reason: String) {
+        guard !isTranscribing else {
+            log.notice("evictForExternalRequest: deferring — transcription in flight (reason=\(reason, privacy: .public))")
+            return
+        }
+        guard manager != nil else {
+            log.debug("evictForExternalRequest: nothing to evict (reason=\(reason, privacy: .public))")
+            return
+        }
+        log.notice("evictForExternalRequest: dropping batch transcriber (reason=\(reason, privacy: .public))")
+        manager = nil
+        prepareTask = nil
+        modelState = .notLoaded
     }
 
     private func handleMemoryWarning() {
