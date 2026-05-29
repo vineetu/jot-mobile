@@ -1348,6 +1348,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         recordingState.updateStreamingPartial(text)
     }
 
+    /// Clear the live-transcript projection (local + App Group) the instant a
+    /// NEW dictation is initiated. The previous session can leave its final
+    /// text in the projection — the keyboard-dictation path doesn't reliably
+    /// receive the main app's post-batch `reset()` — and because that stale
+    /// text is non-empty, the streaming strip renders it verbatim (skipping the
+    /// "Loading…/Listening…" placeholder) for the beat between the strip
+    /// reappearing and the new session's first partial. Clearing on start makes
+    /// the strip open clean every time.
+    private func clearStreamingPartialForNewSession() {
+        recordingState.updateStreamingPartial("")
+        if hasFullAccess {
+            AppGroup.defaults.set("", forKey: AppGroup.Keys.streamingPartialText)
+        }
+    }
+
     // MARK: - Streaming load-state mirror
 
     /// Mirrors `AppGroup.streamingLoadingVariantLabel` (written by the
@@ -1628,6 +1643,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         if let expiresAt = expiresAtSnapshot, expiresAt > now,
            let heartbeat = heartbeatSnapshot,
            now.timeIntervalSince(heartbeat) < 4.0 {
+            clearStreamingPartialForNewSession()
             CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
             keyboardLog.info("Posted warm-resume; skipping URL bounce")
             return
@@ -1669,6 +1685,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         let decision = decideMicTap()
         if hasFullAccess && AppGroup.isJotAppForeground(),
            case .start = decision {
+            clearStreamingPartialForNewSession()
             CrossProcessNotification.post(
                 name: CrossProcessNotification.keyboardDictateTapped
             )
@@ -1690,6 +1707,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             return
 
         case .start:
+            clearStreamingPartialForNewSession()
             // Write the App Group pending-paste session ONLY in the start
             // branch. Moving the write inside the decision switch (vs.
             // calling it before the branch as the prior shape did) closes

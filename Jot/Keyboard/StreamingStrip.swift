@@ -43,11 +43,14 @@ struct StreamingStrip: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Fixed 154pt height for the scrollable streaming pane per spec.
-    private static let paneHeight: CGFloat = 154
+    /// Height of the scrollable streaming pane. Trimmed from 154→130 so the
+    /// recording layout (this strip + action row + space/return row) fits inside
+    /// the 310pt keyboard envelope — at 154 the bottom row (space / return) was
+    /// pushed off and clipped. Still shows ~6½ lines of live transcript.
+    private static let paneHeight: CGFloat = 130
 
-    /// Outer card height = header (~22pt) + spacing (6pt) + pane (154pt)
-    /// + vertical padding (10pt × 2) = 192pt.
+    /// Outer card height = header (~22pt) + spacing (6pt) + pane
+    /// + vertical padding (10pt × 2).
     private static let outerHeight: CGFloat = paneHeight + 22 + 6 + 20
 
     var body: some View {

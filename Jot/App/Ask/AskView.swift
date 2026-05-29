@@ -58,7 +58,21 @@ struct AskView: View {
             .onAppear {
                 controller.refreshAvailability()
                 controller.refreshIndexStatus()
-                inputFocused = true
+                // Voice-first: do NOT auto-raise the keyboard. On a fresh,
+                // available Ask, start listening immediately so the default
+                // action is "just talk". The user can tap the field to type
+                // (which stops + discards the voice).
+                if controller.phase == .idle && !isDictating && !recordingService.isRecording {
+                    startDictation()
+                }
+            }
+            .onChange(of: inputFocused) { _, focused in
+                // Tapping the field = "I want to type" → stop and throw the
+                // in-progress voice away so typing starts clean.
+                if focused && isDictating {
+                    abortDictation()
+                    controller.question = ""
+                }
             }
             .onDisappear {
                 // If the sheet is dismissed mid-dictation, force-stop the
@@ -67,7 +81,10 @@ struct AskView: View {
                 if isDictating { abortDictation() }
             }
         }
-        .presentationDetents([.medium, .large])
+        // Open full-height directly. With `.medium` first, the sheet presented
+        // at half then jumped to large the instant `inputFocused` raised the
+        // keyboard — a visible two-step "half then full" hitch.
+        .presentationDetents([.large])
     }
 
     // MARK: - Body
@@ -122,7 +139,7 @@ struct AskView: View {
                     Text("\(controller.unindexedCount) \(controller.unindexedCount == 1 ? "note isn’t" : "notes aren’t") indexed yet")
                         .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(Color.jotPageInk)
-                    Text("Index them so Ask can search everything.")
+                    Text("Ask already searches them — indexing sharpens the results.")
                         .font(.caption2)
                         .foregroundStyle(Color.jotPageInkSecondary)
                 }
@@ -160,27 +177,19 @@ struct AskView: View {
                 "",
                 text: $controller.question,
                 prompt: Text("Ask anything about your notes…")
-                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .foregroundStyle(Color.jotPageInkSecondary),
+                axis: .vertical
             )
             .font(.system(size: 15))
             .foregroundStyle(Color.jotPageInk)
             .textInputAutocapitalization(.sentences)
             .submitLabel(.search)
+            // Grow with the question up to ~5 lines, then scroll inside — keeps
+            // a long (often dictated) question readable in place instead of
+            // truncating it on one line.
+            .lineLimit(1...5)
             .focused($inputFocused)
             .onSubmit { submitIfPossible() }
-
-            if !controller.question.isEmpty {
-                Button {
-                    controller.reset()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear question")
-            }
 
             Button {
                 if isDictating { stopDictation() } else { startDictation() }
@@ -210,9 +219,13 @@ struct AskView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        // Rounded-rect (not Capsule) so the bar grows gracefully when the
+        // question wraps to multiple lines — a Capsule would turn into an
+        // awkward tall stadium. At single-line height this still reads as a pill.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            Capsule().strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
         )
         // Live dictation: stream the partial transcript into the field while
         // recording, exactly like the keyboard's live dictation.
@@ -255,10 +268,25 @@ struct AskView: View {
     private var answerArea: some View {
         switch controller.phase {
         case .idle:
-            // No example prompts — a clean field; the user asks their own thing.
-            EmptyView()
+            // While listening with nothing transcribed yet, prompt the user to
+            // speak — otherwise an auto-started, empty field gives no cue that
+            // it's recording. Disappears the moment the first words land.
+            if isDictating && controller.question.isEmpty {
+                ListeningRow()
+            } else {
+                // No example prompts — a clean field; the user asks their own thing.
+                EmptyView()
+            }
         case .retrieving:
-            thinkingRow
+            AskLoadingRow(messages: ["Searching your notes…"])
+        case .streaming where controller.segments.isEmpty:
+            // The submit→first-token gap. Show "waking the model" while a cold
+            // backend loads, then rotate light "thinking" lines during prefill.
+            AskLoadingRow(
+                messages: controller.isModelWarming
+                    ? ["Waking the on-device model…"]
+                    : Self.thinkingMessages
+            )
         case .streaming, .done:
             answerSegmentsView
         case .vague:
@@ -271,18 +299,15 @@ struct AskView: View {
     }
 
 
-    private var thinkingRow: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Thinking…")
-                .font(.system(.callout))
-                .foregroundStyle(Color.jotPageInkSecondary)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
+    /// Light, gently-quirky lines cycled while the model is processing the
+    /// prompt before the first token lands. Kept understated on purpose.
+    private static let thinkingMessages = [
+        "Reading through your notes…",
+        "Connecting the dots…",
+        "Following the thread…",
+        "Piecing it together…",
+        "Gathering your thoughts…",
+    ]
 
     private var answerSegmentsView: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -529,6 +554,9 @@ struct AskView: View {
         inputFocused = false
         controller.question = ""
         isDictating = true
+        // Claim ownership so the home view won't adopt this recording as a hero
+        // (it shares the same recorder). Cleared only once teardown completes.
+        controller.ownsActiveRecording = true
         dictationTask = Task {
             do {
                 // `start()` returns once recording is live; partials then flow
@@ -536,6 +564,7 @@ struct AskView: View {
                 try await recordingService.start()
             } catch {
                 isDictating = false
+                controller.ownsActiveRecording = false
             }
         }
     }
@@ -543,10 +572,21 @@ struct AskView: View {
     private func stopDictation() {
         guard isDictating else { return }
         isDictating = false
-        dictationTask?.cancel()
+        let pending = dictationTask
         dictationTask = Task {
+            // Let an in-flight start() finish before stopping — cancelling it
+            // mid-bring-up races the engine and can leak a live recording.
+            _ = await pending?.result
             do {
                 let samples = try await recordingService.stop()
+                // Ask transcribes the samples itself and never runs
+                // RecordingService's normal post-stop pipeline, so we must
+                // release the pipeline-in-flight latch by hand. Without this the
+                // next real dictate throws "a recording is already in progress".
+                recordingService.markPipelineFinished()
+                // Recording is fully stopped — release ownership so the home can
+                // resume normal recording behavior.
+                controller.ownsActiveRecording = false
                 let text = try await transcriptionService.transcribe(samples: samples)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
@@ -557,7 +597,11 @@ struct AskView: View {
                 // NOTE: deliberately NOT calling TranscriptStore.append — the
                 // dictated question is a query, not a note. No corpus pollution.
             } catch {
-                // Keep whatever live text we captured; the user can edit/submit.
+                // stop() failed (its own catch already released the latch) or
+                // transcription threw — release defensively so we never wedge
+                // the recorder for the next dictation.
+                recordingService.markPipelineFinished()
+                controller.ownsActiveRecording = false
             }
         }
     }
@@ -566,9 +610,23 @@ struct AskView: View {
     /// the sheet is dismissed mid-dictation). Discards the audio.
     private func abortDictation() {
         isDictating = false
-        dictationTask?.cancel()
+        let pending = dictationTask
         dictationTask = nil
-        Task { _ = try? await recordingService.stop() }
+        Task {
+            // Let an in-flight start() finish so the teardown sees a live engine
+            // to release — discarding mid-bring-up would leak the recording.
+            _ = await pending?.result
+            // forceStop() discards the captured audio AND fully releases the mic
+            // (unlike cancel(), it does NOT re-enter warm-hold) — the true
+            // "throw it away" for closing Ask / switching to typing, so the mic
+            // doesn't linger after. It never calls stop(), so the
+            // pipeline-in-flight latch is never set. `.failed` here is a benign
+            // terminal phase (handled like `.idle`), not a user-facing error.
+            recordingService.forceStop()
+            // Teardown complete — release ownership so the home (and the next
+            // real dictate) can use the recorder normally.
+            controller.ownsActiveRecording = false
+        }
     }
 
     private func openCitation(id: UUID) {
@@ -683,6 +741,69 @@ private struct FlowLayout: Layout {
             lineHeight = max(lineHeight, size.height)
         }
         return placements
+    }
+}
+
+/// "Listening" status shown below the field while dictation is live but no
+/// words have been transcribed yet — a pulsing record dot + a nudge to speak.
+private struct ListeningRow: View {
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 9, height: 9)
+                .opacity(pulse ? 0.3 : 1.0)
+            Text("Listening… ask about your notes")
+                .font(.system(.callout))
+                .foregroundStyle(Color.jotPageInkSecondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .task {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+}
+
+/// Spinner + a single rotating status line. With one message it sits static
+/// (e.g. "Searching…", "Waking the model…"); with several it cross-fades
+/// through them on a gentle cadence while the model is thinking. The rotation
+/// task is keyed on `messages`, so swapping pools (warming → thinking) restarts
+/// it cleanly, and it cancels automatically when the row leaves the tree (first
+/// token arrives).
+private struct AskLoadingRow: View {
+    let messages: [String]
+    @State private var index = 0
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text(messages.indices.contains(index) ? messages[index] : (messages.first ?? ""))
+                .font(.system(.callout))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .id(index)
+                .transition(.opacity)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .task(id: messages) {
+            index = 0
+            guard messages.count > 1 else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                if Task.isCancelled { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    index = (index + 1) % messages.count
+                }
+            }
+        }
     }
 }
 #endif

@@ -442,7 +442,8 @@ struct ContentView: View {
             if recordingService.isRecording,
                !isWizardPresented,
                !userDismissedHeroDuringRecording,
-               !showAskSheet {  // Ask-mode in-sheet dictation; no hero adoption.
+               !showAskSheet,  // Ask-mode in-sheet dictation; no hero adoption.
+               !askController.ownsActiveRecording {  // …nor during Ask's async recording teardown.
                 let isColdStart = pendingColdStartHeroNudge
                 pendingColdStartHeroNudge = false
                 heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
@@ -483,7 +484,8 @@ struct ContentView: View {
             if isRecording,
                !isWizardPresented,
                !userDismissedHeroDuringRecording,
-               !showAskSheet {  // Ask-mode dictation records in-sheet; no hero.
+               !showAskSheet,  // Ask-mode dictation records in-sheet; no hero.
+               !askController.ownsActiveRecording {  // …nor during Ask's async recording teardown.
                 // Auto-nav adoption — never `start()` from this path.
                 let isColdStart = pendingColdStartHeroNudge
                 pendingColdStartHeroNudge = false
@@ -530,6 +532,7 @@ struct ContentView: View {
             && !showRecordingHero
             && !isWizardPresented
             && !showAskSheet  // Ask-mode dictation records in-sheet; no home pill.
+            && !askController.ownsActiveRecording  // …nor during Ask's async teardown.
             && userDismissedHeroDuringRecording
     }
 

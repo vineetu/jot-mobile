@@ -80,10 +80,34 @@ final class AskController {
     var indexDone: Int = 0
     var indexTotal: Int = 0
 
+    /// True while the on-board model is being loaded into memory *for this
+    /// answer* (cold Qwen). Drives the "Waking the model…" loading copy, which
+    /// the view swaps for the quirky "thinking" messages once generation
+    /// actually starts. Always false for Apple Intelligence (it self-manages).
+    var isModelWarming: Bool = false
+
+    /// True from the instant Ask starts a dictation until that recording is
+    /// FULLY torn down. The home view shares the same `RecordingService`
+    /// singleton and auto-adopts any live recording as a hero — gated only on
+    /// `!showAskSheet`. But Ask's teardown is async, so `isRecording` can still
+    /// be true for a beat after the sheet dismisses, during which the home would
+    /// adopt Ask's recording (flicker) and race its teardown (wedging the mic
+    /// for the next real dictate). The home also checks this flag so it never
+    /// touches a recording Ask owns, through the whole close + teardown window.
+    var ownsActiveRecording: Bool = false
+
     // MARK: - Internals
 
     private var workTask: Task<Void, Never>?
     private var indexTask: Task<Void, Never>?
+    /// Whether the unindexed count has been computed this controller lifetime.
+    /// The controller is a persistent `@State` in `ContentView`, so this
+    /// survives sheet open/close — we compute the count ONCE (off-main) plus
+    /// after index operations, instead of re-scanning the whole store on every
+    /// `onAppear`. Background backfill + the brute-force search floor mean a
+    /// slightly-stale count is harmless (search already covers every note).
+    private var indexStatusLoaded = false
+    private var indexStatusTask: Task<Void, Never>?
     private var answerText: String = ""
     /// Retrieved transcript IDs in retrieval order. `[cite: N]` markers
     /// the model emits are 1-based indices into this list.
@@ -137,8 +161,19 @@ final class AskController {
     // MARK: - Indexing prompt (offered inside Ask when notes aren't indexed)
 
     /// Re-read how many notes still need indexing. Called when the sheet opens.
-    func refreshIndexStatus() {
-        unindexedCount = TranscriptIndexer.unindexedCount()
+    /// Re-read how many notes still need indexing. Cached: only actually scans
+    /// on the first call (per controller lifetime) or when `force` is set
+    /// (after an index operation completes). `onAppear` calls it unforced, so
+    /// reopening Ask is free.
+    func refreshIndexStatus(force: Bool = false) {
+        guard force || !indexStatusLoaded else { return }
+        guard indexStatusTask == nil else { return }
+        indexStatusTask = Task { [weak self] in
+            let count = await TranscriptIndexer.unindexedCountAsync()
+            self?.unindexedCount = count
+            self?.indexStatusLoaded = true
+            self?.indexStatusTask = nil
+        }
     }
 
     /// Index the unindexed notes in the background, with live progress, then
@@ -155,7 +190,7 @@ final class AskController {
             }
             self?.isIndexing = false
             self?.indexTask = nil
-            self?.refreshIndexStatus()
+            self?.refreshIndexStatus(force: true)
         }
     }
 
@@ -188,6 +223,8 @@ final class AskController {
         citedIDs = []
         answerText = ""
         answerBackend = nil
+        isModelWarming = false
+        ownsActiveRecording = false
         orderedIDs = []
         transcriptsByID = [:]
         phase = .idle
@@ -291,6 +328,15 @@ final class AskController {
                 answerBackend = .qwen
                 Self.log.info("Ask: streaming with Qwen")
                 let client = LLMClientFactory.shared.client()
+                // Ensure the model is resident before streaming — `askStreaming`
+                // throws `containerNotLoaded` on a cold backend. Surface the
+                // load as a distinct "waking the model" state only when it
+                // isn't already ready (so a warm backend shows no warming copy).
+                if await client.status != .ready {
+                    isModelWarming = true
+                    try await client.warm()
+                    isModelWarming = false
+                }
                 for try await cumulative in client.askStreaming(
                     systemPrompt: Self.instructionsBlock,
                     userPrompt: userTurn
@@ -312,8 +358,10 @@ final class AskController {
             citedIDs = Self.extractCitedIDs(from: segments)
             phase = .done
         } catch is CancellationError {
+            isModelWarming = false
             phase = .done
         } catch {
+            isModelWarming = false
             Self.log.error("Ask call failed: \(error.localizedDescription, privacy: .public)")
             phase = .error("Couldn't generate an answer. Try again.")
         }
@@ -375,57 +423,73 @@ final class AskController {
     // MARK: - Retrieval
 
     private func retrieveTopK(forQuery query: String, k: Int) async throws -> [Transcript] {
-        // Embed the query — asymmetric: queries use the `.query` task prefix
-        // (chunks were embedded with `.document`).
-        let queryVector = try await EmbeddingGemmaService.shared.encode(query, role: .query)
-        let normalizedQuery = Self.normalize(queryVector)
-        guard !normalizedQuery.isEmpty else { return [] }
-
-        // Hybrid retrieval over CHUNKS: dense cosine + lexical BM25, fused with
-        // RRF. Chunk-level matching surfaces an idea buried in a long note that a
-        // whole-transcript vector would average into mush. We then map the top
-        // chunks to their parent transcripts (dedup, best-rank-wins) and return
-        // those — the rest of the pipeline stays transcript-level.
         let context = ModelContext(JotModelContainer.shared)
+
+        // Brute-force lexical FLOOR over raw transcript text. Every note is
+        // reachable this way — indexed or not — so search never goes blind on
+        // notes the background indexer hasn't reached yet. Embeddings only
+        // *improve* ranking on top of this; they're not a gate for findability.
+        let allTranscripts = (try? context.fetch(FetchDescriptor<Transcript>())) ?? []
+        let rawDocs = allTranscripts
+            .map { (id: $0.id, text: $0.displayText) }
+            .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !rawDocs.isEmpty else { return [] }
+
+        // Each signal is a transcript-id ranking; RRF fuses them. The raw floor
+        // is always present; the chunk signals join only when chunks exist.
+        var rankedLists: [[UUID]] = []
+        rankedLists.append(BM25Index(documents: rawDocs).search(query, limit: 50).map { $0.id })
+
+        // Semantic + chunk-level lexical over CHUNKS (indexed notes only). Chunk
+        // matching surfaces an idea buried in a long note that a whole-transcript
+        // vector would average into mush. Mapped up to parent transcripts.
         let chunks = ChunkStore.allChunks(modelVersion: EmbeddingGemmaService.modelVersion)
-        guard !chunks.isEmpty else { return [] }
+        if !chunks.isEmpty {
+            let parentByChunk = Dictionary(uniqueKeysWithValues: chunks.map { ($0.id, $0.transcriptID) })
 
-        // Dense: cosine per chunk (both vectors unit-norm → dot == cosine).
-        let denseRanked: [UUID] = chunks
-            .compactMap { chunk -> (UUID, Float)? in
-                let vector = chunk.vector
-                guard vector.count == normalizedQuery.count else { return nil }
-                return (chunk.id, Self.dot(normalizedQuery, vector))
+            // Dense cosine — needs the query embedded (asymmetric `.query` prefix;
+            // chunks were `.document`). If the embedder fails, degrade silently to
+            // the lexical signals rather than failing the whole search.
+            if let queryVector = try? await EmbeddingGemmaService.shared.encode(query, role: .query) {
+                let normalizedQuery = Self.normalize(queryVector)
+                if !normalizedQuery.isEmpty {
+                    let denseChunkIDs = chunks
+                        .compactMap { chunk -> (UUID, Float)? in
+                            let vector = chunk.vector
+                            guard vector.count == normalizedQuery.count else { return nil }
+                            return (chunk.id, Self.dot(normalizedQuery, vector))
+                        }
+                        .sorted { $0.1 > $1.1 }
+                        .prefix(50)
+                        .map { $0.0 }
+                    rankedLists.append(Self.transcriptOrder(forChunkIDs: Array(denseChunkIDs), parentByChunk: parentByChunk))
+                }
             }
-            .sorted { $0.1 > $1.1 }
-            .prefix(50)
-            .map { $0.0 }
 
-        // Lexical: BM25 over chunk text.
-        let bm25 = BM25Index(documents: chunks.map { (id: $0.id, text: $0.text) })
-        let lexicalRanked = bm25.search(query, limit: 50).map { $0.id }
+            // Chunk-level BM25.
+            let chunkLexIDs = BM25Index(documents: chunks.map { (id: $0.id, text: $0.text) })
+                .search(query, limit: 50).map { $0.id }
+            rankedLists.append(Self.transcriptOrder(forChunkIDs: chunkLexIDs, parentByChunk: parentByChunk))
+        }
 
-        // Fuse (RRF k=60) → chunk ids best-first → parent transcripts (dedup).
-        let fusedChunkIDs = RRFFusion.fuse([denseRanked, lexicalRanked], k: 60)
-        let parentByChunk = Dictionary(uniqueKeysWithValues: chunks.map { ($0.id, $0.transcriptID) })
+        // Fuse all signals (RRF k=60), take top-k transcripts.
+        let topTranscriptIDs = Array(RRFFusion.fuse(rankedLists, k: 60).prefix(k))
+        guard !topTranscriptIDs.isEmpty else { return [] }
+        let byID = Dictionary(uniqueKeysWithValues: allTranscripts.map { ($0.id, $0) })
+        return topTranscriptIDs.compactMap { byID[$0] }
+    }
+
+    /// Collapse a chunk-id ranking to its parent transcripts, deduped,
+    /// best-rank-wins (a transcript takes the rank of its highest chunk).
+    private static func transcriptOrder(forChunkIDs chunkIDs: [UUID], parentByChunk: [UUID: UUID]) -> [UUID] {
         var seen = Set<UUID>()
-        var topTranscriptIDs: [UUID] = []
-        for chunkID in fusedChunkIDs {
+        var out: [UUID] = []
+        for chunkID in chunkIDs {
             guard let transcriptID = parentByChunk[chunkID], !seen.contains(transcriptID) else { continue }
             seen.insert(transcriptID)
-            topTranscriptIDs.append(transcriptID)
-            if topTranscriptIDs.count >= k { break }
+            out.append(transcriptID)
         }
-        guard !topTranscriptIDs.isEmpty else { return [] }
-
-        // Resolve to Transcripts, preserving fused order.
-        let idSet = Set(topTranscriptIDs)
-        let transcriptDescriptor = FetchDescriptor<Transcript>(
-            predicate: #Predicate<Transcript> { idSet.contains($0.id) }
-        )
-        let transcripts = (try? context.fetch(transcriptDescriptor)) ?? []
-        let byID = Dictionary(uniqueKeysWithValues: transcripts.map { ($0.id, $0) })
-        return topTranscriptIDs.compactMap { byID[$0] }
+        return out
     }
 
     // MARK: - Date-scoped retrieval

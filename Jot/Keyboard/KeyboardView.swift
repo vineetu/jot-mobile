@@ -713,8 +713,22 @@ struct KeyboardView: View {
         // are retained on the view in case we ever need to re-add the
         // globe in a follow-up; they are currently unused by this row.
         let returnWidth = max(78, metrics.letterKeyWidth * 2.2)
+        let openJotWidth = max(50, metrics.letterKeyWidth * 1.4)
 
         return HStack(spacing: metrics.keySpacing) {
+            // Quick jump into the full Jot app (opens `jot://history`). Left of
+            // the space bar per request — a one-tap link out of the keyboard.
+            keyButton(
+                width: openJotWidth,
+                metrics: metrics,
+                style: .primary,
+                accessibilityLabel: "Open Jot",
+                action: onOpenHome
+            ) {
+                Image(systemName: "arrow.up.forward.app.fill")
+                    .font(.system(size: 18, weight: .semibold))
+            }
+
             keyButton(
                 metrics: metrics,
                 style: .primary,

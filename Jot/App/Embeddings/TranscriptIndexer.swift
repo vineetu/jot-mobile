@@ -81,22 +81,31 @@ enum TranscriptIndexer {
 
     /// Number of transcripts that have NO chunks at the current model version
     /// AND have indexable text. Drives the "index your notes" prompt in Ask.
-    /// Empty/whitespace notes are excluded — the chunker yields nothing for
-    /// them, so they can never gain chunks; counting them left the prompt
-    /// stuck at "N notes aren't indexed" forever with an Index button that
-    /// appeared to do nothing.
-    static func unindexedCount() -> Int {
-        let missing = Set(ChunkStore.transcriptIDsMissingChunks(
-            modelVersion: EmbeddingGemmaService.modelVersion,
-            limit: Int.max
-        ))
-        guard !missing.isEmpty else { return 0 }
-        let context = ModelContext(JotModelContainer.shared)
-        let all = (try? context.fetch(FetchDescriptor<Transcript>())) ?? []
-        return all.filter { transcript in
-            missing.contains(transcript.id)
-                && !transcript.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.count
+    ///
+    /// Runs the SwiftData fetches OFF the main actor on a detached context.
+    /// The Ask sheet calls this on appear; doing a whole-table read on Main
+    /// hitched the sheet presentation by ~1s on large libraries. The count is
+    /// a secondary prompt, so populating it a beat after the sheet draws is
+    /// fine. Empty/whitespace notes are excluded — the chunker yields nothing
+    /// for them, so they can never gain chunks; counting them left the prompt
+    /// stuck at "N notes aren't indexed" forever with a dead-looking button.
+    static nonisolated func unindexedCountAsync() async -> Int {
+        let modelVersion = EmbeddingGemmaService.modelVersion
+        let container = await MainActor.run { JotModelContainer.shared }
+        return await Task.detached(priority: .utility) {
+            let context = ModelContext(container)
+            var chunkDescriptor = FetchDescriptor<TranscriptChunk>(
+                predicate: #Predicate { $0.modelVersion == modelVersion }
+            )
+            chunkDescriptor.propertiesToFetch = [\.transcriptID]
+            let chunked = (try? context.fetch(chunkDescriptor)) ?? []
+            let chunkedIDs = Set(chunked.map(\.transcriptID))
+            let all = (try? context.fetch(FetchDescriptor<Transcript>())) ?? []
+            return all.filter { transcript in
+                !chunkedIDs.contains(transcript.id)
+                    && !transcript.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.count
+        }.value
     }
 
     /// Index ONLY the transcripts that currently lack chunks (the backfill the

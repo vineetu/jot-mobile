@@ -46,7 +46,11 @@ struct RecentsListCard: View {
     }
 
     private var groupedRows: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // LazyVStack (not VStack): the rows live inside Recents' ScrollView, so
+        // a plain VStack builds ALL transcript rows up front (eager). LazyVStack
+        // only realizes the visible rows + a small buffer and recycles as you
+        // scroll — the win that keeps a 500+ transcript home screen smooth.
+        LazyVStack(alignment: .leading, spacing: 0) {
             if isLiveRecording {
                 LiveStreamingRow(streamingText: liveStreamingText)
 
