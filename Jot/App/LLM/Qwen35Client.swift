@@ -462,6 +462,134 @@ final class Qwen35Client: LLMClient {
     // MARK: - Internal
 
     #if !targetEnvironment(simulator)
+    /// Free-form Ask mode generation. Same MLX container + chat template
+    /// + cancellation plumbing as `rewrite(...)` but WITHOUT
+    /// grammar-constrained decoding — the model emits plain prose with
+    /// inline `[cite: <uuid>]` markers that `AskController` parses into
+    /// tappable chips. Used as a fallback when Apple Foundation Models
+    /// is unavailable (older device, AI off in Settings, etc.).
+    func ask(systemPrompt: String, userPrompt: String) async throws -> String {
+        Self.qwenLog.notice("Qwen35.ask: ENTRY user-chars=\(userPrompt.count, privacy: .public)")
+        try await warm()
+        Self.qwenLog.notice("Qwen35.ask: WARM done")
+
+        #if targetEnvironment(simulator)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        return "[simulator stand-in] Ask answer for: \(userPrompt.prefix(50))"
+        #else
+        guard let container else {
+            throw Qwen35Error.containerNotLoaded
+        }
+
+        let askTask = Task<String, Error> { [container, log] in
+            Self.qwenLog.notice("Qwen35.ask: CONTAINER perform start")
+            let buf: String = try await container.perform { ctx in
+                let chat: [Chat.Message] = [
+                    .system(systemPrompt),
+                    .user(userPrompt)
+                ]
+                let input = try await ctx.processor.prepare(
+                    input: UserInput(
+                        chat: chat,
+                        additionalContext: ["enable_thinking": false]
+                    )
+                )
+
+                // No grammar — free generation. Ask answers are short
+                // prose (~200-500 words = ~300-650 tokens); 800 is the
+                // budget that matches the plan's reserved-output slot.
+                let stream = try await generate(
+                    input: input,
+                    parameters: GenerateParameters(maxTokens: 800, temperature: 0.4),
+                    context: ctx
+                )
+
+                var buffer = ""
+                var chunkCount = 0
+                for await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .chunk(let chunk):
+                        buffer += chunk
+                        chunkCount += 1
+                        if chunkCount % 32 == 0 {
+                            Self.qwenLog.notice("Qwen35.ask: chunks=\(chunkCount, privacy: .public)")
+                        }
+                    case .info(let i):
+                        log.info(
+                            "Qwen 3.5 ask: tokens=\(i.generationTokenCount) tps=\(i.tokensPerSecond, format: .fixed(precision: 2))"
+                        )
+                    case .toolCall:
+                        break
+                    }
+                }
+                return buffer
+            }
+            Self.qwenLog.notice("Qwen35.ask: DONE chars=\(buf.count, privacy: .public)")
+            return buf.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return try await withTaskCancellationHandler {
+            try await askTask.value
+        } onCancel: {
+            askTask.cancel()
+        }
+        #endif
+    }
+
+    /// Streaming Ask: yields the cumulative answer text as tokens generate.
+    /// Mirrors `ask` but emits the growing buffer instead of only the final
+    /// string, so the UI can render token-by-token.
+    nonisolated func askStreaming(systemPrompt: String, userPrompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { @MainActor [weak self] in
+                guard let self else { continuation.finish(); return }
+                do {
+                    try await self.warm()
+                    #if targetEnvironment(simulator)
+                    // Stand-in: emit a couple of cumulative chunks so the
+                    // streaming UI can be exercised in the simulator.
+                    continuation.yield("[simulator] streaming…")
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    continuation.yield("[simulator stand-in] Ask answer for: \(userPrompt.prefix(50))")
+                    continuation.finish()
+                    return
+                    #else
+                    guard let container = self.container else {
+                        throw Qwen35Error.containerNotLoaded
+                    }
+                    try await container.perform { ctx in
+                        let chat: [Chat.Message] = [.system(systemPrompt), .user(userPrompt)]
+                        let input = try await ctx.processor.prepare(
+                            input: UserInput(
+                                chat: chat,
+                                additionalContext: ["enable_thinking": false]
+                            )
+                        )
+                        let stream = try await generate(
+                            input: input,
+                            parameters: GenerateParameters(maxTokens: 800, temperature: 0.4),
+                            context: ctx
+                        )
+                        var buffer = ""
+                        for await event in stream {
+                            try Task.checkCancellation()
+                            if case .chunk(let chunk) = event {
+                                buffer += chunk
+                                continuation.yield(buffer)
+                            }
+                        }
+                    }
+                    continuation.finish()
+                    #endif
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     private func loadContainer(progress: (@Sendable (Double) -> Void)?) async throws -> ModelContainer {
         if let container { return container }
         let configuration = ModelConfiguration(id: Self.modelID)

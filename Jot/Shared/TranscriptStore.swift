@@ -86,7 +86,7 @@ enum JotModelContainer {
         // as new `JotSchemaVN` files + new `MigrationStage`s — see
         // `JotMigrationPlan.swift` and `docs/schema-migrations.md`.
         do {
-            let versionedSchema = Schema(versionedSchema: JotSchemaV4.self)
+            let versionedSchema = Schema(versionedSchema: JotSchemaV7.self)
             let config = ModelConfiguration(
                 "JotTranscripts",
                 schema: versionedSchema,
@@ -146,7 +146,17 @@ enum JotModelContainer {
             // The cost is that an existing fallback store may need
             // another round of inference (not migration) on a later
             // schema change.
-            let legacySchema = Schema([Transcript.self])
+            // Include the V7 sibling entities so fallback-path devices
+            // can read/write the chunk + category tables (and the
+            // deprecated embedding table). All additive — SwiftData's
+            // inferred-schema path accepts them on a previously-
+            // non-versioned store.
+            let legacySchema = Schema([
+                Transcript.self,
+                TranscriptEmbedding.self,
+                TranscriptCategory.self,
+                TranscriptChunk.self
+            ])
             let config = ModelConfiguration(
                 "JotTranscripts",
                 schema: legacySchema,
@@ -278,12 +288,11 @@ enum TranscriptStore {
             instruction: instruction,
             // Editable-transcripts state (V2+) and rating (V3+) start
             // unset — populated by the Detail surface when the user
-            // edits or rates a rewrite. Category (V4+) starts unset;
-            // the background classifier populates it on the next
-            // BG task fire (gated by the Lab toggle).
+            // edits or rates a rewrite. `category` is dead-data from V6
+            // onward — see the banner on `JotSchemaV6.Transcript.category`;
+            // future classification writes go to `TranscriptCategory`.
             rewriteUserEdit: nil,
-            rewriteUpvoted: nil,
-            category: nil
+            rewriteUpvoted: nil
         )
         context.insert(transcript)
         do {
@@ -306,6 +315,12 @@ enum TranscriptStore {
         // mirror. `historyMirrorUpdated` is the canonical "mirror has been
         // written" signal — see `CrossProcessNotification.swift`.
         CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+
+        // Snapshot id + text BEFORE the detached hop — Transcript is a
+        // SwiftData @Model bound to the short-lived ModelContext above.
+        // TranscriptIndexer runs the embed + classify pipeline on a
+        // detached `.utility` task so the encode happens off MainActor.
+        TranscriptIndexer.index(transcriptID: transcript.id, text: transcript.text)
 
         return transcript
     }

@@ -85,12 +85,14 @@ enum AppGroup {
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
-        /// Set to `true` when the user is running a foreground "Classify
-        /// now" loop from the Lab dashboard. The BG classifier task
-        /// reads this on `submitIfEnabled()` and bails when set, so the
-        /// two paths don't double-classify (or even worse, race-write)
-        /// the same rows. Foreground clears it in `defer`.
-        static let classifierForegroundInFlight = "jot.classifier.foregroundInFlight"
+        /// Default-ON Lab kill-switch for the MiniLM embedding writer.
+        /// Read by `TranscriptStore.append`, `PhoneSideWCSession.saveTranscript`,
+        /// and `EmbeddingBackfillTask` before any encode work. Default `true`
+        /// (treated as ON by `AppGroup.isEmbeddingsEnabled`). Stored here in
+        /// `AppGroup.defaults` for symmetry with the prior classifier toggle.
+        /// Surfaced in Settings → About as a one-row toggle. See
+        /// `docs/plans/minilm-embeddings.md` §Lab kill-switch for rationale.
+        static let embeddingsEnabled = "jot.embeddings.enabled"
 
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
@@ -124,6 +126,31 @@ enum AppGroup {
         /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
+
+        /// Which LLM answers Ask-mode questions. `"appleIntelligence"` (default —
+        /// no download) or `"qwen"` (on-board, better answers, needs the 2.5 GB
+        /// download). Read by `AskController.pickBackend()`; bound to the
+        /// Settings → AI "Use on-board Qwen for Ask" toggle.
+        static let askBackend = "jot.ask.backend"
+    }
+
+    /// MiniLM embedding writer toggle. **Default `true`** — users opt OUT
+    /// rather than in, because embeddings are foundation work the rest of
+    /// Jot will depend on. Surfaced in Settings → About as an emergency
+    /// kill-switch if a field MLTensor OOM regression slips past the
+    /// pre-merge memory gate.
+    ///
+    /// Custom getter (not `bool(forKey:)`) so the missing-key state reads
+    /// as `true` (default-ON). Setter writes through to the underlying
+    /// `Bool` so the SwiftUI `Toggle` binding works naturally.
+    static var isEmbeddingsEnabled: Bool {
+        get {
+            guard defaults.object(forKey: Keys.embeddingsEnabled) != nil else {
+                return true
+            }
+            return defaults.bool(forKey: Keys.embeddingsEnabled)
+        }
+        set { defaults.set(newValue, forKey: Keys.embeddingsEnabled) }
     }
 
     /// User-facing master toggle for the warm-hold feature. Default
@@ -204,6 +231,13 @@ enum AppGroup {
         get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "qwen35" }
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
     }
+
+    /// Ask-mode answer backend: `"appleIntelligence"` (default) or `"qwen"`.
+    static var askBackend: String {
+        get { defaults.string(forKey: Keys.askBackend) ?? "appleIntelligence" }
+        set { defaults.set(newValue, forKey: Keys.askBackend) }
+    }
+
 
     /// Raw JSON `Data` blob backing the saved-prompts list. Prefer the
     /// `SavedPromptStore` API (encodes/decodes and seeds the default entry)

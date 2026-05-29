@@ -48,4 +48,47 @@ protocol LLMClient: AnyObject, Sendable {
     /// with no preamble, quoting, or explanation — enforced by the
     /// `Rewrite` JSON schema via grammar-constrained decoding.
     func rewrite(text: String, systemPrompt: String) async throws -> String
+
+    /// Free-form generation for Ask mode. Unlike `rewrite`, this is
+    /// NOT grammar-constrained — the model emits prose with inline
+    /// `[cite: <uuid>]` markers per the system prompt's contract. The
+    /// AskController parses the markers into tappable chips.
+    ///
+    /// Default implementation throws — only the production Qwen client
+    /// implements this; test fakes that don't override will surface a
+    /// clear "not supported" error rather than silently returning
+    /// rewrite output.
+    func ask(systemPrompt: String, userPrompt: String) async throws -> String
+
+    /// Streaming variant of `ask`. Yields the **cumulative** answer text as it
+    /// generates (each value is the full text so far, not a delta), so the UI
+    /// can render the answer token-by-token. The default implementation falls
+    /// back to non-streaming `ask` (one final yield); the Qwen client overrides
+    /// it with true token streaming.
+    func askStreaming(systemPrompt: String, userPrompt: String) -> AsyncThrowingStream<String, Error>
+}
+
+extension LLMClient {
+    func ask(systemPrompt: String, userPrompt: String) async throws -> String {
+        throw NSError(
+            domain: "com.vineetu.jot.mobile.LLMClient",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Ask is not supported by this LLM backend."]
+        )
+    }
+
+    func askStreaming(systemPrompt: String, userPrompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let result = try await ask(systemPrompt: systemPrompt, userPrompt: userPrompt)
+                    continuation.yield(result)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }

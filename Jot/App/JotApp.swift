@@ -1,4 +1,5 @@
 @preconcurrency import AVFAudio
+import BackgroundTasks
 import Combine
 import SwiftUI
 import SwiftData
@@ -177,14 +178,35 @@ struct JotApp: App {
         // directory doesn't exist (user hasn't downloaded any variant yet).
         BackupExclusion.excludeFluidAudioModels()
 
-        // Register the background-classifier BGProcessingTask identifier.
-        // MUST happen during process startup BEFORE any submission — the
-        // BGTaskScheduler refuses to submit a request whose identifier
-        // hasn't been registered. Identifier is also declared in
-        // Info.plist's BGTaskSchedulerPermittedIdentifiers. The task body
-        // only runs work when the Lab toggle `jot.classifier.enabled` is
-        // on; see `TranscriptClassifierTask` for the lifecycle doc.
-        TranscriptClassifierTask.register()
+        // One-shot cleanup: drop any stale `classify-transcripts`
+        // `BGProcessingTaskRequest` iOS may still hold from a pre-build-47
+        // install. The previous build called `cancelAllTaskRequests()`
+        // unconditionally — which also wiped our OWN pending
+        // `backfill-embeddings` request on every launch, defeating the
+        // BG backstop. Specific-identifier cancel + one-shot guard means
+        // (a) we only drop the legacy classifier request, and
+        // (b) we only do it once per install.
+        let bgCleanupKey = "jot.didCleanLegacyClassifierBGRequest_v1"
+        if !UserDefaults.standard.bool(forKey: bgCleanupKey) {
+            BGTaskScheduler.shared.cancel(
+                taskRequestWithIdentifier: "com.vineetu.jot.mobile.Jot.classify-transcripts"
+            )
+            UserDefaults.standard.set(true, forKey: bgCleanupKey)
+        }
+
+        // Register the MiniLM embedding backfill identifier
+        // (`com.vineetu.jot.mobile.Jot.backfill-embeddings`,
+        // `BGAppRefreshTask`). Replaces the deprecated Qwen classifier
+        // task. iOS requires registration before any submission;
+        // identifier is declared in Info.plist's
+        // BGTaskSchedulerPermittedIdentifiers. See `EmbeddingBackfillTask`.
+        EmbeddingBackfillTask.register()
+
+        // One-shot UserDefaults cleanup: drop the residual `jot.classifier.enabled`
+        // key from devices that had the Qwen classifier Lab toggle ON in
+        // a prior build. Idempotent — `removeObject` on a missing key is
+        // a no-op, so leaving this call in place forever is safe.
+        AppGroup.defaults.removeObject(forKey: "jot.classifier.enabled")
 
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
@@ -254,6 +276,17 @@ struct JotApp: App {
             }
         }
 
+        // Pre-warm the MiniLM embedding model so the first dictation
+        // doesn't pay the 3-10s cold load tax inline on the detached
+        // task. `.utility` priority so this doesn't compete with the
+        // userInitiated Parakeet warm-up above. `prewarm()` coalesces
+        // concurrent callers internally, so a dictation that races this
+        // task shares the same in-flight load instead of triggering a
+        // second one.
+        Task(priority: .utility) {
+            try? await EmbeddingGemmaService.shared.prewarm()
+        }
+
         // Reset any leftover non-terminal pipeline-phase projection from a
         // crashed previous launch. Without this reset, the keyboard would
         // observe a stale non-idle phase on first appearance and only recover
@@ -268,14 +301,11 @@ struct JotApp: App {
         // could linger for up to 60s and mislead the keyboard into posting Darwin
         // into a dead listener. Clear on launch.
         AppGroup.warmHoldExpiresAt = nil
-        // Classifier mutex stale-clear: the foreground "Classify now" path
-        // sets `classifierForegroundInFlight = true` then clears in its
-        // Task's `defer`. iOS jetsam / force-quit / Swift crash skips
-        // `defer`, so the flag persists in App Group UserDefaults and
-        // permanently blocks `TranscriptClassifierTask.submitIfEnabled()`.
-        // By definition no foreground classify can be in flight before
-        // this process started — clear at cold launch.
-        AppGroup.defaults.set(false, forKey: AppGroup.Keys.classifierForegroundInFlight)
+        // Activate the phone-side WatchConnectivity session so the
+        // paired watch can transfer audio files in + the iPhone can
+        // push top-10 transcripts back. Safe to call even if no watch
+        // is paired (WCSession.isSupported() guards inside).
+        PhoneSideWCSession.shared.activate()
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
 
@@ -438,11 +468,11 @@ struct JotApp: App {
                         stopForegroundHeartbeat()
                     }
                     if newPhase == .background {
-                        // Submit a BGProcessingTask request for the
-                        // transcript classifier. No-op when the Lab toggle
-                        // is off or there's nothing to classify. See
-                        // `TranscriptClassifierTask` for lifecycle details.
-                        TranscriptClassifierTask.submitIfEnabled()
+                        // Submit a BGAppRefreshTask request for the MiniLM
+                        // embedding backfill. No-op when the kill switch
+                        // is off or there's nothing to embed. See
+                        // `EmbeddingBackfillTask` for lifecycle details.
+                        EmbeddingBackfillTask.submitIfBacklog()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes

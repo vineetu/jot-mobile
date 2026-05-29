@@ -45,8 +45,8 @@ import SwiftData
 ///     the migration needs investigation before merge.
 enum JotMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [JotSchemaV1.self, JotSchemaV2.self, JotSchemaV3.self, JotSchemaV4.self]
-        // Future: append V5.self, V6.self, ... in chronological order.
+        [JotSchemaV1.self, JotSchemaV2.self, JotSchemaV3.self, JotSchemaV4.self, JotSchemaV5.self, JotSchemaV6.self, JotSchemaV7.self]
+        // Future: append V8.self, ... in chronological order.
     }
 
     static var stages: [MigrationStage] {
@@ -71,6 +71,38 @@ enum JotMigrationPlan: SchemaMigrationPlan {
             .lightweight(
                 fromVersion: JotSchemaV3.self,
                 toVersion: JotSchemaV4.self
+            ),
+            // V4 → V5: TWO additive optional fields on `Transcript` —
+            // `source: String?` (capture surface tag: watch/app/keyboard/
+            // shortcut/file) and `watchOriginUUID: String?` (de-dup key
+            // for watch retransmits). Both `nil` for every pre-existing
+            // V4 row on first V5 read. UI treats nil source as "app".
+            .lightweight(
+                fromVersion: JotSchemaV4.self,
+                toVersion: JotSchemaV5.self
+            ),
+            // V5 → V6: TWO new `@Model` entities alongside `Transcript` —
+            // `TranscriptEmbedding` (MiniLM-L6-v2 384-d vectors) and
+            // `TranscriptCategory` (substrate for a future classifier,
+            // no writers in this PR). `Transcript`'s shape is unchanged
+            // (the legacy `category` field is preserved as dead-data —
+            // see the banner in `JotSchemaV6.Transcript.category`).
+            // SwiftData handles both new entities in one inference pass.
+            .lightweight(
+                fromVersion: JotSchemaV5.self,
+                toVersion: JotSchemaV6.self
+            ),
+            // V6 → V7: ONE new `@Model` entity alongside the existing ones —
+            // `TranscriptChunk` (chunk-level embeddings + denormalized filter
+            // metadata for the Ask RAG pipeline). Purely additive: `Transcript`
+            // is untouched and `TranscriptEmbedding` is retained (deprecated).
+            // SwiftData handles the new entity in one inference pass — same
+            // shape as the V5→V6 add. The deprecated `TranscriptEmbedding` table
+            // is dropped in a later `.custom` V7→V8 stage once the chunk
+            // pipeline is cut over (one device-testable migration at a time).
+            .lightweight(
+                fromVersion: JotSchemaV6.self,
+                toVersion: JotSchemaV7.self
             )
         ]
     }

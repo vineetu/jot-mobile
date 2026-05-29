@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ask — Retrieval Engine: Current → Target</title>
+<style>
+  :root{
+    --paper:#F7F6F3; --card:#FFFFFF; --ink:#1A1A1A; --ink2:#6B6B6B; --ink3:#9A988F;
+    --line:rgba(0,0,0,.09);
+    --blue:#2D6BF0; --blue-deep:#1E4FD0; --blue-soft:#EAF0FE;
+    --red:#C0392B; --red-soft:#FBEDEB;
+    --green:#2E8B57; --green-soft:#E8F4EC;
+    --amber:#B8860B; --amber-soft:#FAF3E0;
+    --serif:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,'Times New Roman',serif;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.55;
+       -webkit-font-smoothing:antialiased;padding:0 20px 80px}
+  .wrap{max-width:920px;margin:0 auto}
+
+  /* Hero */
+  header{padding:64px 0 36px;border-bottom:1px solid var(--line)}
+  .kicker{font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--blue);margin-bottom:16px}
+  h1{font-family:var(--serif);font-size:clamp(34px,6vw,56px);line-height:1.04;letter-spacing:-.01em;font-weight:600}
+  h1 em{font-style:italic;color:var(--ink2)}
+  .sub{margin-top:18px;font-size:18px;color:var(--ink2);max-width:640px}
+  .tldr{margin-top:28px;background:var(--blue-soft);border:1px solid rgba(45,107,240,.22);
+        border-radius:14px;padding:18px 20px;font-size:15.5px}
+  .tldr b{color:var(--blue-deep)}
+
+  /* Section scaffolding */
+  section{padding:48px 0;border-bottom:1px solid var(--line)}
+  .sec-num{font-family:var(--serif);font-size:13px;color:var(--ink3);letter-spacing:.04em}
+  h2{font-family:var(--serif);font-size:clamp(26px,4vw,36px);line-height:1.1;margin:6px 0 8px;letter-spacing:-.01em;font-weight:600}
+  .lead{color:var(--ink2);font-size:16.5px;max-width:680px;margin-bottom:26px}
+
+  /* Compare cards */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:680px){.cols{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 22px 8px;
+        box-shadow:0 1px 0 rgba(0,0,0,.02),0 10px 30px -22px rgba(0,0,0,.25)}
+  .tag{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;letter-spacing:.06em;
+       text-transform:uppercase;padding:5px 11px;border-radius:999px;margin-bottom:14px}
+  .tag.now{background:var(--red-soft);color:var(--red)}
+  .tag.next{background:var(--green-soft);color:var(--green)}
+  .card h3{font-family:var(--serif);font-size:21px;font-weight:600;margin-bottom:4px}
+  .card .note{color:var(--ink2);font-size:14px;margin-bottom:14px}
+  ul.feat{list-style:none}
+  ul.feat li{position:relative;padding:9px 0 9px 26px;border-top:1px solid var(--line);font-size:14.5px;color:#33312c}
+  ul.feat li:first-child{border-top:none}
+  ul.feat li::before{position:absolute;left:0;top:8px;font-size:14px}
+  .now li::before{content:"✕";color:var(--red);font-weight:700}
+  .next li::before{content:"✓";color:var(--green);font-weight:700}
+  ul.feat li b{color:var(--ink)}
+
+  /* Pipeline */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;margin-top:8px}
+  .step{flex:1 1 130px;min-width:130px;background:var(--card);border:1px solid var(--line);
+        border-radius:13px;padding:14px;position:relative}
+  .step .s-k{font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);margin-bottom:6px}
+  .step .s-t{font-weight:650;font-size:14.5px;margin-bottom:3px}
+  .step .s-d{font-size:12.5px;color:var(--ink2);line-height:1.4}
+  .arrow{align-self:center;color:var(--ink3);font-size:18px;flex:0 0 auto}
+  @media(max-width:680px){.arrow{transform:rotate(90deg)}}
+
+  /* Steps timeline */
+  ol.steps{list-style:none;counter-reset:s;margin-top:6px}
+  ol.steps li{counter-increment:s;position:relative;padding:0 0 22px 56px}
+  ol.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:38px;height:38px;
+       background:linear-gradient(160deg,var(--blue),var(--blue-deep));color:#fff;border-radius:11px;
+       display:grid;place-items:center;font-weight:700;font-size:16px}
+  ol.steps li::after{content:"";position:absolute;left:18px;top:42px;bottom:0;width:2px;background:var(--line)}
+  ol.steps li:last-child::after{display:none}
+  ol.steps h4{font-size:16px;font-weight:650;margin-bottom:3px}
+  ol.steps p{font-size:14.5px;color:var(--ink2)}
+  ol.steps .pill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;
+       background:var(--amber-soft);color:var(--amber);padding:2px 8px;border-radius:6px;margin-left:8px;vertical-align:middle}
+
+  /* Delete/create table */
+  table{width:100%;border-collapse:collapse;margin-top:8px;background:var(--card);
+        border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  th,td{text-align:left;padding:13px 16px;font-size:14px;border-top:1px solid var(--line);vertical-align:top}
+  th{background:#FbFaF8;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);border-top:none}
+  td.x{color:var(--red);font-weight:600;white-space:nowrap}
+  td.o{color:var(--green);font-weight:600;white-space:nowrap}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+       background:#F0EEEA;padding:1.5px 6px;border-radius:5px}
+
+  .callout{display:flex;gap:14px;background:var(--green-soft);border:1px solid rgba(46,139,87,.25);
+           border-radius:14px;padding:18px 20px;margin-top:26px;font-size:15px}
+  .callout .ico{font-size:22px;line-height:1.2}
+  footer{padding:40px 0 0;color:var(--ink3);font-size:13.5px}
+  footer a{color:var(--blue-deep)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Jot · Ask — retrieval engine</div>
+    <h1>From a blurry guess<br><em>to a real RAG pipeline.</em></h1>
+    <p class="sub">Why "Ask" returns the wrong notes today, what it should be instead, and exactly how we get there — now that embeddings are still beta and nothing is shipped.</p>
+    <div class="tldr"><b>TL;DR —</b> Today we squeeze a whole transcript into <em>one</em> vector with an old, small model. Long notes get averaged into mush and the right answer never surfaces. The fix isn't a tweak — it's <b>chunking + a better embedder + hybrid search + reranking + intent routing</b>. And because no user has embeddings yet, we can <b>delete the old system and rebuild it clean</b>.</div>
+  </header>
+
+  <!-- 1. The two states -->
+  <section>
+    <div class="sec-num">01 — The shift</div>
+    <h2>Where we are vs. where we're going</h2>
+    <p class="lead">Same job — "find the notes that answer this question" — two very different engines.</p>
+    <div class="cols">
+      <div class="card">
+        <span class="tag now">● Current · broken</span>
+        <h3>One vector per transcript</h3>
+        <p class="note">all-MiniLM-L6-v2 · 384-d · cosine top-15</p>
+        <ul class="feat now">
+          <li>A 14-minute note → <b>one</b> vector. Every idea inside is <b>averaged into a blur</b>.</li>
+          <li>MiniLM <b>truncates at ~256 tokens</b> — most of a long note is never even embedded.</li>
+          <li><b>No keyword search</b> — misses names, jargon, codenames the meaning-vector skips.</li>
+          <li><b>No reranking</b> — the right note is often rank 12, never seen.</li>
+          <li>"Last 3 days" / "lately" are treated as <b>searches</b>, not summaries → random notes.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag next">● Target · RAG</span>
+        <h3>Many vectors per transcript</h3>
+        <p class="note">EmbeddingGemma-300M · chunked · hybrid + rerank</p>
+        <ul class="feat next">
+          <li>Each note is <b>split into chunks</b> — every idea gets its own searchable vector.</li>
+          <li><b>EmbeddingGemma-300M</b>: newer, on-device (&lt;200 MB), sees the whole chunk.</li>
+          <li><b>Hybrid search</b>: meaning (vectors) <b>+</b> keywords (BM25), fused together.</li>
+          <li><b>Reranking</b> re-scores the top candidates so the best chunk wins.</li>
+          <li><b>Intent routing</b>: time/summary questions get summarized, not searched.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. How the new engine works -->
+  <section>
+    <div class="sec-num">02 — The target pipeline</div>
+    <h2>What happens when you ask a question</h2>
+    <p class="lead">Two phases: build the index once (left), then answer each question (the flow below).</p>
+    <div class="flow">
+      <div class="step"><div class="s-k">Route</div><div class="s-t">Understand</div><div class="s-d">Look up, summarize, or just filter? Pull out date / tag / type.</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="s-k">Filter</div><div class="s-t">Narrow</div><div class="s-d">Deterministic date / tag / type cut on the candidate pool.</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="s-k">Hybrid</div><div class="s-t">Retrieve</div><div class="s-d">Vectors + keywords, fused with Reciprocal Rank Fusion.</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="s-k">Rerank</div><div class="s-t">Re-score</div><div class="s-d">Qwen re-orders the top ~20 → best 6–10 chunks.</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="s-k">Answer</div><div class="s-t">Generate</div><div class="s-d">Synthesize + cite back to the exact note (and moment).</div></div>
+    </div>
+    <div class="callout">
+      <div class="ico">💡</div>
+      <div><b>The key insight that keeps it simple:</b> at ~1,000 transcripts you get ~10,000 chunks ≈ 10&nbsp;MB of vectors. Scanning all of them takes &lt;50&nbsp;ms on-device. So <b>no vector database, no fancy index</b> — plain math is plenty until you're 10× bigger.</div>
+    </div>
+  </section>
+
+  <!-- 3. Migration -->
+  <section>
+    <div class="sec-num">03 — How we move</div>
+    <h2>Clean rebuild — not a careful migration</h2>
+    <p class="lead">Embeddings shipped to nobody. That's a gift: we don't preserve old data — we tear it out and regenerate from the transcripts (the real source of truth), which are untouched.</p>
+    <ol class="steps">
+      <li>
+        <h4>Drop the old embedding store <span class="pill">SAFE — BETA</span></h4>
+        <p>Delete the per-transcript embedding table and the MiniLM service. Transcripts themselves are never touched.</p>
+      </li>
+      <li>
+        <h4>Add the new shape</h4>
+        <p>A <code>TranscriptChunk</code> record: chunk text, its vector, position in the note, and metadata (date, tags, type). Plus on-device keyword search (SQLite FTS5).</p>
+      </li>
+      <li>
+        <h4>Re-index everything once</h4>
+        <p>On next launch, a background task walks every transcript, chunks it, and embeds the chunks with EmbeddingGemma. Runs quietly; Ask switches on when it's done.</p>
+      </li>
+      <li>
+        <h4>Rebuild tags on the new model</h4>
+        <p>The existing category classifier just re-learns its centroids from your seed phrases using the new embeddings — same feature, new brain.</p>
+      </li>
+      <li>
+        <h4>Wire up the new Ask path + measure</h4>
+        <p>Route → filter → hybrid → rerank → answer. Ship a small eval set (question → expected notes) so "better" is a number, not a vibe.</p>
+      </li>
+    </ol>
+
+    <table>
+      <tr><th>Piece</th><th>Old</th><th>New</th></tr>
+      <tr><td>Embedding model</td><td class="x">MiniLM-L6 (384-d)</td><td class="o">EmbeddingGemma-300M</td></tr>
+      <tr><td>Unit of search</td><td class="x">Whole transcript</td><td class="o">Chunk (~256 tokens)</td></tr>
+      <tr><td>Search type</td><td class="x">Vectors only</td><td class="o">Vectors + keywords (RRF)</td></tr>
+      <tr><td>Ranking</td><td class="x">Raw cosine top-15</td><td class="o">Hybrid → Qwen rerank</td></tr>
+      <tr><td>Vague / time queries</td><td class="x">Treated as search</td><td class="o">Routed to summarize</td></tr>
+      <tr><td>Date / tag / type</td><td class="x">Ignored</td><td class="o">Deterministic pre-filter</td></tr>
+      <tr><td>New models to ship</td><td class="x">—</td><td class="o">Just one (the embedder)</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    Full engineering detail: <a href="ask-retrieval-architecture.md">docs/plans/ask-retrieval-architecture.md</a>.
+    This page explains <em>Phase 1</em> — the quality unlock. Reranker precision, deep-links to the moment, and tag filters follow in Phase 2.
+  </footer>
+
+</div>
+</body>
+</html>

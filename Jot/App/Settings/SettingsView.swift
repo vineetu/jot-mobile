@@ -25,6 +25,11 @@ struct SettingsView: View {
     /// Mirror of `AppGroup.warmHoldEnabled` for the Privacy kill-switch.
     @State private var warmHoldEnabled: Bool = AppGroup.warmHoldEnabled
 
+    /// Ask-mode backend toggle. OFF = Apple Intelligence (built-in, no download);
+    /// ON = on-board Qwen (better answers, needs the model downloaded).
+    @State private var askUseQwen: Bool = (AppGroup.askBackend == "qwen")
+
+
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
     /// VOCABULARY card row both observe `terms.count`.
     @State private var vocabularyStore = VocabularyStore.shared
@@ -35,16 +40,6 @@ struct SettingsView: View {
     /// at Settings.
     @State private var clientAdapter: LLMClientUIAdapter?
 
-    /// Lab toggle: enables the background transcript classifier
-    /// (`TranscriptClassifierTask`). Default false; flipping ON also
-    /// submits a `BGProcessingTaskRequest` so the user doesn't have
-    /// to wait for a backgrounding event to bootstrap the chain.
-    /// Stored in `AppGroup.defaults` for consistency with the other
-    /// cross-process toggles (warmHold, cleanup) even though only the
-    /// main app reads it in v1.
-    @State private var classifierEnabled: Bool = AppGroup.defaults.bool(
-        forKey: TranscriptClassifierTask.labKey
-    )
 
     var body: some View {
         NavigationStack {
@@ -78,19 +73,6 @@ struct SettingsView: View {
             .onChange(of: warmHoldDurationSeconds) { _, newValue in
                 AppGroup.warmHoldDurationSeconds = newValue
             }
-            .onChange(of: classifierEnabled) { _, newValue in
-                AppGroup.defaults.set(
-                    newValue,
-                    forKey: TranscriptClassifierTask.labKey
-                )
-                // Flipping ON bootstraps the chain — submit a request
-                // immediately so we don't have to wait for the next
-                // app-backgrounding event. submitIfEnabled() is a
-                // no-op when the queue is empty or weights aren't on disk.
-                if newValue {
-                    TranscriptClassifierTask.submitIfEnabled()
-                }
-            }
         }
     }
 
@@ -105,7 +87,6 @@ struct SettingsView: View {
             aiSection
             privacySection
             aboutSection
-            labSection
             settingsFooter
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -439,25 +420,66 @@ struct SettingsView: View {
     private var aiSection: some View {
         settingsSection(
             label: "AI",
-            caption: "Titles and tags use the system's built-in AI automatically."
+            caption: "Titles and tags use the system's built-in AI automatically. Ask answers questions across your notes — pick which model below."
         ) {
-            NavigationLink {
-                AIRewriteSettingsView()
-            } label: {
-                LiquidGlassCard(paddingH: 0, paddingV: 0) {
-                    settingsIconRow(
-                        systemImage: "wand.and.stars",
-                        tint: JotDesign.JotSemanticIcon.ai,
-                        shaded: JotDesign.JotSemanticIcon.aiShaded,
-                        title: "Rewrite & prompts",
-                        subline: aiSubline,
-                        trailing: { RowChevron() }
-                    )
+            VStack(spacing: 10) {
+                NavigationLink {
+                    AIRewriteSettingsView()
+                } label: {
+                    LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                        settingsIconRow(
+                            systemImage: "wand.and.stars",
+                            tint: JotDesign.JotSemanticIcon.ai,
+                            shaded: JotDesign.JotSemanticIcon.aiShaded,
+                            title: "Rewrite & prompts",
+                            subline: aiSubline,
+                            trailing: { RowChevron() }
+                        )
+                    }
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Rewrite and prompts, \(aiSubline)")
+                .accessibilityHint("Opens AI Rewrite settings")
+
+                askBackendRow
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Rewrite and prompts, \(aiSubline)")
-            .accessibilityHint("Opens AI Rewrite settings")
+        }
+    }
+
+    /// Ask backend toggle: OFF = Apple Intelligence (built-in, instant, no
+    /// download); ON = on-board Qwen (better answers, needs the model).
+    private var askBackendRow: some View {
+        LiquidGlassCard(paddingH: 0, paddingV: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                IconTile(
+                    systemImage: "sparkles",
+                    tint: JotDesign.JotSemanticIcon.ai,
+                    shaded: JotDesign.JotSemanticIcon.aiShaded
+                )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Use on-board Qwen for Ask")
+                        .font(JotType.rowTitle)
+                        .tracking(-0.2)
+                        .foregroundStyle(Color.jotPageInk)
+                    Text(askUseQwen
+                         ? "Ask uses the on-board Qwen model — better answers, runs fully on-device (needs the model downloaded)."
+                         : "Ask uses Apple Intelligence — built-in and instant, no download. Turn on for higher-quality answers from on-board Qwen.")
+                        .font(JotType.rowSub)
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                        .lineSpacing(2)
+                }
+                Spacer(minLength: 12)
+                Toggle("", isOn: $askUseQwen)
+                    .labelsHidden()
+                    .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                    .accessibilityLabel("Use on-board Qwen for Ask")
+            }
+            .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .onChange(of: askUseQwen) { _, newValue in
+            AppGroup.askBackend = newValue ? "qwen" : "appleIntelligence"
         }
     }
 
@@ -616,6 +638,40 @@ struct SettingsView: View {
 
                     cardDivider
 
+                    NavigationLink {
+                        EmbeddingsPanelView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "sparkles",
+                            tint: Color.jotBlueTop,
+                            shaded: Color.jotBlueBottom.opacity(0.15),
+                            title: "Indexing",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Indexing")
+                    .accessibilityHint("Manage on-device indexing of your dictations.")
+
+                    cardDivider
+
+                    NavigationLink {
+                        DiagnosticsWatchView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "applewatch",
+                            tint: JotDesign.JotSemanticIcon.helpSupport,
+                            shaded: JotDesign.JotSemanticIcon.helpSupportShaded,
+                            title: "Apple Watch",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Apple Watch sync status")
+                    .accessibilityHint("Shows watch connection status and Reset sync button.")
+
+                    cardDivider
+
                     Button {
                         handleRerunSetupTap()
                     } label: {
@@ -769,85 +825,9 @@ struct SettingsView: View {
         return "\(mins) min today · \(RecentsFormatting.dictationCountText(DictationStats.totalCount))"
     }
 
-    // MARK: - LAB FEATURES (experimental)
-
-    /// Bottom-of-Settings section for opt-in experiments. v1 hosts the
-    /// background transcript classifier (see `TranscriptClassifierTask`).
-    /// Default OFF; explicitly labeled "experimental" so a curious user
-    /// can flip it but knows what they're getting into.
-    private var labSection: some View {
-        settingsSection(label: "LAB FEATURES — EXPERIMENTAL", caption: labCaption) {
-            LiquidGlassCard(paddingH: 0, paddingV: 0) {
-                VStack(spacing: 0) {
-                    labClassifierRow
-
-                    // Drill-in to the dashboard only when the classifier
-                    // is on — without categories there's nothing useful
-                    // to show, and the row would just lead to a wall
-                    // of "Unclassified."
-                    if classifierEnabled {
-                        cardDivider
-                        labClassificationsRow
-                    }
-                }
-            }
-        }
-    }
-
-    private var labClassificationsRow: some View {
-        NavigationLink {
-            ClassificationsDashboardView()
-        } label: {
-            settingsIconRow(
-                systemImage: "list.bullet.rectangle",
-                tint: Color.jotBlueTop,
-                shaded: Color.jotBlueBottom.opacity(0.15),
-                title: "View classifications",
-                trailing: { RowChevron() }
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("View classifications")
-        .accessibilityHint("Opens a list of transcripts grouped by category")
-    }
-
-    private var labClassifierRow: some View {
-        HStack(alignment: .center, spacing: 14) {
-            IconTile(
-                systemImage: "tag",
-                tint: Color.jotBlueTop,
-                shaded: Color.jotBlueBottom.opacity(0.15)
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Background transcript classifier")
-                    .font(JotType.rowTitle)
-                    .tracking(-0.2)
-                    .foregroundStyle(Color.jotPageInk)
-
-                Text("Tags each dictation as email/message/note/code/general when your iPhone is charging. On-device only, never uploaded. Currently invisible — used for future personalization research.")
-                    .font(JotType.rowSub)
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .lineSpacing(2)
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle("", isOn: $classifierEnabled)
-                .labelsHidden()
-                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
-                .accessibilityLabel("Background transcript classifier")
-                .accessibilityHint("Tags each dictation as email, message, note, code, or general when your iPhone is charging.")
-        }
-        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .contentShape(Rectangle())
-    }
-
-    private var labCaption: String {
-        "Experimental features that may change or disappear in a future build. Off by default."
-    }
+    // (Lab section removed in build 48 — the embeddings kill-switch and
+    // the hand-seeding UI now live behind Settings → About → Classification
+    // via `EmbeddingsPanelView`.)
 
     // MARK: - Misc
 

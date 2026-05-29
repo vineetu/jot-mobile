@@ -108,7 +108,10 @@ prune_old_artifacts() {
     done < <(eval "ls -td $dir/$pattern 2>/dev/null")
 
     local i=0
-    for item in "${sorted[@]}"; do
+    # `${arr[@]+"${arr[@]}"}` expands to nothing when the array is empty —
+    # required because macOS bash 3.2 + `set -u` errors on `"${arr[@]}"` for an
+    # empty array (hit when the releases dir was just cleaned out).
+    for item in ${sorted[@]+"${sorted[@]}"}; do
       i=$((i+1))
       if (( i > keep )); then
         echo "  pruning old $kind: $item"

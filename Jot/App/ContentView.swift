@@ -126,6 +126,22 @@ struct ContentView: View {
 
     @State private var navPath = NavigationPath()
     @State private var searchText = ""
+    /// Semantic-search controller driving the "meaning" half of the
+    /// hybrid Recents filter. Substring matching still happens inline
+    /// in `filteredTranscripts`; this controller publishes the set of
+    /// transcript IDs whose embedding cosine ≥ 0.50 to the query.
+    @State private var semanticSearch = SemanticSearchController()
+
+    /// "Ask Jot" sheet — natural-language Q&A over transcript history
+    /// (Apple FM + MiniLM embeddings). See `docs/plans/ask-mode.md`.
+    @State private var showAskSheet = false
+    @State private var askController = AskController()
+    /// Whether the Ask entry point (the sparkles pill) is shown. Gated on
+    /// the on-board Qwen weights being *downloaded* (on disk) — not loaded
+    /// into memory — so Ask only appears once the user has a capable
+    /// on-device model. Re-evaluated on appear and whenever the Settings
+    /// sheet (where the download happens) is dismissed.
+    @State private var askAvailable = AskController.isAvailable
     @State private var showSettings = false
     /// Drives the modal Help sheet from the home header's "?" glass-circle
     /// button. Help is also reachable via Settings → ABOUT → "Help & Support"
@@ -199,7 +215,15 @@ struct ContentView: View {
 
                         heroTitle
 
-                        searchBar
+                        HStack(spacing: 8) {
+                            searchBar
+                                .onChange(of: searchText) { _, new in
+                                    semanticSearch.search(query: new)
+                                }
+                            if askAvailable {
+                                askPill
+                            }
+                        }
 
                         if donationCardVisible {
                             DonationCard(
@@ -335,6 +359,13 @@ struct ContentView: View {
                 HelpView(isModal: true)
             }
         }
+        .sheet(isPresented: $showAskSheet) {
+            // Ask-mode sheet — natural-language Q&A. Citation taps
+            // dismiss this sheet and push into the same `navPath`
+            // Recents uses, so Detail resolves through the existing
+            // `.navigationDestination(for: UUID.self)` modifier above.
+            AskView(controller: askController, navPath: $navPath)
+        }
         .confirmationDialog(
             "Delete this entry?",
             isPresented: Binding(
@@ -393,6 +424,7 @@ struct ContentView: View {
             copyHaptic.prepare()
             selectionHaptic.prepare()
             refreshDonationCardVisibility()
+            askAvailable = AskController.isAvailable
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
             }
@@ -409,7 +441,8 @@ struct ContentView: View {
             // doc above.
             if recordingService.isRecording,
                !isWizardPresented,
-               !userDismissedHeroDuringRecording {
+               !userDismissedHeroDuringRecording,
+               !showAskSheet {  // Ask-mode in-sheet dictation; no hero adoption.
                 let isColdStart = pendingColdStartHeroNudge
                 pendingColdStartHeroNudge = false
                 heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
@@ -449,7 +482,8 @@ struct ContentView: View {
         .onChange(of: recordingService.isRecording) { _, isRecording in
             if isRecording,
                !isWizardPresented,
-               !userDismissedHeroDuringRecording {
+               !userDismissedHeroDuringRecording,
+               !showAskSheet {  // Ask-mode dictation records in-sheet; no hero.
                 // Auto-nav adoption — never `start()` from this path.
                 let isColdStart = pendingColdStartHeroNudge
                 pendingColdStartHeroNudge = false
@@ -495,6 +529,7 @@ struct ContentView: View {
         recordingService.isRecording
             && !showRecordingHero
             && !isWizardPresented
+            && !showAskSheet  // Ask-mode dictation records in-sheet; no home pill.
             && userDismissedHeroDuringRecording
     }
 
@@ -567,16 +602,46 @@ struct ContentView: View {
         .accessibilityLabel("Search transcripts")
     }
 
+    /// Companion to the search bar — opens Ask mode (natural-language
+    /// Q&A over transcript history via Apple Foundation Models +
+    /// MiniLM embeddings). Single 44×44 glass-circle button with a
+    /// sparkles glyph so the affordance reads as "AI-powered" without
+    /// stealing visual weight from search.
+    private var askPill: some View {
+        Button {
+            showAskSheet = true
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.jotBlueBottom)
+                .frame(width: 44, height: 44)
+                .background(.regularMaterial, in: Circle())
+                .overlay(
+                    Circle().strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ask Jot")
+        .accessibilityHint("Ask a natural-language question about your transcript history.")
+    }
+
     // MARK: - Grouping
 
-    /// Source of truth for what gets rendered in the grouped list. When
-    /// `searchText` is non-empty we filter case-insensitively across both
-    /// the cleaned/displayed text and the raw transcript text.
+    /// Source of truth for what gets rendered in the grouped list.
+    /// Hybrid filter (build 53): a transcript matches if it's a literal
+    /// substring hit OR if `SemanticSearchController` has classified it
+    /// as semantically similar to the query (cosine ≥ 0.50).
+    /// Substring hits surface immediately on keystroke; semantic hits
+    /// fill in ~250-400ms later after the debounce + embed + cosine
+    /// pass completes. Date-grouping downstream preserves chronological
+    /// ordering regardless of match source.
     private var filteredTranscripts: [Transcript] {
         guard !searchText.isEmpty else { return transcripts }
+        let semanticIDs = semanticSearch.semanticMatches
         return transcripts.filter { transcript in
-            transcript.displayText.localizedCaseInsensitiveContains(searchText)
+            let substring = transcript.displayText.localizedCaseInsensitiveContains(searchText)
                 || transcript.text.localizedCaseInsensitiveContains(searchText)
+            return substring || semanticIDs.contains(transcript.id)
         }
     }
 
@@ -719,6 +784,9 @@ struct ContentView: View {
     /// prevents the wizard's fullScreenCover from racing the sheet
     /// dismiss animation.
     private func handleSettingsDismissed() {
+        // Re-check Ask availability — the user may have just downloaded
+        // the Qwen weights in the Settings sheet they're dismissing.
+        askAvailable = AskController.isAvailable
         guard pendingRerunAfterDismiss else { return }
         pendingRerunAfterDismiss = false
         SettingsRerunTrigger.shared.requestRerun()

@@ -131,3 +131,145 @@ There's no in-app surface that shows the user the **full list** of features the 
 **Status.** Captured 2026-05-21. Direction confirmed by user — option 1 from the donation-prompt discussion. Not on the critical path; defer until donations engagement data motivates building.
 
 ---
+
+## 5. Ask RAG redesign — temporary scaffolding cleanup
+
+Tracking the deliberately-temporary bits introduced by the Ask retrieval redesign
+(design: `docs/plans/ask-retrieval-architecture.md`; plan: `docs/plans/ask-rag-phase1-plan.md`).
+These were the right calls to ship incrementally and safely, but each leaves a
+stopgap to clean up between cycles. Grouped because they all trace to the same effort.
+
+**Why it matters.** The cutover landed in safe, independently-testable increments
+(additive schema, interim embedder, reduced UI) rather than one big risky change.
+The cost is a few "we'll finish this later" seams that, left forever, become
+confusing dead weight or silent quality ceilings.
+
+**What we'd build (the cleanup items).**
+
+1. **Drop the two dormant schema entities — mint `JotSchemaV8`.** V7 retained
+   `TranscriptEmbedding` (deprecated — replaced by `TranscriptChunk`) and
+   `TranscriptCategory` (dormant — the tag classifier was removed) so the V6→V7
+   migration could stay additive `.lightweight` and never risk transcripts. Once
+   the chunk pipeline is confirmed in the field, mint V8 with **one `.custom`
+   V7→V8 stage that drops both tables** (`willMigrate` nukes the rows; nothing to
+   carry forward). One migration, one device upgrade-test, both tables gone.
+
+2. **Swap the interim embedder → EmbeddingGemma-300M.** The cutover runs on the
+   *existing MiniLM-L6 (384-d), chunked* as a stopgap so the chunk + hybrid
+   pipeline could ship without blocking on model integration. The real model is
+   **EmbeddingGemma-300M via Core ML/ANE (256-d Matryoshka)** behind the existing
+   `MiniLMEmbeddingService.encode() -> [Float]` seam. Gated on: (a) the **Gemma
+   license** permitting app distribution (hard ship blocker), (b) on-device
+   Core ML load + per-chunk latency validation on iPhone 16/17. When it lands,
+   bump `TranscriptChunk.modelVersion` and re-index.
+
+3. **Wire the "Rebuild index" button.** `EmbeddingsPanelView` was reduced to a
+   minimal embeddings panel during the classification removal, with a `// TODO`.
+   Wire the user-triggered re-index button + `BGProcessingTask` + `requiresExternalPower`
+   resumable job (design §4) so a from-scratch re-embed (e.g. after the
+   EmbeddingGemma swap) has a real entry point + progress UI.
+
+4. **Reconcile `features.md`.** Per repo discipline (`Jot/CLAUDE.md`): add the Ask
+   section once it stabilizes (entry-point gating on Qwen download, citations,
+   date-scoped + hybrid retrieval) and **remove the classification/tagging feature
+   entry** (feature deleted 2026-05-28).
+
+5. **Cosmetic:** the now-empty `Jot/App/Classification/` and
+   `Jot/Shared/Classification/` dirs can be removed.
+
+**Also deferred (separate, already documented — pointers, not duplicated here):**
+- **Phase 2 retrieval polish** (cross-encoder reranker, HyDE/multi-query,
+  sentence-window expansion, timestamp deep-links, int8 vector quantization) —
+  design doc §3 / §2.B.
+- **Eval harness** (Recall@k / MRR + context-budget memory+latency sweep on-device)
+  — design doc §3 / §2.B.4.
+- **Memory garden / garden of ideas + related-notes + Collections** — future
+  *features* (not cleanup), the only reason tags ever existed. **Architecture
+  decided (design doc §6, "Two-layer"):** the garden = a distilled-memory LAYER on
+  the Phase-1 chunk substrate — NOT a separate build and NOT a second embedder.
+  Reuses the same EmbeddingGemma encoder + vector machinery + Qwen + raw notes;
+  net-new is only a small `Memory`/idea-card `@Model`, the extract+consolidate
+  engine, and the garden UI. Nodes = LLM-distilled idea cards (clusters → titled
+  memories), each citing its source chunks; raw notes stay verbatim underneath.
+  **The consolidation engine is the hard, researched part — port Mem0's
+  methodology (ADD/UPDATE/DELETE, dedup, contradiction-resolution), don't reinvent;
+  their lib is Python/server so adopt the approach, not the code.** Build only
+  after the Phase-1 RAG lands.
+
+**Trigger to pull forward.** Item 1 (V8 drop): after the next 1–2 builds confirm
+the chunk pipeline is healthy in the field. Item 2 (EmbeddingGemma): once the
+Gemma license is cleared — it's the gate on real retrieval quality, so it's the
+highest-value of these. Items 3–5: opportunistically, or when `features.md` drift
+causes a feature-planning miss.
+
+**Estimated size.** Item 1 ~half a day (mint V8 + custom stage + device test).
+Item 2 ~1–2 days (Core ML integration + re-index + latency tuning), license
+permitting. Items 3–5 ~half a day total.
+
+**Status.** Captured 2026-05-28; **parked by user (no time now) — resume later.**
+Build 64 (V7 migration + Apple-FM removal + classification removal + date-scoped
+retrieval on the OLD MiniLM whole-transcript path) is verified on-device.
+
+**Resume point — RAG is NOT yet wired end-to-end:**
+- DONE: V7 schema (`TranscriptChunk`); 4 pure components built + validated
+  (`TranscriptChunker`, `BM25Index`, `IntentRouter`, `RRFFusion`); `CoreMLLLM`
+  package added to `project.yml` + resolves at 1.9.0; exact EmbeddingGemma API
+  known (agent memory `project_ask_rag_redesign`). User chose: CoreML/ANE runtime,
+  model **bundled** in-app.
+- TODO: (1) fetch the ~295 MB model (`mlboydaisuke/embeddinggemma-300m-coreml`)
+  into `Resources/Models/EmbeddingGemma/` (out-of-band, gitignored like Parakeet);
+  (2) `EmbeddingGemmaService` behind the `encode(_:role:)` seam via
+  `EmbeddingGemma.load(bundleURL:)`; (3) swap the 3 callers off MiniLM + delete
+  `MiniLMEmbeddingService` + `SwiftEmbeddings` package; (4) chunk pipeline
+  (`ChunkStore`, chunk-and-embed indexer, chunk-based hybrid retrieval, chunk→transcript
+  citations); (5) eval harness + A/B vs the old path.
+- **Test target:** runnable on THIS Mac (Apple Silicon ANE, "Designed for iPad"
+  on My Mac) once wired — no iPhone needed for embedder validation.
+- Gemma model **license** is still the one hard *ship* blocker (fine to build/test locally).
+
+---
+
+## 6. Ask UX — voice-first mic + "ask about a real transcript" suggestions
+
+Two friction points in the now-shipped Ask, designed in discussion (2026-05-28); parked.
+
+**Why it matters.** Ask is voice-over-voice-notes — but you can't easily *speak* a
+question, and the starter suggestions are weak.
+
+**What we'd build.**
+
+1. **Voice-first mic in the Ask sheet.** Tap a mic → dictation starts via Jot's OWN
+   on-device transcription pipeline (`RecordingService`/`TranscriptionService`), NOT
+   the system/Jot keyboard, no keyboard opened. Decisions (locked with user):
+   - **Tap-to-stop** (NO silence auto-stop — explicitly rejected).
+   - **Live transcribing shown in the question field, exactly like the keyboard's live dictation.**
+   - On stop → **auto-runs the answer** (no separate submit tap).
+   - The dictated question is **NEVER saved as a transcript** (it's a query, not a note —
+     avoids the corpus pollution we discussed; just don't call the save path).
+   - **Keep the text field as a typing fallback.**
+   - This is a focused, ephemeral instance of deferred item #2 (in-app dictation).
+   - **Retires a bug:** today, dictating into the Ask field via the keyboard doesn't
+     start — you must leave Ask → home → dictate → stop → reopen Ask → type → stop.
+     The mic bypasses that path entirely.
+
+2. **Suggestions = "ask about one of your real recent transcripts"** (replaces the
+   hard-coded/templated date pills, which can dead-end — e.g. "summarize May 26" when
+   nothing was recorded then). Pick a recent *substantive* transcript (skip tiny /
+   meta ones via the usefulness signal), show **date + snippet** as the pill; tapping
+   **auto-asks a fixed framing** — *"What else have I said about this?"* — which
+   retrieves that note **+ related notes**, showcasing the connection (the RAG's real
+   superpower). "Ask another" rotates to a different note. Empty corpus → one pill:
+   *"Summarize everything I've recorded so far."* Later upgrade (needs the clustering /
+   garden): a real emergent-topic pill — *"What have you been saying about <theme>?"*.
+
+**Trigger.** Next Ask polish pass, or when the voice-first interaction becomes the
+priority over the typed one.
+
+**Estimated size.** Mic ~half a day (reuses the recording/transcription pipeline +
+the ephemeral no-save tweak). Suggestions ~a couple hours (recent-substantive-transcript
+picker + the fixed "what else about this" framing).
+
+**Status.** Captured 2026-05-28. Designed in discussion; not started. Pairs with the
+shipped Ask RAG (build 65).
+
+---

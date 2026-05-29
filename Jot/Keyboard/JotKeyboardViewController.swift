@@ -836,30 +836,43 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// required here; cursor jumps are not recording events.
     private func handleJumpToStart() {
         fireMenuSelectionFeedback()
-        let proxy = textDocumentProxy
-        // Symmetric with handleJumpToEnd. Jump by EXACT before.count + 1
-        // each iter (with a 64-char floor for stingy hosts). The +1 hits
-        // boundaries cleanly without overshooting into "offset out of
-        // range" territory — Apple's docs say iOS clamps over-range
-        // offsets to the boundary, but in practice WebView-backed hosts
-        // (Slack/Notion-style) silently NO-OP out-of-range offsets,
-        // which is what caused "Move up doesn't move when cursor is
-        // near start." Exact-count + 1 stays in range, hits the
-        // boundary, and the next iter's empty-before guard exits.
-        var moved = 0
-        for i in 0..<50 {
-            guard let before = proxy.documentContextBeforeInput, !before.isEmpty else {
-                keyboardLog.info("move-up iter=\(i, privacy: .public) early-exit reason=empty-before; total-moved=\(moved, privacy: .public)")
-                return
-            }
-            let step = max(before.count + 1, 64)
-            if i < 5 {
-                keyboardLog.info("move-up iter=\(i, privacy: .public) before.count=\(before.count, privacy: .public) step=\(step, privacy: .public)")
-            }
-            proxy.adjustTextPosition(byCharacterOffset: -step)
-            moved += step
+        // Iterate ASYNC across runloop ticks. The earlier synchronous
+        // 50-iter loop didn't actually advance — iOS hosts coalesce
+        // rapid `adjustTextPosition` calls into a single UI cycle, so
+        // only one window's worth (often only one visible line) shifted
+        // per tap. Dispatching each iteration with a small delay lets
+        // the host update `documentContextBeforeInput` between calls so
+        // the next iteration sees fresh context and can advance further.
+        // 200-iter cap + no-progress guard prevents infinite loops on
+        // hosts that don't honor offsets.
+        moveUpStep(iter: 0, totalMoved: 0, prevBeforeLen: -1)
+    }
+
+    /// Recursive async step for `handleJumpToStart`. Continues until:
+    /// - `documentContextBeforeInput` is empty (we hit the top), OR
+    /// - the before-length didn't change since last iter (host won't
+    ///   advance further — common on WebView-backed hosts), OR
+    /// - we exhaust the 200-iter safety cap.
+    private func moveUpStep(iter: Int, totalMoved: Int, prevBeforeLen: Int) {
+        guard iter < 200 else {
+            keyboardLog.info("move-up max iters; total-moved=\(totalMoved, privacy: .public)")
+            return
         }
-        keyboardLog.info("move-up completed 50 iters; total-moved=\(moved, privacy: .public)")
+        let proxy = textDocumentProxy
+        let beforeLen = proxy.documentContextBeforeInput?.count ?? 0
+        guard beforeLen > 0 else {
+            keyboardLog.info("move-up iter=\(iter, privacy: .public) reached start; total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        if iter > 0 && beforeLen == prevBeforeLen {
+            keyboardLog.info("move-up iter=\(iter, privacy: .public) no-progress (host buffered); total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        let step = max(beforeLen + 1, 64)
+        proxy.adjustTextPosition(byCharacterOffset: -step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
+            self?.moveUpStep(iter: iter + 1, totalMoved: totalMoved + step, prevBeforeLen: beforeLen)
+        }
     }
 
     /// Shifts the host caret forward through the focused text field.
@@ -868,32 +881,33 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// each tap shifts approximately one window, not to the true end.
     private func handleJumpToEnd() {
         fireMenuSelectionFeedback()
-        let proxy = textDocumentProxy
-        // Symmetric with handleJumpToStart. Use EXACT after.count + 1
-        // each iter, floored at 64 chars for stingy hosts. The previous
-        // `max(after.count, 1024)` over-jumped past the document end on
-        // some hosts that refuse out-of-range offsets — Move down would
-        // sit still even when there were a few words ahead of the
-        // cursor. Exact-count + 1 hits the end cleanly and the next
-        // iter's empty-after guard exits the loop.
-        //
-        // The 64-char floor still keeps progress fast (~3200 chars per
-        // tap minimum) on hosts where `documentContextAfterInput`
-        // returns a tiny window per iter.
-        var moved = 0
-        for i in 0..<50 {
-            guard let after = proxy.documentContextAfterInput, !after.isEmpty else {
-                keyboardLog.info("move-down iter=\(i, privacy: .public) early-exit reason=empty-after; total-moved=\(moved, privacy: .public)")
-                return
-            }
-            let step = max(after.count + 1, 64)
-            if i < 5 {
-                keyboardLog.info("move-down iter=\(i, privacy: .public) after.count=\(after.count, privacy: .public) step=\(step, privacy: .public)")
-            }
-            proxy.adjustTextPosition(byCharacterOffset: step)
-            moved += step
+        // See `handleJumpToStart` — same async-iteration rationale to
+        // defeat host coalescing of rapid `adjustTextPosition` calls.
+        moveDownStep(iter: 0, totalMoved: 0, prevAfterLen: -1)
+    }
+
+    /// Recursive async step for `handleJumpToEnd`. Mirror of
+    /// `moveUpStep`. Same termination conditions, opposite direction.
+    private func moveDownStep(iter: Int, totalMoved: Int, prevAfterLen: Int) {
+        guard iter < 200 else {
+            keyboardLog.info("move-down max iters; total-moved=\(totalMoved, privacy: .public)")
+            return
         }
-        keyboardLog.info("move-down completed 50 iters; total-moved=\(moved, privacy: .public)")
+        let proxy = textDocumentProxy
+        let afterLen = proxy.documentContextAfterInput?.count ?? 0
+        guard afterLen > 0 else {
+            keyboardLog.info("move-down iter=\(iter, privacy: .public) reached end; total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        if iter > 0 && afterLen == prevAfterLen {
+            keyboardLog.info("move-down iter=\(iter, privacy: .public) no-progress (host buffered); total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        let step = max(afterLen + 1, 64)
+        proxy.adjustTextPosition(byCharacterOffset: step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
+            self?.moveDownStep(iter: iter + 1, totalMoved: totalMoved + step, prevAfterLen: afterLen)
+        }
     }
 
     private func fireMenuSelectionFeedback() {

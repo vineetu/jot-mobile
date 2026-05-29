@@ -4,7 +4,7 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.vineetu.jot.mobile.Jot.classify-transcripts</string>
+		<string>com.vineetu.jot.mobile.Jot.backfill-embeddings</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>

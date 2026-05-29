@@ -96,14 +96,6 @@ struct TranscriptDetailView: View {
     @State private var editError: String?
     @FocusState private var editorFocused: Bool
 
-    /// Mirror of the classifier Lab toggle. Read on appear so the
-    /// category chip in the subline only renders when the user has
-    /// opted into the classifier feature. Public-build users (toggle
-    /// off) never see the chip.
-    @State private var classifierLabEnabled: Bool = AppGroup.defaults.bool(
-        forKey: TranscriptClassifierTask.labKey
-    )
-
     // MARK: - Phase 4 sheet state
     //
     // The Transform button now branches on the adapter's status:
@@ -331,9 +323,6 @@ struct TranscriptDetailView: View {
         .onAppear {
             copyHaptic.prepare()
             refreshRewriteAvailability()
-            classifierLabEnabled = AppGroup.defaults.bool(
-                forKey: TranscriptClassifierTask.labKey
-            )
             // Default to Rewrite tab when a rewrite already exists — the
             // user almost always cares about their latest pass once they've
             // run one. Falls back to Original when no rewrite is saved.
@@ -349,17 +338,6 @@ struct TranscriptDetailView: View {
             // `client.status` while the detail surface is off-window.
             // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
             clientAdapter?.stop()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            // Pick up Lab-toggle flips that happen while Detail is open
-            // (e.g. user opens Settings sheet, toggles ON, dismisses).
-            // Without this the chip stays hidden until Detail is left
-            // and re-entered, because .onAppear doesn't fire on sheet
-            // dismissal in iOS 17+ when the parent view never lost focus.
-            let newValue = AppGroup.defaults.bool(forKey: TranscriptClassifierTask.labKey)
-            if newValue != classifierLabEnabled {
-                classifierLabEnabled = newValue
-            }
         }
         .task {
             refreshRewriteAvailability()
@@ -428,15 +406,6 @@ struct TranscriptDetailView: View {
             .foregroundStyle(Color.jotMute)
             .monospacedDigit()
             .accessibilityElement(children: .combine)
-
-            // Category chip — only shown when the classifier Lab toggle is
-            // on. Lets the user see what the BG classifier picked AND
-            // override it inline. Hidden during edit mode so the editor
-            // gets clean focus. User overrides are sticky — the classifier
-            // only writes rows where `category == nil`.
-            if classifierLabEnabled && !isEditing {
-                CategoryChip(transcript: transcript, shape: .detailSubline)
-            }
 
             Spacer(minLength: 0)
         }
