@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot — Live Design System (build 72)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400;1,9..144,600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* Brand */
+    --coral: #FF6B5C;          /* jotAccent */
+    --coral-top: #FF6B57;      /* jotCoralTop */
+    --coral-bottom: #E0533F;   /* jotCoralBottom */
+    --blue-top: #1A8CFF;       /* jotBlueTop */
+    --blue-bottom: #0064CC;    /* jotBlueBottom */
+    --record: #FF3B30;         /* jotRecord */
+    --record-dot: #E0173B;     /* jotRecordingDot */
+    --record-halo: rgba(224,23,59,0.18);
+    /* Page / text (light) */
+    --page-base: #D1D3DA;      /* jotPageBase */
+    --ink: #15171C;            /* jotPageInk */
+    --ink-2: rgba(60,60,67,0.72);  /* jotPageInkSecondary */
+    --ink-cap: rgba(60,60,67,0.62);/* jotPageInkCaption */
+    --separator: rgba(60,60,67,0.10);
+    /* Status */
+    --success: #34C759;
+    --warning: #FF9F30;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(900px 700px at 0% 0%, rgba(0,122,255,0.18), transparent 60%),
+      radial-gradient(900px 700px at 100% 100%, rgba(255,200,140,0.16), transparent 60%),
+      radial-gradient(700px 600px at 50% 100%, rgba(180,200,240,0.30), transparent 60%),
+      var(--page-base);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.45;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 22px 96px; }
+
+  /* Editorial display = Fraunces (the app's bundled face) */
+  .serif { font-family: "Fraunces", Georgia, "Times New Roman", serif; }
+  h1.hero {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600; font-style: italic;
+    font-size: 54px; letter-spacing: -1.6px; margin: 0 0 6px;
+  }
+  .sub { color: var(--ink-2); font-size: 15px; margin: 0 0 4px; }
+  .meta { color: var(--ink-cap); font-size: 12.5px; }
+
+  .seclabel {
+    text-transform: uppercase; font-size: 11px; font-weight: 700;
+    letter-spacing: 1.5px; color: var(--ink-cap); margin: 44px 0 14px;
+  }
+
+  /* Liquid Glass card — light recipe from the app */
+  .glass {
+    background: rgba(255,255,255,0.62);
+    -webkit-backdrop-filter: blur(28px) saturate(200%);
+    backdrop-filter: blur(28px) saturate(200%);
+    border: 0.5px solid rgba(0,0,0,0.05);
+    border-radius: 18px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 14px 36px -28px rgba(15,17,28,0.30);
+    padding: 16px 18px;
+  }
+
+  .grid { display: grid; gap: 12px; }
+  .cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+  .swatch { border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.55); border: 0.5px solid rgba(0,0,0,0.06); }
+  .swatch .chip { height: 64px; }
+  .swatch .info { padding: 9px 11px; }
+  .swatch .tok { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; font-weight: 600; }
+  .swatch .hex { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--ink-2); }
+  .swatch .use { font-size: 11px; color: var(--ink-cap); margin-top: 3px; }
+
+  /* Semantic icon tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+  .tile-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+  .tile {
+    width: 44px; height: 44px; border-radius: 12px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.35) inset, 0 1px 2px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06);
+  }
+  .tile-cell .tok { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; }
+  .tile-cell .hex { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; color: var(--ink-2); }
+
+  /* Type specimens */
+  .specimen { padding: 14px 0; border-bottom: 1px solid var(--separator); }
+  .specimen:last-child { border-bottom: 0; }
+  .specimen .label { font-size: 11px; color: var(--ink-cap); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-bottom: 6px; }
+
+  table.spec { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.spec td { padding: 8px 6px; border-bottom: 1px solid var(--separator); vertical-align: top; }
+  table.spec td:first-child { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; white-space: nowrap; width: 1%; padding-right: 18px; }
+  table.spec td .val { color: var(--ink-2); }
+
+  /* component demos */
+  .row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .fab {
+    display: inline-flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 999px; color: #fff; font-weight: 600;
+    background: linear-gradient(180deg, var(--blue-top), var(--blue-bottom));
+    box-shadow: 0 14px 36px -22px rgba(15,17,28,0.55);
+  }
+  .pill-status {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: rgba(52,199,89,0.14); color: #1B8E3E;
+  }
+  .pill-status .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--success); }
+  .rec-dot { width: 12px; height: 12px; border-radius: 999px; background: var(--record-dot); box-shadow: 0 0 0 6px var(--record-halo); }
+  .settings-row { display: flex; align-items: center; gap: 12px; }
+  .settings-row .t { width: 30px; height: 30px; border-radius: 9px; }
+  .settings-row .name { font-size: 15px; font-weight: 500; letter-spacing: -0.2px; }
+  .settings-row .s { font-size: 12.5px; color: var(--ink-2); }
+
+  /* watch */
+  .watch-frame {
+    width: 184px; aspect-ratio: 0.82; background: #000; border-radius: 44px;
+    border: 6px solid #1c1c1f; padding: 16px 12px; color: #fff; display: flex; flex-direction: column; gap: 6px;
+    box-shadow: 0 24px 60px -30px rgba(0,0,0,0.7);
+  }
+  .watch-card { background: rgba(255,255,255,0.06); border: 0.5px solid rgba(255,255,255,0.10); border-radius: 12px; padding: 8px 10px; }
+  .watch-stop { margin-top: auto; align-self: center; width: 54px; height: 54px; border-radius: 999px; background: linear-gradient(180deg,#FF5A4E,#FF3B30); display:flex; align-items:center; justify-content:center; }
+  .watch-stop .sq { width: 18px; height: 18px; border-radius: 4px; background:#fff; }
+
+  .callout { font-size: 12.5px; color: var(--ink-2); background: rgba(255,255,255,0.45); border-left: 3px solid var(--blue-top); padding: 10px 14px; border-radius: 0 10px 10px 0; margin-top: 10px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1 class="hero">Jot — Design System.</h1>
+  <p class="sub">The live design system, extracted directly from the shipped iOS + watchOS code (build 72, marketing 1.0.3).</p>
+  <p class="meta">Source of truth: <code>JotDesign.swift</code> (iOS) &amp; <code>JotDesignWatchSafe.swift</code> (Watch). Editorial type is <strong>Fraunces</strong>; chrome is SF Pro (system). All colors list light · dark where the token is adaptive.</p>
+
+  <!-- ===================== BRAND ===================== -->
+  <div class="seclabel">Brand colors</div>
+  <div class="swatches">
+    <div class="swatch" style="grid-column:span 2;outline:2px solid var(--blue-top);outline-offset:-2px;"><div class="chip" style="background:linear-gradient(180deg,#1A8CFF,#0064CC);height:80px;"></div><div class="info"><div class="tok">blue — PRIMARY BRAND</div><div class="hex">#1A8CFF → #0064CC (jotBlueTop → jotBlueBottom)</div><div class="use">The brand color, used across the whole core app: Dictate FAB, Recents accents (sparkline, LATEST tag, avatar, Jot mark), Recording, Ask, Transcript Detail, Settings, Donations, action bars, keyboard Dictate pill.</div></div></div>
+    <div class="swatch"><div class="chip" style="background:linear-gradient(180deg,#FF6B57,#E0533F)"></div><div class="info"><div class="tok">coral — AI + Wizard ONLY</div><div class="hex">#FF6B57 → #E0533F</div><div class="use">Scoped to the AI/Rewrite screens and the Setup Wizard. NOT the brand color — never used on core surfaces.</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FF3B30"></div><div class="info"><div class="tok">jotRecord</div><div class="hex">#FF3B30</div><div class="use">Stop button, draft caret</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#E0173B"></div><div class="info"><div class="tok">jotRecordingDot</div><div class="hex">#E0173B + halo .18</div><div class="use">Live recording dot</div></div></div>
+  </div>
+
+  <!-- ===================== PAGE / TEXT ===================== -->
+  <div class="seclabel">Page &amp; text (light · dark adaptive)</div>
+  <div class="swatches">
+    <div class="swatch"><div class="chip" style="background:#D1D3DA"></div><div class="info"><div class="tok">jotPageBase</div><div class="hex">#D1D3DA · #15171C</div><div class="use">Page wallpaper base (matches keyboard chrome)</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#15171C"></div><div class="info"><div class="tok">jotPageInk</div><div class="hex">#15171C · #FFF .96</div><div class="use">Primary text</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#6b6b75"></div><div class="info"><div class="tok">jotPageInkSecondary</div><div class="hex">#3C3C43 .72 · #FFF .62</div><div class="use">Sub-labels, row subtitles</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#8e8e96"></div><div class="info"><div class="tok">jotPageInkCaption</div><div class="hex">#3C3C43 .62 · #FFF .46</div><div class="use">Section labels, captions</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#1C1C1E"></div><div class="info"><div class="tok">jotInk (editorial)</div><div class="hex">#1C1C1E · #FFF .96</div><div class="use">Editorial body ink</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#C7C7CC"></div><div class="info"><div class="tok">jotMuteWeak</div><div class="hex">#C7C7CC · #FFF .30</div><div class="use">Chevrons, dividers</div></div></div>
+  </div>
+
+  <!-- ===================== STATUS ===================== -->
+  <div class="seclabel">Status</div>
+  <div class="swatches">
+    <div class="swatch"><div class="chip" style="background:#34C759"></div><div class="info"><div class="tok">jotSuccess</div><div class="hex">#34C759 (ink #1B8E3E)</div><div class="use">"Ready" pills, "on" toggles</div></div></div>
+    <div class="swatch"><div class="chip" style="background:#FF9F30"></div><div class="info"><div class="tok">jotWarning</div><div class="hex">#FF9F30 (ink #B87314)</div><div class="use">Warning pill dot/border</div></div></div>
+  </div>
+
+  <!-- ===================== SEMANTIC ICON TILES ===================== -->
+  <div class="seclabel">Semantic icon tiles (Settings &amp; Wizard) — top → shaded bottom gradient</div>
+  <div class="glass">
+    <div class="tiles">
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#1A8CFF,#1573D1)"></div><div class="tok">Speech</div><div class="hex">#1A8CFF</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#1FCED1,#19A9AB)"></div><div class="tok">Vocabulary</div><div class="hex">#1FCED1</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#FF6B57,#D15847)"></div><div class="tok">AI</div><div class="hex">#FF6B57</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#34C759,#2BA349)"></div><div class="tok">On-device</div><div class="hex">#34C759</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#7C5CFF,#664BD1)"></div><div class="tok">Full Access</div><div class="hex">#7C5CFF</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#FF9A33,#D17E2A)"></div><div class="tok">Mic Ready</div><div class="hex">#FF9A33</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#1FCED1,#19A9AB)"></div><div class="tok">Help</div><div class="hex">#1FCED1</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#7C5CFF,#664BD1)"></div><div class="tok">Feedback</div><div class="hex">#7C5CFF</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#8B8E96,#72747B)"></div><div class="tok">Version</div><div class="hex">#8B8E96</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#34C759,#2BA349)"></div><div class="tok">Donations</div><div class="hex">#34C759</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#007AFF,#0064CC)"></div><div class="tok">Backup</div><div class="hex">#007AFF</div></div>
+      <div class="tile-cell"><div class="tile" style="background:linear-gradient(180deg,#FF4F6B,#D14158)"></div><div class="tok">Acknowledge</div><div class="hex">#FF4F6B</div></div>
+    </div>
+    <div class="callout">Tile = rounded square (~28% corner radius), <code>linear-gradient(180deg, color, shade −18%)</code>, inset top highlight <code>rgba(255,255,255,0.35)</code>, soft shadow + 0.5px hairline.</div>
+  </div>
+
+  <!-- ===================== TYPOGRAPHY ===================== -->
+  <div class="seclabel">Typography — editorial (Fraunces)</div>
+  <div class="glass">
+    <div class="specimen"><div class="label">editorialDisplay · Fraunces SemiBold 38</div><div class="serif" style="font-weight:600;font-size:38px;">Recents.</div></div>
+    <div class="specimen"><div class="label">hero display · system/Fraunces italic, tracking −1.6</div><div class="serif" style="font-weight:600;font-style:italic;font-size:44px;letter-spacing:-1.6px;">Settings.</div></div>
+    <div class="specimen"><div class="label">editorialTitle · Fraunces SemiBold 30</div><div class="serif" style="font-weight:600;font-size:30px;">Transcript title</div></div>
+    <div class="specimen"><div class="label">editorialBody · Fraunces Regular 24</div><div class="serif" style="font-size:24px;">so during calculate time we don't have to</div></div>
+    <div class="specimen"><div class="label">editorialItalic · Fraunces Italic 19 (9pt-opsz text cut)</div><div class="serif" style="font-style:italic;font-size:19px;">“yo what's up”</div></div>
+  </div>
+
+  <div class="seclabel">Typography — chrome (SF Pro / system)</div>
+  <div class="glass">
+    <div class="specimen"><div class="label">sectionLabel · 11 bold, tracking 1.5, UPPERCASE, caption color</div><div style="text-transform:uppercase;font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--ink-cap);">Your prompts · 2</div></div>
+    <div class="specimen"><div class="label">rowTitle · 15 medium, tracking −0.2</div><div style="font-size:15px;font-weight:500;letter-spacing:-0.2px;">Rewrite &amp; prompts</div></div>
+    <div class="specimen"><div class="label">rowSub · 12.5 regular, secondary</div><div style="font-size:12.5px;color:var(--ink-2);">On-board model · Ready</div></div>
+    <div class="specimen"><div class="label">monoEditor · 12.5 monospaced, line-height 1.6</div><div style="font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12.5px;line-height:1.6;">Rewrite the selected text for clarity…</div></div>
+  </div>
+
+  <!-- ===================== SPACING / RADII ===================== -->
+  <div class="seclabel">Spacing, radii &amp; surfaces (iOS)</div>
+  <div class="grid cols-2">
+    <div class="glass">
+      <table class="spec">
+        <tr><td>pageGutter</td><td class="val">18 — page horizontal margin</td></tr>
+        <tr><td>cardPaddingH / V</td><td class="val">16 / 14 — inside cards</td></tr>
+        <tr><td>sectionGap (v0.9)</td><td class="val">18 — between cards</td></tr>
+        <tr><td>cardRadius (v0.9)</td><td class="val">18 — card corners</td></tr>
+        <tr><td>sheetRadius</td><td class="val">24 — bottom-sheet headers</td></tr>
+        <tr><td>tileRowSize / hero</td><td class="val">30 / 84 — icon tiles</td></tr>
+        <tr><td>pillRadius</td><td class="val">999 — buttons / status pills</td></tr>
+        <tr><td>statusPillHeight</td><td class="val">28 (padding 8×4)</td></tr>
+      </table>
+    </div>
+    <div class="glass">
+      <div class="label" style="font-size:11px;color:var(--ink-cap);font-family:ui-monospace,'SF Mono',Menlo,monospace;margin-bottom:10px;">Liquid Glass card (iOS 26 .glassEffect; CSS approximation shown)</div>
+      <table class="spec">
+        <tr><td>fill (light)</td><td class="val">rgba(255,255,255,0.62)</td></tr>
+        <tr><td>backdrop</td><td class="val">blur(28px) saturate(200%)</td></tr>
+        <tr><td>hairline</td><td class="val">rgba(0,0,0,0.05) · 0.5px</td></tr>
+        <tr><td>shadow</td><td class="val">0 14px 36px −28px rgba(15,17,28,0.30)</td></tr>
+        <tr><td>inset highlight</td><td class="val">0 1px 0 rgba(255,255,255,0.7)</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===================== COMPONENTS ===================== -->
+  <div class="seclabel">Components (iOS)</div>
+  <div class="glass">
+    <div class="row">
+      <div class="fab"><span>🎤</span> Dictate</div>
+      <span class="pill-status"><span class="dot"></span> Ready</span>
+      <span class="rec-dot" title="recording dot + halo"></span>
+      <div class="settings-row">
+        <div class="t" style="background:linear-gradient(180deg,#FF6B57,#D15847)"></div>
+        <div><div class="name">Rewrite &amp; prompts</div><div class="s">On-board model · Ready</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== WATCH ===================== -->
+  <div class="seclabel">watchOS — design system</div>
+  <div class="grid cols-2">
+    <div class="glass">
+      <p class="meta" style="margin:0 0 12px;">A deliberately narrow subset — coral/blue accents, the red recording cue, amber pending-sync, system inks. <strong>No</strong> keyboard-blue chrome, <strong>no</strong> semantic-tile palette, <strong>no</strong> materials/shadows (true-black AMOLED). Tuned for 40/45mm.</p>
+      <div class="swatches" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));">
+        <div class="swatch"><div class="chip" style="background:linear-gradient(180deg,#1A8CFF,#0064CC)"></div><div class="info"><div class="tok">blue (primary CTA)</div><div class="hex">#1A8CFF → #0064CC</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#FF6B5C"></div><div class="info"><div class="tok">jotAccent (legacy)</div><div class="hex">#FF6B5C</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#FF3B30"></div><div class="info"><div class="tok">jotRecord (Stop)</div><div class="hex">#FF3B30</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#E0173B"></div><div class="info"><div class="tok">jotRecordingDot</div><div class="hex">#E0173B + halo</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#FF9500"></div><div class="info"><div class="tok">jotPendingAmber</div><div class="hex">system .orange</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#34C759"></div><div class="info"><div class="tok">jotSyncSuccess</div><div class="hex">system .green</div></div></div>
+      </div>
+      <table class="spec" style="margin-top:14px;">
+        <tr><td>watchCardRadius</td><td class="val">12</td></tr>
+        <tr><td>watchCardPaddingH / V</td><td class="val">10 / 8</td></tr>
+        <tr><td>watchPageGutter</td><td class="val">8</td></tr>
+        <tr><td>watchRowSpacing</td><td class="val">6</td></tr>
+        <tr><td>watchCardFill</td><td class="val">primary .06 (no material)</td></tr>
+        <tr><td>watchHairline</td><td class="val">primary .10 · 0.5px</td></tr>
+      </table>
+    </div>
+    <div class="glass" style="display:flex;align-items:center;justify-content:center;">
+      <div class="watch-frame">
+        <div style="font-size:10px;letter-spacing:1.2px;opacity:0.6;text-transform:uppercase;">● Recording 0:08</div>
+        <div class="watch-card" style="font-family:'Fraunces',serif;font-style:italic;font-size:14px;">remember to send the deck before…</div>
+        <div class="watch-card" style="font-size:11px;opacity:0.85;">3 notes · synced</div>
+        <div class="watch-stop"><div class="sq"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <p class="meta" style="margin-top:44px;">Generated from code — keep in sync with <code>JotDesign.swift</code> / <code>JotDesignWatchSafe.swift</code>. The page wallpaper here reproduces the app's surface (<code>#D1D3DA</code> base + blue/warm radial washes).</p>
+
+</div>
+</body>
+</html>

@@ -624,8 +624,7 @@ extension Color {
     /// `#0064CC` — bottom stop for the blue accent gradient. Same usage scope as `jotBlueTop`.
     static let jotBlueBottom = Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
 
-    /// Page wallpaper base color — adapts for dark mode. Designer spec
-    /// (`design_handoff_jot_ux/design/screens.jsx:377`): dark base is
+    /// Page wallpaper base color — adapts for dark mode. The dark base is
     /// `#15171C` (the same value as `jotPageInk` in light mode — intentional
     /// brand symmetry, the dark page literally reads as inverted-ink).
     ///   - light: `#D1D3DA`
