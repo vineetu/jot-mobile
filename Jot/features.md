@@ -19,6 +19,7 @@
   - [1.9 Settings Access](#1-9-settings-access)
   - [1.10 Live Recording Preview on Home](#1-10-live-recording-preview-on-home)
   - [1.11 Multi-Select & Combine](#1-11-multi-select--combine)
+  - [1.12 Ask Jot Entry Point](#1-12-ask-jot-entry-point)
 - [2. Recording Experience](#2-recording-experience)
   - [2.1 Full-Screen Recording Surface](#2-1-full-screen-recording-surface)
   - [2.2 Recording Status Indicator](#2-2-recording-status-indicator)
@@ -126,14 +127,21 @@
   - [13.4 Transcript Storage](#13-4-transcript-storage)
   - [13.5 Rewrite Edit Training Pairs](#13-5-rewrite-edit-training-pairs)
   - [13.6 No Accounts, No Telemetry, No Analytics](#13-6-no-accounts-no-telemetry-no-analytics)
-- [14. Known Bugs (Unresolved)](#14-known-bugs-unresolved)
-  - [14.1 Keyboard-initiated dictation opens Jot but does not start recording](#14-1-keyboard-initiated-dictation-opens-jot-but-does-not-start-recording)
-  - [14.2 Keyboard auto-switches back to system keyboard after dictation stop](#14-2-keyboard-auto-switches-back-to-system-keyboard-after-dictation-stop)
-  - [14.3 Auto-paste silently fails in some host apps (notably Slack)](#14-3-auto-paste-silently-fails-in-some-host-apps-notably-slack)
-  - [14.4 New user-created prompts have no before/after preview in the list](#14-4-new-user-created-prompts-have-no-beforeafter-preview-in-the-list)
-  - [14.5 Minimize sometimes leaves keyboard at full height with collapsed content inside](#14-5-minimize-sometimes-leaves-keyboard-at-full-height-with-collapsed-content-inside)
-  - [14.6 Actions popover regression cluster (Paste, Undo, Move up/down)](#14-6-actions-popover-regression-cluster-paste-undo-move-updown)
-- [15. Planned Work & Plans Index](#15-planned-work--plans-index)
+- [14. Ask Jot](#14-ask-jot)
+  - [14.1 Natural-Language Q&A](#14-1-natural-language-qa)
+  - [14.2 Voice or Typed Questions](#14-2-voice-or-typed-questions)
+  - [14.3 Cited Answers](#14-3-cited-answers)
+  - [14.4 Library-Wide Retrieval & Indexing](#14-4-library-wide-retrieval--indexing)
+  - [14.5 Answer Model Choice](#14-5-answer-model-choice)
+  - [14.6 Availability](#14-6-availability)
+- [15. Known Bugs (Unresolved)](#15-known-bugs-unresolved)
+  - [15.1 Keyboard-initiated dictation opens Jot but does not start recording](#15-1-keyboard-initiated-dictation-opens-jot-but-does-not-start-recording)
+  - [15.2 Keyboard auto-switches back to system keyboard after dictation stop](#15-2-keyboard-auto-switches-back-to-system-keyboard-after-dictation-stop)
+  - [15.3 Auto-paste silently fails in some host apps (notably Slack)](#15-3-auto-paste-silently-fails-in-some-host-apps-notably-slack)
+  - [15.4 New user-created prompts have no before/after preview in the list](#15-4-new-user-created-prompts-have-no-beforeafter-preview-in-the-list)
+  - [15.5 Minimize sometimes leaves keyboard at full height with collapsed content inside](#15-5-minimize-sometimes-leaves-keyboard-at-full-height-with-collapsed-content-inside)
+  - [15.6 Actions popover regression cluster (Paste, Undo, Move up/down, Dismiss)](#15-6-actions-popover-regression-cluster-paste-undo-move-updown-dismiss)
+- [16. Planned Work & Plans Index](#16-planned-work--plans-index)
 
 ---
 
@@ -147,7 +155,7 @@ Planned and pending entries below carry a **size** tag using a T-shirt scale:
 - **L** — 3-5 days, multi-component, real design decisions.
 - **XL** — over a week, architectural change or new subsystem.
 
-Sizes appear on Known Bugs (§14) and on aspirational entries that haven't shipped. Already-shipped features don't carry sizes.
+Sizes appear on Known Bugs (§15) and on aspirational entries that haven't shipped. Already-shipped features don't carry sizes.
 
 ---
 
@@ -187,6 +195,9 @@ While a recording is in progress and the user has [backed out of the recording s
 
 ### 1.11 Multi-Select & Combine
 A long-press on any transcript row in the home library (see [§1.7](#1-7-transcript-row-actions)) enters multi-select mode with the long-pressed row pre-selected. In this mode the Dictate button is replaced by a bottom toolbar with three actions: **Select All** (selects every visible transcript), **Combine** (merges 2–5 selected entries into one new transcript), and **Delete N** (removes all selected entries after a confirmation dialog). Tapping additional rows toggles their selection. Exit multi-select by completing an action or by tapping outside the selected rows. Combine is enabled only when at least 2 and at most 5 rows are selected; outside that range the button dims. Tapping Combine opens a confirmation dialog with two options: **Combine and delete originals** (destructive — the source entries are removed and replaced by the new combined one) and **Combine and keep originals** (the new combined entry is created alongside the originals). In both cases, the combined entry is built from the **best available version** of each source — if a source has an [AI Rewrite](#7-ai-rewrite), the rewrite is used; if it does not, the original transcript is used. The picked strings are joined **oldest-first** (the earliest dictation appears at the top of the combined entry, the most recent at the bottom) with paragraph breaks. This is the opposite of the library's visual order — the library shows newest on top — because the combined entry reads naturally as a chronological narrative rather than as a stack of the rows in display order. The result is stored as the new entry's original (the new combined entry has no Rewrite of its own and no Rewrite tab). The new entry receives a fresh timestamp and ledger number.
+
+### 1.12 Ask Jot Entry Point
+A small sparkles pill sits next to the [search bar](#1-3-live-search) in the home header. Where search finds a remembered phrase, this opens [Ask Jot](#14-ask-jot) — natural-language Q&A across all the user's notes. The pill only appears once the device has a capable answer model available (see [§14.6](#14-6-availability)), so the entry point is never shown in a non-working state.
 
 ---
 
@@ -231,7 +242,7 @@ When an in-app dictation — started from the home screen [Dictate button](#1-6-
 ### 2.11 Chained Follow-Up Voice Commands
 Within 30 seconds after a dictation completes, the user can make a short follow-up dictation to transform the prior text — for example, "make it shorter" or "translate that to Spanish." Jot recognises this as a command against the just-dictated text rather than a new separate dictation: the transformed result replaces the prior text on the clipboard, a new transcript entry is created, and the original no longer appears in the keyboard's recent history. Outside the 30-second window, all new dictations are treated as fresh independent entries.
 
-In the new entry's [detail view](#3-1-original-rewrite-tabs), the command utterance itself (e.g., "make it shorter") becomes the **Original** tab text, while the transformed prior dictation appears under the **Rewrite** tab. This means a user opening the follow-up entry sees their voice command as the Original and the rewritten text — attributed as "Rewritten with [model name]" — as the Rewrite.
+In the new entry's [detail view](#3-1-original--rewrite-tabs), the command utterance itself (e.g., "make it shorter") becomes the **Original** tab text, while the transformed prior dictation appears under the **Rewrite** tab. This means a user opening the follow-up entry sees their voice command as the Original and the rewritten text — attributed as "Rewritten with [model name]" — as the Rewrite.
 
 **Home library vs. keyboard recents asymmetry**: in the Home library, both the original transcript and the follow-up entry appear as separate rows — the original is not hidden or marked in any way. In the keyboard's recents strip, only the follow-up entry is shown; the original is filtered out and does not appear. A user browsing the Home library therefore sees the full chain, while a user glancing at the keyboard recents sees only the latest result.
 
@@ -261,7 +272,7 @@ Jot ships a standalone Apple Watch app (watchOS 26+) for capturing thoughts dire
 The detail view for any transcript presents two tabs — Original and Rewrite — selectable via a two-pill segment control. The Original tab always shows the unmodified text produced by the [speech model](#6-1-speech-model-management). The Rewrite tab shows the [automatic cleanup](#7-1-automatic-cleanup) output when present, and later shows the output of [AI Rewrite](#7-ai-rewrite) if one has been generated; older entries with neither show an empty state with a prompt to create one. When cleanup or a rewrite already exists, the detail view defaults to the Rewrite tab on open so the improved text is immediately visible.
 
 ### 3.2 Transcript Metadata
-A subline at the top of the detail view displays the relative recording date, the word count, and the duration when available (present for live dictations; omitted for file transcriptions via Shortcuts), giving context without cluttering the reading area. The detail view has no title surface — title and tag fields are intentionally absent from v1 (see also [§7.11](#7-11-ai-settings-copy-discrepancy-titles-and-tags)).
+A subline at the top of the detail view displays the relative recording date, the word count, and the duration when available (present for live dictations; omitted for file transcriptions via Shortcuts), giving context without cluttering the reading area. The detail view has no title surface — title and tag fields are intentionally absent from v1 (see also [§7.11](#7-11-ai-settings-copy-discrepancy--titles-and-tags)).
 
 ### 3.3 Selectable Text
 Both the original transcript text and the rewrite text are fully selectable, allowing users to copy any portion to the clipboard using the standard iOS text selection handles.
@@ -383,7 +394,7 @@ The Settings screen surfaces the name and current status of the installed speech
 A row in the Speech section shows the current count of [custom vocabulary terms](#8-vocabulary-boost) and navigates to the full [Vocabulary settings screen](#8-vocabulary-boost) where terms can be managed.
 
 ### 6.3 AI Settings Link
-A row in the AI section shows the current status of the [AI Rewrite model](#7-ai-rewrite) and navigates to the full AI Rewrite settings screen where the model can be downloaded, freed, and prompts can be managed.
+A row in the AI section shows the current status of the [AI Rewrite model](#7-ai-rewrite) and navigates to the full AI Rewrite settings screen where the model can be downloaded, freed, and prompts can be managed. This same screen is also where the user chooses which model answers [Ask Jot](#14-ask-jot) — Apple Intelligence (default) or the on-board model (see [§14.5](#14-5-answer-model-choice)).
 
 ### 6.4 Privacy Controls
 A Privacy section shows a tappable Full Access row (subline "General → Keyboard → Keyboards → Jot", trailing external-arrow), plus a toggle for [Warm Hold](#13-2-warm-hold) after [wizard step W6](#4-6-warm-hold-opt-in-w6). When Warm Hold is on, the toggle is followed by a "Ready for" duration picker with 60s, 2 min, 3 min, and 5 min options. The Full Access row opens iOS Settings to Jot's app-settings page; the subline gives the user the breadcrumb to navigate from there to Allow Full Access (Jot cannot read its state directly — see [§13.3](#13-3-full-access-disclosure)). The bottom-of-section caption "Your words stay on your iPhone. No accounts, no cloud, no telemetry." carries the on-device-only message; no separate "On-device only" row is shown.
@@ -492,7 +503,7 @@ A Troubleshooting section in Help contains collapsible Q&A entries addressing th
 A Contact section at the bottom of the Help screen provides a Send feedback button that opens an in-app feedback form. The form has a text field, an "Add screenshots" button (multi-select up to 3 from the user's photo library — each thumbnail is shown below the editor with an X button to remove individually), and an "Include diagnostic logs" toggle (default off; when on, attaches a recent slice of anonymous app events — recording start/stop, paste outcomes, memory warnings — to help track down bugs; an explicit caption reassures that no personal info or transcripts are included). A counter shows the combined screenshot size and current selection count so the user can see what they're about to upload. The app version and platform are attached automatically. The user stays inside Jot — no Mail handoff. After a successful send the form auto-clears (text, screenshots, and the logs toggle all reset) and a green-check "Sent. Thank you." confirmation appears in place for fifteen seconds before fading on its own — so the user can immediately type another piece of feedback without needing to dismiss anything, and a stale confirmation never lingers. The Send button is disabled while a submission is in flight so repeated taps can't fire duplicate uploads. On rate-limit or server errors the message is shown inline so the user can try again. The same form is reachable from Settings → About → Send feedback (see [§6.5 About](#6-5-about--support)).
 
 ### 9.7 Use Cases
-A "What it's for" section appears as the first section of the Help screen (above [§9.2 Getting Started Guide](#9-2-getting-started-guide)) and frames Jot in three user-situation stories rather than feature claims. **Speak instead of typing, in any app** describes globe-switching to the Jot keyboard and dictating directly into the current text field. **Keep going when life interrupts** describes the [warm-hold microphone](#5-12-warm-hold) staying ready for up to five minutes across app switches and incoming calls, with continuous saves so partial dictations survive interruptions. **Polish what you said into what you meant** describes the three built-in [AI Rewrite](#7-ai-rewrite) prompts (Articulate, Action Items, Email) plus the ability to write a custom prompt once and reuse it on any transcript. Each story is a short paragraph under a small bold subhead, with the AI prompt names highlighted inline.
+A "What it's for" section appears as the first section of the Help screen (above [§9.2 Getting Started Guide](#9-2-getting-started-guide)) and frames Jot in three user-situation stories rather than feature claims. **Speak instead of typing, in any app** describes globe-switching to the Jot keyboard and dictating directly into the current text field. **Keep going when life interrupts** describes the [warm-hold microphone](#13-2-warm-hold) staying ready for up to five minutes across app switches and incoming calls, with continuous saves so partial dictations survive interruptions. **Polish what you said into what you meant** describes the three built-in [AI Rewrite](#7-ai-rewrite) prompts (Articulate, Action Items, Email) plus the ability to write a custom prompt once and reuse it on any transcript. Each story is a short paragraph under a small bold subhead, with the AI prompt names highlighted inline.
 
 ---
 
@@ -582,11 +593,35 @@ Settings surfaces the claim: "Your words stay on your iPhone. No accounts, no cl
 
 ---
 
-## 14. Known Bugs (Unresolved)
+## 14. Ask Jot
+
+**Beta.** Natural-language question-answering over the user's own transcript library. Where [Live Search](#1-3-live-search) finds a remembered phrase and [AI Rewrite](#7-ai-rewrite) reshapes a single note, Ask Jot answers a *question* by reading across many notes at once and writing back a grounded answer. Reached from the [home Ask entry point](#1-12-ask-jot-entry-point); presented as a full-height sheet titled "Ask Jot" with a BETA tag.
+
+### 14.1 Natural-Language Q&A
+The user asks a plain-language question ("what did I decide about the launch date?", "summarise my notes from last week") and Ask Jot returns a written answer drawn from the user's own transcripts — not generic knowledge. The answer streams in as it's written; while it's preparing, a short status line cycles through "Searching your notes…", a model-loading note if the answer model is cold, then light "thinking" messages until the first words arrive. The field shows no canned example prompts — the user asks their own thing.
+
+### 14.2 Voice or Typed Questions
+Ask is voice-first: opening it starts listening immediately (without raising the keyboard), so the default action is simply to talk, with a "Listening…" prompt shown until the first words are transcribed. The live transcript fills the question field as the user speaks; tapping the field switches to typing instead (and discards the in-progress voice). The dictated question reuses Jot's own [recording + transcription](#2-recording-experience) pipeline but is treated as a query only — it is never saved as a transcript. The question field grows to several lines for longer questions.
+
+### 14.3 Cited Answers
+Answers carry inline citation chips that map back to the specific transcripts the answer drew from. Tapping a citation dismisses the Ask sheet and opens that note in [Transcript Detail](#3-transcript-detail). A sources list beneath the answer shows which transcripts were used and which on-device model produced the answer.
+
+### 14.4 Library-Wide Retrieval & Indexing
+Ask searches the user's entire library — including notes captured from the [keyboard](#5-jot-keyboard), [Apple Watch](#2-13-apple-watch-dictation), and [Shortcuts](#10-1-shortcuts-transcribe-audio-with-jot) — combining meaning-based matching with keyword matching so relevant notes surface even when the wording differs. Notes are indexed in the background for the best results; until a note is indexed it is still findable by keyword, so search is never blind. When some notes aren't indexed yet, Ask offers a one-tap "Index" prompt with progress (indexing also runs on its own in the background). Date-style questions ("yesterday", "last 3 days", "May 26") are resolved by recording time rather than meaning.
+
+### 14.5 Answer Model Choice
+By default Ask answers with Apple Intelligence (no download required). The user can switch to the on-board model — the same one used by [AI Rewrite](#7-ai-rewrite) — from [Settings → AI](#6-3-ai-settings-link). If the chosen model isn't available on the device, Ask falls back to the other so an answer can still be produced.
+
+### 14.6 Availability
+The [home Ask entry point](#1-12-ask-jot-entry-point) appears only when the device has a capable answer model available, so Ask is never surfaced in a non-working state. When no model is available, Ask explains what's needed rather than failing silently.
+
+---
+
+## 15. Known Bugs (Unresolved)
 
 This section tracks user-facing bugs that are reproduced but not yet fixed. Each entry is a short symptom statement + the reproducer + the current root-cause hypothesis. Entries are removed when a fix lands and ships.
 
-### 14.1 Keyboard-initiated dictation opens Jot but does not start recording
+### 15.1 Keyboard-initiated dictation opens Jot but does not start recording
 **Size: S.** **Plan: [docs/plans/bug-cold-start-dictation-race.md](../docs/plans/bug-cold-start-dictation-race.md).** Hypothesis recorded here may not match code reality — see plan for diagnostic-first approach.
 
 **Symptom:** User taps the Dictate pill in the Jot keyboard from a host app. Jot is brought to the foreground (recording hero may briefly appear) but recording never actually starts — the timer stays at 0:00 and no audio is captured. The user has to back out and tap the home-screen Dictate FAB to actually record.
@@ -595,7 +630,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 **Current hypothesis:** the `jot://dictate` URL-bounce reaches the main app before the speech model has finished loading into ANE. The recording-start handler proceeds and starts the audio engine, but the streaming session's `loadModels(from:)` fails or hangs, leaving the recording in a half-started state where the engine isn't capturing. Needs trace logs to confirm.
 
-### 14.2 Keyboard auto-switches back to system keyboard after dictation stop
+### 15.2 Keyboard auto-switches back to system keyboard after dictation stop
 **Size: M.** **Plan: [docs/plans/bug-keyboard-auto-switch.md](../docs/plans/bug-keyboard-auto-switch.md).** Two hypotheses (keyboard kill vs. main-app jetsam); diagnostic plan disambiguates.
 
 **Symptom:** Rare. After the user taps Stop in the Jot keyboard (the same Dictate pill in its stop state), iOS switches the active keyboard back to the previous system keyboard. When the user manually switches back to Jot via the globe key, the transcript has already been auto-pasted into the host field and the keyboard is in its normal idle state.
@@ -604,7 +639,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 **Current hypothesis:** the keyboard extension is being terminated by iOS (memory pressure during transcribe/cleanup) and iOS falls back to the previously-active keyboard while it relaunches. The auto-paste still completes because the main-app pipeline finishes independently and the v7 paste deadline machinery resurrects it on next keyboard presentation. Needs trace logs around the stop → transcribe-complete window to confirm.
 
-### 14.3 Auto-paste silently fails in some host apps (notably Slack)
+### 15.3 Auto-paste silently fails in some host apps (notably Slack)
 **Size: M.** **Plan: [docs/plans/bug-slack-silent-paste.md](../docs/plans/bug-slack-silent-paste.md).** Probe shipped in build 4; plan tightens it (existing `contextGrew` signal is ambiguous on long fields) then ships banner + clipboard fallback.
 
 **Symptom:** Stop a warm-hold dictation while focused on a host app's text field (observed in Slack). The keyboard's `pasteSuccess` event fires in the diagnostics log with the full character count, but no text appears in the host field. The dictated transcript is still stored in Jot's library — only the auto-paste step silently no-ops.
@@ -615,7 +650,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 **Current hypothesis:** the host's textDocumentProxy is disconnected (returns `nil` for `documentContextBeforeInput`) at the moment of insert, so iOS no-ops the call silently. Slack's compose field has known unusual focus + draft-autosave behavior that may transiently break the proxy connection. As of build 4 the `pasteSuccess` log now also captures `proxyHadContextBefore` + a before/after context-length delta so the next failure produces actionable signal: if `contextGrew` equals the inserted character count, the host accepted the text; if it's `0` or `-1`, the insert was silently dropped. Once a failure is captured with the new instrumentation, the fix (likely gating insert on `proxyHadContextBefore == true` and posting an error banner otherwise) becomes a one-liner.
 
-### 14.4 New user-created prompts have no before/after preview in the list
+### 15.4 New user-created prompts have no before/after preview in the list
 **Size: S.** **Plan: [docs/plans/bug-user-prompt-no-preview.md](../docs/plans/bug-user-prompt-no-preview.md).** Deterministic, ready to implement.
 
 **Symptom:** Each bundled default prompt in [Settings → AI Rewrite](#7-7-saved-prompt-management) (Articulate, AI prompt, Action Items, Email) renders with a mini before→after sample directly inside its row — a representative dictation in italic + the prompt's transformed output below it. When the user creates their own prompt via the "+ New prompt" sheet, the new row appears in the list but **without a before/after sample**; it just shows the icon + name + a one-line preview of the system prompt. Visually inconsistent with the bundled rows and gives the user no quick "is this prompt doing what I expect" cue.
@@ -626,7 +661,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 **Plan:** Capture the most recent (before, after) pair produced by the "Try this prompt" footer for each user-created prompt and persist it on the `SavedPrompt` row (or as a separate side-table keyed by id). Render that pair in the list row using the same component path as the bundled defaults. Falls back to the existing "first-line of system prompt" preview when no try-run has happened yet. Deferred for now — capture the bug, fix later.
 
-### 14.5 Minimize sometimes leaves keyboard at full height with collapsed content inside
+### 15.5 Minimize sometimes leaves keyboard at full height with collapsed content inside
 **Size: diagnosis-first.** **Plan: [docs/plans/bug-keyboard-minimize-stuck-height.md](../docs/plans/bug-keyboard-minimize-stuck-height.md).** Ten plausible causes enumerated; fix size XS→M depending on which one confirms via the existing `[KB-COLLAPSE-DEBUG]` instrumentation.
 
 **Symptom:** Tapping the Minimize button in the [Jot Keyboard](#5-8-minimize--expand) sometimes swaps the SwiftUI render to the collapsed-bar view (small Stop button centered) but leaves the keyboard's outer frame at full expanded height (~450 pt). User sees the small content floating in a tall empty envelope. Intermittent — not every Minimize tap is affected.
@@ -637,7 +672,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 **Current hypotheses (no winner — diagnostic capture pending):** ten candidate causes ranging from system input-view height caching, animation-interruption races on double-tap, status-banner auto-expand collisions, SwiftUI vs UIKit ordering, hosting-controller intrinsic-content-size conflicts, transitions during the tap window, and `UIInputView` size-negotiation timing. The plan explores each path and lists the diagnostic signal that would disambiguate. Fix is not chosen until logs confirm.
 
-### 14.6 Actions popover regression cluster (Paste, Undo, Move up/down, Dismiss)
+### 15.6 Actions popover regression cluster (Paste, Undo, Move up/down, Dismiss)
 **Size: bundled, XS-S.** **Plan: [docs/plans/bug-actions-popover-regressions.md](../docs/plans/bug-actions-popover-regressions.md).** Four bugs in the keyboard's [Actions Popover](#5-6-actions-popover) surface:
 
 - **Paste** doesn't re-read the system clipboard when the popover opens. Stale enabled-state persists across opens until the keyboard re-appears. **Confidence: 90%.** Fix is XS — call `refreshPasteState()` from the Actions button tap.
@@ -647,7 +682,7 @@ This section tracks user-facing bugs that are reproduced but not yet fixed. Each
 
 ---
 
-## 15. Planned Work & Plans Index
+## 16. Planned Work & Plans Index
 
 Curated index of plan documents that elaborate aspirational features, deferred engineering work, and unresolved bugs. Each plan has a recommendation, alternatives, edge cases, and a test plan ready to pick up.
 
@@ -665,14 +700,14 @@ Curated index of plan documents that elaborate aspirational features, deferred e
 - **In-app feature list + forward-only release log** — [docs/plans/feature-catalog-release-log.md](../docs/plans/feature-catalog-release-log.md) — **S.** Static hand-coded SwiftUI list grouped by hero feature. Release log starts forward from the version that ships this feature; no back-fill of past versions. No JSON sidecar, no CI check, no `features.md` sync.
 - **Donation milestone re-prompt** — [docs/plans/donation-milestone-card.md](../docs/plans/donation-milestone-card.md) — **S.** Evolves the existing `DonationCard` (`Jot/App/Donation/DonationCard.swift` — already shipping) from a single-shot at 2h into a multi-milestone re-prompt at 2h / 10h / 25h with a 90-day cooldown and a "never ask again" affordance.
 
-### Known bugs (§14)
+### Known bugs (§15)
 
-- **§14.1 Cold-start dictation race** — [docs/plans/bug-cold-start-dictation-race.md](../docs/plans/bug-cold-start-dictation-race.md) — **S.** Diagnostic instrumentation first; primary fix is a one-line `warmUp()` kick in the deferred branch of `triggerAutoStart`.
-- **§14.2 Keyboard auto-switch on stop** — [docs/plans/bug-keyboard-auto-switch.md](../docs/plans/bug-keyboard-auto-switch.md) — **M.** Two hypotheses (keyboard kill vs. main-app jetsam); diagnostic plan disambiguates. Resurrection UX uses a Dictate-button overlay rather than a banner because of the §5.10 collapsed-banner bug.
-- **§14.3 Slack silent paste** — [docs/plans/bug-slack-silent-paste.md](../docs/plans/bug-slack-silent-paste.md) — **M.** Build-4 probe ships; plan tightens it (existing `contextGrew` is ambiguous on long fields) then adds banner + clipboard fallback with `setItems` expiration.
-- **§14.4 User-prompt no preview** — [docs/plans/bug-user-prompt-no-preview.md](../docs/plans/bug-user-prompt-no-preview.md) — **S.** Persist last (before, after) pair from the Try-This footer + render via the same component path as bundled defaults.
-- **§14.5 Minimize sometimes leaves keyboard at full height with collapsed content inside** — [docs/plans/bug-keyboard-minimize-stuck-height.md](../docs/plans/bug-keyboard-minimize-stuck-height.md) — **diagnosis-first.** Ten plausible causes enumerated; existing `[KB-COLLAPSE-DEBUG]` log layer is most of the instrumentation needed. Fix size XS→M depending on which cause confirms.
-- **§14.6 Actions popover regression cluster** — [docs/plans/bug-actions-popover-regressions.md](../docs/plans/bug-actions-popover-regressions.md) — **XS-S bundled.** Four bugs: Paste-stale (90% confidence, XS fix), Undo coverage for Recents tap (50% confidence, diagnostic-first), Move up/down regression (40% confidence, git check + diagnostic), and unreliable popover dismiss (60% confidence, XS fix — full-frame catcher + explicit toggle-close + ✕ affordance).
+- **§15.1 Cold-start dictation race** — [docs/plans/bug-cold-start-dictation-race.md](../docs/plans/bug-cold-start-dictation-race.md) — **S.** Diagnostic instrumentation first; primary fix is a one-line `warmUp()` kick in the deferred branch of `triggerAutoStart`.
+- **§15.2 Keyboard auto-switch on stop** — [docs/plans/bug-keyboard-auto-switch.md](../docs/plans/bug-keyboard-auto-switch.md) — **M.** Two hypotheses (keyboard kill vs. main-app jetsam); diagnostic plan disambiguates. Resurrection UX uses a Dictate-button overlay rather than a banner because of the §5.10 collapsed-banner bug.
+- **§15.3 Slack silent paste** — [docs/plans/bug-slack-silent-paste.md](../docs/plans/bug-slack-silent-paste.md) — **M.** Build-4 probe ships; plan tightens it (existing `contextGrew` is ambiguous on long fields) then adds banner + clipboard fallback with `setItems` expiration.
+- **§15.4 User-prompt no preview** — [docs/plans/bug-user-prompt-no-preview.md](../docs/plans/bug-user-prompt-no-preview.md) — **S.** Persist last (before, after) pair from the Try-This footer + render via the same component path as bundled defaults.
+- **§15.5 Minimize sometimes leaves keyboard at full height with collapsed content inside** — [docs/plans/bug-keyboard-minimize-stuck-height.md](../docs/plans/bug-keyboard-minimize-stuck-height.md) — **diagnosis-first.** Ten plausible causes enumerated; existing `[KB-COLLAPSE-DEBUG]` log layer is most of the instrumentation needed. Fix size XS→M depending on which cause confirms.
+- **§15.6 Actions popover regression cluster** — [docs/plans/bug-actions-popover-regressions.md](../docs/plans/bug-actions-popover-regressions.md) — **XS-S bundled.** Four bugs: Paste-stale (90% confidence, XS fix), Undo coverage for Recents tap (50% confidence, diagnostic-first), Move up/down regression (40% confidence, git check + diagnostic), and unreliable popover dismiss (60% confidence, XS fix — full-frame catcher + explicit toggle-close + ✕ affordance).
 
 ### Index conventions
 
