@@ -27,7 +27,34 @@ struct AskView: View {
     @Environment(TranscriptionService.self) private var transcriptionService
     @Environment(StreamingPartial.self) private var streamingPartial
     @State private var isDictating = false
-    @State private var dictationTask: Task<Void, Never>?
+    /// Shared inline-dictation lifecycle — the same `InlineDictationSession` Edit
+    /// and the keyboard-in-Jot receiver use. Ask's only difference is the
+    /// terminal: the transcribed text becomes a submitted question, not a
+    /// field insert. Replaces Ask's hand-rolled start/stop/abort dance (which is
+    /// where this pattern was first written, before it was extracted).
+    @State private var dictationSession: InlineDictationSession?
+
+    // Auto-send on silence (voice-first §14): once the user has actually spoken
+    // (first words transcribed), `silenceAutoSendSeconds` of continuous quiet
+    // auto-finishes the question via the SAME terminal as the Send/Stop button
+    // (`stopDictation` → finalize + submit). Speaking resets the timer; a short
+    // grace before the countdown shows keeps inter-word pauses from flashing it.
+    @State private var secondsUntilAutoSend: Int?
+    @State private var silenceMonitor: Task<Void, Never>?
+    private static let silenceAutoSendSeconds: Double = 5
+    /// Normalized RMS at or below this reads as silence (tunable on-device).
+    private static let speechAmplitudeThreshold: Float = 0.08
+    /// Wait this long into a silence before showing the countdown.
+    private static let countdownGrace: Double = 1.0
+
+    /// "What can I ask?" hints shown under "Listening" while the field is empty,
+    /// to help the user find their voice. Stays visible briefly AFTER they start
+    /// speaking (not yanked instantly), then fades — see `hintHideAfterSpeechSeconds`.
+    @State private var showAskHints = false
+    @State private var hintHideTask: Task<Void, Never>?
+    /// Grace window to keep the hints up after the first words land, so the
+    /// suggestion doesn't vanish the instant the user begins.
+    private static let hintHideAfterSpeechSeconds: Double = 4
 
     var body: some View {
         NavigationStack {
@@ -271,8 +298,24 @@ struct AskView: View {
             // While listening with nothing transcribed yet, prompt the user to
             // speak — otherwise an auto-started, empty field gives no cue that
             // it's recording. Disappears the moment the first words land.
-            if isDictating && controller.question.isEmpty {
-                ListeningRow()
+            if isDictating {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let seconds = secondsUntilAutoSend {
+                        // Spoke, then went quiet → counting down to auto-send.
+                        // Sits where "Listening" did.
+                        AutoSendCountdownRow(seconds: seconds)
+                    } else if controller.question.isEmpty {
+                        ListeningRow()
+                    }
+                    // Rotating "what can I ask" suggestions — fills the space under
+                    // "Listening", helps the user think of what to say. Held a few
+                    // seconds past first speech (showAskHints), then fades.
+                    if showAskHints {
+                        AskSuggestionHints()
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.4), value: showAskHints)
             } else {
                 // No example prompts — a clean field; the user asks their own thing.
                 EmptyView()
@@ -554,54 +597,40 @@ struct AskView: View {
         inputFocused = false
         controller.question = ""
         isDictating = true
-        // Claim ownership so the home view won't adopt this recording as a hero
-        // (it shares the same recorder). Cleared only once teardown completes.
-        controller.ownsActiveRecording = true
-        dictationTask = Task {
-            do {
-                // `start()` returns once recording is live; partials then flow
-                // through `streamingPartial.streamingText` into the field.
-                try await recordingService.start()
-            } catch {
-                isDictating = false
-                controller.ownsActiveRecording = false
+        // The session claims ownership (so the home won't adopt this as a hero),
+        // awaits the in-flight start before any terminal, releases the
+        // pipeline-in-flight latch, and force-stops on discard — all the fragile
+        // invariants in one place. Partials flow through
+        // `streamingPartial.streamingText` into the question field (onChange below).
+        let session = InlineDictationSession(
+            recordingService: recordingService,
+            transcribe: { [transcriptionService] samples in
+                try await transcriptionService.transcribe(samples: samples)
             }
-        }
+        )
+        dictationSession = session
+        session.start()
+        hintHideTask?.cancel()
+        hintHideTask = nil
+        showAskHints = true
+        startSilenceMonitor()
     }
 
     private func stopDictation() {
         guard isDictating else { return }
         isDictating = false
-        let pending = dictationTask
-        dictationTask = Task {
-            // Let an in-flight start() finish before stopping — cancelling it
-            // mid-bring-up races the engine and can leak a live recording.
-            _ = await pending?.result
-            do {
-                let samples = try await recordingService.stop()
-                // Ask transcribes the samples itself and never runs
-                // RecordingService's normal post-stop pipeline, so we must
-                // release the pipeline-in-flight latch by hand. Without this the
-                // next real dictate throws "a recording is already in progress".
-                recordingService.markPipelineFinished()
-                // Recording is fully stopped — release ownership so the home can
-                // resume normal recording behavior.
-                controller.ownsActiveRecording = false
-                let text = try await transcriptionService.transcribe(samples: samples)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    controller.question = trimmed
-                    // Auto-run the answer on stop — speak → stop → answer.
-                    submitIfPossible()
-                }
-                // NOTE: deliberately NOT calling TranscriptStore.append — the
-                // dictated question is a query, not a note. No corpus pollution.
-            } catch {
-                // stop() failed (its own catch already released the latch) or
-                // transcription threw — release defensively so we never wedge
-                // the recorder for the next dictation.
-                recordingService.markPipelineFinished()
-                controller.ownsActiveRecording = false
+        hintHideTask?.cancel(); hintHideTask = nil
+        showAskHints = false
+        stopSilenceMonitor()
+        let session = dictationSession
+        dictationSession = nil
+        Task {
+            // `finalize()` stops, transcribes, and releases the latch + ownership.
+            // Ask's terminal: set the question and auto-run the answer (speak →
+            // stop → answer). NOT saved as a transcript — it's a query.
+            if let text = await session?.finalize() {
+                controller.question = text
+                submitIfPossible()
             }
         }
     }
@@ -610,23 +639,64 @@ struct AskView: View {
     /// the sheet is dismissed mid-dictation). Discards the audio.
     private func abortDictation() {
         isDictating = false
-        let pending = dictationTask
-        dictationTask = nil
-        Task {
-            // Let an in-flight start() finish so the teardown sees a live engine
-            // to release — discarding mid-bring-up would leak the recording.
-            _ = await pending?.result
-            // forceStop() discards the captured audio AND fully releases the mic
-            // (unlike cancel(), it does NOT re-enter warm-hold) — the true
-            // "throw it away" for closing Ask / switching to typing, so the mic
-            // doesn't linger after. It never calls stop(), so the
-            // pipeline-in-flight latch is never set. `.failed` here is a benign
-            // terminal phase (handled like `.idle`), not a user-facing error.
-            recordingService.forceStop()
-            // Teardown complete — release ownership so the home (and the next
-            // real dictate) can use the recorder normally.
-            controller.ownsActiveRecording = false
+        hintHideTask?.cancel(); hintHideTask = nil
+        showAskHints = false
+        stopSilenceMonitor()
+        let session = dictationSession
+        dictationSession = nil
+        session?.discard()
+    }
+
+    /// Watches the live mic amplitude while dictating. Once the user has spoken
+    /// (first words transcribed), `silenceAutoSendSeconds` of continuous quiet
+    /// auto-finishes the question via `stopDictation()` (finalize + submit). Any
+    /// speech resets the timer; the countdown surfaces only after a short grace
+    /// so inter-word pauses don't flash it.
+    @MainActor
+    private func startSilenceMonitor() {
+        silenceMonitor?.cancel()
+        secondsUntilAutoSend = nil
+        silenceMonitor = Task { @MainActor in
+            var hasSpoken = false
+            var lastVoiceAt = Date()
+            while !Task.isCancelled, isDictating {
+                let amp = recordingService.currentAmplitude ?? 0
+                let now = Date()
+                let speaking = amp > Self.speechAmplitudeThreshold
+                if speaking { lastVoiceAt = now }
+                if !controller.question.isEmpty { hasSpoken = true }
+                // First words landed → keep the hints up a few more seconds, then
+                // fade. Scheduled once (guarded on the nil task).
+                if hasSpoken, showAskHints, hintHideTask == nil {
+                    hintHideTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(Self.hintHideAfterSpeechSeconds))
+                        if !Task.isCancelled { showAskHints = false }
+                    }
+                }
+                if hasSpoken, !speaking {
+                    let silent = now.timeIntervalSince(lastVoiceAt)
+                    if silent >= Self.silenceAutoSendSeconds {
+                        secondsUntilAutoSend = nil
+                        stopDictation() // finalize + submit — same as the Send/Stop button
+                        return
+                    } else if silent >= Self.countdownGrace {
+                        let remaining = Int(ceil(Self.silenceAutoSendSeconds - silent))
+                        if secondsUntilAutoSend != remaining { secondsUntilAutoSend = remaining }
+                    } else if secondsUntilAutoSend != nil {
+                        secondsUntilAutoSend = nil
+                    }
+                } else if secondsUntilAutoSend != nil {
+                    secondsUntilAutoSend = nil
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
         }
+    }
+
+    private func stopSilenceMonitor() {
+        silenceMonitor?.cancel()
+        silenceMonitor = nil
+        secondsUntilAutoSend = nil
     }
 
     private func openCitation(id: UUID) {
@@ -767,6 +837,54 @@ private struct ListeningRow: View {
                 pulse = true
             }
         }
+    }
+}
+
+/// Rotating, non-interactive "what can I ask" suggestions shown under "Listening"
+/// to help the user find their voice. Each is phrased as something to *say aloud*
+/// and set in Jot's editorial italic so it reads as an example, not a button. They
+/// cycle one at a time (summary → topic recall → connections — what the retrieval
+/// actually does well).
+private struct AskSuggestionHints: View {
+    private static let hints = [
+        "“Summarize what I recorded today.”",
+        "“What have I been saying about …?”",
+        "“What else have I said about this?”",
+    ]
+
+    var body: some View {
+        RotatingMessageView(
+            messages: Self.hints,
+            dwell: 4.5,
+            sequenced: true,
+            font: Font.custom(JotType.frauncesItalicText, size: 16),
+            color: Color.jotPageInkSecondary.opacity(0.85),
+            alignment: .leading
+        )
+        .padding(.horizontal, 14)
+        .accessibilityLabel("Examples of what you can ask, like summarizing your day or asking about a topic")
+    }
+}
+
+/// Countdown shown after the user has spoken and gone quiet — the question
+/// auto-sends when it hits zero (same as tapping Send). Sits where "Listening"
+/// was. Speaking again hides it and resets the timer.
+private struct AutoSendCountdownRow: View {
+    let seconds: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "paperplane.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.jotBlueTop)
+            Text("Sending in \(seconds)s — keep talking to continue")
+                .font(.system(.callout))
+                .foregroundStyle(Color.jotPageInkSecondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .accessibilityLabel("Auto-sending your question in \(seconds) seconds. Keep talking to continue.")
     }
 }
 

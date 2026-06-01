@@ -17,6 +17,16 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     enum Phase: String, Codable, Sendable {
         case idle
         case recording
+        /// Mid-dictation pause (UX-overhaul round 2, §10). The audio engine
+        /// keeps running and the mic stays warm, but the slice router drops
+        /// buffers so nothing is captured. Distinct from `.recording` so the
+        /// hero and keyboard can both render a paused UI (Resume control,
+        /// frozen elapsed clock) cross-process. `isRecording` stays `true`
+        /// while paused — it is a sub-state of an active recording, terminated
+        /// only by Resume or Stop/Cancel. The keyboard treats `.paused` as a
+        /// live-but-not-capturing state (mic CTA shows Resume, not the in-
+        /// flight spinner).
+        case paused
         case transcribing
         case processing
         case cleaning
@@ -61,7 +71,7 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         switch projection.phase {
         case .idle, .failed:
             return projection
-        case .recording, .transcribing, .processing, .cleaning, .rewriting, .publishing:
+        case .recording, .paused, .transcribing, .processing, .cleaning, .rewriting, .publishing:
             let age = Date().timeIntervalSince(projection.lastUpdatedAt)
             if age > heartbeatStaleThreshold {
                 return PipelinePhaseProjection(

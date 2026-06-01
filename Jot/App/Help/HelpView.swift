@@ -156,7 +156,7 @@ struct HelpView: View {
 
                 useCase(
                     "Polish what you said into what you meant",
-                    Text("You dictated something — a long meandering thought, a list of things to do, the bones of an email. Open it in Jot and tap one of the built-in prompts: **Articulate** cleans up the prose, **Action Items** pulls out the tasks, **Email** formats it for sending. Or write your own prompt once and reuse it — \u{201C}Turn this into bullet points,\u{201D} \u{201C}Translate to French,\u{201D} \u{201C}Make it sound more formal\u{201D} — and run it on any transcript with a tap.")
+                    Text("You dictated something — a long meandering thought, a list of things to do, the bones of an email. Open it in Jot and tap one of the built-in prompts: **Cleanup** tidies up the prose, **Action Items** pulls out the tasks, **Email** formats it for sending. Or write your own prompt once and reuse it — \u{201C}Turn this into bullet points,\u{201D} \u{201C}Translate to French,\u{201D} \u{201C}Make it sound more formal\u{201D} — and run it on any transcript with a tap.")
                 )
             }
         }
@@ -164,7 +164,7 @@ struct HelpView: View {
 
     /// Use-case entry: a small bold title followed by a body paragraph.
     /// Body is a `Text` so callers can compose inline-bold runs (for proper
-    /// names like Articulate / Action Items / Email) without dropping out
+    /// names like Cleanup / Action Items / Email) without dropping out
     /// to AttributedString.
     @ViewBuilder
     private func useCase(_ title: String, _ body: Text) -> some View {
@@ -248,6 +248,10 @@ struct HelpView: View {
 
                 bulletParagraph(
                     "Optional AI rewrites are also on-device (\(JotDesign.activeRewriteModelDisplayName))."
+                )
+
+                bulletParagraph(
+                    "The one exception: when you tap Send Feedback, your message and any screenshots you attach are sent to us. Nothing else ever leaves your iPhone."
                 )
             }
         }

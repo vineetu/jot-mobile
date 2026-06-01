@@ -273,3 +273,48 @@ picker + the fixed "what else about this" framing).
 shipped Ask RAG (build 65).
 
 ---
+
+## 7. Single-mic takeover prompt — ask before stealing a live recording
+
+**Context.** There is exactly ONE microphone in the app — every surface shares
+`RecordingService.shared`. So whenever you navigate into a recording-capable surface
+while a recording is *already* live somewhere else, that's a conflict over a single
+resource. Today the surfaces silently fight over it (auto-start stomps, or the second
+start no-ops). The user's call: **don't assume — ask.**
+
+**The behavior.** When you open a surface that wants the mic and a recording is already
+running, surface a prompt instead of auto-grabbing it:
+
+> *"You're already recording. Stop & save that first, then dictate here?"*  —
+> primary **"Stop & save, dictate here"** (finalize+save the live one, then start),
+> secondary **"Keep recording"** (dismiss; stay in typed mode / go back).
+
+Lead with the **non-destructive** option (stop = save), because the live recording was
+deliberately started and a one-tap discard would be data loss. A straight "cancel &
+discard" can be an option but should not be the headline.
+
+**Where it applies (all the same pattern):**
+1. **Ask Jot** — opening Ask wants the mic. *Do this one first; keep it simple.* Live-check
+   at Ask-open: Ask hasn't started its own mic yet, so if `recordingService.isRecording`
+   is true it is **by definition foreign** — no ownership flag needed. Show the prompt
+   instead of auto-starting; gate the silence-auto-send until Ask is actually recording.
+2. **Transcription / edit pane** — same prompt. Plus the deeper piece: the
+   **save-vs-don't-save decision is made at STOP time by context** — a recording you
+   stop while editing a transcript **pastes inline and does NOT save a new transcript**.
+   That ephemeral-at-stop semantics is the real work here.
+3. **Send Feedback** — same prompt. (Also has a separate flaky-start bug: feedback-field
+   dictation sometimes doesn't begin at all — triage alongside.)
+
+**Depends on.** The source-based hero redesign (shipped) — once the hero only presents
+from the FAB / cold-URL / return-pill, the "one mic" conflict is the only remaining
+cross-surface recording concern, and it's a clean live-check + dialog.
+
+**Estimated size.** Ask prompt ~half a day (contained to `AskView` / `AskController`,
+one `.confirmationDialog`). Edit-pane ephemeral-at-stop ~1–2 days (stop-time save
+routing). Feedback ~half a day + the flaky-start triage.
+
+**Status.** Captured 2026-05-31. Designed in discussion; not started. The keyboard
+status row was also generalized into a reusable container (`StreamingStrip.statusLine`)
+in the same session — future "Won't be saved" (edit / feedback) statuses plug into it.
+
+---

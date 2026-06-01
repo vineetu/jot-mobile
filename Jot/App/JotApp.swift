@@ -3,6 +3,7 @@ import BackgroundTasks
 import Combine
 import SwiftUI
 import SwiftData
+import UIKit
 import os.log
 
 private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "app-lifecycle")
@@ -13,6 +14,10 @@ struct JotApp: App {
     private let stopRequestObserver: CrossProcessNotification.Observer
     private let cancelRequestObserver: CrossProcessNotification.Observer
     private let warmResumeObserver: CrossProcessNotification.Observer
+    /// Live foreground handshake responder: pongs the keyboard's
+    /// `keyboardForegroundPing` iff we're genuinely foreground, so the keyboard
+    /// can decide inline-vs-cold-start without trusting a stale flag.
+    private let foregroundPingObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var streamingService: StreamingTranscriptionService
@@ -73,6 +78,19 @@ struct JotApp: App {
             name: CrossProcessNotification.cancelRequested
         ) {
             CrossProcessRecordingStopCoordinator.shared.handleCancelRequested()
+        }
+
+        foregroundPingObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.keyboardForegroundPing
+        ) {
+            // Live foreground handshake (ping/pong). Pong ONLY if we're genuinely
+            // foreground. Receiving the ping proves we're not suspended, but a
+            // just-backgrounded (not-yet-suspended) app can briefly receive it —
+            // the applicationState check suppresses the pong there so the keyboard
+            // correctly cold-starts to the hero instead of recording inline.
+            if UIApplication.shared.applicationState != .background {
+                CrossProcessNotification.post(name: CrossProcessNotification.appForegroundPong)
+            }
         }
 
         warmResumeObserver = CrossProcessNotification.addObserver(
@@ -458,13 +476,20 @@ struct JotApp: App {
                     // the modifier wires up — without it, `onChange` would
                     // never fire on initial render and the keyboard's
                     // `isJotAppForeground()` would return false during a cold
-                    // W7 entry. The .background/.inactive teardown path is
-                    // unaffected — initial-fire on `.active` just kicks the
-                    // same flow that would normally fire on transition.
+                    // W7 entry. Initial-fire on `.active` just kicks the same
+                    // flow that would normally fire on transition.
                     if newPhase == .active {
                         handleSceneActive()
                         startForegroundHeartbeat()
-                    } else {
+                    } else if newPhase == .background {
+                        // Tear down ONLY on a true background. `.inactive` is
+                        // transient — a custom keyboard taking focus, a banner,
+                        // Control Center — and Jot is still effectively the
+                        // foreground app. Clearing the heartbeat on `.inactive`
+                        // made `isJotAppForeground()` read false while the Jot
+                        // keyboard was up, so a Dictate tap INSIDE Jot bounced to
+                        // the hero instead of recording inline. Keep it alive
+                        // through `.inactive`; only `.background` clears it.
                         stopForegroundHeartbeat()
                     }
                     if newPhase == .background {

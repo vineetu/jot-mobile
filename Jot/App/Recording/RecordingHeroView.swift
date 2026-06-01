@@ -3,7 +3,8 @@
 //  Jot
 //
 //  Phase 3 of the UX overhaul — full-screen recording hero surface.
-//  See: Jot/tmp/ux-overhaul-plan.md §5.2 (Mockup 08).
+//  See: Jot/tmp/ux-overhaul-plan.md §5.2 (Mockup 08) +
+//       docs/plans/ux-overhaul-round2.md WS-C (§2a two-path, §10 Pause/Resume).
 //
 //  Reached two ways:
 //  - **Manual entry** via the Dictate FAB on the editorial home: this view
@@ -20,6 +21,31 @@
 //    directly, the same observable the keyboard's strip-timer renders from.
 //
 //  On stop or cancel, pops back to the home stack.
+//
+//  ## §2a — two entry paths, two streaming behaviors (round-2 WS-C)
+//
+//  Recording (audio capture) starts immediately in BOTH paths — only the
+//  *display* of the live stream differs:
+//   - **App-Dictate** (`.startRecording` / `.adoptInFlight`): the user chose to
+//     be here, so the live stream shows immediately (full WS-A treatment).
+//   - **Cold-start keyboard** (`.coldStartFromExternalKeyboard`): Apple forces
+//     the app to foreground to record; this surface's job is to send the user
+//     BACK to their app, not to keep them watching a stream. So we WITHHOLD the
+//     live stream (and suppress the "Listening…/Loading…" placeholder) and show
+//     swipe-back coaching instead. The stream reveals on
+//     `max(coaching beat, first real partial token)` — gated on real text so the
+//     pane is never empty — then fades transparent → translucent. A recording
+//     indicator (red dot + timer) stays visible the whole withhold window so
+//     "Jot keeps listening" has on-screen proof.
+//
+//  ## §10 — Pause / Resume (round-2 WS-C)
+//
+//  A Pause/Resume control sits next to Stop/Cancel. Pause does NOT finalize —
+//  `recordingService.pauseRecording()` keeps the engine + mic warm (Option A)
+//  and gates the slice router; `resumeRecording()` concatenates onto the same
+//  capture. The elapsed timer freezes (the service back-dates
+//  `currentRecordingStartedAt` to the active-time total). The paused UI reads
+//  "Paused · mic ready, not capturing".
 //
 //  ## Why `showRecordingHero` is a `@Binding`, not `@Environment(\.dismiss)`
 //
@@ -47,20 +73,13 @@
 //     `start()`. Calling `start()` on the stale path would silently
 //     create a recording the user never asked for.
 //
-//  ## What it shows
-//  - Top: glass back chevron, pulsing red dot + timer (mono), 3-dots more.
-//  - Center: serif italic streaming partial (Fraunces 19pt), trailing-fade
-//    mask.
-//  - Bottom: 40-bar amplitude waveform + cancel-X (small glass) + 88pt
-//    glass-red stop button with 8pt outer glow ring + wand (small glass).
-//
 //  ## Backend invariants
-//  Nothing in this file mutates services. `RecordingService.start()`,
-//  `RecordingService.forceStop()`, `DictationActivityCoordinator`,
-//  `DictationPipeline.completeEndOfRecording`, and `StreamingPartial`
-//  are read/called exactly as `ContentView` already does. The cancel-X
-//  uses `forceStop()` — which already discards captured samples without
-//  invoking the publish pipeline — so no new "discard" entry point is
+//  Nothing in this file mutates services beyond the documented control surface
+//  (`start()`, `forceStop()`, `pauseRecording()`, `resumeRecording()`).
+//  `DictationActivityCoordinator`, `DictationPipeline.completeEndOfRecording`,
+//  and `StreamingPartial` are read/called exactly as `ContentView` already does.
+//  The cancel-X uses `forceStop()` — which already discards captured samples
+//  without invoking the publish pipeline — so no new "discard" entry point is
 //  needed on `RecordingService`.
 //
 
@@ -78,6 +97,7 @@ private let recordingHeroLog = Logger(
 /// auto-start / auto-pop lifecycle, which the home surface does not.
 private enum HeroPhase: Equatable {
     case starting        // pre-`start()` race window
+    case preparing       // cold-start hero shown; the recording is deferred behind a cold model load and hasn't begun yet
     case recording
     case transcribing
     case finished        // pipeline complete, ready to dismiss
@@ -119,12 +139,17 @@ struct RecordingHeroView: View {
     // `recordingService.currentRecordingStartedAt` — the same observable the
     // keyboard's strip timer reads. A local snapshot here would go stale
     // across warm-hold/warm-resume cycles while the view stayed mounted,
-    // making the hero show a longer elapsed than the keyboard.
+    // making the hero show a longer elapsed than the keyboard. The service
+    // back-dates this anchor across pause (§10.4), so reading
+    // `Date().timeIntervalSince(started)` naturally freezes while paused.
     @State private var elapsed: TimeInterval = 0
-    @State private var bars: [CGFloat] = Array(repeating: 0.18, count: 40)
     @State private var timerTask: Task<Void, Never>?
     @State private var startTask: Task<Void, Never>?
     @State private var stopTask: Task<Void, Never>?
+    @State private var pauseTask: Task<Void, Never>?
+    /// Timeout while in `.preparing` — pops the hero if the model-load-deferred
+    /// recording never starts within the launch window.
+    @State private var preparingTask: Task<Void, Never>?
     @State private var errorMessage: String?
     /// Latched by the swipe-back / `backTapped()` path so the `.onDisappear` safety-net cancel
     /// doesn't fire when the user is INTENTIONALLY backgrounding the hero
@@ -134,9 +159,23 @@ struct RecordingHeroView: View {
     /// net stays armed for system-back gestures, scene transitions, etc.
     @State private var dismissingViaBack: Bool = false
 
+    /// §2a — gates whether the live stream is shown. App-Dictate paths reveal
+    /// immediately (`true` at appear); the cold-start keyboard path withholds
+    /// (`false`) until `max(coaching beat, first real partial token)` and then
+    /// fades the stream in (transparent → translucent). Once `true`, stays
+    /// `true` for the rest of the session.
+    @State private var streamRevealed: Bool = false
+    /// True once the coaching-window beat has elapsed (cold-start path only).
+    /// The stream reveal needs BOTH this AND a real partial token, so the pane
+    /// is never empty (round-2 §2a review fix).
+    @State private var coachingBeatElapsed: Bool = false
+    /// Drives the cold-start stream reveal task so we can cancel it on teardown.
+    @State private var revealTask: Task<Void, Never>?
+
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .soft)
     @State private var cancelHaptic = UIImpactFeedbackGenerator(style: .rigid)
+    @State private var pauseHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var successHaptic = UINotificationFeedbackGenerator()
 
     // Programmatic VoiceOver focus: when the hero is auto-pushed from the
@@ -145,11 +184,35 @@ struct RecordingHeroView: View {
     // meaningful starting element — the recording status (red dot + timer).
     @AccessibilityFocusState private var recordingStatusFocused: Bool
 
-    /// True while the cold-start "Swipe back to your app" overlay is visible.
+    /// True while the cold-start swipe-back coaching overlay is visible.
     /// Driven by `.onAppear` (when `intent == .coldStartFromExternalKeyboard`
-    /// AND show count is below the suppression limit). Auto-cleared by a 4s
-    /// timer or by user tap on the overlay itself.
+    /// AND show count is below the suppression limit). Auto-cleared by a timer
+    /// (≥ the coaching animation length) or by user tap on the overlay itself.
     @State private var showColdStartNudge: Bool = false
+
+    /// True on the cold-start keyboard path (`.coldStartFromExternalKeyboard`).
+    /// Cached at body level so the stream-withhold + coaching branches read a
+    /// single source.
+    private var isColdStartPath: Bool {
+        if case .coldStartFromExternalKeyboard = intent { return true }
+        return false
+    }
+
+    /// §9 hero top-space "story" messages (sequenced H1→H4). H5 is the pinned
+    /// stream-arrival caption (rendered separately once the stream reveals, not
+    /// folded into rotation so it's actually seen).
+    // NOTE: the "head back — swipe right along the bottom" line lives in the
+    // dedicated `ColdStartNudgeOverlay` (shown first, at the bottom). It is
+    // intentionally NOT repeated here, so once the nudge dismisses these rotate
+    // through fresh value props rather than echoing what the user just read.
+    private static let heroTopMessages: [String] = [
+        "Recording stays on while you go. Your words land back in that field.",
+        "You don't have to watch this — looking away helps you find the words.",
+        "The thinking happens out loud, not on the screen."
+    ]
+    /// §9 H5 — pinned caption shown above the stream once it arrives.
+    private static let heroStreamCaption =
+        "A sharper transcriber takes a second pass when you stop and tidies the live text."
 
     var body: some View {
         ZStack {
@@ -160,7 +223,11 @@ struct RecordingHeroView: View {
                     .padding(.horizontal, 18)
                     .padding(.top, 8)
 
-                streamingTextArea
+                // §2a — the freed top space (waveform removed in round-2)
+                // carries the rotating micro-messages on the cold-start path
+                // while the stream is withheld. Once the stream reveals (or on
+                // the App-Dictate path), the stream itself owns the space.
+                heroContentArea
                     .padding(.horizontal, 14)
                     .padding(.vertical, 14)
                     .frame(maxHeight: .infinity)
@@ -168,22 +235,29 @@ struct RecordingHeroView: View {
 
                 Spacer(minLength: 24)
 
-                stopButton
+                bottomControls
                     .padding(.bottom, 36)
             }
 
             if showColdStartNudge {
                 ColdStartNudgeOverlay(
+                    reduceMotion: reduceMotion,
                     onTap: { showColdStartNudge = false }
                 )
                 .padding(.horizontal, 24)
-                .padding(.top, 8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // Anchored to the BOTTOM, just above the recording controls —
+                // the coaching is about "swipe right along the bottom," so the
+                // affordance belongs where the gesture happens. Shown first on
+                // cold open; the top message space stays empty until it dismisses
+                // (see `withheldTopSpace`) so the two never overlap.
+                .padding(.bottom, 130)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .transition(reduceMotion
                     ? .opacity
-                    : .move(edge: .top).combined(with: .opacity))
+                    : .move(edge: .bottom).combined(with: .opacity))
                 .zIndex(1)
             }
+
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showColdStartNudge)
         .navigationBarBackButtonHidden(true)
@@ -195,9 +269,11 @@ struct RecordingHeroView: View {
             startHaptic.prepare()
             stopHaptic.prepare()
             cancelHaptic.prepare()
+            pauseHaptic.prepare()
             successHaptic.prepare()
             beginRecordingFlow()
             maybeShowColdStartNudge()
+            configureStreamReveal()
             beginTimerLoop()
             // Move VoiceOver focus to the live transcript card instead of
             // the default first-focusable back chevron, so an auto-pushed hero
@@ -206,6 +282,8 @@ struct RecordingHeroView: View {
         }
         .onDisappear {
             timerTask?.cancel()
+            revealTask?.cancel()
+            preparingTask?.cancel()
             // Intentional backgrounding via the visible back chevron calls
             // `backTapped()`, which sets `dismissingViaBack = true` before
             // this fires; keep the recording running and bail out before the
@@ -223,6 +301,18 @@ struct RecordingHeroView: View {
             // over.
             if (phase == .recording || phase == .starting)
                 && recordingService.isRecording {
+                onBackgrounded?()
+                dismissingViaBack = true
+                return
+            }
+            // Cold-start "Getting ready…" backgrounded before the mic actually
+            // started (`.preparing`): the recording is about to begin but
+            // `isRecording` is still false, so the branch above doesn't catch it.
+            // Arm the same backgrounding latch anyway — when `isRecording` flips,
+            // the home return-pill / live-preview adopts it instead of stranding
+            // an invisible recording. (Source-based presentation removed the old
+            // `isRecording`-adoption that used to self-heal this.)
+            if phase == .preparing {
                 onBackgrounded?()
                 dismissingViaBack = true
                 return
@@ -246,8 +336,26 @@ struct RecordingHeroView: View {
                 && !recordingService.isPipelineInFlight
                 && phase != .transcribing
                 && phase != .finished
+                && phase != .preparing
             {
                 showRecordingHero = false
+            }
+        }
+        .onChange(of: recordingService.isRecording) { _, isRecording in
+            // Cold-start "getting ready" → live: the deferred recording (the
+            // model finished loading) has begun, so adopt it.
+            if phase == .preparing, isRecording {
+                adoptInFlightRecording()
+            }
+        }
+        // §2a — reveal the cold-start stream the instant the first real
+        // partial token arrives AND the coaching beat has elapsed. Cheap:
+        // streamingText only changes on a partial, and the guard short-circuits
+        // once `streamRevealed` is true.
+        .onChange(of: streamingPartial.streamingText) { _, newText in
+            guard isColdStartPath, !streamRevealed, coachingBeatElapsed else { return }
+            if !newText.isEmpty {
+                revealStream()
             }
         }
         .alert(
@@ -304,6 +412,17 @@ struct RecordingHeroView: View {
 
             Spacer(minLength: 0)
 
+            // Top center stays EMPTY during active recording / paused — the Stop
+            // pill (dot + timer) and the paused caption already convey state, so
+            // a "Recording" label here is redundant double-info (user feedback).
+            // The ONLY thing shown here is the cold-start "Getting ready…" load
+            // cue, since nothing else on screen says the model is still warming.
+            if phase == .preparing {
+                recordingIndicator
+            }
+
+            Spacer(minLength: 0)
+
             Button(action: cancelTapped) {
                 Text("Cancel")
                     .font(.system(size: 13, weight: .semibold))
@@ -331,20 +450,103 @@ struct RecordingHeroView: View {
         .frame(minHeight: 44)
     }
 
-    // MARK: - Streaming text
+    /// Compact red-dot + MM:SS indicator. Hollows + says nothing extra while
+    /// paused beyond the static dot — the "Paused · mic ready, not capturing"
+    /// copy lives in the content area / control. The dot pulses while actively
+    /// recording, goes static (hollow) while paused.
+    private var recordingIndicator: some View {
+        let paused = recordingService.isPaused
+        return HStack(spacing: 7) {
+            Circle()
+                .fill(paused ? Color.clear : Color.jotRecordingDot)
+                .overlay {
+                    Circle().strokeBorder(Color.jotRecordingDot, lineWidth: paused ? 1.5 : 0)
+                }
+                .frame(width: 9, height: 9)
+                .opacity(paused ? 1 : (reduceMotion ? 1 : 0.9))
+
+            // Status word, not a clock: the elapsed time already lives in the
+            // Stop pill, so a second timer here was pure duplication. The dot +
+            // word is the recording-status indicator §2.2 calls for.
+            Text(phase == .preparing ? "Getting ready…" : (paused ? "Paused" : "Recording"))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(phase == .preparing || paused ? Color.jotPageInkSecondary : Color.jotPageInk)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(paused ? "Paused. \(timeString) recorded." : "Recording. \(timeString).")
+    }
+
+    // MARK: - Hero content area (stream OR withheld-coaching top space)
 
     /// Vertical-line cap for the streaming text block before scrolling kicks in.
-    /// ~14 lines of Fraunces 19pt editorial italic at ~28pt computed line height.
-    /// Below this many lines the block is rendered as a plain centered Text and
-    /// grows in both directions around the "Listening…" anchor; above it the
-    /// block freezes at this height and scrolls internally with a top fade.
-    private static let streamingMaxBlockHeight: CGFloat = 14 * 28
+    /// Round-2 WS-A: ~3.5 lines of serif italic at ~28pt computed line height
+    /// (down from ~14). Above this the block freezes at this height and scrolls
+    /// internally with a top fade; below it the block grows naturally.
+    private static let streamingMaxBlockHeight: CGFloat = 3.5 * 28
 
     @ViewBuilder
-    private var streamingTextArea: some View {
+    private var heroContentArea: some View {
+        // §2a — on the cold-start path, while the stream is withheld, the freed
+        // top space carries the sequenced rotating micro-messages and the live
+        // stream + placeholder are fully suppressed (the recording indicator in
+        // the top bar carries the "still listening" proof). Once revealed (or
+        // on the App-Dictate path), the stream owns the space.
+        if isColdStartPath && !streamRevealed {
+            withheldTopSpace
+        } else {
+            streamingCard
+        }
+    }
+
+    /// Cold-start withhold window: sequenced rotating micro-messages (H1→H4)
+    /// occupying the freed top space, plus a soft instructional anchor. No live
+    /// stream, no "Listening…/Loading…" placeholder.
+    private var withheldTopSpace: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            // Held back while the bottom swipe-nudge is showing, so the two never
+            // collide on cold open. The rotator mounts only once the nudge has
+            // dismissed — it then starts fresh from the first message and fades in.
+            if !showColdStartNudge {
+                RotatingMessageView(
+                    messages: Self.heroTopMessages,
+                    dwell: 5,
+                    sequenced: true,
+                    font: JotType.displaySerif(22),
+                    color: .jotPageInk,
+                    alignment: .leading
+                )
+                .transition(.opacity)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.top, 26)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 20)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: showColdStartNudge)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var streamingCard: some View {
         let text = streamingPartial.streamingText
         let isLoadingModel = streamingService.sessionLoadState == .loading
         VStack(alignment: .leading, spacing: 0) {
+            // H5 — pinned stream-arrival caption (round-2 §9). Shown above the
+            // live text once the stream has revealed via the cold-start path so
+            // the "second pass tidies it up" promise is actually seen. Hidden on
+            // the App-Dictate path (no coaching story) to keep that surface clean.
+            if isColdStartPath {
+                Text(Self.heroStreamCaption)
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
+
             Group {
                 if text.isEmpty {
                     if isLoadingModel {
@@ -367,10 +569,6 @@ struct RecordingHeroView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            WaveformBars(values: bars, reduceMotion: reduceMotion)
-                .frame(height: 36)
-                .padding(.top, 18)
         }
         .padding(.top, 26)
         .padding(.horizontal, 24)
@@ -383,6 +581,11 @@ struct RecordingHeroView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: Color.jotPageInk.opacity(0.30), radius: 20, x: 0, y: 14)
+        // §2a — when this card arrives via the cold-start reveal, fade it in
+        // from transparent → translucent (rising out of the background, never
+        // snapping on). On the App-Dictate path `streamRevealed` is already
+        // true at appear, so this is a no-op (opacity 1, no transition fired).
+        .opacity(streamRevealed || !isColdStartPath ? 1 : 0)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             text.isEmpty
@@ -403,15 +606,7 @@ struct RecordingHeroView: View {
     ///
     /// Visual contract: identical typography to the "Listening…"
     /// placeholder (26pt serif italic, `jotPageInkSecondary`) so the
-    /// swap reads as a copy change rather than a layout shift. The
-    /// earlier `ProgressView` was dropped — its small iOS-system
-    /// dotted-circle clashed with the editorial serif and the
-    /// `.firstTextBaseline` alignment also sat the spinner below the
-    /// glyphs' visual center. A subtle 1.5s opacity breathing on the
-    /// text itself communicates "active work" without inserting a
-    /// foreign UI primitive into the typographic surface. The
-    /// animation is suppressed when Reduce Motion is on. Light / dark
-    /// adapt through `jotPageInkSecondary`.
+    /// swap reads as a copy change rather than a layout shift.
     @ViewBuilder
     private var loadingPlaceholder: some View {
         LoadingPlaceholderText(variantName: SpeechModelVariant.current().displayName,
@@ -421,6 +616,56 @@ struct RecordingHeroView: View {
     }
 
     // MARK: - Bottom controls
+
+    /// Pause/Resume + Stop control set (round-2 WS-C §10.8). Cancel lives in
+    /// the top bar (hero uses a "Cancel" label per §2.6). When paused, a
+    /// "Paused · mic ready, not capturing" caption sits above the controls so
+    /// the held mic / orange indicator never reads as covert recording (§10.3).
+    @ViewBuilder
+    private var bottomControls: some View {
+        VStack(spacing: 14) {
+            if recordingService.isPaused {
+                Text("Paused · mic ready, not capturing")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
+
+            HStack(spacing: 18) {
+                pauseResumeButton
+                stopButton
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: recordingService.isPaused)
+    }
+
+    /// Pause ⇄ Resume circular glass control. Disabled outside the live
+    /// recording window (starting / transcribing) so it can't race a teardown.
+    private var pauseResumeButton: some View {
+        let paused = recordingService.isPaused
+        return Button(action: pauseResumeTapped) {
+            Image(systemName: paused ? "play.fill" : "pause.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.jotPageInk)
+                .frame(width: 64, height: 64)
+                .background {
+                    ZStack {
+                        Circle().fill(.ultraThinMaterial)
+                        Circle().fill(Color.white.opacity(0.45))
+                    }
+                }
+                .overlay {
+                    Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Circle())
+        .disabled(phase != .recording)
+        .accessibilityLabel(paused ? "Resume recording" : "Pause recording")
+    }
 
     private var stopButton: some View {
         Button(action: stopTapped) {
@@ -467,8 +712,7 @@ struct RecordingHeroView: View {
             .shadow(color: Color.jotBlueTop.opacity(0.14), radius: 96, x: 0, y: 28)
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .disabled(phase == .transcribing || phase == .starting)
+        .disabled(phase == .transcribing || phase == .starting || phase == .preparing)
         .accessibilityLabel(phase == .transcribing ? "Transcribing" : "Stop recording")
     }
 
@@ -494,11 +738,22 @@ struct RecordingHeroView: View {
             }
         case .adoptInFlight, .coldStartFromExternalKeyboard:
             // Same lifecycle for both — adopt the running session. The
-            // cold-start case additionally surfaces the nudge overlay
-            // via `shouldShowColdStartNudge` (gated on the show-count
-            // limit). NEVER call `start()` from this path.
+            // cold-start case additionally surfaces the swipe-back coaching
+            // overlay via `maybeShowColdStartNudge` (gated on the show-count
+            // limit) and withholds the stream (§2a). NEVER call `start()` from
+            // this path.
             if recordingService.isRecording {
                 adoptInFlightRecording()
+            } else if case .coldStartFromExternalKeyboard = intent {
+                // The keyboard just initiated this recording, but on a fresh
+                // install / update it can be DEFERRED behind a cold speech-model
+                // load. Rather than treat "no recording yet" as stale and pop
+                // (which strands the user on home — the "5–10 tries" weirdness),
+                // show a "getting ready" hero NOW and adopt the moment the
+                // recording actually begins (`onChange(of: isRecording)`). A
+                // timeout pops if it never comes (cold launch failed).
+                phase = .preparing
+                armPreparingTimeout()
             } else {
                 recordingHeroLog.info("Stale hero presentation — popping (no recording, no pipeline)")
                 showRecordingHero = false
@@ -506,25 +761,88 @@ struct RecordingHeroView: View {
         }
     }
 
-    /// Decides whether the cold-start nudge overlay should appear on this
-    /// presentation. Conditions:
-    ///   1. Intent is `.coldStartFromExternalKeyboard` (i.e. this Hero
-    ///      was pushed by an auto-nav following a URL-bounce from a
-    ///      third-party keyboard, not the FAB or pill).
+    /// Pops the `.preparing` cold-start hero if the deferred recording never
+    /// starts within the launch window (cold launch failed / cancelled). Mirrors
+    /// the keyboard's 15s launch deadline.
+    private func armPreparingTimeout() {
+        preparingTask?.cancel()
+        preparingTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled,
+                  phase == .preparing,
+                  !recordingService.isRecording else { return }
+            recordingHeroLog.info("Cold-start hero preparing timed out — recording never began; popping.")
+            showRecordingHero = false
+        }
+    }
+
+    /// §2a — configures the streaming-display reveal policy.
+    ///  - App-Dictate paths: reveal immediately (the user chose to be here).
+    ///  - Cold-start keyboard path: withhold; arm a coaching-beat timer
+    ///    (~10s upper bound) so the stream reveals on
+    ///    `max(coaching beat, first real partial)`. The `.onChange` of
+    ///    `streamingText` handles the "first real partial" half; this method
+    ///    owns the coaching-beat half (and, as a fallback, reveals on the
+    ///    coaching beat if a partial already arrived).
+    private func configureStreamReveal() {
+        guard isColdStartPath else {
+            // App-Dictate: stream is shown immediately, full treatment.
+            streamRevealed = true
+            coachingBeatElapsed = true
+            return
+        }
+
+        // Cold-start: withhold. Arm the ~10s coaching upper bound.
+        streamRevealed = false
+        coachingBeatElapsed = false
+        revealTask?.cancel()
+        revealTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            coachingBeatElapsed = true
+            // If a real partial has ALREADY arrived, reveal now (the
+            // `.onChange` handler bailed earlier because the beat hadn't
+            // elapsed yet). Otherwise the `.onChange` will reveal on the next
+            // partial. As a hard upper bound, if there's already text, show it.
+            if !streamingPartial.streamingText.isEmpty {
+                revealStream()
+            }
+        }
+    }
+
+    /// Flip the cold-start stream into view with a slow transparent →
+    /// translucent fade. Idempotent — guarded by `streamRevealed`.
+    private func revealStream() {
+        guard !streamRevealed else { return }
+        revealTask?.cancel()
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.7)) {
+            streamRevealed = true
+        }
+        // The coaching overlay has done its job once the stream is up.
+        showColdStartNudge = false
+    }
+
+    /// Decides whether the cold-start swipe-back coaching overlay should appear
+    /// on this presentation. Conditions:
+    ///   1. Intent is `.coldStartFromExternalKeyboard`.
     ///   2. The user has seen the overlay fewer than 7 times across the
     ///      app's lifetime (UserDefaults `jot.hero.coldStartNudgeShownCount`).
-    /// When both hold, surfaces the overlay and increments the counter.
-    /// The overlay self-dismisses after 4s or on user tap.
+    /// When both hold, surfaces the overlay and increments the counter. The
+    /// overlay self-dismisses after a window ≥ its ~5s animation (round-2 D1),
+    /// or on user tap.
     private func maybeShowColdStartNudge() {
         guard case .coldStartFromExternalKeyboard = intent else { return }
         let key = "jot.hero.coldStartNudgeShownCount"
         let count = UserDefaults.standard.integer(forKey: key)
-        guard count < 7 else { return }
+        // Raised 7 → 50 so the "head back to your app" coaching reliably appears
+        // during early use / testing instead of self-suppressing after a week.
+        guard count < 50 else { return }
         UserDefaults.standard.set(count + 1, forKey: key)
         showColdStartNudge = true
-        // Auto-dismiss after 4s.
+        // Auto-dismiss after 6s — raised from the prior 4s so the ~5s coaching
+        // animation isn't truncated mid-demo (round-2 D1 / WCAG 2.2.2).
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(6))
             showColdStartNudge = false
         }
     }
@@ -563,12 +881,47 @@ struct RecordingHeroView: View {
     /// kicked `recordingService.start()`; re-calling it would throw
     /// `.alreadyRunning`. Skip the start haptic (the recording was already
     /// going from the user's POV) and jump straight to `.recording` so the
-    /// timer + waveform start ticking — the timer reads its anchor off
+    /// timer starts ticking — the timer reads its anchor off
     /// `recordingService.currentRecordingStartedAt` directly, so no local
     /// snapshot is needed here.
     private func adoptInFlightRecording() {
+        preparingTask?.cancel()
         elapsed = 0
         phase = .recording
+    }
+
+    /// Pause ⇄ Resume. Pause does NOT finalize (§10): the engine + mic stay
+    /// warm and the slice router is gated. Resume concatenates onto the same
+    /// capture. Both are no-ops outside the `.recording` phase (the button is
+    /// already disabled there, but guard defensively against a stale tap).
+    private func pauseResumeTapped() {
+        guard phase == .recording else { return }
+        pauseHaptic.impactOccurred()
+        pauseHaptic.prepare()
+        if recordingService.isPaused {
+            pauseTask?.cancel()
+            pauseTask = Task {
+                do {
+                    try await recordingService.resumeRecording()
+                } catch {
+                    await MainActor.run {
+                        recordingHeroLog.error(
+                            "Resume failed: \(error.localizedDescription, privacy: .public)"
+                        )
+                        // A resume that throws means the engine went away under
+                        // us (interruption raced the resume); the service has
+                        // already routed to internalStop. Surface the standard
+                        // error path so the user isn't stuck on a dead hero.
+                        errorMessage = "Could not resume: \(error.localizedDescription)"
+                        phase = .cancelled
+                    }
+                }
+            }
+        } else {
+            // `pauseRecording()` is synchronous (gates the router, kicks an
+            // async streaming-prefix snapshot internally). No await needed here.
+            recordingService.pauseRecording()
+        }
     }
 
     private func stopTapped() {
@@ -640,8 +993,10 @@ struct RecordingHeroView: View {
         // `forceStop()` discards the captured samples and publishes a
         // `.failed` pipeline phase. That's exactly the cancel semantics
         // we want — no transcript appended, no clipboard publish, no
-        // history-mirror refresh. The streaming presenter is cleared
-        // here so the next hero surface starts blank.
+        // history-mirror refresh. Works the same whether we're actively
+        // recording or paused (forceStop tears the engine down regardless).
+        // The streaming presenter is cleared here so the next hero surface
+        // starts blank.
         recordingService.forceStop()
         streamingPartial.reset()
         phase = .cancelled
@@ -651,24 +1006,24 @@ struct RecordingHeroView: View {
         dismiss()
     }
 
-    // MARK: - Timer + amplitude
+    // MARK: - Timer
 
     private func beginTimerLoop() {
         timerTask?.cancel()
         timerTask = Task { @MainActor in
-            // ~10 Hz update for the elapsed timer + bar shift. Mirrors the
-            // 0.08s tick used by `ContentView.startVUTimer` but expressed
-            // as an async loop so we don't hold a Timer reference across
-            // dismiss.
+            // ~10 Hz update for the elapsed timer. The anchor
+            // (`currentRecordingStartedAt`) is back-dated by the service to the
+            // active-time total at pause (§10.4). Back-dating alone does NOT
+            // freeze a clock that keeps re-reading `now` — `now − anchor` would
+            // keep growing through the pause. So we explicitly skip the update
+            // while paused, leaving `elapsed` frozen at its last active value;
+            // on resume the service re-anchors and the loop picks up exactly
+            // where it froze.
             while !Task.isCancelled {
                 if phase == .recording,
+                   !recordingService.isPaused,
                    let started = recordingService.currentRecordingStartedAt {
                     elapsed = Date().timeIntervalSince(started)
-                    var next = bars
-                    next.removeFirst()
-                    let amp = CGFloat(recordingService.currentAmplitude ?? 0.05)
-                    next.append(max(0.08, min(1.0, amp)))
-                    bars = next
                 }
                 try? await Task.sleep(for: .milliseconds(90))
             }
@@ -678,50 +1033,6 @@ struct RecordingHeroView: View {
     private var timeString: String {
         let total = max(0, Int(elapsed.rounded(.down)))
         return String(format: "%d:%02d", total / 60, total % 60)
-    }
-}
-
-/// 40-bar amplitude waveform with a blue gradient. Newest sample is at
-/// the right edge; bars age leftward.
-private struct WaveformBars: View {
-    let values: [CGFloat]
-    let reduceMotion: Bool
-
-    var body: some View {
-        GeometryReader { proxy in
-            let count = max(1, values.count)
-            let totalGapWidth = CGFloat(count - 1) * 4
-            let barWidth = max(2, (proxy.size.width - totalGapWidth) / CGFloat(count))
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(Array(values.enumerated()), id: \.offset) { _, value in
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.jotBlueTop,
-                                    Color.jotBlueBottom
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(
-                            width: barWidth,
-                            height: barHeight(for: value, container: proxy.size.height)
-                        )
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-        }
-        .animation(reduceMotion ? nil : .linear(duration: 0.09), value: values)
-        .accessibilityHidden(true)
-    }
-
-    private func barHeight(for value: CGFloat, container: CGFloat) -> CGFloat {
-        let clamped = max(0.05, min(1.0, value))
-        let minH: CGFloat = 6
-        let maxH = max(minH + 1, container)
-        return minH + clamped * (maxH - minH)
     }
 }
 
@@ -737,10 +1048,10 @@ private struct WaveformBars: View {
 ///    growing text — the user sees a clean centered block.
 ///
 /// 2. **At-or-over cap (scroll mode).** Once the measured text height reaches
-///    `maxBlockHeight` (~14-15 lines), the inner ScrollView freezes at that
-///    height, the top fade mask switches on, and `scrollTo` keeps the newest
-///    line pinned to the bottom edge. Older lines slide up under the top fade.
-///    The bottom edge stays sharp; no bottom fade.
+///    `maxBlockHeight` (round-2: ~3.5 lines), the inner ScrollView freezes at
+///    that height, the top fade mask switches on, and `scrollTo` keeps the
+///    newest line pinned to the bottom edge. Older lines slide up under the top
+///    fade. The bottom edge stays sharp; no bottom fade.
 ///
 /// Measurement is done with a hidden `GeometryReader` background on the text,
 /// reporting its size through `StreamingTextHeightKey`. Because the text uses
@@ -769,7 +1080,8 @@ private struct StreamingDictationText: View {
                     // frequently-changing Text causes SwiftUI to animate
                     // the text-content diff itself, smearing characters as
                     // partials arrive — so the streaming text is rendered
-                    // standalone here with no trailing caret.
+                    // standalone here with no trailing caret. Italic exclusively
+                    // signals "live" (round-2 WS-A — final text renders roman).
                     Text(text)
                         .foregroundColor(Color.jotPageInk)
                         .font(.system(size: 26, weight: .regular, design: .serif).italic())
@@ -887,44 +1199,63 @@ private struct LoadingPlaceholderText: View {
     }
 }
 
-/// Temporary "Swipe back to your app" overlay shown at the top of the
-/// Recording Hero on cold-start auto-nav from a third-party keyboard.
-/// Auto-dismisses after 4s; tap to dismiss early. Suppressed after the
-/// user has seen it 7 times (gated by `RecordingHeroView.maybeShowColdStartNudge`).
+/// Cold-start "head back to your app" coaching overlay shown at the top of the
+/// Recording Hero on cold-start auto-nav from a third-party keyboard (round-2
+/// §2a / D1). Evolves the original glass-pill nudge into a finite, animated
+/// demonstration of the RIGHTWARD home-indicator return gesture, alternating
+/// (across the demo) with the "‹ Back to App" pill hint that iOS draws on this
+/// inter-app path.
 ///
-/// Visual treatment: glass pill with `chevron.left` accent + headline +
-/// sub-line. Matches the keyboard's Liquid-Glass language; auto-adapts
-/// light/dark via `.regularMaterial` background.
+/// Behavior:
+///   - Animates a rightward home-indicator drag (`Color.jotBlueTop` chevron +
+///     ghost touch-point + comet trail dragging left→right along a dimmed
+///     mini home-indicator pill). Finite — ~2 cycles, ≤5s total, clears
+///     WCAG 2.2.2.
+///   - Alternates with the "‹ Back to App" pill hint so both return methods
+///     are coached (D1: "once this, once that").
+///   - Reduce Motion → a STATIC end-frame (no perpetual motion).
+///   - VoiceOver → `.announcement` (does NOT use `.screenChanged`, which would
+///     fight the hero's `recordingStatusFocused`).
+///   - Tap to dismiss; the parent also auto-dismisses after a window ≥ this
+///     animation, and the 7-show suppression is enforced upstream
+///     (`maybeShowColdStartNudge`).
 private struct ColdStartNudgeOverlay: View {
+    let reduceMotion: Bool
     let onTap: () -> Void
+
+    /// Toggles between the swipe-demo variant and the back-pill hint variant
+    /// (D1 — coach both return methods, alternating). Advanced on a slow timer
+    /// while the overlay lives; frozen on the swipe variant under Reduce Motion.
+    @State private var showPillVariant: Bool = false
+    /// 0→1 drag progress of the ghost touch-point along the home-indicator
+    /// pill, driving the rightward demo. Frozen at the end-frame under Reduce
+    /// Motion.
+    @State private var dragProgress: CGFloat = 0
+    @State private var variantTask: Task<Void, Never>?
 
     var body: some View {
         Button(action: onTap) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.jotBlueTop)
-                    .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 12) {
+                headline
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Swipe back to your app")
-                        .font(.system(size: 15, weight: .semibold, design: .default))
-                        .foregroundStyle(Color.jotInk)
-                    Text("Your text will paste when you stop")
-                        .font(.system(size: 12, weight: .regular, design: .default))
-                        .foregroundStyle(Color.jotInk.opacity(0.65))
+                if showPillVariant {
+                    backPillHint
+                        .transition(.opacity)
+                } else {
+                    swipeDemo
+                        .transition(.opacity)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 // Bumped opacity vs. the standard `jotKeyboardGlassHairline`
                 // token so the pill reads crisply on the Recording Hero's
                 // tinted wallpaper in both modes. Same mitigation pattern
                 // as the keyboard Cancel button.
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
                         Color(uiColor: UIColor { trait in
                             trait.userInterfaceStyle == .dark
@@ -936,8 +1267,131 @@ private struct ColdStartNudgeOverlay: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Swipe back to your app. Your text will paste when you stop. Tap to dismiss.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        // VoiceOver: announce without stealing focus from the hero's
+        // recordingStatusFocused (round-2 D1 — `.announcement`, not
+        // `.screenChanged`).
         .accessibilityAddTraits(.isButton)
+        .onAppear {
+            UIAccessibility.post(notification: .announcement, argument: accessibilityLabel)
+            startAnimating()
+        }
+        .onDisappear { variantTask?.cancel() }
+    }
+
+    private var headline: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(showPillVariant ? "Tap “‹ Back” to return to your app" : "Head back to your app")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.jotInk)
+            Text("Jot keeps listening — your text pastes when you stop.")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Color.jotInk.opacity(0.65))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Animated rightward home-indicator drag demo. A ghost touch-point with a
+    /// short comet trail rides a dimmed mini home-indicator pill from left to
+    /// right, a `jotBlueTop` chevron pointing the way. Reduce Motion freezes
+    /// the touch-point at the end-frame (right edge) with no trail motion.
+    private var swipeDemo: some View {
+        GeometryReader { geo in
+            let pillWidth = geo.size.width
+            let dotSize: CGFloat = 26
+            let travel = max(0, pillWidth - dotSize)
+            let x = reduceMotion ? travel : dragProgress * travel
+
+            ZStack(alignment: .leading) {
+                // Dimmed mini home-indicator pill.
+                Capsule(style: .continuous)
+                    .fill(Color.jotInk.opacity(0.12))
+                    .frame(height: 5)
+                    .frame(maxWidth: .infinity)
+                    .frame(maxHeight: .infinity, alignment: .center)
+
+                // Comet trail behind the touch-point (suppressed under Reduce
+                // Motion — it implies motion).
+                if !reduceMotion {
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.jotBlueTop.opacity(0.0), Color.jotBlueTop.opacity(0.35)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, x), height: 10)
+                        .frame(maxHeight: .infinity, alignment: .center)
+                }
+
+                // Ghost touch-point + rightward chevron.
+                ZStack {
+                    Circle()
+                        .fill(Color.jotBlueTop.opacity(0.18))
+                        .frame(width: dotSize, height: dotSize)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.jotBlueTop)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+                .offset(x: x)
+            }
+        }
+        .frame(height: 26)
+        .accessibilityHidden(true)
+    }
+
+    /// "‹ Back to App" pill hint — the breadcrumb iOS draws top-left on the
+    /// inter-app cold-start path (D1). Static; coached alongside the swipe.
+    private var backPillHint: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.jotBlueTop)
+            Text("Back to App")
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Color.jotInk.opacity(0.8))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule(style: .continuous).fill(Color.jotInk.opacity(0.06))
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHidden(true)
+    }
+
+    private var accessibilityLabel: String {
+        "Head back to your app by swiping right along the bottom of the screen, or tap the Back button at the top left. Jot keeps listening; your text pastes when you stop. Tap to dismiss."
+    }
+
+    /// Drives the finite drag demo + variant alternation. Under Reduce Motion
+    /// nothing animates — the swipe demo is shown as a static end-frame and the
+    /// variant never flips (no perpetual motion, WCAG 2.2.2).
+    private func startAnimating() {
+        guard !reduceMotion else { return }
+        variantTask?.cancel()
+        variantTask = Task { @MainActor in
+            // Two drag cycles on the swipe variant (~2.8s each — the slide is
+            // slowed 50% for legibility), then a beat on the pill hint, then
+            // back. Alternation continues until the parent's auto-dismiss.
+            while !Task.isCancelled {
+                // Swipe demo: two rightward drags.
+                showPillVariant = false
+                for _ in 0..<2 {
+                    dragProgress = 0
+                    withAnimation(.easeInOut(duration: 2.4)) { dragProgress = 1 }
+                    try? await Task.sleep(for: .milliseconds(2800))
+                    guard !Task.isCancelled else { return }
+                }
+                // Pill hint beat.
+                withAnimation(.easeInOut(duration: 0.3)) { showPillVariant = true }
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { showPillVariant = false }
+            }
+        }
     }
 }

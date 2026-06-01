@@ -45,3 +45,6 @@ Jot/Resources/Models/
 
 # Local safety-net stash from the Gemma-experimentation revert.
 .revert-stash/
+
+# Local ML scratch prototype (large checkpoints, not app code)
+prototypes/style-adapter/

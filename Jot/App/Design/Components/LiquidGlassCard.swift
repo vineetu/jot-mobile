@@ -5,6 +5,7 @@ import UIKit
 /// rounded glass surface, card padding, hairline border, highlight, and shadow.
 struct LiquidGlassCard<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.liquidGlassShadowScale) private var shadowScale
 
     private let cornerRadius: CGFloat
     private let paddingH: CGFloat
@@ -40,7 +41,9 @@ struct LiquidGlassCard<Content: View>: View {
         let highlightColor: Color = isDark
             ? Color.white.opacity(0.18)
             : Color.white.opacity(0.7)
-        let shadowOpacity: Double = isDark ? 0.0 : 0.30
+        // Dark mode omits the drop shadow entirely; light mode's 0.30 can be
+        // softened per-surface via `liquidGlassShadowScale` (Settings sets 0.5).
+        let shadowOpacity: Double = (isDark ? 0.0 : 0.30) * shadowScale
 
         content()
             .padding(.horizontal, paddingH)
@@ -70,6 +73,22 @@ struct LiquidGlassCard<Content: View>: View {
                 x: 0,
                 y: 14
             )
+    }
+}
+
+// MARK: - Shadow-scale environment
+
+private struct LiquidGlassShadowScaleKey: EnvironmentKey {
+    static let defaultValue: Double = 1.0
+}
+
+extension EnvironmentValues {
+    /// Multiplier on `LiquidGlassCard`'s light-mode drop-shadow opacity (default
+    /// 1.0). Settings sets 0.5 to lighten its denser stack of cards. Dark mode
+    /// already omits the shadow, so this only affects light mode.
+    var liquidGlassShadowScale: Double {
+        get { self[LiquidGlassShadowScaleKey.self] }
+        set { self[LiquidGlassShadowScaleKey.self] = newValue }
     }
 }
 

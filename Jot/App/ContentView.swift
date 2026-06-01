@@ -198,6 +198,35 @@ struct ContentView: View {
     /// we'd rather pop back than spuriously start a recording.
     @State private var heroIntent: HeroIntent = .adoptInFlight
 
+    /// WS-B unified receiver for the keyboard's Dictate-tap while Jot is
+    /// foreground and the wizard is NOT presented (§9 R5). Routes the tap to an
+    /// `InlineDictationSession` bound to whatever editable surface registered
+    /// itself as the focused inline target (Edit). The wizard keeps its own
+    /// observer + behavior; this receiver's observer bails while the wizard is
+    /// up, so the two never double-fire on the same Darwin name. Constructed
+    /// with the shared transcription service so inline dictation transcribes the
+    /// same way the pipeline does (but saves no transcript).
+    @State private var inlineReceiver = InlineDictationReceiver(
+        transcribe: { samples in
+            try await TranscriptionService.shared.transcribe(samples: samples)
+        }
+    )
+    /// Darwin observer for the keyboard-dictate tap, installed only while the
+    /// wizard is NOT presented (the wizard owns its own observer during its
+    /// lifetime — see `SetupWizardView`). Re-installed / torn down by the
+    /// `isWizardPresented`-aware `.onChange` + `.onAppear` below.
+    @State private var dictateTapObserver: CrossProcessNotification.Observer?
+
+    /// WS-F: home-side mirror of `AppGroup.warmHoldNudgeShouldShow`. The app's
+    /// streak math (RecordingService, at the clean `stop()` site) flips that
+    /// projection and posts `warmHoldNudgeChanged`; we cache it into this
+    /// SwiftUI-watchable flag so `WarmHoldNudgeView` can render after a
+    /// qualifying record-and-bounce burst that ended on home. Re-read on appear,
+    /// on `.active`, and on the cross-process notification.
+    @State private var warmHoldNudgeVisible = false
+    /// Darwin observer for the warm-hold switching-nudge projection flip.
+    @State private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
+
     var body: some View {
         NavigationStack(path: $navPath) {
             ZStack(alignment: .bottom) {
@@ -231,6 +260,16 @@ struct ContentView: View {
                                 onSeeDonations: handleDonationCardOpen
                             )
                             .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+
+                        // WS-F: the warm-hold switching nudge. Surfaces here when
+                        // the record-and-bounce streak crossed threshold and the
+                        // burst ended on home (the app set the projection). The
+                        // view owns its own state writes + cross-process post; we
+                        // just drop it from the tree on resolve.
+                        if warmHoldNudgeVisible {
+                            WarmHoldNudgeView(onResolve: { warmHoldNudgeVisible = false })
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
 
                         RecentsListCard(
@@ -301,6 +340,15 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            // Floating selection-Cancel: pinned to the top so it's reachable
+            // anywhere in a long list (the in-header Cancel scrolled away). Glass
+            // so the list reads through it.
+            .overlay(alignment: .topTrailing) {
+                if isSelectionMode {
+                    floatingCancelButton
+                        .transition(.opacity)
+                }
+            }
             .animation(.easeInOut(duration: 0.25), value: recordingService.isRecording)
             .animation(.easeInOut(duration: 0.25), value: showRecordingHero)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSelectionMode)
@@ -348,6 +396,16 @@ struct ContentView: View {
         }
         .enableInteractivePopGesture()
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        // WS-B: make the unified inline receiver reachable by any editable
+        // surface (Edit) so it can register itself as the focused target.
+        .environment(inlineReceiver)
+        // Install / tear down the keyboard-dictate observer in lockstep with the
+        // wizard. While the wizard is up it owns the tap (W5); the moment it's
+        // down the unified receiver takes over. Identity-checked Observer means
+        // re-installing is idempotent.
+        .onChange(of: isWizardPresented) { _, wizardUp in
+            updateDictateTapObserver(wizardPresented: wizardUp)
+        }
         .sheet(isPresented: $showSettings, onDismiss: handleSettingsDismissed) {
             SettingsView(onRerunRequested: { pendingRerunAfterDismiss = true })
         }
@@ -425,28 +483,38 @@ struct ContentView: View {
             selectionHaptic.prepare()
             refreshDonationCardVisibility()
             askAvailable = AskController.isAvailable
+            // WS-B: arm the unified keyboard-dictate observer unless the wizard
+            // is currently presenting (it owns the tap then).
+            updateDictateTapObserver(wizardPresented: isWizardPresented)
+            // WS-F: arm the warm-hold-nudge projection observer + read the
+            // current state (a qualifying burst may have crossed threshold while
+            // we were backgrounded).
+            if warmHoldNudgeObserver == nil {
+                warmHoldNudgeObserver = CrossProcessNotification.addObserver(
+                    name: CrossProcessNotification.warmHoldNudgeChanged
+                ) {
+                    refreshWarmHoldNudge()
+                }
+            }
+            refreshWarmHoldNudge()
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
             }
-            // Cold-launch / first-appear adoption: if `JotApp.onOpenURL`
-            // already kicked the recording before our nav stack rendered,
-            // we land here with `isRecording == true`. Push the hero on
-            // the next runloop so the recording surface owns the timer +
-            // streaming preview from the user's POV. Tag the intent as
-            // adoption — the hero must not call `start()` here.
-            //
-            // Suppress while the wizard is presenting — W6's mic test is
-            // recording-driven and we don't want a zombie hero accumulating
-            // on the nav stack behind the wizard. See `isWizardPresented`
-            // doc above.
-            if recordingService.isRecording,
-               !isWizardPresented,
-               !userDismissedHeroDuringRecording,
-               !showAskSheet,  // Ask-mode in-sheet dictation; no hero adoption.
-               !askController.ownsActiveRecording {  // …nor during Ask's async recording teardown.
-                let isColdStart = pendingColdStartHeroNudge
+            // Cold-launch hero (SOURCE-BASED — the only first-appear hero path).
+            // The keyboard's `jot://dictate` bounce set `pendingColdStartHeroNudge`
+            // during launch, BEFORE this view's `.onChange` was installed, so a
+            // freshly-launched process must re-check it here. The hero is presented
+            // because a COLD keyboard dictate explicitly asked for it — NOT because
+            // `isRecording` happened to flip. Inline / Ask / warm / Action-Button
+            // recordings never set this flag, so they can never reach the hero.
+            // Guards are LIVE reads only (is a hero already up? is the wizard up?) —
+            // no provenance flags to keep in sync.
+            if pendingColdStartHeroNudge,
+               !showRecordingHero,
+               !isWizardPresented {
                 pendingColdStartHeroNudge = false
-                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
+                userDismissedHeroDuringRecording = false
+                heroIntent = .coldStartFromExternalKeyboard
                 showRecordingHero = true
             }
         }
@@ -463,47 +531,45 @@ struct ContentView: View {
         .onDisappear {
             copyResetTask?.cancel()
         }
-        // Auto-nav: any time recording comes alive outside our control
-        // (URL bounce, future entry points), surface the hero. The hero's
-        // own `beginRecordingFlow` adopts the in-flight session rather
-        // than calling `start()` a second time. Pipeline-tail transitions
-        // (`.transcribing` / `.cleaning`) deliberately do NOT trigger this
-        // — see the docblock above for the reasoning.
-        //
-        // Suppressed while the wizard is presenting — W5's "Try it once"
-        // step calls `recordingService.start()` to drive an in-wizard mic
-        // test. Without this gate, that start fires this observer and a
-        // hero gets pushed onto the home view's nav stack behind the
-        // wizard. When the user taps stop inside W5 the recording cleanly
-        // ends, but the hero on the home nav stack has no symmetric pop
-        // path — it sits there frozen in `.recording` phase. The user
-        // then dismisses the wizard and lands on a zombie "Listening"
-        // surface with no underlying capture. See `isWizardPresented`
-        // doc above.
+        // Cold keyboard-dictate just initiated (the keyboard set this flag via
+        // jot://dictate while Jot was already alive in the background). This is
+        // the SOLE cold-hero trigger for a warm process — present the hero NOW,
+        // the instant the URL signal lands, decoupled from whether the recording
+        // actually starts (on a fresh install / update it can be deferred behind
+        // a cold speech-model load). The hero enters its "getting ready" state
+        // and adopts once recording begins, so the user is never stranded on home.
+        // Guards are LIVE reads only — no provenance flags.
+        .onChange(of: pendingColdStartHeroNudge) { _, pending in
+            guard pending, !showRecordingHero, !isWizardPresented else { return }
+            pendingColdStartHeroNudge = false
+            userDismissedHeroDuringRecording = false
+            heroIntent = .coldStartFromExternalKeyboard
+            showRecordingHero = true
+        }
+        // Hero TEARDOWN only. The hero is never *pushed* from `isRecording`
+        // anymore (source-based presentation lives at the FAB tap, the cold
+        // `jot://dictate` URL, and the return-pill tap). This observer just
+        // handles the end-of-recording reset: a recording that was *not* a hero
+        // recording (inline edit, Ask, warm, Action Button, the wizard mic test)
+        // simply never had a hero to begin with, so there is nothing to adopt
+        // and nothing to suppress — the whole veto-flag stack is gone.
         .onChange(of: recordingService.isRecording) { _, isRecording in
-            if isRecording,
-               !isWizardPresented,
-               !userDismissedHeroDuringRecording,
-               !showAskSheet,  // Ask-mode dictation records in-sheet; no hero.
-               !askController.ownsActiveRecording {  // …nor during Ask's async recording teardown.
-                // Auto-nav adoption — never `start()` from this path.
-                let isColdStart = pendingColdStartHeroNudge
-                pendingColdStartHeroNudge = false
-                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
-                showRecordingHero = true
-            } else if !isRecording {
-                // Recording ended (user stopped, cancelled, errored, or the
-                // pipeline finished). Reset the user-dismissal flag so the
-                // NEXT recording auto-pushes the hero normally. Without this
-                // the flag would stay armed and the user would have to tap
-                // the FAB explicitly forever after one back-out.
-                userDismissedHeroDuringRecording = false
-                // A successful end-of-recording is also the moment the
-                // donation card threshold could have just been crossed —
-                // re-evaluate so the card can animate in for the user as
-                // they land back on home.
-                refreshDonationCardVisibility()
-            }
+            guard !isRecording else { return }
+            // Recording ended (stopped, cancelled, errored, or pipeline done).
+            // Re-arm the hero back-out flag so the next hero recording presents
+            // cleanly, and re-check the donation-card threshold for the user
+            // landing back on home.
+            userDismissedHeroDuringRecording = false
+            refreshDonationCardVisibility()
+        }
+        // Keyboard Dictate tapped inside Jot, but no editable field is a
+        // registered inline target (Send Feedback, search, prompt editor, …).
+        // Never leave it a silent dead tap — fall back to a hero recording. The
+        // keyboard tap is the source/trigger (source-based, no flag mirroring).
+        .onChange(of: inlineReceiver.heroFallbackRequest) { _, _ in
+            guard !showRecordingHero, !isWizardPresented else { return }
+            heroIntent = .startRecording
+            showRecordingHero = true
         }
         // Keyboard dictations increment the stats counter from another
         // process without ever opening Jot.app. When the user returns to
@@ -512,6 +578,14 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 refreshDonationCardVisibility()
+                refreshWarmHoldNudge()
+            } else if phase == .background {
+                // WS-B R6: an inline session backgrounded mid-dictation must not
+                // leak a live recording. Discard rather than finalize — home has
+                // no "preserve my words" field of its own (Edit handles its own
+                // app-background terminal). Wizard-presented state is irrelevant
+                // here: our observer is already torn down then.
+                inlineReceiver.discardActive()
             }
         }
         .onChange(of: visibleTranscriptIDs) { _, visibleIDs in
@@ -521,36 +595,99 @@ struct ContentView: View {
 
     // MARK: - Recording state
 
-    /// True when a recording is hot AND the user has backed out of the hero
-    /// — i.e. the moment to surface the live streaming preview inline at the
-    /// top of the Recents list. Also drives the swap from FAB to blue
-    /// "Return to recording" pill. Wizard-presented state stays suppressed:
-    /// W6's in-wizard mic test runs `isRecording == true` and the wizard
-    /// owns its own surface during its lifetime.
+    /// True when a HERO recording is hot AND the user has backed out of it —
+    /// i.e. the moment to surface the live streaming preview inline at the top
+    /// of the Recents list and swap the FAB for the blue "Return to recording"
+    /// pill. Keyed on `userDismissedHeroDuringRecording`, which is set ONLY by
+    /// the hero's own back-out (`onBackgrounded`) — inline edit / Ask / warm
+    /// recordings never set it, so this is already a precise "backgrounded hero"
+    /// signal with no provenance flags to check. Wizard stays suppressed (its
+    /// mic test owns its own surface).
     private var isLiveRecordingInline: Bool {
         recordingService.isRecording
             && !showRecordingHero
             && !isWizardPresented
-            && !showAskSheet  // Ask-mode dictation records in-sheet; no home pill.
-            && !askController.ownsActiveRecording  // …nor during Ask's async teardown.
             && userDismissedHeroDuringRecording
+    }
+
+    // MARK: - WS-B unified keyboard-dictate receiver
+
+    /// Install or tear down the `keyboardDictateTapped` observer so it is live
+    /// exactly when the wizard is NOT presented. The wizard installs its OWN
+    /// observer for its lifetime (W5); running both at once would double-handle
+    /// a single tap. When the wizard is down we route the tap into the unified
+    /// receiver (inline dictation into the focused field, §9 R5). When the
+    /// wizard comes up we drop our observer AND discard any inline session in
+    /// flight so it never leaks behind the wizard.
+    private func updateDictateTapObserver(wizardPresented: Bool) {
+        if wizardPresented {
+            dictateTapObserver = nil
+            inlineReceiver.discardActive()
+        } else if dictateTapObserver == nil {
+            let receiver = inlineReceiver
+            dictateTapObserver = CrossProcessNotification.addObserver(
+                name: CrossProcessNotification.keyboardDictateTapped
+            ) {
+                receiver.handleKeyboardDictateTap()
+            }
+        }
+    }
+
+    // MARK: - WS-F warm-hold switching nudge
+
+    /// Re-read the App-Group projection and update the SwiftUI-watchable flag.
+    /// Shows only when the app set `warmHoldNudgeShouldShow` AND the user hasn't
+    /// permanently suppressed it (`WarmHoldNudgeView` writes suppression on the
+    /// "Don't show again" tap). Cheap UserDefaults reads — fine to call from
+    /// every entry point. Animated so it eases in rather than snapping.
+    private func refreshWarmHoldNudge() {
+        let next = AppGroup.warmHoldNudgeShouldShow && !AppGroup.warmHoldNudgeSuppressed
+        guard next != warmHoldNudgeVisible else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            warmHoldNudgeVisible = next
+        }
     }
 
     // MARK: - Hero
 
+    /// WS-E: the editorial "Recents." headline is replaced by a rotating CTA
+    /// that doubles as the home micro-messaging surface (§9 home CTA pool, D2 —
+    /// both `.anywhere` and `.universal` lines shown to everyone this cycle).
+    /// "What do you want to dictate today?" is the anchor line; the rotator
+    /// shuffles the full pool. The date sub-line is retained for context.
     private var heroTitle: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Recents.")
-                .font(JotType.displaySerif(44))
-                .tracking(-1.6)
-                .foregroundStyle(Color.jotPageInk)
-                .accessibilityAddTraits(.isHeader)
+            RotatingMessageView(
+                messages: Self.homeCTAPool,
+                dwell: 8,
+                sequenced: false,
+                font: JotType.displaySerif(34),
+                color: .jotPageInk,
+                alignment: .leading
+            )
+            .tracking(-1.0)
+            .accessibilityAddTraits(.isHeader)
 
             Text(formattedDate)
                 .font(.system(size: 13, weight: .regular, design: .default))
                 .foregroundStyle(Color.jotPageInkSecondary)
         }
     }
+
+    /// Home CTA rotation pool (§9 — `.anywhere` + `.universal`, D2 resolved:
+    /// show both buckets to everyone in v1). Line 6 is the anchor.
+    private static let homeCTAPool: [String] = [
+        "Speak it straight into your last app.",
+        "Your keyboard can talk — tap the globe and dictate anywhere.",
+        "Skip the typing. Dictate into any app you're in.",
+        "Mid-message thought? Say it into the field you're already in.",
+        "Dictate into Mail, Notes, Messages — anywhere a keyboard goes.",
+        "What do you want to dictate today?",
+        "Say it out loud and let your hands rest.",
+        "Think out loud — Jot keeps up.",
+        "Talk faster than you type. Start here.",
+        "Say the messy version — tidy the wording later."
+    ]
 
     private var formattedDate: String {
         Date().formatted(.dateTime.weekday(.wide).month(.wide).day())
@@ -688,12 +825,27 @@ struct ContentView: View {
 
     // MARK: - Actions
 
-    /// Maximum number of entries that can be combined in one operation.
-    /// Keeps the resulting single transcript from blowing past UI readability
-    /// (long scrolling block) and gives the user a soft prompt to be
-    /// intentional. The picker UX in `recentsSelectionToolbar` disables the
-    /// Combine button beyond this count.
-    private static let combineMaxSelection = 5
+    /// Translucent floating "Cancel" pinned at the top during selection mode so
+    /// the user can exit from anywhere in a long list (the header Cancel scrolled
+    /// away). Glass capsule — the list reads through it.
+    private var floatingCancelButton: some View {
+        Button(action: exitSelectionMode) {
+            Text("Cancel")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.jotBlueTop)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 38)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, JotDesign.Spacing.pageGutter)
+        .padding(.top, 6)
+        .accessibilityLabel("Cancel selection")
+    }
 
     private var recentsSelectionToolbar: some View {
         HStack(spacing: 12) {
@@ -723,7 +875,7 @@ struct ContentView: View {
             .frame(minHeight: 44)
             .contentShape(Rectangle())
             .disabled(!isCombineEnabled)
-            .accessibilityHint("Merge selected entries into one. Up to \(Self.combineMaxSelection).")
+            .accessibilityHint("Merge selected entries into one.")
 
             Button("Delete \(selectedTranscriptIDs.count)", role: .destructive) {
                 prepareBulkDelete()
@@ -749,8 +901,9 @@ struct ContentView: View {
     }
 
     private var isCombineEnabled: Bool {
-        let count = selectedTranscriptIDs.count
-        return count >= 2 && count <= Self.combineMaxSelection
+        // No upper cap — combine as many as you've selected (hundreds is fine).
+        // Just need ≥2 to have something to merge.
+        selectedTranscriptIDs.count >= 2
     }
 
     private func enterSelectionMode(selecting transcript: Transcript) {

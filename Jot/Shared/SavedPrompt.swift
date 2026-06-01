@@ -67,7 +67,12 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
     /// matches the previous canonical text.
     static let defaultArticulate: SavedPrompt = SavedPrompt(
         id: UUID(uuidString: "A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1")!,
-        name: "Articulate",
+        // User-facing label is "Cleanup" (UX-overhaul round 2 WS-G): the
+        // ActionBar's primary button is now "Articulate" and OPENS this
+        // picker, whose primary/default row is this prompt — so the two
+        // names can't collide. The stable id + `DefaultKind.articulate`
+        // identity are unchanged; only the display string moves.
+        name: "Cleanup",
         systemPrompt:
             "Rewrite this dictation for clarity. " +
             "Connect related ideas so they flow logically. " +

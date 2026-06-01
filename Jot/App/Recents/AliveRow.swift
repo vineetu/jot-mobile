@@ -12,7 +12,10 @@ struct AliveRow: View {
                     .foregroundStyle(Color.jotPageInk)
                     .tracking(-0.1)
                     .lineSpacing(1.5)
-                    .lineLimit(2)
+                    // Reserve 2 lines ALWAYS so every row is the same height
+                    // regardless of text length — rows no longer resize/shrink to
+                    // one line (matches selection mode). User request.
+                    .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 

@@ -1,17 +1,18 @@
 import SwiftUI
 
 /// Streaming-state top strip — rebuilt 2026-05-11 per
-/// `Jot/tmp/keyboard-design-reference.html`.
+/// `Jot/tmp/keyboard-design-reference.html`; re-capped + italicized in the
+/// UX-overhaul round 2 WS-A pass (capped fading stream, hero parity).
 ///
 /// Anatomy:
-/// - Header row: blue pulsing recording dot (`#007AFF`, 8×8pt, 1.4s
-///   ease-in-out) + SF-Mono timer (`#3C5A99`) + animated waveform
-///   bars (6 vertical bars, blue, varying heights, 0.5-0.9 opacity).
-///   The prior "..." placeholder + black amplitude-meter shimmer are
-///   gone — the waveform is the spec.
-/// - Streaming pane: fixed 154pt height Liquid Glass card with a
-///   scrollable interior. Streaming text is `#3C5A99` at full
-///   opacity (NO per-line opacity ladder), 13pt, line-height 1.55.
+/// - Header row: blue pulsing recording dot (`#007AFF`, 8×8pt) + an optional
+///   relocated SF-Mono timer (WS-D — only when controls + Enter share a row)
+///   + animated waveform bars (6 blue bars). While paused (WS-C / §10) the
+///   header swaps to a static hollow dot + frozen clock + "mic ready, not
+///   capturing" and the waveform hides.
+/// - Streaming pane: ~3.5-line capped Liquid Glass card with a scrollable
+///   interior. Live text renders in the bundled Fraunces ITALIC (italic =
+///   "live" only), `#3C5A99`, line-height ~1.55.
 /// - Top-edge fade via `.mask(LinearGradient(...))` so older content
 ///   eases out as it scrolls off the top.
 /// - Custom 3pt-wide blue scroll indicator on the right, always
@@ -30,6 +31,20 @@ struct StreamingStrip: View {
     let partialText: String
     /// Wall-clock start of the active recording.
     let startedAt: Date?
+    /// WS-C / §10 — true while the dictation is paused. Freezes the header
+    /// clock and swaps the live recording cue for a static "Paused · mic
+    /// ready, not capturing" treatment so the orange mic indicator never reads
+    /// as covert recording.
+    var isPaused: Bool = false
+    /// Frozen elapsed seconds the app pinned at pause (active-time total, pause
+    /// gaps excluded). Rendered in the header clock while paused instead of the
+    /// live ticking value. Nil while actively recording.
+    var pausedElapsedSeconds: TimeInterval? = nil
+    /// WS-D — when the controls + adaptive Enter share one row (large widths),
+    /// the Stop pill drops its inline timer and the elapsed clock relocates
+    /// here to the strip header. Below 428 the pill keeps the timer and this is
+    /// `false`, so the header omits the clock to avoid showing it twice.
+    var showsHeaderTimer: Bool = false
     /// Pre-composed "Loading [variant]…" copy mirrored from the main
     /// app's `StreamingTranscriptionService.sessionLoadState`. Non-nil
     /// only while the streaming graph is in its per-session ANE load
@@ -41,13 +56,26 @@ struct StreamingStrip: View {
     /// (or the first partial, whichever arrives first).
     var loadingLabel: String? = nil
 
+    /// Contextual status shown in the header between the recording cue and the
+    /// waveform. A reusable slot — the caller decides what belongs here for the
+    /// current context (e.g. "Tidied up when you stop" during a normal capture;
+    /// later, "Won't be saved" for edit / feedback dictation). Nil hides it.
+    /// One line, scales down before it ever truncates so the waveform keeps its
+    /// space on narrow keyboards.
+    var statusLine: String? = nil
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Height of the scrollable streaming pane. Trimmed from 154→130 so the
-    /// recording layout (this strip + action row + space/return row) fits inside
-    /// the 310pt keyboard envelope — at 154 the bottom row (space / return) was
-    /// pushed off and clipped. Still shows ~6½ lines of live transcript.
-    private static let paneHeight: CGFloat = 130
+    /// Height of the scrollable streaming pane. WS-A re-cap: trimmed from 130 →
+    /// 76 so the live transcript shows ~3.5 lines (down from ~6½) — the
+    /// "capped fading stream" treatment shared with the hero (plan §1 / WS-A).
+    /// At 13pt with ~1.55 line-height (~20pt/line) the italic body fits ~3.5
+    /// lines, bottom-anchored, older text scrolling up + fading at the top
+    /// (the fade mask + auto-follow are unchanged below). Re-derive
+    /// `outerHeight` whenever this changes and re-test the 310pt envelope
+    /// (R15): header(22) + spacing(6) + pane(76) + vPadding(20) = 124pt, which
+    /// leaves ample room for the control + Enter rows under 310pt.
+    private static let paneHeight: CGFloat = 76
 
     /// Outer card height = header (~22pt) + spacing (6pt) + pane
     /// + vertical padding (10pt × 2).
@@ -89,29 +117,76 @@ struct StreamingStrip: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            PulsingBlueDot(reduceMotion: reduceMotion)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
+            if isPaused {
+                // WS-C / §10 paused cue: static hollow dot (not pulsing) +
+                // plain-language "mic ready, not capturing" so the held mic
+                // never reads as covert recording. No waveform while paused.
+                Circle()
+                    .strokeBorder(Color.jotKeyboardStreamText, lineWidth: 1.5)
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
 
-            if let startedAt {
-                TimelineView(.periodic(from: startedAt, by: 0.5)) { context in
-                    Text(elapsedString(now: context.date, since: startedAt))
+                if showsHeaderTimer {
+                    Text(pausedHeaderTime)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Color.jotKeyboardStreamText)
                         .monospacedDigit()
                 }
-            } else {
-                Text("0:00")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+
+                Text("Paused · mic ready, not capturing")
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.jotKeyboardStreamText)
-                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 0)
+            } else {
+                PulsingBlueDot(reduceMotion: reduceMotion)
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
+
+                // WS-D: the live clock is shown here only when it has been
+                // relocated off the Stop pill (large widths share controls +
+                // Enter on one row). Below 428 the pill keeps the timer, so
+                // the header omits it to avoid two ticking clocks.
+                if showsHeaderTimer {
+                    if let startedAt {
+                        TimelineView(.periodic(from: startedAt, by: 0.5)) { context in
+                            Text(elapsedString(now: context.date, since: startedAt))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.jotKeyboardStreamText)
+                                .monospacedDigit()
+                        }
+                    } else {
+                        Text("0:00")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.jotKeyboardStreamText)
+                            .monospacedDigit()
+                    }
+                }
+
+                if let statusLine {
+                    Text(statusLine)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.8))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .padding(.leading, showsHeaderTimer ? 4 : 0)
+                        .accessibilityLabel(statusLine)
+                }
+
+                Spacer(minLength: 6)
+
+                WaveformBars(reduceMotion: reduceMotion)
+                    .accessibilityHidden(true)
             }
-
-            Spacer(minLength: 0)
-
-            WaveformBars(reduceMotion: reduceMotion)
-                .accessibilityHidden(true)
         }
+    }
+
+    /// Frozen MM:SS shown in the header while paused (§10.4).
+    private var pausedHeaderTime: String {
+        let total = max(0, Int((pausedElapsedSeconds ?? 0).rounded(.down)))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     // MARK: - Surface
@@ -215,9 +290,17 @@ private struct StreamingPane: View {
                                     KeyboardLoadingText(label: loadingLabel,
                                                         reduceMotion: reduceMotion)
                                 } else {
+                                    // WS-A / R15: live transcript renders in the
+                                    // already-bundled Fraunces ITALIC (the
+                                    // 9pt-opsz text cut, tuned for text size) —
+                                    // italic exclusively signals "live", giving
+                                    // hero parity. NOT synthetic system italic.
+                                    // "Listening…" placeholder stays a plain hint.
                                     Text(partialText.isEmpty ? "Listening…" : partialText)
-                                        .font(.system(size: 13, weight: .regular))
-                                        .lineSpacing(13 * 0.55) // ~line-height 1.55
+                                        .font(partialText.isEmpty
+                                              ? .system(size: 13, weight: .regular)
+                                              : Font.custom(JotType.frauncesItalicText, size: 14))
+                                        .lineSpacing(14 * 0.55) // ~line-height 1.55
                                         .foregroundStyle(Color.jotKeyboardStreamText)
                                         .multilineTextAlignment(.leading)
                                         .fixedSize(horizontal: false, vertical: true)

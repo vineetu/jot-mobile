@@ -45,6 +45,15 @@ struct RecentsStrip: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Which touch affordance is currently held, driving the contextual header
+    /// hint ("Pastes here" / "Opens in Jot"). Set by the row-body / open-in-app
+    /// button styles on press and cleared on release — or when a press turns
+    /// into a scroll, since a `ButtonStyle`'s `isPressed` cancels then too.
+    /// PURE affordance: no gesture or behavior change, just feedback.
+    @State private var pressHint: PressHint?
+
+    private enum PressHint { case paste, open }
+
     /// Top-10 view of the mirrored history. We render 3 by default and
     /// keep the rest accessible via internal scroll. Empty when no
     /// Full Access / no history yet — the strip still draws header +
@@ -132,6 +141,22 @@ struct RecentsStrip: View {
             .accessibilityAddTraits(.isButton)
         }
         .frame(height: Self.headerHeight)
+        // Contextual hint, centered over the header's spare space — names what
+        // the touch under the user's finger will do. Only present while a row
+        // or the open button is actually held (overlay, so it never reflows
+        // "Recent" / "See all").
+        .overlay(alignment: .center) {
+            if let pressHint {
+                Text(pressHint == .paste ? "Pastes here" : "Opens in Jot")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: pressHint)
     }
 
     // MARK: - Rows
@@ -247,7 +272,9 @@ struct RecentsStrip: View {
                 .padding(.vertical, Self.rowVerticalPad)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RecentRowPressStyle(onPress: { pressed in
+                pressHint = pressed ? .paste : nil
+            }))
             .accessibilityLabel(entry.createdAt.formatted(date: .omitted, time: .shortened))
             .accessibilityValue(entry.text)
             .accessibilityHint("Pastes this transcript")
@@ -266,7 +293,9 @@ struct RecentsStrip: View {
                     .padding(.vertical, Self.rowVerticalPad)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(OpenInAppPressStyle(onPress: { pressed in
+                pressHint = pressed ? .open : nil
+            }))
             .accessibilityLabel("Open in Jot")
             .accessibilityHint("Opens this transcript in the Jot app")
             .accessibilityAddTraits(.isButton)
@@ -308,5 +337,54 @@ struct RecentsStrip: View {
                     )
                 )
         }
+    }
+}
+
+// MARK: - Press affordance styles (UX-only, no behavior change)
+
+/// Row-body press feedback. On press: a soft blue wash + a leading accent bar
+/// mark the row the touch will paste. A `ButtonStyle`'s `isPressed` already
+/// mirrors the existing gesture semantics — it goes false when a press turns
+/// into a scroll — so tap / hold-release / hold-scroll all behave exactly as
+/// before; this only *shows* the active target. Reports press changes so the
+/// header can name the action.
+private struct RecentRowPressStyle: ButtonStyle {
+    let onPress: (Bool) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.jotKeyboardAccent.opacity(configuration.isPressed ? 0.12 : 0))
+            )
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.25, style: .continuous)
+                    .fill(Color.jotKeyboardAccent)
+                    .frame(width: 2.5)
+                    .padding(.vertical, 2)
+                    .opacity(configuration.isPressed ? 1 : 0)
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in onPress(pressed) }
+    }
+}
+
+/// Open-in-app (↗) press feedback: a small blue rounded wash behind the glyph so
+/// it reads as a target distinct from the paste body. Reports press so the header
+/// hint can switch to "Opens in Jot".
+private struct OpenInAppPressStyle: ButtonStyle {
+    let onPress: (Bool) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.jotKeyboardAccent.opacity(configuration.isPressed ? 0.14 : 0))
+                    .padding(.horizontal, 2)
+            )
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in onPress(pressed) }
     }
 }

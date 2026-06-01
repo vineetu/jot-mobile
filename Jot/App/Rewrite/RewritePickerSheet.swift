@@ -60,6 +60,12 @@ struct RewritePickerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    /// Resizable detent (WS-G). The smallest stays `.height(360)` — the
+    /// Dynamic-Type floor that keeps the header/subline/footer (which live
+    /// OUTSIDE the inner ScrollView) from clipping on small devices — with
+    /// two larger detents to drag up into.
+    @State private var detent: PresentationDetent = .height(360)
+
     // Bundled default identification now flows through `SavedPrompt.defaultKind`
     // and the `RowKind` enum below — no per-id constants needed in this view.
 
@@ -96,8 +102,11 @@ struct RewritePickerSheet: View {
         .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(WallpaperBackground())
-        .presentationDetents([.height(360)])
+        .presentationDetents([.height(360), .fraction(0.72), .large], selection: $detent)
         .presentationDragIndicator(.visible)
+        // At the floor detent a content swipe resizes the sheet up; once
+        // expanded it scrolls the prompt list (WS-G).
+        .presentationContentInteraction(detent == .height(360) ? .resizes : .scrolls)
         .presentationCornerRadius(JotDesign.Spacing.sheetRadius)
     }
 

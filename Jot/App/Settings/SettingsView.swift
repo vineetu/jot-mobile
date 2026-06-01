@@ -74,6 +74,10 @@ struct SettingsView: View {
                 AppGroup.warmHoldDurationSeconds = newValue
             }
         }
+        // Soften every card's drop shadow throughout Settings by 50% (light mode
+        // only — dark mode already omits it). Scoped to this NavigationStack, so
+        // Home / Recents cards keep their full shadow.
+        .environment(\.liquidGlassShadowScale, 0.5)
     }
 
     // MARK: - Page chrome
@@ -103,7 +107,11 @@ struct SettingsView: View {
 
                 Text("Jot")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color(red: 60 / 255, green: 60 / 255, blue: 67 / 255).opacity(0.85))
+                    // Adaptive secondary ink — the old hardcoded #3C3C43 was the
+                    // light-mode label gray and rendered near-invisible on the
+                    // dark navy wallpaper. jotPageInkSecondary lifts to white@0.62
+                    // in dark, stays the same muted gray in light.
+                    .foregroundStyle(Color.jotPageInkSecondary)
             }
 
             Spacer()
@@ -233,7 +241,7 @@ struct SettingsView: View {
     }
 
     private var settingsFooter: some View {
-        Text("Made with care in San Francisco.\nNo accounts, no cloud, no telemetry.")
+        Text("Made with care in San Francisco.\nNo accounts, no cloud, no telemetry.\nOnly feedback you send leaves your iPhone.")
             .font(.system(size: 12))
             .foregroundStyle(Color(red: 60 / 255, green: 60 / 255, blue: 67 / 255).opacity(0.45))
             .multilineTextAlignment(.center)
@@ -502,7 +510,7 @@ struct SettingsView: View {
     private var privacySection: some View {
         settingsSection(
             label: "PRIVACY",
-            caption: "Your words stay on your iPhone. No accounts, no cloud, no telemetry."
+            caption: "Your words stay on your iPhone. No accounts, no cloud, no telemetry — only feedback you send is ever transmitted."
         ) {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(spacing: 0) {

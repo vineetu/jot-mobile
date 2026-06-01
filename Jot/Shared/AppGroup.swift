@@ -85,6 +85,27 @@ enum AppGroup {
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
+        /// Warm-hold switching-nudge state (UX-overhaul round 2 §4 / R10).
+        /// All three live in App-Group `UserDefaults` (no schema bump) so the
+        /// app's streak math and the keyboard's render of the nudge share one
+        /// source of truth across processes.
+        ///
+        /// `captureStopRing`: JSON-encoded ring buffer of the last ~4
+        /// `(startedAt, stoppedAt, sessionID)` clean-stop pairs. The app
+        /// derives the qualifying-return streak from this (R16 — self-expiring
+        /// across app kills because it's capped). Written ONLY at the clean
+        /// `stop()` site by `RecordingService`. The keyboard never reads it.
+        static let captureStopRing = "jot.warmHold.captureStopRing"
+        /// `warmHoldNudgeShouldShow`: boolean projection the app sets when the
+        /// streak crosses threshold; the keyboard (which can't run the math)
+        /// renders the nudge off this and clears it via the two actions.
+        /// Mirrors the `pipelinePhase` projection pattern.
+        static let warmHoldNudgeShouldShow = "jot.warmHold.nudgeShouldShow"
+        /// `warmHoldNudgeSuppressed`: permanent one-tap "Don't show again"
+        /// flag (§4). Once true the nudge never re-shows; turning warm hold ON
+        /// is the other terminal state. Passive ignore does NOT set this.
+        static let warmHoldNudgeSuppressed = "jot.warmHold.nudgeSuppressed"
+
         /// Default-ON Lab kill-switch for the MiniLM embedding writer.
         /// Read by `TranscriptStore.append`, `PhoneSideWCSession.saveTranscript`,
         /// and `EmbeddingBackfillTask` before any encode work. Default `true`
@@ -179,7 +200,7 @@ enum AppGroup {
     static var warmHoldDurationSeconds: TimeInterval {
         get {
             guard defaults.object(forKey: Keys.warmHoldDurationSeconds) != nil else {
-                return 60
+                return 120
             }
             let raw = defaults.double(forKey: Keys.warmHoldDurationSeconds)
             return min(max(raw, 60), 300)
@@ -220,6 +241,34 @@ enum AppGroup {
                 defaults.removeObject(forKey: Keys.warmHoldHeartbeat)
             }
         }
+    }
+
+    /// Ring buffer of recent clean-stop `(startedAt, stoppedAt, sessionID)`
+    /// pairs backing the warm-hold switching-nudge streak math (§4 / R10 /
+    /// R16). Stored as JSON `Data`; `RecordingService` owns the encode/decode
+    /// (it owns the `CaptureStopEntry` shape and the iso8601 coder pair).
+    /// Returns `nil` when no stop has ever been recorded — the app treats a
+    /// `nil`/undecodable blob as an empty ring (self-healing).
+    static var captureStopRing: Data? {
+        get { defaults.data(forKey: Keys.captureStopRing) }
+        set { defaults.set(newValue, forKey: Keys.captureStopRing) }
+    }
+
+    /// Boolean projection the app sets when the switching-nudge streak crosses
+    /// threshold (§4 / R10). The keyboard process can't run the streak math,
+    /// so it renders the nudge off this flag and clears it when the user acts.
+    /// `bool(forKey:)` because the missing-key default is `false` (no nudge).
+    static var warmHoldNudgeShouldShow: Bool {
+        get { defaults.bool(forKey: Keys.warmHoldNudgeShouldShow) }
+        set { defaults.set(newValue, forKey: Keys.warmHoldNudgeShouldShow) }
+    }
+
+    /// Permanent "Don't show this again" flag for the switching nudge (§4).
+    /// Set by the nudge's dismiss action (one tap, no confirm); once `true`
+    /// the nudge never re-shows. `bool(forKey:)` — missing-key default `false`.
+    static var warmHoldNudgeSuppressed: Bool {
+        get { defaults.bool(forKey: Keys.warmHoldNudgeSuppressed) }
+        set { defaults.set(newValue, forKey: Keys.warmHoldNudgeSuppressed) }
     }
 
     /// Selected AI rewrite backend. Currently the only valid value is
