@@ -29,8 +29,8 @@ struct HowItWorksStep: View {
     /// Wall-clock anchor for the loop, reset on appear.
     @State private var startDate = Date()
 
-    /// 4 steps × ~5s each. "At least five seconds per step, looping."
-    private let loopDuration: Double = 20
+    /// 4 steps × ~3.25s each, looping (sped up ~1.5× from the original 20s).
+    private let loopDuration: Double = 13
 
     private let steps: [(n: Int, text: String)] = [
         (1, "Tap Dictate on your keyboard"),
@@ -161,8 +161,9 @@ private struct HowScene: View {
     /// Recording is live during steps 2 and 3.
     private var recording: Bool { step == 2 || step == 3 }
 
-    /// Fast 0…1 pulse for the record dot / tap ring (≈2 Hz over the loop).
-    private var pulse: CGFloat { 0.5 + 0.5 * sin(phase * .pi * 2 * 40) }
+    /// Fast 0…1 pulse for the record dot / tap ring. Multiplier scaled with the
+    /// loop (40 × 13/20 ≈ 26) so its real-time pulse rate stays ~constant.
+    private var pulse: CGFloat { 0.5 + 0.5 * sin(phase * .pi * 2 * 26) }
 
     // MARK: Phone chrome colors (scene-internal — inline hexes are fine here)
 
@@ -243,10 +244,12 @@ private struct HowScene: View {
         .accessibilityLabel("Animation showing four steps: tap Dictate, Jot records, swipe back to your app, stop from the keyboard")
     }
 
-    /// Steps 2–3: the Jot recording panel, abstracted to an EMPTY dark card that
-    /// fills the WHOLE mini-phone — no controls, no live text, just the shell
-    /// (per "make the transparent hero thing full page"). Insets leave room for
-    /// the dynamic island on top and the home-indicator at the bottom.
+    /// Steps 2–3: the Jot recording panel — a clearly-bounded light card filling
+    /// the mini-phone, with a faint, bottom-anchored "live transcript"
+    /// placeholder (a few rounded-rect lines of decreasing width) so it reads as
+    /// Jot's recording screen rather than a blank page. Kept abstract — it's a
+    /// mockup. Insets leave room for the dynamic island on top and the
+    /// home-indicator at the bottom.
     private var heroPanel: some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(Color.white.opacity(0.06))
@@ -254,16 +257,34 @@ private struct HowScene: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
             )
+            .overlay(alignment: .bottomLeading) {
+                // Faint streaming-transcript placeholder, parked above the swipe
+                // coaching so the two never overlap.
+                VStack(alignment: .leading, spacing: 7) {
+                    transcriptLine(widthFraction: 0.74)
+                    transcriptLine(widthFraction: 0.60)
+                    transcriptLine(widthFraction: 0.42)
+                }
+                .padding(.leading, 22)
+                .padding(.bottom, 52)
+            }
             .padding(.horizontal, 12)
             .padding(.top, 34)
             .padding(.bottom, 16)
             .frame(width: frameW, height: frameH)
     }
 
+    /// One faint streaming-transcript placeholder line.
+    private func transcriptLine(widthFraction: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(placeholderInk.opacity(0.5))
+            .frame(width: (frameW - 24) * widthFraction, height: 8)
+    }
+
     // MARK: Layers
 
-    /// Top-leading step badge — the current step number (hidden in the
-    /// reduce-motion neutral frame, step 0).
+    /// Centered step badge sitting just below the dynamic island — the current
+    /// step number (hidden in the reduce-motion neutral frame, step 0).
     @ViewBuilder
     private var stepBadge: some View {
         if step >= 1 {
@@ -279,9 +300,8 @@ private struct HowScene: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color.jotAccent, in: Capsule(style: .continuous))
-            .frame(width: frameW, height: frameH, alignment: .topLeading)
-            .padding(.leading, 10)
-            .padding(.top, 9)
+            .frame(width: frameW, height: frameH, alignment: .top)
+            .padding(.top, 30)
             .accessibilityHidden(true)
         }
     }
@@ -426,11 +446,12 @@ private struct HowScene: View {
                     .tracking(1.0)
                     .foregroundStyle(Color.jotAccent)
             }
-            // Centered horizontally, parked near the bottom of the full-page
-            // panel; sweeps a short distance right→left, staying fully inside the
-            // frame (no clipping at the edge).
+            // Centered horizontally, parked comfortably INSIDE the hero card
+            // (above its 16pt bottom inset) and below the transcript lines;
+            // sweeps a short distance right→left, staying fully inside the frame
+            // (no clipping at the edge).
             .frame(width: frameW, height: frameH, alignment: .bottom)
-            .padding(.bottom, 24)
+            .padding(.bottom, 26)
             .offset(x: 26 - 52 * t)
             .opacity(Double(sin(t * .pi)))
         }
