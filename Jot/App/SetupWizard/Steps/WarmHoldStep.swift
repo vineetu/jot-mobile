@@ -26,7 +26,7 @@ struct WarmHoldStep: View {
 
                 readyTile
 
-                WizardItalicTitle(text: "Keep mic ready?", size: 32)
+                WizardItalicTitle(text: "Keep the mic ready", size: 32)
                     .padding(.top, 8)
 
                 WizardBody(text: bodyCopy)
@@ -49,7 +49,7 @@ struct WarmHoldStep: View {
     }
 
     private var bodyCopy: String {
-        "After a dictation, Jot can keep a 60-second audio session active so the next recording starts faster. The orange mic indicator stays on during that wait, but Jot is not transcribing while it waits. You can change this anytime in Settings."
+        "After you dictate, Jot stays ready for two minutes — so your next dictation starts instantly, without hopping back to the app. Nothing is recorded until you tap Dictate."
     }
 
     private var warmHoldBinding: Binding<Bool> {

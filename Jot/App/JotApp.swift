@@ -1043,6 +1043,24 @@ private final class CrossProcessRecordingStopCoordinator {
             return
         }
 
+        // Inline / transient dictation (transcript Edit, keyboard-in-Jot, Ask)
+        // owns this recording. The keyboard cannot tell inline from a capture —
+        // `RecordingService.start()` publishes `.recording` for both, so the
+        // keyboard's second tap posts `stopRequested` either way. Discriminate
+        // here on the in-process ownership flag: an inline stop must finalize
+        // INLINE (insert at the cursor, NO saved Transcript) — never run the
+        // capture pipeline. `InlineDictationReceiver.handleExternalStop` (a
+        // sibling `stopRequested` observer in ContentView) does that finalize;
+        // we just bail before the saving path and clear the keyboard's pending
+        // paste so it doesn't hang waiting for a publish that won't come.
+        // (Checked synchronously: the inline `finalize()` flips this flag only
+        // after its async stop completes, so there's no race with that observer.)
+        if RecordingService.shared.ownsActiveRecording {
+            ClipboardHandoff.clearPendingPasteSession()
+            log.info("Cross-process stop: inline session owns the recording — finalizing inline, no transcript saved.")
+            return
+        }
+
         // v7 auto-paste (per design §4.2 round-2 BLOCKER #4 closure): widen
         // the guard to `(isRecording || isPipelineInFlight)` so the duplicate-
         // stop branch ALSO runs while transcription/cleaning is still in
@@ -1114,6 +1132,27 @@ private final class CrossProcessRecordingStopCoordinator {
             ?? projection?.recordingStartedAt
             ?? Date()
 
+        // unify-keyboard-dictation §3/§4 — the save/no-save discriminator lives
+        // HERE, at the keyboard stop site, not at the recording's birth. This
+        // method runs ONLY for keyboard-initiated stops (the hero stops by
+        // calling `completeEndOfRecording` directly — `RecordingHeroView` — and
+        // never reaches this coordinator). So:
+        //   • Jot main app ACTIVE at stop  → the user is dictating INTO a Jot
+        //     field (Feedback / transcript edit / settings); paste, but write NO
+        //     Transcript → `transient = true`.
+        //   • Otherwise (.inactive / .background) → cold dictation from ANOTHER
+        //     app; paste AND save exactly as today → `transient = false`.
+        // We gate on `.active` SPECIFICALLY (not `!= .background`) to make data
+        // loss impossible: a cold-from-another-app stop can reach Jot while it is
+        // mid-transition / briefly `.inactive`, and treating `.inactive` as
+        // transient would DROP that transcript. `.active` is only ever true when a
+        // Jot field is the live foreground host, so cold stops never read it and
+        // always save. Worst case is the SAFE direction — a Jot-field stop during a
+        // rare `.inactive` blip saves a spurious transcript rather than losing one.
+        // The hero never funnels through here, so its save is untouched.
+        let jotActiveAtStop = UIApplication.shared.applicationState == .active
+        log.info("Cross-process stop: jotActiveAtStop=\(jotActiveAtStop, privacy: .public) → transient(no-save)=\(jotActiveAtStop, privacy: .public)")
+
         // v7 auto-paste: peek the keyboard's pending paste session synchronously
         // at task entry into a local. A subsequent keyboard tap that overwrites
         // the App Group key cannot affect this in-flight stop. Adoption is
@@ -1149,7 +1188,8 @@ private final class CrossProcessRecordingStopCoordinator {
                 sessionID: resolvedSessionID,
                 startedAt: startedAt,
                 stoppedAt: result.stoppedAt,
-                controller: controller
+                controller: controller,
+                transient: jotActiveAtStop
             )
 
         case .idle:
@@ -1157,7 +1197,8 @@ private final class CrossProcessRecordingStopCoordinator {
             try await stopStandaloneRecording(
                 startedAt: startedAt,
                 sessionID: resolvedSessionID,
-                controller: controller
+                controller: controller,
+                transient: jotActiveAtStop
             )
 
         case .transcribing, .processing, .cleaning:
@@ -1189,7 +1230,8 @@ private final class CrossProcessRecordingStopCoordinator {
     private func stopStandaloneRecording(
         startedAt: Date,
         sessionID: UUID,
-        controller: any DictationController
+        controller: any DictationController,
+        transient: Bool = false
     ) async throws {
         let recording = RecordingService.shared
         guard recording.isRecording else {
@@ -1207,7 +1249,8 @@ private final class CrossProcessRecordingStopCoordinator {
                 sessionID: sessionID,
                 startedAt: startedAt,
                 stoppedAt: stoppedAt,
-                controller: controller
+                controller: controller,
+                transient: transient
             )
         } catch {
             recording.markPipelineFinished()

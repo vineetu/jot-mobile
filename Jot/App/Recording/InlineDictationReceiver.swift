@@ -2,6 +2,22 @@ import Foundation
 import Observation
 import os.log
 
+// ============================================================================
+// 🚧 BEING REMOVED — DO NOT EXTEND. See docs/plans/unify-keyboard-dictation.md
+// ----------------------------------------------------------------------------
+// This whole registration layer (the "inline dictation receiver" + targets +
+// heroFallbackRequest) is slated for DELETION. In-Jot keyboard dictation is
+// moving to the SAME path the keyboard uses in any other app: record in-app,
+// insert the result into the focused field on stop. Jot's fields become "just
+// fields" — no registration, no live-partial streaming, no hero fallback.
+//
+// The doc comments below describe the OLD (current) behavior accurately, but
+// that behavior is NOT the target design. Do not add features here or "fix"
+// this in its own terms — align with the plan instead.
+//
+// Survivors: Ask keeps its own InlineDictationSession; warm-hold is untouched.
+// ============================================================================
+
 /// App-level receiver for the keyboard's Dictate-tap (`keyboardDictateTapped`)
 /// when the host app is Jot itself and the **setup wizard is NOT presented**
 /// (UX-overhaul round 2 §9 R5 — the unified receiver).
@@ -143,6 +159,18 @@ final class InlineDictationReceiver {
             return
         }
         startInline(into: target)
+    }
+
+    /// Handle a cross-process `stopRequested` (the keyboard posted it because the
+    /// pipeline projection shows `.recording` — it cannot tell our inline session
+    /// from a capture). If we own a live inline session, finalize it INLINE:
+    /// transcribe + insert at the cursor, write NO Transcript. No-op otherwise —
+    /// a capture stop is owned by `JotApp.handleStopRequested`, which only reaches
+    /// its saving path when no inline session owns the recording.
+    func handleExternalStop() {
+        guard session != nil else { return }
+        Self.log.notice("stopRequested while hosting an inline session → finalize inline, no save")
+        finalizeActive()
     }
 
     // MARK: - Lifecycle

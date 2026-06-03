@@ -1,6 +1,19 @@
 import Foundation
 import Observation
 
+// ============================================================================
+// ⚠️ PARTIAL TRANSITION — see docs/plans/unify-keyboard-dictation.md
+// ----------------------------------------------------------------------------
+// This type SURVIVES, but only for **Ask** (the one intentional exception).
+// Its use by Edit / Feedback / Wizard (via InlineDictationReceiver) is being
+// REMOVED — those surfaces move to the normal keyboard stop path. So:
+//   • Do NOT delete this type — Ask depends on it.
+//   • Do NOT add new callers outside Ask, and do NOT extend the Edit/Feedback
+//     wiring; that path is going away.
+// Note the `finalize()` vs `discard()` split below (stop()=warm-hold-preserving
+// vs forceStop()=mic-release) — warm-hold stays untouched by the transition.
+// ============================================================================
+
 /// Reusable lifecycle for **inline** (in-field) dictation — the pattern Ask Jot
 /// pioneered, extracted so Edit, Ask, and the keyboard-while-in-Jot receiver
 /// share ONE correct implementation instead of each re-deriving the four

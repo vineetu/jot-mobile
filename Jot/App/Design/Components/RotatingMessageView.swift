@@ -27,10 +27,9 @@ import SwiftUI
 /// pauses while the view is off-screen (`.onDisappear`) so a backgrounded /
 /// scrolled-away instance doesn't burn timers.
 ///
-/// Layout: reserves a fixed 2-line minimum height so swapping a 1-line message
-/// for a 2-line one doesn't reflow the surrounding chrome. Visual specifics
-/// (exact curve, rise distance) are intentionally rough — tune later per the
-/// plan; behavior correctness first.
+/// Layout: reserves the height of the TALLEST message in the pool (every line is
+/// laid out invisibly behind the visible one), so swapping a 1-line message for a
+/// 3-line one never reflows the surrounding chrome — regardless of font size.
 struct RotatingMessageView: View {
     let messages: [String]
     let dwell: TimeInterval
@@ -61,29 +60,39 @@ struct RotatingMessageView: View {
         // Guard an empty pool — render nothing rather than crash on `order[0]`.
         let current = currentMessage
 
-        Text(current)
-            .font(font)
-            .foregroundStyle(color)
-            .multilineTextAlignment(alignment)
-            .frame(
-                maxWidth: .infinity,
-                minHeight: twoLineMinHeight,
-                alignment: frameAlignment
-            )
-            .id(current)                       // force a fresh view per swap so
-                                                // the transition actually fires
-            .transition(transition)
-            .animation(.easeInOut(duration: 0.45), value: current)
-            .onAppear {
-                isVisible = true
-                if order.isEmpty { resolveOrder() }
-                // Reduce Motion: stay on the single stable line, no advance.
-                guard !reduceMotion else { return }
-                Task { await rotate() }
+        ZStack(alignment: stackAlignment) {
+            // Height reservation: lay out EVERY message invisibly so the frame is
+            // always as tall as the longest line-wrapped message in the pool. The
+            // visible line then swaps inside that fixed box — no reflow, no bounce,
+            // whatever the font size or however many lines a given message takes.
+            ForEach(messages.indices, id: \.self) { i in
+                Text(messages[i])
+                    .font(font)
+                    .multilineTextAlignment(alignment)
+                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                    .hidden()
             }
-            .onDisappear { isVisible = false }
-            .accessibilityElement()
-            .accessibilityLabel(Text(current))
+
+            Text(current)
+                .font(font)
+                .foregroundStyle(color)
+                .multilineTextAlignment(alignment)
+                .frame(maxWidth: .infinity, alignment: frameAlignment)
+                .id(current)                       // fresh view per swap so the
+                                                    // transition actually fires
+                .transition(transition)
+        }
+        .animation(.easeInOut(duration: 0.45), value: current)
+        .onAppear {
+            isVisible = true
+            if order.isEmpty { resolveOrder() }
+            // Reduce Motion: stay on the single stable line, no advance.
+            guard !reduceMotion else { return }
+            Task { await rotate() }
+        }
+        .onDisappear { isVisible = false }
+        .accessibilityElement()
+        .accessibilityLabel(Text(current))
     }
 
     // MARK: - Derived
@@ -106,12 +115,14 @@ struct RotatingMessageView: View {
         )
     }
 
-    /// Two lines of the current font, used as the reserved min height so the
-    /// container doesn't reflow when message length changes.
-    private var twoLineMinHeight: CGFloat {
-        // Rough reservation — a 2-line box at ~22pt leading. Tunable later;
-        // the plan flags pixel sizes as adjustable.
-        44
+    /// Top-anchored stack alignment so a short message sits at the TOP of the
+    /// reserved (tallest-message) box rather than floating in its vertical center.
+    private var stackAlignment: Alignment {
+        switch alignment {
+        case .leading:  return .topLeading
+        case .center:   return .top
+        case .trailing: return .topTrailing
+        }
     }
 
     private var frameAlignment: Alignment {

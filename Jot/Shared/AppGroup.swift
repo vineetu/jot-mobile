@@ -179,7 +179,7 @@ enum AppGroup {
     /// (Phase 2) or Settings toggle (Phase 1).
     ///
     /// When enabled, the audio session stays active for the user-configured
-    /// duration (see `warmHoldDurationSeconds`, default 60s) after each
+    /// duration (see `warmHoldDurationSeconds`, default 120s (2 minutes)) after each
     /// successful dictation so the next dictation skips cold-start latency.
     /// The iOS orange microphone indicator stays on during that window.
     ///
@@ -190,7 +190,7 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
     }
 
-    /// User-configurable warm-hold duration in seconds. Default `60` when
+    /// User-configurable warm-hold duration in seconds. Default `120` (2 minutes) when
     /// unset; values are clamped to `[60, 300]` on both read and write.
     ///
     /// `RecordingService.enterWarmHold()` reads this once at warm-hold

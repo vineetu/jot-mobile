@@ -11,7 +11,7 @@ import SwiftUI
 /// callers can use either file; values are identical.
 ///
 /// **Tokens covered:** the watch-app surface uses a deliberately narrow
-/// subset. Coral CTAs (`jotAccent`), red live-recording cue (`jotRecord`
+/// subset. Blue brand CTAs (`jotAccent`), red live-recording cue (`jotRecord`
 /// + `jotRecordingDot`), amber for pending-sync, plus the standard page
 /// inks. No keyboard-blue, no semantic icon tile palette — those aren't
 /// needed on watch.
@@ -22,13 +22,11 @@ import SwiftUI
 enum JotDesignWatchSafe {
     // MARK: - Brand accents
 
-    /// Coral CTA color. Mirrors `JotDesign.jotAccent` at
-    /// `Jot/App/Design/JotDesign.swift:35`. Legacy — the actual brand
-    /// CTA across iOS uses the blue gradient (`jotBlueTop` → `jotBlueBottom`)
-    /// per `Jot/App/Design/Components/DictateFAB.swift`. Kept as a
-    /// secondary accent token; new watch surfaces should prefer the
-    /// blue gradient for primary CTAs to match the iOS brand.
-    static let jotAccent = Color(red: 1.00, green: 0.42, blue: 0.36)
+    /// Brand accent (blue `#1A8CFF`). Mirrors `JotDesign.jotAccent` at
+    /// `Jot/App/Design/JotDesign.swift:35`. Was coral historically; now the
+    /// canonical blue accent matching the iOS brand. Coral survives only in
+    /// the explicit `jotCoralTop`/`jotCoralBottom` tokens (Settings + AI).
+    static let jotAccent = Color(red: 0x1A / 255.0, green: 0x8C / 255.0, blue: 0xFF / 255.0)
 
     /// Top stop of the brand blue gradient. Mirrors `JotDesign.jotBlueTop`
     /// at `Jot/App/Design/JotDesign.swift:622`. `#1A8CFF`. Used for the

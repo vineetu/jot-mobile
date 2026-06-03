@@ -386,18 +386,8 @@ struct RecordingHeroView: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.jotPageInk)
                 .frame(width: 36, height: 36)
-                .background {
-                    ZStack {
-                        Circle()
-                            .fill(.ultraThinMaterial)
-                        Circle()
-                            .fill(Color.white.opacity(0.55))
-                    }
-                }
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5)
-                }
+                // Shared design-language chrome treatment (light glass / dark grey).
+                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 18))
         }
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
@@ -423,29 +413,15 @@ struct RecordingHeroView: View {
 
             Spacer(minLength: 0)
 
-            Button(action: cancelTapped) {
-                Text("Cancel")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.jotPageInk)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background {
-                        ZStack {
-                            Capsule(style: .continuous)
-                                .fill(.ultraThinMaterial)
-                            Capsule(style: .continuous)
-                                .fill(Color.white.opacity(0.55))
-                        }
-                    }
-                    .overlay {
-                        Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5)
-                    }
-            }
-            .buttonStyle(.plain)
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
-            .accessibilityLabel("Cancel recording")
+            // Cancel moved OUT of the top bar to the bottom control row as a
+            // circular trash button (see `cancelButton`), so the three
+            // recording controls (Pause · Stop · Cancel) read as one set.
+            // A zero-size spacer balances the two `Spacer`s so the cold-start
+            // "Getting ready…" indicator stays centered (matching the back
+            // chevron's leading inset) instead of drifting right.
+            Color.clear
+                .frame(width: 36, height: 36)
+                .accessibilityHidden(true)
         }
         .frame(minHeight: 44)
     }
@@ -482,7 +458,10 @@ struct RecordingHeroView: View {
     /// Round-2 WS-A: ~3.5 lines of serif italic at ~28pt computed line height
     /// (down from ~14). Above this the block freezes at this height and scrolls
     /// internally with a top fade; below it the block grows naturally.
-    private static let streamingMaxBlockHeight: CGFloat = 3.5 * 28
+    // For now: effectively uncapped so the live text fills the WHOLE panel
+    // (user request). It bottom-aligns and the card's `.clipShape` contains any
+    // overflow at the top; the proper capped/faded scroll treatment is deferred.
+    private static let streamingMaxBlockHeight: CGFloat = 150
 
     @ViewBuilder
     private var heroContentArea: some View {
@@ -568,12 +547,15 @@ struct RecordingHeroView: View {
                     )
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.top, 26)
         .padding(.horizontal, 24)
         .padding(.bottom, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Live text + caption hug the BOTTOM of the panel (user request) — the
+        // block sizes to content (StreamingDictationText self-caps + scrolls at
+        // `streamingMaxBlockHeight`) and bottom-aligns inside the full-height card.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -617,10 +599,11 @@ struct RecordingHeroView: View {
 
     // MARK: - Bottom controls
 
-    /// Pause/Resume + Stop control set (round-2 WS-C §10.8). Cancel lives in
-    /// the top bar (hero uses a "Cancel" label per §2.6). When paused, a
-    /// "Paused · mic ready, not capturing" caption sits above the controls so
-    /// the held mic / orange indicator never reads as covert recording (§10.3).
+    /// Pause/Resume + Stop + Cancel control set (round-2 WS-C §10.8). Cancel is
+    /// the circular RED trash button at the trailing end of this row (it replaced
+    /// the old top-bar "Cancel" label). When paused, a "Paused · mic ready, not
+    /// capturing" caption sits above the controls so the held mic / orange
+    /// indicator never reads as covert recording (§10.3).
     @ViewBuilder
     private var bottomControls: some View {
         VStack(spacing: 14) {
@@ -635,6 +618,7 @@ struct RecordingHeroView: View {
             HStack(spacing: 18) {
                 pauseResumeButton
                 stopButton
+                cancelButton
             }
         }
         .frame(maxWidth: .infinity)
@@ -650,21 +634,36 @@ struct RecordingHeroView: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Color.jotPageInk)
                 .frame(width: 64, height: 64)
-                .background {
-                    ZStack {
-                        Circle().fill(.ultraThinMaterial)
-                        Circle().fill(Color.white.opacity(0.45))
-                    }
-                }
-                .overlay {
-                    Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
-                }
+                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 32))
         }
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Circle())
         .disabled(phase != .recording)
         .accessibilityLabel(paused ? "Resume recording" : "Pause recording")
+    }
+
+    /// Circular trash control — the cancel affordance, moved out of the top
+    /// bar (row: "[Pause] [Stop · timer] [Trash]"). 64pt circle with the same
+    /// adaptive `secondarySystemFill` background as `pauseResumeButton` (dark in
+    /// dark mode), but a RED `trash` glyph to read as destructive. Wired to the
+    /// SAME `cancelTapped` the old top-bar Cancel used — `forceStop()` + discard
+    /// + dismiss, including the rigid cancel haptic.
+    private var cancelButton: some View {
+        Button(action: cancelTapped) {
+            Image(systemName: "trash")
+                .font(.system(size: 22, weight: .semibold))
+                // Red trash, matching the keyboard's delete affordance — it's a
+                // destructive action (discards the recording).
+                .foregroundStyle(Color.jotRecord)
+                .frame(width: 64, height: 64)
+                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 32))
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Circle())
+        .accessibilityLabel("Cancel recording")
+        .accessibilityHint("Discards this recording.")
     }
 
     private var stopButton: some View {

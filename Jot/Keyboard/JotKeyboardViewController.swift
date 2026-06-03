@@ -1637,13 +1637,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         let now = Date()
         let expiresAtSnapshot = AppGroup.warmHoldExpiresAt
         let heartbeatSnapshot = AppGroup.warmHoldHeartbeat
-        if let expiresAt = expiresAtSnapshot, expiresAt > now,
-           let heartbeat = heartbeatSnapshot,
-           now.timeIntervalSince(heartbeat) < 4.0 {
-            clearStreamingPartialForNewSession()
-            CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
-            keyboardLog.info("Posted warm-resume; skipping URL bounce")
-            return
+        let warmWindowOpen = (expiresAtSnapshot.map { $0 > now } ?? false)
+            && (heartbeatSnapshot.map { now.timeIntervalSince($0) < 4.0 } ?? false)
+
+        if warmWindowOpen {
+            // Warm-hold is ONLY a "start faster" optimisation — it must not change
+            // WHERE a keyboard dictation goes. If Jot is FOREGROUND, the user is
+            // dictating inside the app, which must record INLINE (insert at the
+            // cursor, save NO transcript) exactly as it does without warm-hold. So
+            // do NOT take the warm-RESUME *capture* path here (it saves a transcript
+            // and was the cause of in-app dictations being saved); fall through to
+            // the normal ping/pong, which routes the tap inline. The warm engine
+            // still makes that inline start fast — so warm-hold keeps its speed
+            // benefit without changing behaviour. Only when Jot is NOT foreground do
+            // we warm-resume in the background (the no-foreground fast path). The
+            // warm-hold keys are left intact so leaving the app still resumes warm.
+            if !AppGroup.isJotAppForeground() {
+                clearStreamingPartialForNewSession()
+                CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
+                keyboardLog.info("Posted warm-resume (Jot backgrounded); skipping URL bounce")
+                return
+            }
+            keyboardLog.info("Warm window open but Jot is foreground -> routing inline (no warm capture)")
+            // fall through to decideMicTap → inline
         } else if expiresAtSnapshot != nil || heartbeatSnapshot != nil {
             // Ghost cleanup — main app is gone (or just exited warm-hold).
             // Log includes deltas so we can distinguish stale-jetsam from

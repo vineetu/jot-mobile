@@ -31,8 +31,11 @@ import UIKit
 // MARK: - Color tokens
 
 extension Color {
-    /// `#FF6B5C` — Rewrite + Dictate + recent-marker. The single brand accent.
-    static let jotAccent = Color(red: 1.00, green: 0.42, blue: 0.36)
+    /// `#1A8CFF` — the single brand accent (blue). Same value as `jotBlueTop`;
+    /// this is the canonical app accent used app-wide. Coral is NOT the brand
+    /// accent — it survives only in the explicit `jotCoralTop`/`jotCoralBottom`
+    /// tokens on the Settings + AI surfaces.
+    static let jotAccent = Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255)
 
     /// `#FF3B30` — recording dot, stop button, draft caret. System red, kept distinct
     /// from `jotAccent` so a recording state never reads as a generic CTA.
@@ -511,14 +514,24 @@ fileprivate struct SurfaceModifier: ViewModifier {
                 .background(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(keyTopOpacity),
-                                    Color.white.opacity(keyBottomOpacity)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
+                            // App-wide chrome-control fix: DARK uses a solid system
+                            // grey so the control reads as a real button on the dark
+                            // wallpaper (the old white-opacity frost washed out).
+                            // LIGHT keeps the white-opacity glass gradient. This is
+                            // the single source for every chrome control — back /
+                            // close / pause / trash.
+                            isDark
+                                ? AnyShapeStyle(Color(uiColor: .secondarySystemFill))
+                                : AnyShapeStyle(
+                                    LinearGradient(
+                                        colors: [
+                                            Color.white.opacity(keyTopOpacity),
+                                            Color.white.opacity(keyBottomOpacity)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
                         )
                 )
                 .overlay(
@@ -618,11 +631,20 @@ extension Color {
     /// `#E0533F` — bottom stop for coral action gradients in the v0.9 app redesign.
     static let jotCoralBottom = Color(red: 0xE0 / 255, green: 0x53 / 255, blue: 0x3F / 255)
 
-    /// `#1A8CFF` — top stop for the blue accent. Used by the keyboard Dictate pill AND the Recents page accents (sparkline, LATEST tag, Dictate FAB, avatar tint, Jot mark). Not used elsewhere in the app — Settings/AI/Wizard remain coral.
+    /// `#1A8CFF` — top stop for the blue accent gradient (same hue as `jotAccent`). Used by the keyboard Dictate pill AND the Recents page accents (sparkline, LATEST tag, Dictate FAB, avatar tint, Jot mark). Explicit coral (`jotCoralTop`/`jotCoralBottom`) is retained only on the Settings + AI surfaces.
     static let jotBlueTop = Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255)
 
     /// `#0064CC` — bottom stop for the blue accent gradient. Same usage scope as `jotBlueTop`.
     static let jotBlueBottom = Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
+
+    /// `#2E9BFF` — top stop for the wizard/onboarding blue CTA gradient (handoff `WizPrimary` pill).
+    static let jotCtaBlueTop = Color(red: 0x2E / 255, green: 0x9B / 255, blue: 0xFF / 255)
+
+    /// `#0E7AE6` — middle stop for the wizard/onboarding blue CTA gradient (handoff `WizPrimary` pill).
+    static let jotCtaBlueMid = Color(red: 0x0E / 255, green: 0x7A / 255, blue: 0xE6 / 255)
+
+    /// `#0064CC` — bottom stop for the wizard/onboarding blue CTA gradient (handoff `WizPrimary` pill). Same value as `jotBlueBottom`, defined explicitly for the CTA.
+    static let jotCtaBlueBottom = Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
 
     /// Page wallpaper base color — adapts for dark mode. The dark base is
     /// `#15171C` (the same value as `jotPageInk` in light mode — intentional

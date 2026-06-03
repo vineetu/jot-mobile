@@ -12,13 +12,6 @@ struct RecentsListCard: View {
     let groups: [RecentsTranscriptGroup]
     let isSearching: Bool
     let copiedTranscriptID: UUID?
-    /// When true, render a live streaming row at the top of the card and
-    /// suppress the featured "LATEST" treatment on the most recent transcript
-    /// — the live row IS the user's current "latest" while the mic is hot.
-    let isLiveRecording: Bool
-    /// Live partial transcript text forwarded from the streaming presenter.
-    /// Empty string until the first partial arrives.
-    let liveStreamingText: String
     @Binding var isSelectionMode: Bool
     @Binding var selectedTranscriptIDs: Set<UUID>
     @Binding var navPath: NavigationPath
@@ -33,9 +26,9 @@ struct RecentsListCard: View {
     var body: some View {
         LiquidGlassCard(paddingH: 0, paddingV: 0) {
             Group {
-                if transcripts.isEmpty && !isLiveRecording {
+                if transcripts.isEmpty {
                     emptyState
-                } else if isSearching && groups.isEmpty && !isLiveRecording {
+                } else if isSearching && groups.isEmpty {
                     noMatchesState
                 } else {
                     groupedRows
@@ -51,18 +44,8 @@ struct RecentsListCard: View {
         // only realizes the visible rows + a small buffer and recycles as you
         // scroll — the win that keeps a 500+ transcript home screen smooth.
         LazyVStack(alignment: .leading, spacing: 0) {
-            if isLiveRecording {
-                LiveStreamingRow(streamingText: liveStreamingText)
-
-                if !groups.isEmpty {
-                    Divider()
-                        .overlay(Color.jotPageSeparator)
-                        .padding(.leading, 18)
-                }
-            }
-
             ForEach(Array(groups.enumerated()), id: \.element.id) { groupIndex, group in
-                if groupIndex == 0 && group.items.first?.id == featuredID && !isLiveRecording {
+                if groupIndex == 0 && group.items.first?.id == featuredID {
                     FeaturedTodaySection(
                         title: group.title,
                         items: group.items,
@@ -81,7 +64,6 @@ struct RecentsListCard: View {
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isLiveRecording)
     }
 
     private func groupLabel(_ title: String, isFirst: Bool) -> some View {
@@ -168,7 +150,7 @@ struct RecentsListCard: View {
 
     @ViewBuilder
     private func rowContent(for transcript: Transcript) -> some View {
-        if transcript.id == featuredID && !isLiveRecording {
+        if transcript.id == featuredID {
             FeaturedLatestRow(
                 transcript: transcript,
                 isCopied: copiedTranscriptID == transcript.id

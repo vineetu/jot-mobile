@@ -3,8 +3,8 @@
 //  Jot
 //
 //  Phase 6 — wizard panel W2.
-//  Coral 92pt mic IconBox + "Let Jot hear you" + iOS mic permission
-//  request. Auto-advances on grant.
+//  Orange (semantic `privacyMicReady`) mic IconTile + "Let Jot hear you"
+//  + iOS mic permission request. Auto-advances on grant.
 //
 
 @preconcurrency import AVFAudio
@@ -36,7 +36,7 @@ struct MicStep: View {
             VStack(spacing: 28) {
                 Spacer(minLength: 60)
 
-                coralMicTile
+                micTile
                     .padding(.bottom, 8)
 
                 WizardItalicTitle(text: titleText)
@@ -106,7 +106,8 @@ struct MicStep: View {
 
     // MARK: - Tile
 
-    private var coralMicTile: some View {
+    // Orange semantic mic tile (`privacyMicReady`), not coral.
+    private var micTile: some View {
         IconTile(
             systemImage: "mic.fill",
             tint: JotDesign.JotSemanticIcon.privacyMicReady,

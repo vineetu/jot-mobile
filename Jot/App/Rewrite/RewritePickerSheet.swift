@@ -234,7 +234,7 @@ struct RewritePickerSheet: View {
 
         var iconTint: Color {
             switch self {
-            case .articulate:  return Color.jotAccent
+            case .articulate:  return Color.jotCoralTop
             case .aiPrompt:    return Color.jotPromptTeal
             case .actionItems: return Color.jotPromptPurple
             case .email:       return Color.jotSuccess
@@ -285,7 +285,7 @@ struct RewritePickerSheet: View {
                 Text("New prompt")
                     .font(.system(size: 14, weight: .semibold))
             }
-            .foregroundStyle(Color.jotAccent)
+            .foregroundStyle(Color.jotCoralTop)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
@@ -311,7 +311,7 @@ struct RewritePickerSheet: View {
 
 extension Color {
     /// Purple icon used for the "Bullet points" / user-prompt rows in the
-    /// rewrite picker (Mockup 10). Distinct from `jotAccent` (coral) so the
+    /// rewrite picker (Mockup 10). Distinct from `jotCoralTop` (coral) so the
     /// seeded default row reads as the visually primary option. Not part of
     /// Phase 1 tokens because nothing else in the system uses it yet;
     /// scoped to this file so the design system stays single-accent.

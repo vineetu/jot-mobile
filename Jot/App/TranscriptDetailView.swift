@@ -599,13 +599,14 @@ struct TranscriptDetailView: View {
         // regular; Save persists the plain `String` (italic is session-only).
         // Same editor for both Original and Rewrite tabs (they share
         // `editorText`). See `InlineEditTextView` + docs/plans/inline-edit-italics.md.
-        // `isEditable: !isDictating` keeps the prior "no manual typing while the
-        // partial streams" guard.
+        // `isEditable: true` keeps the editor editable during dictation so the
+        // keyboard (and its Stop control) stay available; the live partial still
+        // streams in at the caret.
         InlineEditTextView(
             text: $editorText,
             selection: $editorSelection,
             sessionToken: editSessionToken,
-            isEditable: !editDictation.isDictating,
+            isEditable: true,
             baseFont: .systemFont(ofSize: 17, weight: .regular),
             textColor: UIColor(Color.jotPageInk),
             isFocused: $editorFocused

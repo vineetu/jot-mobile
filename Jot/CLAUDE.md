@@ -2,6 +2,42 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## 🚧 DICTATION ARCHITECTURE IS MID-TRANSITION — read before touching recording 🚧
+
+**If you are about to edit anything related to in-app keyboard dictation, STOP and read
+[`docs/plans/unify-keyboard-dictation.md`](../docs/plans/unify-keyboard-dictation.md) first.
+It is the authoritative source of truth for the target design.**
+
+The codebase is moving from a **custom inline-dictation engine** (being removed) to **one
+unified keyboard stop path** used everywhere except Ask. Many existing code comments still
+describe the OLD model as if it were correct and permanent — **they are not**. Do not extend
+the old path; do not "fix" it in its own terms; align changes with the plan.
+
+**OLD model (being deleted — do NOT build on it):**
+- `InlineDictationReceiver` (the whole registration layer: `register`/`deregister`/`heroFallbackRequest`).
+- Edit / Feedback / Wizard registering themselves as inline targets and streaming live partials into the field.
+- The `keyboardDictateTapped` → inline-session routing and the "no target → hero fallback" band-aid.
+
+**NEW model (target — build toward this):**
+- In-Jot keyboard dictation behaves like the keyboard in **any other app**: record in the app,
+  insert the result into the focused field on stop. Jot's fields are *just fields*.
+- Every stop **ends the transcription cleanly** (recording state flips off → home + keyboard
+  reset, next Dictate tap starts fresh) and **leaves the mic warm-held exactly as today**.
+  "End the transcription" and "release the mic / warm-hold" are SEPARATE axes — do not conflate.
+- **Save a transcript only when you stop OUTSIDE Jot** (another app) or from the **hero**. Stop
+  inside a Jot field (feedback/edit/settings/wizard) → paste, **no** save. Fate is decided at
+  the *stop*, not stamped at the *start*.
+
+**Do NOT touch / do NOT delete:**
+- **Warm-hold** — orthogonal; stays exactly as-is.
+- **Ask** — keeps its own `InlineDictationSession`; it is the one intentional exception. Note
+  `InlineDictationSession` itself SURVIVES (Ask uses it); only Edit/Feedback/Wizard stop using it.
+- **FAB / cold-keyboard / Action Button / DictateIntent / warm-resume** captures — still save.
+
+---
+
 ## Feature work: consult `features.md` FIRST
 
 `features.md` is the single source of truth for what Jot does at a product level — ~100 user-facing features across 13 surfaces, with anchor cross-links between related ones. It was hand-verified across many review rounds; treat it as authoritative.
@@ -30,7 +66,7 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 
 ## Wizard / setup-flow conventions
 
-- The 9-panel wizard (7 core W1–W7 + 2 optional follow-ons) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`.
+- The 7-panel wizard (W1–W7) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`. (The optional AI-offer follow-on was removed; the wizard is now exactly W1–W7.)
 - **Wizard contract:** any recording started inside the wizard (W5 keyboard test triggered via the keyboard's Dictate-tap notification) MUST be force-stopped before the wizard dismisses. Failing this leaks a zombie recording into the home view. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks. Don't bypass.
 
 ## Build / run
