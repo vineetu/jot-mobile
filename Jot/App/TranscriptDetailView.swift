@@ -50,7 +50,6 @@ struct TranscriptDetailView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var scenePhase
 
     init(
         transcript: Transcript,
@@ -103,27 +102,9 @@ struct TranscriptDetailView: View {
     /// text as "original" (regular) and clears its new-range (italic) tracking.
     @State private var editSessionToken: Int = 0
 
-    // MARK: - WS-B inline Edit dictation
-    //
-    // `editorSelection` is the live caret/selection in the Edit `TextEditor`;
-    // it's the snapshot source for insert-at-cursor (R3). `editDictation`
-    // owns the `InlineDictationSession` and the prefix/suffix bookkeeping, and
-    // doubles as the focused-field `InlineDictationReceiver.Target` so the
-    // keyboard-while-in-Jot Dictate tap (R5) lands in the Edit field too.
+    /// The live caret/selection in the Edit editor, bound to `InlineEditTextView`
+    /// so the italic-tracking editor can report and restore the caret.
     @State private var editorSelection: TextSelection?
-    @State private var editDictation = EditDictationController(
-        transcribe: { samples in
-            try await TranscriptionService.shared.transcribe(samples: samples)
-        }
-    )
-    /// Shared app-level receiver for the keyboard's Dictate tap. Edit registers
-    /// `editDictation` as the active inline target while editing (decision #10,
-    /// §9 R5). Optional because the standalone `#Preview` has no host to inject
-    /// it; the inline-mic path doesn't need it.
-    @Environment(InlineDictationReceiver.self) private var inlineReceiver: InlineDictationReceiver?
-    /// Live streaming-partial presenter, shared with the recording pipeline.
-    /// Watched while dictating so the partial streams into the editor.
-    @Environment(StreamingPartial.self) private var streamingPartial
 
     // MARK: - Phase 4 sheet state
     //
@@ -367,26 +348,6 @@ struct TranscriptDetailView: View {
             // `client.status` while the detail surface is off-window.
             // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
             clientAdapter?.stop()
-            // WS-B: never leave a live inline dictation behind when the detail
-            // surface goes off-window (a recording would otherwise leak into
-            // the home view). `discard()` drops the audio; deregister stops the
-            // keyboard tap from routing here.
-            editDictation.discard()
-            inlineReceiver?.deregister(target: editDictation)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // WS-B R6: an Edit mic-button dictation owns its OWN
-            // `InlineDictationSession` on `editDictation` — NOT the shared
-            // `inlineReceiver` session — so ContentView's background
-            // `inlineReceiver.discardActive()` does NOT reach it, and
-            // `.onDisappear` does NOT fire when the app backgrounds while this
-            // pushed detail view stays on the nav stack. Without this observer
-            // the mic keeps recording in the background (a zombie recording).
-            // Per R6, prefer `finalize()` here so the spoken words are preserved
-            // into the Edit field (leaving it dirty/unsaved) rather than
-            // silently dropped.
-            guard phase == .background, editDictation.isDictating else { return }
-            editDictation.finalize()
         }
         .task {
             refreshRewriteAvailability()
@@ -599,9 +560,9 @@ struct TranscriptDetailView: View {
         // regular; Save persists the plain `String` (italic is session-only).
         // Same editor for both Original and Rewrite tabs (they share
         // `editorText`). See `InlineEditTextView` + docs/plans/inline-edit-italics.md.
-        // `isEditable: true` keeps the editor editable during dictation so the
-        // keyboard (and its Stop control) stay available; the live partial still
-        // streams in at the caret.
+        // `isEditable: true` keeps the editor editable while the keyboard (and
+        // its Stop control) drive an in-Jot dictation through the normal capture
+        // path, which inserts the result via the keyboard on stop.
         InlineEditTextView(
             text: $editorText,
             selection: $editorSelection,
@@ -617,13 +578,6 @@ struct TranscriptDetailView: View {
                 ? "Edit original transcript"
                 : "Edit rewrite"
         )
-        // Stream the live partial into the editor at the snapshotted caret
-        // (R3). Mirrors Ask's `streamingPartial.streamingText` watch.
-        .onChange(of: streamingPartial.streamingText) { _, newText in
-            if editDictation.isDictating {
-                editDictation.renderPartial(newText)
-            }
-        }
     }
 
     /// Scrollable body text styled to match Recents row typography (system
@@ -891,11 +845,6 @@ struct TranscriptDetailView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // While dictating, the only exit is the mic Stop — Cancel/Save
-            // are disabled so a synchronous save can't race the async
-            // finalize-and-insert. The user stops dictation first, then
-            // saves/cancels the resulting text.
-            .disabled(editDictation.isDictating)
             .accessibilityLabel("Cancel edit")
 
             Spacer(minLength: 6)
@@ -925,11 +874,10 @@ struct TranscriptDetailView: View {
                 .frame(minHeight: 40)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(editDictation.isDictating ? Color.jotMuteWeak : Color.jotBlueTop)
+                        .fill(Color.jotBlueTop)
                 )
             }
             .buttonStyle(.plain)
-            .disabled(editDictation.isDictating)
             .accessibilityLabel("Save edit")
         }
         .padding(.horizontal, 14)
@@ -943,19 +891,15 @@ struct TranscriptDetailView: View {
         )
     }
 
-    /// Center label of the EditBar. Reflects the dictation state so the user
-    /// sees why Cancel/Save are dimmed while a dictation is streaming in.
+    /// Center label of the EditBar.
     private var editBarCenterLabel: String {
-        if editDictation.isDictating { return "Listening…" }
-        return editTargetTab == .original ? "Editing Original" : "Editing Rewrite"
+        editTargetTab == .original ? "Editing Original" : "Editing Rewrite"
     }
 
-    // The in-editor mic button was removed (user didn't want a separate mic in
-    // the Edit bar). Inline dictation while editing is driven by the keyboard's
-    // own Dictate tap: the keyboard posts `keyboardDictateTapped`, the app's
-    // `inlineReceiver` routes it to `editDictation` (registered as the focused
-    // target), and the partial streams into the editor at the caret. The edit
-    // bar's centre label still flips to "Listening…" so the user sees it.
+    // Dictation while editing is driven by the keyboard's own Dictate tap: the
+    // keyboard posts `keyboardDictateTapped`, the app starts a normal background
+    // capture (the same path used in any other app), and on Stop the keyboard
+    // inserts the transcribed text into this focused field. No in-editor mic.
 
     /// Inline warning card shown when Save validation fails (e.g. Original
     /// text empty). Stays visible until the user types something valid or
@@ -1165,13 +1109,6 @@ struct TranscriptDetailView: View {
         // New edit session → the inline editor re-baselines the just-loaded text
         // as "original" (regular) and clears italic tracking.
         editSessionToken += 1
-        // WS-B: wire the inline-dictation controller to THIS edit session's
-        // text binding + caret, and register it as the focused inline target so
-        // the keyboard-while-in-Jot Dictate tap (R5) inserts here too. The
-        // selection resolver lets the receiver path snapshot the live caret at
-        // the instant the keyboard tap fires.
-        editDictation.bind(editorText: $editorText, selection: $editorSelection)
-        inlineReceiver?.register(target: editDictation)
         // Focus on the next runloop so the TextEditor has installed its
         // text view by the time we ask for first responder. Without the
         // hop the keyboard occasionally doesn't pop on first tap.
@@ -1266,17 +1203,7 @@ struct TranscriptDetailView: View {
 
     /// Common exit path for both Save and Cancel. Drops the keyboard,
     /// clears local edit state, and brings the regular ActionBar back.
-    ///
-    /// WS-B: tear down inline dictation on the way out. `discard()` is a no-op
-    /// when nothing is live (the common case — Cancel/Save are disabled while
-    /// dictating, so a live session here means a focus-move / background race);
-    /// deregistering from the receiver stops the keyboard-in-Jot tap from
-    /// routing into a field that's no longer being edited.
     private func exitEditMode() {
-        editDictation.discard()
-        if let inlineReceiver {
-            inlineReceiver.deregister(target: editDictation)
-        }
         editorSelection = nil
         editorFocused = false
         isEditing = false
@@ -1678,9 +1605,4 @@ struct TranscriptDetailView: View {
         )
     }
     .modelContainer(for: Transcript.self, inMemory: true)
-    // WS-B: the Edit `TextEditor` reads `StreamingPartial` from the environment
-    // (non-optional) to stream live dictation into the field; the standalone
-    // preview must inject one or it would crash on the missing dependency. The
-    // `InlineDictationReceiver` is optional and left absent here.
-    .environment(StreamingPartial())
 }

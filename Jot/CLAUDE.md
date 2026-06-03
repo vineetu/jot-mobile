@@ -4,36 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## 🚧 DICTATION ARCHITECTURE IS MID-TRANSITION — read before touching recording 🚧
+## ✅ DICTATION ARCHITECTURE — unification COMPLETE
 
-**If you are about to edit anything related to in-app keyboard dictation, STOP and read
-[`docs/plans/unify-keyboard-dictation.md`](../docs/plans/unify-keyboard-dictation.md) first.
-It is the authoritative source of truth for the target design.**
+The keyboard-dictation unification (`docs/plans/unify-keyboard-dictation.md`) is **done**.
+The custom inline-dictation engine has been removed. In-Jot keyboard dictation now behaves
+like the keyboard in **any other app**: record in the app, insert the result into the focused
+field on stop. Jot's fields are *just fields* — no registration layer, no live-partial
+streaming, no hero fallback band-aid.
 
-The codebase is moving from a **custom inline-dictation engine** (being removed) to **one
-unified keyboard stop path** used everywhere except Ask. Many existing code comments still
-describe the OLD model as if it were correct and permanent — **they are not**. Do not extend
-the old path; do not "fix" it in its own terms; align changes with the plan.
+**What was removed:** `InlineDictationReceiver` (the whole registration layer, `register`/
+`deregister`/`heroFallbackRequest`), `EditDictationController`, and the Edit / Feedback inline
+wiring. The `keyboardDictateTapped` → inline-session routing was replaced by a normal
+background capture started in `ContentView.updateDictateTapObserver`.
 
-**OLD model (being deleted — do NOT build on it):**
-- `InlineDictationReceiver` (the whole registration layer: `register`/`deregister`/`heroFallbackRequest`).
-- Edit / Feedback / Wizard registering themselves as inline targets and streaming live partials into the field.
-- The `keyboardDictateTapped` → inline-session routing and the "no target → hero fallback" band-aid.
-
-**NEW model (target — build toward this):**
-- In-Jot keyboard dictation behaves like the keyboard in **any other app**: record in the app,
-  insert the result into the focused field on stop. Jot's fields are *just fields*.
+**Current model:**
 - Every stop **ends the transcription cleanly** (recording state flips off → home + keyboard
-  reset, next Dictate tap starts fresh) and **leaves the mic warm-held exactly as today**.
+  reset, next Dictate tap starts fresh) and **leaves the mic warm-held exactly as before**.
   "End the transcription" and "release the mic / warm-hold" are SEPARATE axes — do not conflate.
-- **Save a transcript only when you stop OUTSIDE Jot** (another app) or from the **hero**. Stop
-  inside a Jot field (feedback/edit/settings/wizard) → paste, **no** save. Fate is decided at
-  the *stop*, not stamped at the *start*.
+- **A transcript is saved only when you stop OUTSIDE Jot** (another app) or from the **hero**.
+  Stop inside a Jot field (feedback/edit/settings/wizard) → paste, **no** save. Fate is decided
+  at the *stop*, not stamped at the *start*.
 
-**Do NOT touch / do NOT delete:**
-- **Warm-hold** — orthogonal; stays exactly as-is.
-- **Ask** — keeps its own `InlineDictationSession`; it is the one intentional exception. Note
-  `InlineDictationSession` itself SURVIVES (Ask uses it); only Edit/Feedback/Wizard stop using it.
+**Survivors — do NOT touch / do NOT delete:**
+- **Warm-hold** — orthogonal; untouched.
+- **Ask** — keeps its own `InlineDictationSession` and is now its SOLE user (the one intentional
+  exception). Do not add new callers of that type outside Ask.
+- **Wizard** — its W5 keyboard test uses its own `keyboardDictateTapped` observer and starts a
+  pipeline recording; it never used the (now-removed) inline receiver.
 - **FAB / cold-keyboard / Action Button / DictateIntent / warm-resume** captures — still save.
 
 ---

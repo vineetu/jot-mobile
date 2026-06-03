@@ -8,13 +8,12 @@ import UIKit
 ///
 /// ## Why no diffing
 /// Every edit this surface can produce is a SINGLE CONTIGUOUS replacement —
-/// typing, backspace, paste, select-replace, and the voice stream's
-/// `prefix + partial + suffix` rewrite (see `EditDictationController`). For a
-/// single contiguous change the changed range is recovered EXACTLY in O(n) by a
-/// common-prefix / common-suffix delta against the last text. No LCS, no fuzzy
-/// alignment (which would mis-mark repeated dictation words). Keyboard typing
-/// and the dictation stream both flow through this one path, so the controller
-/// — which rewrites the `text` binding — needs no change.
+/// typing, backspace, paste, select-replace, and the keyboard's dictation
+/// insert-on-stop. For a single contiguous change the changed range is
+/// recovered EXACTLY in O(n) by a common-prefix / common-suffix delta against
+/// the last text. No LCS, no fuzzy alignment (which would mis-mark repeated
+/// dictation words). Keyboard typing and the dictation insert both flow through
+/// this one path, so whatever rewrites the `text` binding needs no change.
 ///
 /// All offsets are in UTF-16 units (UITextView's native index space) so emoji /
 /// combining marks can't desync the ranges. The `selection` binding is exposed
@@ -279,9 +278,8 @@ struct InlineEditTextView: UIViewRepresentable {
         // MARK: Selection bridge
 
         /// Mirror the UTF-16 `selectedRange` into the SwiftUI `TextSelection?`
-        /// binding so `EditDictationController`'s insert-at-cursor resolves the
-        /// caret. A zero-length caret and a real selection both map to a single
-        /// `Range<String.Index>`.
+        /// binding so the host can read the live caret/selection. A zero-length
+        /// caret and a real selection both map to a single `Range<String.Index>`.
         func syncSelection(from tv: UITextView) {
             let ns = tv.selectedRange
             let str = tv.text ?? ""

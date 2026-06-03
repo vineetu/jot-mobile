@@ -117,17 +117,6 @@ struct RecordingHeroView: View {
     /// actually pops the nav destination; `dismiss()` alone is unreliable
     /// for `.navigationDestination(isPresented:)`. See the file docblock.
     @Binding var showRecordingHero: Bool
-    /// Fired when the user backgrounds the hero with the visible back
-    /// chevron, the iOS swipe-back gesture, or any other non-cancel/non-stop
-    /// disappearance while the recording is still live. The back chevron
-    /// calls `backTapped()`; the swipe-back gesture remains a parallel path.
-    /// The parent uses this signal to mark the hero as "user-dismissed" so
-    /// its auto-push observers (`onAppear`, `onChange` of `isRecording`)
-    /// don't immediately slam us back here. The recording itself is NOT
-    /// stopped — `cancelTapped` (the top header pill) is the only path that
-    /// actually cancels. The flag is cleared automatically when the recording
-    /// ends or the user re-enters via the home-surface return pill.
-    var onBackgrounded: (() -> Void)?
     /// What this presentation is for — fresh FAB tap vs. adoption of an
     /// already-running session. Set by the caller before flipping the
     /// `showRecordingHero` binding; consumed once on `.onAppear` via
@@ -295,13 +284,11 @@ struct RecordingHeroView: View {
             // still backgrounds the hero through this safety net. When we
             // disappear while the recording is still alive and the user did
             // NOT explicitly cancel/stop, treat the pop as a backgrounding
-            // intent rather than a cancel: hold the recording, fire
-            // `onBackgrounded` so the parent stops auto-pushing us back, and
-            // latch the flag so the home surface's return-pill flow takes
-            // over.
+            // intent rather than a cancel: hold the recording and latch the
+            // flag so the home surface's return-pill flow takes over (the pill
+            // shows for any live recording).
             if (phase == .recording || phase == .starting)
                 && recordingService.isRecording {
-                onBackgrounded?()
                 dismissingViaBack = true
                 return
             }
@@ -313,7 +300,6 @@ struct RecordingHeroView: View {
             // an invisible recording. (Source-based presentation removed the old
             // `isRecording`-adoption that used to self-heal this.)
             if phase == .preparing {
-                onBackgrounded?()
                 dismissingViaBack = true
                 return
             }
@@ -969,13 +955,9 @@ struct RecordingHeroView: View {
 
     /// Back chevron — drops the user back to home WITHOUT cancelling the
     /// recording. The mic, transcription pipeline, and Live Activity all keep
-    /// running. The parent ContentView observes `onBackgrounded` to mark the
-    /// hero as user-dismissed so its `isRecording` auto-push observers don't
-    /// immediately push us back. The user returns either via the home-surface
-    /// recording indicator (which clears the dismissal flag) or naturally
-    /// when the recording ends and the dismissal flag is reset.
+    /// running. The user returns via the home-surface recording pill, which
+    /// shows for any live recording.
     private func backTapped() {
-        onBackgrounded?()
         // Latch BEFORE flipping the binding so the `.onDisappear` safety-net
         // sees it and skips the cancel-on-disappear branch.
         dismissingViaBack = true

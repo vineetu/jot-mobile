@@ -177,15 +177,6 @@ struct ContentView: View {
     /// Set to true when the user taps the back chevron on the hero while a
     /// recording is in progress. While this is true the auto-push observers
     /// (`onAppear` and `onChange(of: isRecording)`) skip pushing the hero
-    /// even though `isRecording == true`, so the user can stay on home with
-    /// the recording running. Cleared automatically when the recording ends,
-    /// or when the user taps the home "return to recording" pill.
-    /// Currently written by the hero back-out (`onBackgrounded`) and reset in
-    /// the recording-teardown observers, but no longer READ — the home pill was
-    /// rekeyed off `pendingColdStartHeroNudge` in unify-keyboard-dictation §5
-    /// Stage 1. Retained pending Stage 4 cleanup; `@State` stored properties do
-    /// not warn when written-but-unread, so this compiles clean.
-    @State private var userDismissedHeroDuringRecording = false
     /// Mirrors `DictationStats.shouldShowDonationCard` into a SwiftUI-watchable
     /// flag. Re-evaluated on `onAppear` and on every transition to `.active`
     /// scene phase — that covers (a) a fresh app launch, (b) returning to
@@ -203,29 +194,11 @@ struct ContentView: View {
     /// we'd rather pop back than spuriously start a recording.
     @State private var heroIntent: HeroIntent = .adoptInFlight
 
-    /// WS-B unified receiver for the keyboard's Dictate-tap while Jot is
-    /// foreground and the wizard is NOT presented (§9 R5). Routes the tap to an
-    /// `InlineDictationSession` bound to whatever editable surface registered
-    /// itself as the focused inline target (Edit). The wizard keeps its own
-    /// observer + behavior; this receiver's observer bails while the wizard is
-    /// up, so the two never double-fire on the same Darwin name. Constructed
-    /// with the shared transcription service so inline dictation transcribes the
-    /// same way the pipeline does (but saves no transcript).
-    @State private var inlineReceiver = InlineDictationReceiver(
-        transcribe: { samples in
-            try await TranscriptionService.shared.transcribe(samples: samples)
-        }
-    )
     /// Darwin observer for the keyboard-dictate tap, installed only while the
     /// wizard is NOT presented (the wizard owns its own observer during its
     /// lifetime — see `SetupWizardView`). Re-installed / torn down by the
     /// `isWizardPresented`-aware `.onChange` + `.onAppear` below.
     @State private var dictateTapObserver: CrossProcessNotification.Observer?
-    /// Sibling of `dictateTapObserver`: routes a keyboard `stopRequested` to the
-    /// inline receiver so an inline dictation's STOP finalizes inline (no saved
-    /// transcript) instead of falling through to the capture pipeline. Installed
-    /// and torn down in lock-step with `dictateTapObserver`.
-    @State private var inlineStopObserver: CrossProcessNotification.Observer?
 
     /// WS-F: home-side mirror of `AppGroup.warmHoldNudgeShouldShow`. The app's
     /// streak math (RecordingService, at the clean `stop()` site) flips that
@@ -332,10 +305,8 @@ struct ContentView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if isLiveRecordingInline {
                     RecordingReturnPill {
-                        // Re-enter the hero. Clear the dismissal flag so the
-                        // next back-tap arms it fresh, and adopt the running
-                        // session rather than `start()`-ing a second one.
-                        userDismissedHeroDuringRecording = false
+                        // Re-enter the hero, adopting the running session rather
+                        // than `start()`-ing a second one.
                         heroIntent = .adoptInFlight
                         showRecordingHero = true
                     }
@@ -369,9 +340,6 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showRecordingHero) {
                 RecordingHeroView(
                     showRecordingHero: $showRecordingHero,
-                    onBackgrounded: {
-                        userDismissedHeroDuringRecording = true
-                    },
                     intent: heroIntent
                 )
             }
@@ -409,9 +377,6 @@ struct ContentView: View {
         }
         .enableInteractivePopGesture()
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
-        // WS-B: make the unified inline receiver reachable by any editable
-        // surface (Edit) so it can register itself as the focused target.
-        .environment(inlineReceiver)
         // Install / tear down the keyboard-dictate observer in lockstep with the
         // wizard. While the wizard is up it owns the tap (W5); the moment it's
         // down the unified receiver takes over. Identity-checked Observer means
@@ -526,7 +491,6 @@ struct ContentView: View {
                !showRecordingHero,
                !isWizardPresented {
                 pendingColdStartHeroNudge = false
-                userDismissedHeroDuringRecording = false
                 heroIntent = .coldStartFromExternalKeyboard
                 showRecordingHero = true
             }
@@ -555,7 +519,6 @@ struct ContentView: View {
         .onChange(of: pendingColdStartHeroNudge) { _, pending in
             guard pending, !showRecordingHero, !isWizardPresented else { return }
             pendingColdStartHeroNudge = false
-            userDismissedHeroDuringRecording = false
             heroIntent = .coldStartFromExternalKeyboard
             showRecordingHero = true
         }
@@ -569,20 +532,9 @@ struct ContentView: View {
         .onChange(of: recordingService.isRecording) { _, isRecording in
             guard !isRecording else { return }
             // Recording ended (stopped, cancelled, errored, or pipeline done).
-            // Re-arm the hero back-out flag so the next hero recording presents
-            // cleanly, and re-check the donation-card threshold for the user
-            // landing back on home.
-            userDismissedHeroDuringRecording = false
+            // Re-check the donation-card threshold for the user landing back
+            // on home.
             refreshDonationCardVisibility()
-        }
-        // Keyboard Dictate tapped inside Jot, but no editable field is a
-        // registered inline target (Send Feedback, search, prompt editor, …).
-        // Never leave it a silent dead tap — fall back to a hero recording. The
-        // keyboard tap is the source/trigger (source-based, no flag mirroring).
-        .onChange(of: inlineReceiver.heroFallbackRequest) { _, _ in
-            guard !showRecordingHero, !isWizardPresented else { return }
-            heroIntent = .startRecording
-            showRecordingHero = true
         }
         // Keyboard dictations increment the stats counter from another
         // process without ever opening Jot.app. When the user returns to
@@ -592,13 +544,6 @@ struct ContentView: View {
             if phase == .active {
                 refreshDonationCardVisibility()
                 refreshWarmHoldNudge()
-            } else if phase == .background {
-                // WS-B R6: an inline session backgrounded mid-dictation must not
-                // leak a live recording. Discard rather than finalize — home has
-                // no "preserve my words" field of its own (Edit handles its own
-                // app-background terminal). Wizard-presented state is irrelevant
-                // here: our observer is already torn down then.
-                inlineReceiver.discardActive()
             }
         }
         .onChange(of: visibleTranscriptIDs) { _, visibleIDs in
@@ -612,9 +557,8 @@ struct ContentView: View {
     /// the FAB for the blue "Return to recording" pill so the FAB never reads
     /// "Start" while something is recording. Tapping the pill opens the hero,
     /// which adopts whatever recording is in flight. We deliberately do NOT
-    /// gate on how the recording started (`userDismissedHeroDuringRecording`,
-    /// the old narrow "backgrounded hero" key, was dropped in
-    /// unify-keyboard-dictation §5 Stage 1).
+    /// gate on how the recording started (the old narrow "backgrounded hero"
+    /// key was dropped in unify-keyboard-dictation §5 Stage 1).
     ///
     /// One exception — the cold-start-about-to-present window: on a
     /// `jot://dictate` cold launch, `isRecording` flips true *before*
@@ -642,17 +586,13 @@ struct ContentView: View {
     /// Install or tear down the `keyboardDictateTapped` observer so it is live
     /// exactly when the wizard is NOT presented. The wizard installs its OWN
     /// observer for its lifetime (W5); running both at once would double-handle
-    /// a single tap. When the wizard is down we route the tap into the unified
-    /// receiver (inline dictation into the focused field, §9 R5). When the
-    /// wizard comes up we drop our observer AND discard any inline session in
-    /// flight so it never leaks behind the wizard.
+    /// a single tap. When the wizard is down we route the tap into a normal
+    /// background capture (Stage 2 — same path the keyboard uses in any other
+    /// app). When the wizard comes up we drop our observer.
     private func updateDictateTapObserver(wizardPresented: Bool) {
         if wizardPresented {
             dictateTapObserver = nil
-            inlineStopObserver = nil
-            inlineReceiver.discardActive()
         } else if dictateTapObserver == nil {
-            let receiver = inlineReceiver
             dictateTapObserver = CrossProcessNotification.addObserver(
                 name: CrossProcessNotification.keyboardDictateTapped
             ) {
@@ -679,6 +619,15 @@ struct ContentView: View {
                     do {
                         contentLog.notice("RECORDING START FROM: ContentView.keyboardDictateTapped (in-Jot keyboard tap)")
                         let startedAt = Date()
+                        // A capture must never inherit a stale inline-ownership
+                        // flag. `ownsActiveRecording` is set ONLY by Ask's
+                        // `InlineDictationSession`; if Ask ever leaves it true,
+                        // a later capture that starts via `start()` directly would
+                        // carry it, and the keyboard Stop would bail out of
+                        // `handleStopRequested` BEFORE stopping the mic (the
+                        // warm-resume "won't stop" regression). This is a normal
+                        // capture, so clear it defensively before starting.
+                        recording.ownsActiveRecording = false
                         try await recording.start()
                         // Seed the activity coordinator's start anchor so any
                         // later hero adoption reads THIS recording's start time
@@ -688,15 +637,6 @@ struct ContentView: View {
                         contentLog.error("keyboardDictateTapped (in-Jot) start failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
-            }
-            // An inline session's STOP arrives as `stopRequested` (the keyboard
-            // can't tell inline from capture). Finalize it inline here; JotApp's
-            // own `stopRequested` handler bails when an inline session owns the
-            // recording, so the two never both act on it.
-            inlineStopObserver = CrossProcessNotification.addObserver(
-                name: CrossProcessNotification.stopRequested
-            ) {
-                receiver.handleExternalStop()
             }
         }
     }

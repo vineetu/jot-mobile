@@ -2,22 +2,22 @@ import Foundation
 import Observation
 
 // ============================================================================
-// ⚠️ PARTIAL TRANSITION — see docs/plans/unify-keyboard-dictation.md
+// ℹ️ Ask is the SOLE user — transition complete.
+// (see docs/plans/unify-keyboard-dictation.md)
 // ----------------------------------------------------------------------------
-// This type SURVIVES, but only for **Ask** (the one intentional exception).
-// Its use by Edit / Feedback / Wizard (via InlineDictationReceiver) is being
-// REMOVED — those surfaces move to the normal keyboard stop path. So:
+// The inline-dictation registration layer (InlineDictationReceiver) and its use
+// by Edit / Feedback / Wizard have been REMOVED. Those surfaces now take the
+// normal keyboard stop path (record in-app, insert on stop). This type survives
+// because **Ask** still drives it directly. So:
 //   • Do NOT delete this type — Ask depends on it.
-//   • Do NOT add new callers outside Ask, and do NOT extend the Edit/Feedback
-//     wiring; that path is going away.
+//   • Do NOT add new callers outside Ask.
 // Note the `finalize()` vs `discard()` split below (stop()=warm-hold-preserving
-// vs forceStop()=mic-release) — warm-hold stays untouched by the transition.
+// vs forceStop()=mic-release) — warm-hold is untouched.
 // ============================================================================
 
 /// Reusable lifecycle for **inline** (in-field) dictation — the pattern Ask Jot
-/// pioneered, extracted so Edit, Ask, and the keyboard-while-in-Jot receiver
-/// share ONE correct implementation instead of each re-deriving the four
-/// fragile invariants (ux-overhaul-round2.md §9 R4):
+/// pioneered. Ask is now its sole user; the implementation captures the four
+/// fragile invariants once (ux-overhaul-round2.md §9 R4):
 ///
 ///   1. `await` the in-flight `start()` before stop/discard — cancelling it
 ///      mid-bring-up races the engine and leaks a live recording.

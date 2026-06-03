@@ -183,6 +183,14 @@ struct SetupWizardView: View {
         Task { @MainActor in
             do {
                 wizardLog.notice("RECORDING START FROM: SetupWizardView.handleKeyboardDictateTapped (W5 keyboard mic)")
+                // A normal capture must never inherit a stale inline-ownership
+                // flag. `ownsActiveRecording` is set ONLY by Ask's
+                // `InlineDictationSession`; a leaked `true` would make the
+                // keyboard Stop bail out of `handleStopRequested` before
+                // stopping the mic. Mirror `ContentView`'s in-Jot observer and
+                // clear it defensively before starting. The wizard W5 field then
+                // receives the in-process transient insert on stop.
+                RecordingService.shared.ownsActiveRecording = false
                 try await recordingService.start()
             } catch {
                 // Expected on already-recording / pipeline-in-flight

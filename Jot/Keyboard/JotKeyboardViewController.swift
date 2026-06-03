@@ -1579,8 +1579,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
     }
 
-    /// Jot is foreground → record inline into the focused field. The app's
-    /// `InlineDictationReceiver` (or the wizard on W5) handles the Darwin tap.
+    /// Jot is foreground → post the Darwin Dictate tap. The app starts a normal
+    /// background capture (the same path the keyboard uses in any other app) and
+    /// inserts the transcribed result into the focused field on stop. The wizard
+    /// (W5) handles this tap with its own observer while it is presented.
     private func startInlineViaDarwin() {
         clearStreamingPartialForNewSession()
         CrossProcessNotification.post(name: CrossProcessNotification.keyboardDictateTapped)

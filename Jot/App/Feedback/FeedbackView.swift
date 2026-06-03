@@ -21,17 +21,6 @@ struct FeedbackView: View {
     @State private var state: SubmissionState = .idle
     @FocusState private var editorFocused: Bool
 
-    // WS-B unification: Feedback dictates inline via the SAME machinery as Edit
-    // — the (generic) `EditDictationController` + the shared
-    // `InlineDictationReceiver`. Env is optional: if the nested-sheet
-    // environment doesn't carry these, the wiring is a graceful no-op (Feedback
-    // just has no keyboard dictation), never a crash or a regression to typing.
-    @Environment(InlineDictationReceiver.self) private var inlineReceiver: InlineDictationReceiver?
-    @Environment(RecordingService.self) private var recordingService: RecordingService?
-    @Environment(TranscriptionService.self) private var transcriptionService: TranscriptionService?
-    @Environment(StreamingPartial.self) private var streamingPartial: StreamingPartial?
-    @State private var dictation: EditDictationController?
-
     /// PhotosPicker's selection model. Re-encodes whenever it changes.
     @State private var pickerItems: [PhotosPickerItem] = []
     /// Successfully loaded + JPEG-encoded screenshots ready to send.
@@ -110,29 +99,6 @@ struct FeedbackView: View {
                 }
             }
         }
-        // WS-B inline dictation wiring (mirrors Edit): register the field with
-        // the shared receiver on focus, stream partials into `message`, discard
-        // on dismiss. No-ops gracefully if the env didn't carry the objects.
-        .onChange(of: editorFocused) { _, focused in
-            setupDictationIfNeeded()
-            guard let dictation, let inlineReceiver else { return }
-            if focused {
-                inlineReceiver.register(target: dictation)
-            } else {
-                inlineReceiver.deregister(target: dictation)
-            }
-        }
-        .onChange(of: streamingPartial?.streamingText ?? "") { _, newText in
-            if let dictation, dictation.isDictating {
-                dictation.renderPartial(newText)
-            }
-        }
-        .onDisappear {
-            if let dictation {
-                dictation.discard()
-                inlineReceiver?.deregister(target: dictation)
-            }
-        }
         .onChange(of: pickerItems) { _, newItems in
             // Re-encode whenever the selection changes. Cancel any prior
             // in-flight encode FIRST — a bare `Task {}` per change doesn't
@@ -197,22 +163,6 @@ struct FeedbackView: View {
             .font(.system(size: 15))
             .foregroundStyle(Color.jotPageInkSecondary)
             .fixedSize(horizontal: false, vertical: true)
-    }
-
-    /// Lazily build the inline-dictation controller once the env objects are
-    /// available (they arrive via the nested-sheet environment, not at `@State`
-    /// init). Feedback's `TextEditor` has no live selection binding, so dictation
-    /// appends at the end (`nil` selection → append) — fine for a feedback note.
-    private func setupDictationIfNeeded() {
-        guard dictation == nil,
-              let recordingService,
-              let transcriptionService else { return }
-        let controller = EditDictationController(
-            recordingService: recordingService,
-            transcribe: { samples in try await transcriptionService.transcribe(samples: samples) }
-        )
-        controller.bind(editorText: $message, selection: .constant(nil))
-        dictation = controller
     }
 
     private var editorCard: some View {

@@ -1244,6 +1244,10 @@ final class RecordingService {
         await tearDownStreamingSession()
 
         isRecording = false
+        // Robustness backstop (warm-resume "won't stop" regression): cancel is a
+        // terminal — clear inline ownership so no later capture inherits a stale
+        // `ownsActiveRecording`.
+        ownsActiveRecording = false
         currentAmplitude = nil
         AmplitudeProjection.clear()
         // Cancel-from-paused is valid; clear pause/elapsed state. Cancelled
@@ -1273,6 +1277,12 @@ final class RecordingService {
     /// Discards captured samples silently. If the caller needs the samples,
     /// they must call `stop()` on the happy path, not this.
     func forceStop() {
+        // Robustness backstop (warm-resume "won't stop" regression): a force-stop
+        // is a terminal teardown — clear inline ownership so no later capture
+        // inherits a stale `ownsActiveRecording`. Done before the warm-hold
+        // early-return so it covers both the release-warm-mic and the
+        // discard/interruption paths.
+        ownsActiveRecording = false
         if isWarm {
             exitWarmHold()
             return
@@ -1358,6 +1368,16 @@ final class RecordingService {
     func markPipelineFinished() {
         log.notice("[WARM-HOLD-DEBUG] markPipelineFinished, pendingWarmHoldPublish=\(self.pendingWarmHoldPublish, privacy: .public)")
         isPipelineInFlight = false
+        // Robustness backstop (warm-resume "won't stop" regression): clear inline
+        // ownership at every pipeline terminal so no LATER capture inherits a
+        // stale `ownsActiveRecording` and makes the keyboard Stop bail out of
+        // `handleStopRequested` before stopping the mic. Ask sets this true only
+        // for the duration of its own active session and clears it on
+        // finalize/discard; this runs only after the pipeline has finished (the
+        // recording is no longer active), so clearing here is consistent and
+        // does not disturb a live Ask recording. `stop()` already read the flag
+        // for its warm-hold-nudge classification before this point.
+        ownsActiveRecording = false
         if pendingWarmHoldPublish {
             pendingWarmHoldPublish = false
             publishWarmHoldState()

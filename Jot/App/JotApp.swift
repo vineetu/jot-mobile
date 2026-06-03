@@ -105,6 +105,14 @@ struct JotApp: App {
                 let startedAt = Date()
                 do {
                     lifecycleLog.notice("RECORDING START FROM: warmResumeObserver (JotApp.init)")
+                    // A warm-resumed capture must never carry a stale inline-
+                    // ownership flag. `ownsActiveRecording` is set ONLY by Ask's
+                    // `InlineDictationSession`; warm-resume calls `start()`
+                    // directly (no cold-start cleanup), so a leaked `true` would
+                    // survive into this capture and make the keyboard Stop bail
+                    // out of `handleStopRequested` before stopping the mic
+                    // (the warm-resume "won't stop" regression). Clear it here.
+                    RecordingService.shared.ownsActiveRecording = false
                     try await RecordingService.shared.start()
                     // Refresh the coordinator's recording-start timestamp
                     // so the hero adopts THIS recording's start time, not
@@ -1043,18 +1051,16 @@ private final class CrossProcessRecordingStopCoordinator {
             return
         }
 
-        // Inline / transient dictation (transcript Edit, keyboard-in-Jot, Ask)
-        // owns this recording. The keyboard cannot tell inline from a capture —
+        // Ask owns this recording via its own `InlineDictationSession`. The
+        // keyboard cannot tell Ask's inline session from a capture —
         // `RecordingService.start()` publishes `.recording` for both, so the
         // keyboard's second tap posts `stopRequested` either way. Discriminate
-        // here on the in-process ownership flag: an inline stop must finalize
-        // INLINE (insert at the cursor, NO saved Transcript) — never run the
-        // capture pipeline. `InlineDictationReceiver.handleExternalStop` (a
-        // sibling `stopRequested` observer in ContentView) does that finalize;
-        // we just bail before the saving path and clear the keyboard's pending
-        // paste so it doesn't hang waiting for a publish that won't come.
-        // (Checked synchronously: the inline `finalize()` flips this flag only
-        // after its async stop completes, so there's no race with that observer.)
+        // here on the in-process ownership flag: an Ask stop finalizes inside
+        // Ask (no saved Transcript) — never run the capture pipeline. We just
+        // bail before the saving path and clear the keyboard's pending paste so
+        // it doesn't hang waiting for a publish that won't come. (In-Jot keyboard
+        // taps now take the NORMAL capture path and do NOT set this flag, so
+        // they fall through to the saving path below like any other app.)
         if RecordingService.shared.ownsActiveRecording {
             ClipboardHandoff.clearPendingPasteSession()
             log.info("Cross-process stop: inline session owns the recording — finalizing inline, no transcript saved.")
