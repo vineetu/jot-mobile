@@ -340,6 +340,24 @@ enum DictationPipeline {
 
             let transcriptID = UUID()
 
+            // Transient (in-Jot keyboard stop): clear the keyboard's pending
+            // paste session BEFORE the publish + phase flip below. The publish
+            // wakes the keyboard's `flushPendingAutoPasteIfPossible` in its own
+            // process; clearing first means it finds no pending session and skips
+            // (its `guard let session = readPendingPasteSession()` returns early),
+            // leaving the in-process `FocusedFieldInsert` (further down) as the
+            // SOLE in-app deliverer — no keyboard/in-process double-insert, and no
+            // race (the App Group clear is persisted before the notification that
+            // wakes the keyboard). The non-transient (other-app) path keeps its
+            // pending session so the keyboard pastes into the host as usual.
+            // BRIDGE: in-app needs the in-process insert because the host's
+            // re-render on stop disconnects the keyboard proxy and the flush would
+            // drop. The root-decoupling refactor will isolate the field and let us
+            // delete this and reach a true single paste path.
+            if transient {
+                ClipboardHandoff.clearPendingPasteSession()
+            }
+
             // Step A: publish FIRST. The keyboard's auto-paste cares about
             // the publish; the ledger row is a separate concern that must
             // not gate it.
@@ -361,13 +379,25 @@ enum DictationPipeline {
             )
             CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
-            // In-Jot (transient) stop: there is no special in-app paste path
-            // anymore. iOS is showing Jot's own focused field, so the keyboard's
-            // auto-paste flush — woken by the publish + phase flip above — lands
-            // the text exactly like in any other app. (The old in-process
-            // `FocusedFieldInsert` side door was removed; with the keyboard's
-            // same-field guards gone it no longer double-inserts.) "Stop inside
-            // Jot = no save" still holds via the `if !transient` guards below.
+            // In-Jot (transient) stop: Jot is the foreground host, so insert the
+            // text IN-PROCESS into Jot's own focused field. The keyboard's pending
+            // paste was already cleared above, so its flush no-ops — this is the
+            // SOLE in-app deliverer (lands exactly once). "Stop inside Jot = no
+            // save" still holds via the `if !transient` guards below.
+            if transient {
+                // `completeEndOfRecording` is `@MainActor`, so this UIKit
+                // first-responder insert is already on the main actor.
+                let inserted = FocusedFieldInsert.insertIntoFocusedField(publishedText)
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .publishCompleted,
+                    message: "In-Jot transient paste (in-process insert)",
+                    metadata: [
+                        "sessionID": resolvedSessionID.uuidString,
+                        "inserted": "\(inserted)"
+                    ]
+                )
+            }
 
             updateFollowUpDiscoveryState(
                 wasFollowUpUtterance: uiFollowUpActive,

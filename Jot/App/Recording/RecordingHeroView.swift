@@ -440,15 +440,6 @@ struct RecordingHeroView: View {
 
     // MARK: - Hero content area (stream OR withheld-coaching top space)
 
-    /// Vertical-line cap for the streaming text block before scrolling kicks in.
-    /// Round-2 WS-A: ~3.5 lines of serif italic at ~28pt computed line height
-    /// (down from ~14). Above this the block freezes at this height and scrolls
-    /// internally with a top fade; below it the block grows naturally.
-    // For now: effectively uncapped so the live text fills the WHOLE panel
-    // (user request). It bottom-aligns and the card's `.clipShape` contains any
-    // overflow at the top; the proper capped/faded scroll treatment is deferred.
-    private static let streamingMaxBlockHeight: CGFloat = 150
-
     @ViewBuilder
     private var heroContentArea: some View {
         // §2a — on the cold-start path, while the stream is withheld, the freed
@@ -498,19 +489,15 @@ struct RecordingHeroView: View {
         let text = streamingPartial.streamingText
         let isLoadingModel = streamingService.sessionLoadState == .loading
         VStack(alignment: .leading, spacing: 0) {
-            // H5 — pinned stream-arrival caption (round-2 §9). Shown above the
-            // live text once the stream has revealed via the cold-start path so
-            // the "second pass tidies it up" promise is actually seen. Hidden on
-            // the App-Dictate path (no coaching story) to keep that surface clean.
-            if isColdStartPath {
-                Text(Self.heroStreamCaption)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 12)
-                    .transition(.opacity)
-                    .accessibilityHidden(true)
-            }
+            // Pinned caption — shown ABOVE the live text on EVERY recording.
+            // One hero panel: it does NOT matter whether dictation started from
+            // the keyboard (cold-start) or the in-app Dictate button.
+            Text(Self.heroStreamCaption)
+                .font(.system(size: 12.5, weight: .regular))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+                .accessibilityHidden(true)
 
             Group {
                 if text.isEmpty {
@@ -526,21 +513,18 @@ struct RecordingHeroView: View {
                             .accessibilityHidden(true)
                     }
                 } else {
-                    StreamingDictationText(
-                        text: text,
-                        maxBlockHeight: Self.streamingMaxBlockHeight,
-                        reduceMotion: reduceMotion
-                    )
+                    StreamingDictationText(text: text)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Bottom-align so "Listening…" sits at the bottom — the same place the
+            // first words appear — instead of floating in the middle.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
         .padding(.top, 26)
         .padding(.horizontal, 24)
         .padding(.bottom, 20)
-        // Live text + caption hug the BOTTOM of the panel (user request) — the
-        // block sizes to content (StreamingDictationText self-caps + scrolls at
-        // `streamingMaxBlockHeight`) and bottom-aligns inside the full-height card.
+        // The live-text area fills the whole panel (bottom-anchored, scrollable,
+        // top-faded) — see `StreamingDictationText`.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
@@ -1017,131 +1001,48 @@ struct RecordingHeroView: View {
     }
 }
 
-/// Bottom-anchored streaming text block with two render modes:
-///
-/// 1. **Under-cap (natural growth).** While the text's natural rendered height
-///    is below `maxBlockHeight`, the inner `ScrollView` is frame-locked to the
-///    measured text height. The outer `streamingTextArea` then has two
-///    `Spacer`s above and below it that expand evenly, keeping the block
-///    vertically centered. Each new word makes the measured height grow → the
-///    block expands in both directions out of the "Listening…" anchor. The
-///    fade mask is suppressed here so there is no fade-out at the top of the
-///    growing text — the user sees a clean centered block.
-///
-/// 2. **At-or-over cap (scroll mode).** Once the measured text height reaches
-///    `maxBlockHeight` (round-2: ~3.5 lines), the inner ScrollView freezes at
-///    that height, the top fade mask switches on, and `scrollTo` keeps the
-///    newest line pinned to the bottom edge. Older lines slide up under the top
-///    fade. The bottom edge stays sharp; no bottom fade.
-///
-/// Measurement is done with a hidden `GeometryReader` background on the text,
-/// reporting its size through `StreamingTextHeightKey`. Because the text uses
-/// `.fixedSize(horizontal: false, vertical: true)` it reports its natural
-/// rendered height regardless of the surrounding ScrollView.
+/// Live transcript view: a bottom-anchored, scrollable text block that FILLS the
+/// card. The newest text stays in view as it streams; the user can scroll up
+/// through the whole recording; the top edge fades as older lines scroll off.
 private struct StreamingDictationText: View {
     let text: String
-    let maxBlockHeight: CGFloat
-    let reduceMotion: Bool
-
-    /// Last measured natural height of the text. Seeded with a single-line
-    /// estimate so the first render doesn't briefly collapse the ScrollView
-    /// to 0pt before the GeometryReader reports back.
-    @State private var measuredTextHeight: CGFloat = 28
-
     var body: some View {
-        let clamped = min(measuredTextHeight, maxBlockHeight)
-        let isOverflowing = measuredTextHeight > maxBlockHeight
-
+        // FILL the card, and AUTO-FOLLOW: as new text streams in we scroll the
+        // bottom sentinel back into view so the newest words stay pinned to the
+        // bottom and older lines slide up and fade off the top.
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Single bare Text node — no sibling cursor, no
-                    // `.animation(...)` modifier. A sibling view with
-                    // `.repeatForever` inside the same HStack as the
-                    // frequently-changing Text causes SwiftUI to animate
-                    // the text-content diff itself, smearing characters as
-                    // partials arrive — so the streaming text is rendered
-                    // standalone here with no trailing caret. Italic exclusively
-                    // signals "live" (round-2 WS-A — final text renders roman).
                     Text(text)
                         .foregroundColor(Color.jotPageInk)
                         .font(.system(size: 26, weight: .regular, design: .serif).italic())
                         .tracking(-0.4)
                         .lineSpacing(8.3)
                         .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel(text)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear
-                                    .preference(
-                                        key: StreamingTextHeightKey.self,
-                                        value: geo.size.height
-                                    )
-                            }
-                        )
                     Color.clear
                         .frame(height: 1)
                         .id("streamingBottom")
                 }
             }
-            // Lock the ScrollView's outer height to min(measured, cap).
-            // Under-cap: ScrollView is exactly the text's height ⇒ no scroll
-            // possible, no clipping, content fully visible. At-or-over cap:
-            // ScrollView is frozen at the cap and internal scrolling shows
-            // the newest content while older content slides up.
-            .frame(height: max(1, clamped))
-            // Top fade is only meaningful in scroll mode; under cap the
-            // `.black` mask is a no-op pass-through so the centered, growing
-            // text doesn't have any phantom fade across the top.
+            .defaultScrollAnchor(.bottom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .mask(
-                Group {
-                    if isOverflowing {
-                        LinearGradient(
-                            stops: [
-                                .init(color: .black.opacity(0.0), location: 0.0),
-                                .init(color: .black, location: 0.12),
-                                .init(color: .black, location: 1.0)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    } else {
-                        Color.black
-                    }
-                }
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.0), location: 0.0),
+                        .init(color: .black, location: 0.10),
+                        .init(color: .black, location: 1.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             )
-            .onChange(of: text, initial: false) { _, _ in
-                // Only scroll when we're actually in scroll mode. Under cap
-                // the ScrollView's frame already equals the text height, so
-                // calling scrollTo would nudge the content up by 1pt (the
-                // sentinel height) — a visible drift the user shouldn't see.
-                //
-                // The withAnimation here animates the SCROLL only (it wraps
-                // `proxy.scrollTo`). It does NOT attach an `.animation`
-                // modifier to the Text — that distinction is what keeps
-                // the streaming text from inheriting an animation
-                // transaction. Same shape as the keyboard's working
-                // `StreamingPane.onChange(of: partialText)` handler.
-                guard isOverflowing else { return }
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    proxy.scrollTo("streamingBottom", anchor: .bottom)
-                }
+            .onChange(of: text, initial: true) { _, _ in
+                proxy.scrollTo("streamingBottom", anchor: .bottom)
             }
         }
-        .onPreferenceChange(StreamingTextHeightKey.self) { newHeight in
-            measuredTextHeight = newHeight
-        }
-    }
-}
-
-/// Carries the natural rendered height of the streaming text out of the
-/// hidden GeometryReader so the parent can decide whether to scroll.
-private struct StreamingTextHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
