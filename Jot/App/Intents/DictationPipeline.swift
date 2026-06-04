@@ -361,34 +361,13 @@ enum DictationPipeline {
             )
             CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
-            // Transient (in-Jot keyboard stop): Jot is the foreground host, so
-            // the paste must land IN-PROCESS in Jot's own focused field — NOT
-            // via the keyboard's `textDocumentProxy` flush, which Jot's own
-            // SwiftUI re-render on the recording-state flip would trip out of
-            // (documentIdentifier-changed / nil-context guards) and drop. Insert
-            // directly, then CLEAR the keyboard's pending paste so its
-            // `flushPendingAutoPasteIfPossible` no-ops (its `guard let session =
-            // readPendingPasteSession()` returns early). Order: insert first,
-            // then clear — the clear neutralizes the keyboard before the
-            // terminal `.idle` publish below could prompt a flush, so the text
-            // lands exactly once with no window for a double-insert. The non-
-            // transient path is untouched: the keyboard pastes via the publish
-            // above exactly as before.
-            if transient {
-                // `completeEndOfRecording` is `@MainActor`, so this UIKit
-                // first-responder insert is already on the main actor.
-                let inserted = FocusedFieldInsert.insertIntoFocusedField(publishedText)
-                ClipboardHandoff.clearPendingPasteSession()
-                DiagnosticsLog.record(
-                    source: "main-app",
-                    category: .publishCompleted,
-                    message: "In-Jot transient paste (in-process insert)",
-                    metadata: [
-                        "sessionID": resolvedSessionID.uuidString,
-                        "inserted": "\(inserted)"
-                    ]
-                )
-            }
+            // In-Jot (transient) stop: there is no special in-app paste path
+            // anymore. iOS is showing Jot's own focused field, so the keyboard's
+            // auto-paste flush — woken by the publish + phase flip above — lands
+            // the text exactly like in any other app. (The old in-process
+            // `FocusedFieldInsert` side door was removed; with the keyboard's
+            // same-field guards gone it no longer double-inserts.) "Stop inside
+            // Jot = no save" still holds via the `if !transient` guards below.
 
             updateFollowUpDiscoveryState(
                 wasFollowUpUtterance: uiFollowUpActive,

@@ -39,6 +39,8 @@ background capture started in `ContentView.updateDictateTapObserver`.
 
 `features.md` is the single source of truth for what Jot does at a product level — ~100 user-facing features across 13 surfaces, with anchor cross-links between related ones. It was hand-verified across many review rounds; treat it as authoritative.
 
+**Known bugs & planned work live in [`known-bugs-and-plans.md`](known-bugs-and-plans.md)** — the canonical registry (split out of `features.md` to keep that doc user-facing only). It tracks unresolved bugs and the plans index; each entry links an elaborated doc in `docs/plans/`. When recording a NEW bug or plan, follow the protocol: write the `docs/plans/<slug>.md` doc AND add a dual entry here (a detailed entry + a one-line index entry) — a stray `docs/plans/` doc alone is not discoverable. Start here for "what's planned / known bugs" questions.
+
 **Before adding, modifying, or removing any user-facing behavior, do these steps in order and report results to the user BEFORE writing code:**
 
 1. **Read `features.md`** (at minimum the sections most relevant to the request — use the Table of Contents to triage).

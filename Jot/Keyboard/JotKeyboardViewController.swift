@@ -132,11 +132,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var pipelineStaleDeadlineTask: Task<Void, Never>?
     private var pendingLaunchDeadlineTask: Task<Void, Never>?
 
+    // `deadAppWatchdogTask` — armed on a recording-control tap (Stop / Pause /
+    // Cancel / Resume). The keyboard drives those controls by posting Darwin
+    // requests the MAIN app must handle; if iOS jetsammed the app mid-recording
+    // there is no live handler, the projection is frozen at `.recording`, and
+    // the keyboard would otherwise hang until the 30s stale path. This watchdog
+    // snapshots the projection's `lastUpdatedAt` at the tap and, after the 5s
+    // ceiling, recovers the keyboard to idle if it never advanced. A live app —
+    // foreground or background — refreshes within the 3s heartbeat (and
+    // immediately when it processes the control), so it never trips this.
+    private var deadAppWatchdogTask: Task<Void, Never>?
+
+    // After a dead-app recovery, the shared `PipelinePhaseProjection` is still
+    // frozen at `.recording` (the jetsammed writer never wrote a terminal phase,
+    // and the 30s stale synth hasn't fired). Tombstone that exact session +
+    // frozen timestamp so a keyboard dismiss/re-present inside that window does
+    // NOT resurrect the zombie recording UI when `refreshPipelinePhase` re-reads
+    // the projection. Cleared the moment the projection advances or a new
+    // session appears (a live writer is back).
+    private var recoveredZombieFreeze: (sessionID: UUID, frozenAt: Date)?
+
     /// Bound on cold-launch / URL-delivery latency. iOS delivers a URL to a
     /// foreground-target target in O(seconds), not O(minutes), so 15s is a
     /// state question ("did the pipeline ever come up?"), not a workload-
     /// latency guess. Per design §4.6.G.
     private static let launchDeadline: TimeInterval = 15
+
+    /// Hard ceiling on how long the keyboard waits for proof the main app is
+    /// alive after a recording-control tap before recovering itself to idle.
+    /// The 3s projection heartbeat (`PipelinePhaseProjection.heartbeatInterval`)
+    /// sits comfortably under this, so a live app always clears it; only a
+    /// jetsammed app — which stamps nothing — trips it.
+    private static let controlTapLivenessCeiling: TimeInterval = 5
 
     // MARK: - Jot affordance state
 
@@ -298,6 +325,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         pipelineStaleDeadlineTask = nil
         pendingLaunchDeadlineTask?.cancel()
         pendingLaunchDeadlineTask = nil
+        deadAppWatchdogTask?.cancel()
+        deadAppWatchdogTask = nil
         cancelBackspaceRepeat()
     }
 
@@ -503,6 +532,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleCancelRecording() {
         keyboardLog.info("Posted cross-process recording cancel request")
         CrossProcessNotification.post(name: CrossProcessNotification.cancelRequested)
+        armDeadAppWatchdog(reason: "cancel")
     }
 
     /// Called when the user taps Pause during an active dictation (WS-C / §10).
@@ -514,6 +544,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handlePauseRecording() {
         keyboardLog.info("Posted cross-process recording pause request")
         CrossProcessNotification.post(name: CrossProcessNotification.pauseRequested)
+        armDeadAppWatchdog(reason: "pause")
     }
 
     /// Called when the user taps Resume on a paused dictation (WS-C / §10).
@@ -523,6 +554,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleResumeRecording() {
         keyboardLog.info("Posted cross-process recording resume request")
         CrossProcessNotification.post(name: CrossProcessNotification.resumeRequested)
+        armDeadAppWatchdog(reason: "resume")
     }
 
     /// Accept the warm-hold switching nudge (WS-F / §4). One tap, no confirm:
@@ -1048,47 +1080,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
         // Happy path: payload session ID matches our pending session.
         if let payload, payload.sessionID == session.id {
-            // Best-effort same-input-context guard. The actual API on
-            // UITextDocumentProxy is `documentIdentifier` (UUID-typed);
-            // `textInputContextIdentifier` is on UIResponder and isn't
-            // accessible via the proxy abstraction. Fall back to
-            // `keyboardType` rawValue when documentIdentifier is nil.
-            if let claimedDoc = session.hostDocumentIdentifier {
-                let nowDoc = textDocumentProxy.documentIdentifier
-                if nowDoc != claimedDoc {
-                    keyboardLog.info("Skipped auto-paste because document identifier changed since tap")
-                    DiagnosticsLog.record(
-                        source: "keyboard",
-                        category: .pasteSkipDocumentMismatch,
-                        message: "Doc identifier changed since tap",
-                        metadata: [
-                            "claimedDoc": claimedDoc.uuidString,
-                            "nowDoc": nowDoc.uuidString,
-                            "sessionID": session.id.uuidString
-                        ]
-                    )
-                    clearPendingPasteSession()
-                    renderRootView()
-                    return
-                }
-            } else if let claimedKbRaw = session.hostKeyboardTypeRaw,
-                      let nowKb = textDocumentProxy.keyboardType?.rawValue,
-                      nowKb != claimedKbRaw {
-                keyboardLog.info("Skipped auto-paste because keyboard type changed since tap")
-                DiagnosticsLog.record(
-                    source: "keyboard",
-                    category: .pasteSkipKeyboardTypeMismatch,
-                    message: "Keyboard type changed since tap",
-                    metadata: [
-                        "claimedKb": String(claimedKbRaw),
-                        "nowKb": String(nowKb),
-                        "sessionID": session.id.uuidString
-                    ]
-                )
-                clearPendingPasteSession()
-                renderRootView()
-                return
-            }
+            // Single paste path: iOS only presents the keyboard when a text
+            // input is focused, so if we're flushing there IS an input — paste
+            // wherever the cursor is now. The old documentIdentifier /
+            // keyboardType "same-field" guards were removed deliberately: they
+            // rejected a valid paste whenever Jot re-rendered its own field on
+            // stop, which is what forced the in-process side-door insert and
+            // produced the in-app double paste.
             // Empty-text diagnostic: an empty payload would no-op inside
             // `insertTrackedText` and silently fall through the rest of the
             // happy-path cleanup. Surface it explicitly in the log so a
@@ -1335,7 +1333,23 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// runs the flush. Per design §4.6 + §4.6.G.
     private func refreshPipelinePhase() {
         guard hasFullAccess else { return }
-        let projection = PipelinePhaseProjection.read()
+        var projection = PipelinePhaseProjection.read()
+        // Suppress a recovered dead-app zombie. After `recoverFromUnresponsiveApp`
+        // the shared projection can still read `.recording`/`.paused` (the dead
+        // writer never went terminal). If this is that same frozen session, treat
+        // it as idle so a re-present can't resurrect it. Once the projection
+        // advances past the frozen timestamp or a new session appears, the writer
+        // is alive again — drop the tombstone and resume normal handling.
+        if let freeze = recoveredZombieFreeze {
+            if let p = projection,
+               p.sessionID == freeze.sessionID,
+               p.lastUpdatedAt <= freeze.frozenAt,
+               p.phase == .recording || p.phase == .paused {
+                projection = nil
+            } else {
+                recoveredZombieFreeze = nil
+            }
+        }
         recordingState.applyPipelineProjection(projection)
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
@@ -1382,6 +1396,74 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             self?.refreshPipelinePhase()
         }
+    }
+
+    /// Arm the dead-app watchdog after a recording-control tap. Snapshots the
+    /// pipeline projection's freshness; if `lastUpdatedAt` has not advanced
+    /// within `controlTapLivenessCeiling`, the main app was jetsammed
+    /// mid-recording and we recover the keyboard to idle. A live app refreshes
+    /// the projection within the 3s heartbeat (and immediately when it processes
+    /// the control), so it never trips this. Tap-triggered only — no polling. A
+    /// newer control tap (or a recovery) supersedes any in-flight watchdog.
+    private func armDeadAppWatchdog(reason: String) {
+        deadAppWatchdogTask?.cancel()
+        let baseline = PipelinePhaseProjection.read()?.lastUpdatedAt
+        deadAppWatchdogTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.controlTapLivenessCeiling))
+            } catch {
+                return  // cancelled: keyboard dismissed, superseded, or recovered
+            }
+            guard let self, !Task.isCancelled else { return }
+            let latest = PipelinePhaseProjection.read()
+            // Recover ONLY on the unambiguous zombie signal: the projection is
+            // STILL an active recording/paused phase AND its timestamp has not
+            // advanced past the tap-time baseline. A live writer — even
+            // backgrounded — stamps a heartbeat within 3s, so any advance means
+            // alive; a terminal (.idle/.failed) / cleared / missing projection
+            // means the app (or the normal path) already handled it — stand down
+            // and never clear a still-valid pending paste.
+            if let baseline, let latest,
+               latest.lastUpdatedAt <= baseline,
+               latest.phase == .recording || latest.phase == .paused {
+                self.recoverFromUnresponsiveApp(reason: reason)
+            } else {
+                self.deadAppWatchdogTask = nil
+            }
+        }
+    }
+
+    /// Reset the keyboard out of a zombie "recording" UI after the main app was
+    /// found unresponsive on a control tap. Does NOT write the shared projection
+    /// blob (writer-owns-clears — `PipelinePhaseProjection`); it resets only the
+    /// keyboard's local mirror + stuck control state, mirroring the synthetic
+    /// `.failed` recovery the 30s stale path runs, just fired early.
+    private func recoverFromUnresponsiveApp(reason: String) {
+        keyboardLog.notice("Liveness: main app silent after \(reason, privacy: .public) tap — recovering keyboard to idle")
+        DiagnosticsLog.record(
+            source: "keyboard",
+            category: .appUnresponsiveRecovery,
+            message: "App unresponsive after \(reason) — recovered to idle",
+            metadata: ["reason": reason]
+        )
+        // Tombstone this exact frozen session so a keyboard dismiss/re-present
+        // within the 30s stale window can't resurrect it from the still-active
+        // shared projection (the dead writer never goes terminal).
+        if let frozen = PipelinePhaseProjection.read(),
+           frozen.phase == .recording || frozen.phase == .paused,
+           let frozenSession = frozen.sessionID {
+            recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
+        }
+        stopRequestPosted = false
+        recordingState.applyPipelineProjection(nil)
+        clearStreamingPartialForNewSession()
+        recordingState.updateLoadingVariantLabel("")
+        clearPendingPasteSession()
+        pipelineStaleDeadlineTask?.cancel()
+        pipelineStaleDeadlineTask = nil
+        deadAppWatchdogTask?.cancel()
+        deadAppWatchdogTask = nil
+        renderRootView()
     }
 
     // MARK: - Selection state
@@ -1747,6 +1829,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // the disabled-CTA path, and the inbound `pipelinePhaseChanged`
             // will replace `.recording` with the in-flight phase shortly.
             keyboardLog.info("Posted cross-process recording stop request")
+            armDeadAppWatchdog(reason: "stop")
 
             // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
             // the case where the immediate `pipelinePhaseChanged` is dropped

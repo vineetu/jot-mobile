@@ -533,6 +533,7 @@ struct HelpView: View {
         case .classifyStart: return ("CLASSIFY/START", Color.jotAccent)
         case .classifyEnd: return ("CLASSIFY/END", Color.jotAccent)
         case .classifyMemoryWarning: return ("CLASSIFY/MEM", Color.jotWarning)
+        case .appUnresponsiveRecovery: return ("RECOVER", Color.jotWarning)
         }
     }
 

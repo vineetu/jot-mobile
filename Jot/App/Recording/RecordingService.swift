@@ -1408,7 +1408,7 @@ final class RecordingService {
     // projected to the App Group so the keyboard extension can read it
     // without a polling loop. Every phase transition writes the projection +
     // posts a Darwin notification (`pipelinePhaseChanged`) so the keyboard
-    // wakes and re-reads. While non-terminal, a 10s heartbeat re-writes the
+    // wakes and re-reads. While non-terminal, a 3s heartbeat re-writes the
     // projection's `lastUpdatedAt` so the keyboard can detect a dead writer
     // (the synthetic-`.failed` view inside `PipelinePhaseProjection.read()`).
     //
@@ -1546,7 +1546,7 @@ final class RecordingService {
         // Paused-clock freeze (§10.4). The keyboard derives the frozen elapsed
         // as `projection.lastUpdatedAt − recordingStartedAt`. Each heartbeat
         // advances `lastUpdatedAt` by `heartbeatInterval`, so re-publishing the
-        // SAME frozen anchor would make that difference grow ~10s per tick —
+        // SAME frozen anchor would make that difference grow ~3s per tick —
         // the "frozen" keyboard clock would jump forward every heartbeat. While
         // paused, re-back-date the anchor against the fresh `lastUpdatedAt` so
         // `lastUpdatedAt − recordingStartedAt` stays pinned to the accumulated

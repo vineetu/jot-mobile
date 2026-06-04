@@ -45,11 +45,15 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     let lastUpdatedAt: Date
     let failureReason: String?
 
-    /// Heartbeat: every 10s while non-idle, the writer process refreshes
-    /// `lastUpdatedAt`. The reader treats a non-idle projection older than
-    /// 30s (3× heartbeat) as the writer being dead and synthesizes a
-    /// `.failed` view without mutating storage.
-    static let heartbeatInterval: TimeInterval = 10
+    /// Heartbeat: every 3s while non-idle, the writer process refreshes
+    /// `lastUpdatedAt`. A fast cadence (well under the keyboard's 5s
+    /// control-tap liveness ceiling) lets the keyboard treat "no refresh
+    /// within 5s of a control tap" as a clean dead-app signal — a live app,
+    /// foreground or background, always stamps within 3s. The reader still
+    /// treats a non-idle projection older than `heartbeatStaleThreshold` as
+    /// the writer being dead and synthesizes a `.failed` view without
+    /// mutating storage (the passive, non-tap recovery path).
+    static let heartbeatInterval: TimeInterval = 3
     static let heartbeatStaleThreshold: TimeInterval = 30
 
     static func write(_ projection: PipelinePhaseProjection) {
