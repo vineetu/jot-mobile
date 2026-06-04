@@ -99,10 +99,13 @@ struct SettingsView: View {
     private var navRow: some View {
         HStack {
             HStack(spacing: 8) {
-                Image(systemName: "j.square.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.jotPageInk)
+                // Brand mark — the app/watch icon art clipped to a circle,
+                // matching Home. Replaces the old `j.square.fill` SF monogram.
+                Image("JotBrandTile")
+                    .resizable()
+                    .interpolation(.high)
                     .frame(width: 20, height: 20)
+                    .clipShape(Circle())
                     .accessibilityHidden(true)
 
                 Text("Jot")

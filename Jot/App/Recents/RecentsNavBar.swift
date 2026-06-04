@@ -11,15 +11,14 @@ struct RecentsNavBar: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "j.circle.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.jotBlueTop, Color.jotBlueBottom],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                // Brand mark — the app/watch icon art clipped to a circle (the
+                // watch's circular masking), matching the icon on the Home
+                // Screen. Replaces the old `j.circle.fill` SF monogram.
+                Image("JotBrandTile")
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 20, height: 20)
+                    .clipShape(Circle())
                     .accessibilityHidden(true)
 
                 Text("Jot")

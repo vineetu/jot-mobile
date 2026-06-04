@@ -48,3 +48,6 @@ Jot/Resources/Models/
 
 # Local ML scratch prototype (large checkpoints, not app code)
 prototypes/style-adapter/
+
+# Design handoff references (HTML/JSX prototypes, not app source)
+Jot/design_handoff_setup_wizard/

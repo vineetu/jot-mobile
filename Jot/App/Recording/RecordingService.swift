@@ -1106,6 +1106,18 @@ final class RecordingService {
         }
     }
 
+    /// Gently release a warm-held microphone — exit warm-hold and restore the
+    /// audio session — when a surface that warm-held it is dismissed (e.g.
+    /// closing Ask Jot after asking a question). No-op unless the mic is
+    /// currently warm-held; this is NOT `forceStop` and never tears down an
+    /// active recording. Ask is a query, not a dictation to continue, so its
+    /// sheet-close releases the held mic rather than leaving the orange
+    /// indicator on (Warm Hold §13.2 still governs the normal dictation flow).
+    func releaseWarmHold() {
+        guard isWarm else { return }
+        exitWarmHold()
+    }
+
     private func fullyTeardownEngine() {
         clearActiveSliceRouting()
         if let engine {

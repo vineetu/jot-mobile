@@ -400,6 +400,12 @@ struct ContentView: View {
             // dismiss this sheet and push into the same `navPath`
             // Recents uses, so Detail resolves through the existing
             // `.navigationDestination(for: UUID.self)` modifier above.
+            //
+            // The `askController` is intentionally PERSISTENT (not reset on
+            // dismiss): closing Ask — e.g. tapping a source to read the note —
+            // and reopening keeps the previous answer on screen, so the user can
+            // pick up where they left off and tap "Ask another" when they want a
+            // fresh session. Only the mic is released on close (AskView.onDisappear).
             AskView(controller: askController, navPath: $navPath)
         }
         .confirmationDialog(
