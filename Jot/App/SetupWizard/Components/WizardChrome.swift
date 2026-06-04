@@ -29,148 +29,30 @@ struct WizardWallpaper: View {
 
 // MARK: - Brand mark
 
-/// The blue app-icon tile with the white "j+waveform" mark, rendered
-/// natively (mirrors the shipped iOS/Watch app icon). Used by the W1
-/// welcome step; `size:` lets the call site pick the hero size while the
-/// default keeps the app's uniform tile rhythm.
+/// The Jot brand mark — the **real app-icon art** (heavy `j` stem + thin 3-bar
+/// voice waveform on the brand-blue gradient tile), rendered from the shipped
+/// `JotBrandTile` icon asset so the W1 welcome hero matches the Home Screen
+/// icon exactly. `size:` lets the call site pick the hero size.
 ///
-/// Tile: rounded square with `0.245 × size` continuous radius, a 168°
-/// (near-vertical, slightly tilted) `#3AA0FF → #1483F2 → #0064CC`
-/// gradient, a white top sheen, and a soft ambient shadow.
-///
-/// Mark: white round-capped strokes from a `22 6 72 148` viewBox scaled
-/// to ~46% of the tile and centered — a "j" stem plus a 3-bar waveform
-/// tittle. The three tittle bars are drawn separately and must stay
-/// visually distinct (never fuse).
+/// Previously this was a hand-drawn SwiftUI reconstruction (a `22 6 72 148`
+/// viewBox `j` stem + a symmetric 3-bar tittle). Its proportions drifted from
+/// the designed logo — a shorter/thicker `j` and an even short-tall-short
+/// tittle instead of the logo's slim `j` and varied voice-wave — so it read as
+/// "off." Using the actual icon raster removes the drift entirely. Clipped to
+/// the iOS-squircle rounded square with a soft ambient shadow.
 struct WizardBrandMark: View {
     var size: CGFloat = 84
 
     var body: some View {
-        let radius = 0.245 * size
-
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0x3A / 255, green: 0xA0 / 255, blue: 0xFF / 255),
-                        Color(red: 0x14 / 255, green: 0x83 / 255, blue: 0xF2 / 255),
-                        Color(red: 0x00 / 255, green: 0x64 / 255, blue: 0xCC / 255)
-                    ],
-                    // 168° ≈ near-vertical, tilted slightly off the
-                    // top edge — approximated with explicit unit points.
-                    startPoint: UnitPoint(x: 0.18, y: 0),
-                    endPoint: UnitPoint(x: 0.68, y: 1)
-                )
-            )
-            .overlay(
-                // White top sheen.
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.24), Color.clear],
-                            startPoint: .top,
-                            endPoint: .center
-                        )
-                    )
-                    .allowsHitTesting(false)
-            )
-            .overlay(
-                // Stem and tittle bars carry different viewBox stroke
-                // widths (15 vs 5.4), so they're stroked separately —
-                // each width scaled by the same viewBox→tile factor.
-                ZStack {
-                    WizardWaveMarkStem()
-                        .stroke(
-                            Color.white,
-                            style: StrokeStyle(
-                                lineWidth: WizardWaveMarkGeometry.scaledWidth(15, tile: size),
-                                lineCap: .round,
-                                lineJoin: .round
-                            )
-                        )
-                    WizardWaveMarkTittle()
-                        .stroke(
-                            Color.white,
-                            style: StrokeStyle(
-                                lineWidth: WizardWaveMarkGeometry.scaledWidth(5.4, tile: size),
-                                lineCap: .round,
-                                lineJoin: .round
-                            )
-                        )
-                }
-            )
+        Image("JotBrandTile")
+            .resizable()
+            .interpolation(.high)
             .frame(width: size, height: size)
+            // 0.2237 ≈ the iOS app-icon superellipse corner ratio, so the tile
+            // reads as the same squircle the user sees on their Home Screen.
+            .clipShape(RoundedRectangle(cornerRadius: 0.2237 * size, style: .continuous))
             .shadow(color: Color.black.opacity(0.18), radius: size * 0.14, x: 0, y: size * 0.06)
             .accessibilityHidden(true)
-    }
-}
-
-/// Shared viewBox→tile mapping for the brand mark. The mark is authored in
-/// a `22 6 72 148` viewBox and fitted (aspect-preserving) into the centered
-/// ~46% region of the tile, so the stem and tittle shapes — and their
-/// stroke widths — all use the same scale factor.
-private enum WizardWaveMarkGeometry {
-    static let vbX: CGFloat = 22
-    static let vbY: CGFloat = 6
-    static let vbW: CGFloat = 72
-    static let vbH: CGFloat = 148
-    static let fillFraction: CGFloat = 0.46
-
-    /// Scale factor from viewBox units to points for a square `tile`.
-    static func scale(tile: CGFloat) -> CGFloat {
-        (tile * fillFraction) / max(vbW, vbH)
-    }
-
-    /// A viewBox stroke width converted to points for a square `tile`.
-    static func scaledWidth(_ viewBoxWidth: CGFloat, tile: CGFloat) -> CGFloat {
-        viewBoxWidth * scale(tile: tile)
-    }
-
-    /// Map a viewBox point into the centered draw region of `rect`.
-    static func point(_ x: CGFloat, _ y: CGFloat, in rect: CGRect) -> CGPoint {
-        let s = (min(rect.width, rect.height) * fillFraction) / max(vbW, vbH)
-        let drawW = vbW * s
-        let drawH = vbH * s
-        let originX = rect.midX - drawW / 2
-        let originY = rect.midY - drawH / 2
-        return CGPoint(x: originX + (x - vbX) * s, y: originY + (y - vbY) * s)
-    }
-}
-
-/// The "j" stem: `M58 52 L58 116 Q58 138 34 138`. Stroked at viewBox
-/// width 15 (round cap/join) by `WizardBrandMark`.
-private struct WizardWaveMarkStem: Shape {
-    func path(in rect: CGRect) -> Path {
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            WizardWaveMarkGeometry.point(x, y, in: rect)
-        }
-        var path = Path()
-        path.move(to: p(58, 52))
-        path.addLine(to: p(58, 116))
-        path.addQuadCurve(to: p(34, 138), control: p(58, 138))
-        return path
-    }
-}
-
-/// The waveform tittle — THREE separate vertical bars that must NOT fuse.
-/// x = 47 / 58 / 69, centered at y ≈ 24; heights 10 / 18 / 10 (centre
-/// tallest). Stroked at viewBox width 5.4 (round caps) by `WizardBrandMark`.
-private struct WizardWaveMarkTittle: Shape {
-    func path(in rect: CGRect) -> Path {
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            WizardWaveMarkGeometry.point(x, y, in: rect)
-        }
-        var path = Path()
-        // Left bar:  y 19 → 29 (h 10)
-        path.move(to: p(47, 19))
-        path.addLine(to: p(47, 29))
-        // Centre bar: y 15 → 33 (h 18, tallest)
-        path.move(to: p(58, 15))
-        path.addLine(to: p(58, 33))
-        // Right bar: y 19 → 29 (h 10)
-        path.move(to: p(69, 19))
-        path.addLine(to: p(69, 29))
-        return path
     }
 }
 
