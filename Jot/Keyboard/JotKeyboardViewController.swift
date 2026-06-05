@@ -91,6 +91,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `transcriptReady` observer here doesn't regress paste behaviour.
     private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
+    private var transcriptReadyObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
     private var streamingLoadingObserver: CrossProcessNotification.Observer?
     /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
@@ -269,6 +270,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         installHeightConstraint()
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
+        startObservingTranscriptReady()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
@@ -289,6 +291,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // The main app stays honest by not claiming to know FA state.
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
+        startObservingTranscriptReady()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
@@ -317,6 +320,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         super.viewWillDisappear(animated)
         historyMirrorUpdatedObserver = nil
         pipelinePhaseObserver = nil
+        transcriptReadyObserver = nil
         streamingPartialObserver = nil
         streamingLoadingObserver = nil
         warmHoldNudgeObserver = nil
@@ -927,6 +931,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 || priorHistory != self.historyEntries {
                 self.renderRootView()
             }
+        }
+    }
+
+    /// Observes `transcriptReady`, which the dictation pipeline posts
+    /// IMMEDIATELY after `ClipboardHandoff.publish` writes the payload —
+    /// i.e. the instant transcription is done — with no `await` in between.
+    ///
+    /// This is the reliable auto-paste trigger. `pipelinePhaseChanged`
+    /// (via `refreshPipelinePhase`) is the only other flush driver, and the
+    /// single post of it that fires AFTER the payload is the terminal
+    /// `.idle` — which also stops the heartbeat, so it's simultaneously the
+    /// LAST notification for the session. If that one Darwin post is
+    /// coalesced/dropped (it follows a burst of same-named posts and an
+    /// `await transitionPostPublish`), the flush never re-runs and the
+    /// payload sits unread forever — a silent, intermittent paste loss.
+    /// `transcriptReady` fires earlier, in the live notification window,
+    /// closing that race.
+    ///
+    /// The old objection ("`transcriptReady` precedes the SwiftData append +
+    /// mirror write → stale recents") is about the HISTORY MIRROR, handled
+    /// by `historyMirrorUpdated`. It does NOT apply to paste: the payload is
+    /// already written when `transcriptReady` posts, and the flush only
+    /// reads that payload. Flushing twice (here + on `.idle`) is harmless —
+    /// `markConsumed()` + `clearPendingPasteSession()` make the happy path
+    /// idempotent, so whichever signal lands first wins and the second
+    /// no-ops.
+    private func startObservingTranscriptReady() {
+        guard transcriptReadyObserver == nil else { return }
+        transcriptReadyObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.transcriptReady
+        ) { [weak self] in
+            self?.flushPendingAutoPasteIfPossible()
         }
     }
 
