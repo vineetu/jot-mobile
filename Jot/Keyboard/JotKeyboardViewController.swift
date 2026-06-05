@@ -91,7 +91,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `transcriptReady` observer here doesn't regress paste behaviour.
     private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
-    private var transcriptReadyObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
     private var streamingLoadingObserver: CrossProcessNotification.Observer?
     /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
@@ -270,7 +269,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         installHeightConstraint()
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
-        startObservingTranscriptReady()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
@@ -291,7 +289,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // The main app stays honest by not claiming to know FA state.
         startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
-        startObservingTranscriptReady()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
@@ -320,7 +317,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         super.viewWillDisappear(animated)
         historyMirrorUpdatedObserver = nil
         pipelinePhaseObserver = nil
-        transcriptReadyObserver = nil
         streamingPartialObserver = nil
         streamingLoadingObserver = nil
         warmHoldNudgeObserver = nil
@@ -934,38 +930,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
     }
 
-    /// Observes `transcriptReady`, which the dictation pipeline posts
-    /// IMMEDIATELY after `ClipboardHandoff.publish` writes the payload —
-    /// i.e. the instant transcription is done — with no `await` in between.
-    ///
-    /// This is the reliable auto-paste trigger. `pipelinePhaseChanged`
-    /// (via `refreshPipelinePhase`) is the only other flush driver, and the
-    /// single post of it that fires AFTER the payload is the terminal
-    /// `.idle` — which also stops the heartbeat, so it's simultaneously the
-    /// LAST notification for the session. If that one Darwin post is
-    /// coalesced/dropped (it follows a burst of same-named posts and an
-    /// `await transitionPostPublish`), the flush never re-runs and the
-    /// payload sits unread forever — a silent, intermittent paste loss.
-    /// `transcriptReady` fires earlier, in the live notification window,
-    /// closing that race.
-    ///
-    /// The old objection ("`transcriptReady` precedes the SwiftData append +
-    /// mirror write → stale recents") is about the HISTORY MIRROR, handled
-    /// by `historyMirrorUpdated`. It does NOT apply to paste: the payload is
-    /// already written when `transcriptReady` posts, and the flush only
-    /// reads that payload. Flushing twice (here + on `.idle`) is harmless —
-    /// `markConsumed()` + `clearPendingPasteSession()` make the happy path
-    /// idempotent, so whichever signal lands first wins and the second
-    /// no-ops.
-    private func startObservingTranscriptReady() {
-        guard transcriptReadyObserver == nil else { return }
-        transcriptReadyObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.transcriptReady
-        ) { [weak self] in
-            self?.flushPendingAutoPasteIfPossible()
-        }
-    }
-
     /// Generates a fresh `PendingPasteSession`, writes it to the App Group,
     /// and arms the launch-deadline task. The same-input-context guards
     /// (`hostKeyboardTypeRaw`, `hostDocumentIdentifier`) are best-effort
@@ -1143,33 +1107,43 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
 
-            // Probe the host's textDocumentProxy state immediately
-            // BEFORE the insert so we can compare context length after.
-            // `documentContextBeforeInput` is documented as nil when the
-            // proxy has no active connection (e.g., the host's text
-            // field just lost focus, or this keyboard isn't currently
-            // the active input view). When it's nil at insert time,
-            // `insertText(_:)` silently no-ops on the host — but the
-            // call itself returns void and looks indistinguishable from
-            // a successful insert. See features.md §14.3.
-            let beforeContext = textDocumentProxy.documentContextBeforeInput
-            let beforeLen = beforeContext?.count ?? -1
-            let afterContextLenPre = textDocumentProxy.documentContextAfterInput?.count ?? -1
-            let proxyHadContextBefore = (beforeContext != nil)
+            // Detect whether the insert LANDED by reading the proxy AFTER it —
+            // not before. The pre-insert read can't tell an empty-but-live
+            // field from a disconnected proxy: BOTH report
+            // `documentContextBeforeInput == nil` (an empty field has no text
+            // before the caret). After a REAL insert, the pre-caret context is
+            // non-nil (it now holds at least the text we just inserted); after
+            // a no-op into a disconnected proxy it stays nil.
+            //
+            // This fixes the build-105 EMPTY-FIELD double-paste: an empty field
+            // read nil before the insert, so the old "proxyHadContextBefore"
+            // check misread a SUCCESSFUL insert as "not landed", kept the
+            // payload, and a second flush (the `.publishing` post racing to run
+            // after the payload landed) re-inserted → duplicate. Only on empty
+            // fields, exactly as observed. A speculative insert is harmless when
+            // it no-ops (adds nothing); reading the AFTER state means we
+            // re-insert ONLY when the previous attempt genuinely added nothing.
+            let proxyHadContextBefore = (textDocumentProxy.documentContextBeforeInput != nil)
 
             insertTrackedText(payload.text)
 
-            // Re-read after the insert. On a healthy host the
-            // pre-caret context grows by `payload.text.count`. If it
-            // doesn't grow at all, the host silently rejected the
-            // insert — most commonly because the proxy was disconnected
-            // (Slack's draft-saving compose loses focus mid-flight) or
-            // because iOS gated the call (keyboard not the active
-            // input view at insert time).
-            let afterLen = textDocumentProxy.documentContextBeforeInput?.count ?? -1
-            let contextGrew = (beforeLen >= 0 && afterLen >= 0)
-                ? (afterLen - beforeLen)
-                : -1
+            let proxyHasContextAfter = (textDocumentProxy.documentContextBeforeInput != nil)
+            let landed = proxyHadContextBefore || proxyHasContextAfter
+
+            guard landed else {
+                // Insert no-op'd into a disconnected proxy — keep the transcript
+                // pending (don't burn it) so the settled `.idle` flush lands it.
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteSkipProxyDisconnected,
+                    message: "Insert no-op'd — proxy not connected; kept pending",
+                    metadata: [
+                        "sessionID": session.id.uuidString,
+                        "chars": "\(payload.text.count)",
+                    ]
+                )
+                return
+            }
 
             DiagnosticsLog.record(
                 source: "keyboard",
@@ -1179,10 +1153,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     "chars": "\(payload.text.count)",
                     "sessionID": session.id.uuidString,
                     "proxyHadContextBefore": "\(proxyHadContextBefore)",
-                    "beforeLen": "\(beforeLen)",
-                    "afterLen": "\(afterLen)",
-                    "afterContextLenPre": "\(afterContextLenPre)",
-                    "contextGrew": "\(contextGrew)",
+                    "proxyHasContextAfter": "\(proxyHasContextAfter)",
                 ]
             )
             // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
