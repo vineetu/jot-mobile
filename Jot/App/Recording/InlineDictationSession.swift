@@ -119,6 +119,40 @@ final class InlineDictationSession {
         }
     }
 
+    /// Gently stop WITHOUT transcribing — the dismiss path (Ask "Done" / switch
+    /// to typing mid-speech). Uses `recordingService.stop()` — the SAME clean
+    /// stop every other surface uses: it ends the recording and HONOURS Warm
+    /// Hold per the user's setting (mic warm-holds if enabled, fully tears down
+    /// if not) — NOT `forceStop()`, which rips the mic out of warm-hold. The
+    /// query audio is simply dropped: nothing is transcribed or submitted.
+    ///
+    /// Captures the `RecordingService` (a singleton) directly — NOT `self` —
+    /// because the caller nils its `InlineDictationSession` reference the instant
+    /// this returns (Ask's `abortDictation` does `dictationSession = nil`), so a
+    /// `[weak self]` Task would find `self` already deallocated after the `await`
+    /// suspension and silently skip the stop, leaving the mic recording forever.
+    func stopGently() {
+        let pending = task
+        task = nil
+        guard isDictating else {
+            recordingService.ownsActiveRecording = false
+            return
+        }
+        isDictating = false
+        let service = recordingService
+        Task {
+            _ = await pending?.result // invariant 1
+            do {
+                _ = try await service.stop()  // gentle stop; Warm Hold honoured
+            } catch {
+                // stop() released its own in-flight latch on throw.
+            }
+            service.markPipelineFinished()       // invariant 2
+            service.ownsActiveRecording = false   // invariant 3
+            service.publishPipelinePhase(.idle)
+        }
+    }
+
     /// Discard the recording without transcribing — the dismiss/abandon path.
     /// `forceStop()` drops the audio and fully releases the mic (no warm-hold
     /// re-entry); it never calls `stop()`, so no pipeline latch is set.

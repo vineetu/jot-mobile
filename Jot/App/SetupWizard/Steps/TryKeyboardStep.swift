@@ -45,7 +45,7 @@ struct TryKeyboardStep: View {
                 WizardItalicTitle(text: "Now try the keyboard", size: 28)
                     .padding(.bottom, 4)
 
-                WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Dictate.")
+                WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Jot down.")
 
                 sampleField
                     .padding(.top, 12)

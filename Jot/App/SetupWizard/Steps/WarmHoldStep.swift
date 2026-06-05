@@ -49,7 +49,7 @@ struct WarmHoldStep: View {
     }
 
     private var bodyCopy: String {
-        "After you dictate, Jot stays ready for two minutes — so your next dictation starts instantly, without hopping back to the app. Nothing is recorded until you tap Dictate."
+        "After you dictate, Jot stays ready for two minutes — so your next dictation starts instantly, without hopping back to the app. Nothing is recorded until you tap Jot down."
     }
 
     private var warmHoldBinding: Binding<Bool> {

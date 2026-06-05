@@ -225,7 +225,7 @@ Jot uses two on-device speech models: a fast streaming model that powers the [li
 ### 2.9 Auto-Dismiss on Completion
 Once transcription finishes, the recording view dismisses itself automatically and the user lands on Jot's home view, with the new transcript already saved and available in the [library](#1-2-transcript-library-with-time-grouping).
 
-When the dictation was initiated from a third-party app's keyboard (via the Dictate key) **and there is no active Warm Hold session (cold start)**, Jot is brought to the foreground during recording and the user must manually swipe back to the host app — for example, by swiping right along the iOS app-switcher gesture bar. The transcribed text is pasted into the originating text field once the user returns to that app. Jot does not automatically switch the user back to the host app. On a fresh install or right after an update, the on-device speech model may still be warming up when this cold start fires; in that case the recording surface appears immediately in a brief "Getting ready…" state (rather than leaving the user on the home screen wondering) and begins capturing the moment the model is ready.
+When the dictation was initiated from a third-party app's keyboard (via the Jot down key) **and there is no active Warm Hold session (cold start)**, Jot is brought to the foreground during recording and the user must manually swipe back to the host app — for example, by swiping right along the iOS app-switcher gesture bar. The transcribed text is pasted into the originating text field once the user returns to that app. Jot does not automatically switch the user back to the host app. On a fresh install or right after an update, the on-device speech model may still be warming up when this cold start fires; in that case the recording surface appears immediately in a brief "Getting ready…" state (rather than leaving the user on the home screen wondering) and begins capturing the moment the model is ready.
 
 **Within the Warm Hold window**, this flow is different: Jot is never brought to the foreground, so no manual swipe-back is needed. The keyboard's streaming strip shows recording progress in place, and when transcription completes the text is auto-pasted without the user leaving the host app. See [§13.2](#13-2-warm-hold) for the Warm Hold UI-path disclosure.
 
@@ -338,7 +338,7 @@ When a dictation is in progress inside the keyboard, the top strip transforms in
 A prominent pill button in the keyboard's action row toggles recording on and off. The label and appearance change to reflect the current state — "Dictate" when idle, active stop styling when recording — so the current state is always unambiguous. While recording it is joined by [Pause / Resume](#5-8-pause--resume) and a trash-can Cancel on the left ([§5.1](#5-1-full-custom-keyboard)). When Full Access is not enabled, the button displays "Enable Full Access" and tapping it opens Jot's iOS Settings page (from which the user navigates to Keyboards → Jot to toggle Full Access) instead of starting a recording.
 
 ### 5.5 Post-Stop "Working" State
-Immediately after the user stops a keyboard dictation, the Dictate button transitions to a "Working" label while transcription finishes on-device. The keyboard remains visible and the user can see that processing is in progress before the result is inserted.
+Immediately after the user stops a keyboard dictation, the Jot down button transitions to a "Working" label while transcription finishes on-device. The keyboard remains visible and the user can see that processing is in progress before the result is inserted.
 
 ### 5.6 Actions Popover
 An actions button in the action row opens a compact glass popover with four operations: **Paste** (pastes whatever is currently on the system clipboard into the host app's focused field), **Copy** (places the currently-selected text in the host's focused field on the clipboard; enabled only when there is a non-empty selection AND Full Access is granted), **Undo last insertion** (removes the text the keyboard most recently pasted), and **Redo last insertion** (re-inserts text that was just undone). The popover dismisses after each action.
@@ -358,7 +358,7 @@ Errors and warnings (such as microphone permission issues or model loading failu
 ### 5.11 Full Access Requirement
 The return key works without Full Access. Backspace and Undo/Redo also work without Full Access. The following actions are specifically gated:
 
-- **Dictate**: when Full Access is absent, the Dictate button is replaced by an "Enable Full Access" CTA (with a lock-shield icon). Tapping it opens iOS Settings to Jot's app-settings page; from there the user navigates General → Keyboard → Keyboards → Jot Keyboard → Allow Full Access to flip the toggle.
+- **Jot down**: when Full Access is absent, the Jot down button is replaced by an "Enable Full Access" CTA (with a lock-shield icon). Tapping it opens iOS Settings to Jot's app-settings page; from there the user navigates General → Keyboard → Keyboards → Jot Keyboard → Allow Full Access to flip the toggle.
 - **Paste**: the Paste row in the [Actions Popover](#5-6-actions-popover) is silently disabled (dimmed, non-interactive) without Full Access, because clipboard reads are unavailable. No error is shown.
 - **Copy**: the Copy row in the [Actions Popover](#5-6-actions-popover) is silently disabled without Full Access, because the keyboard can only read the host's selected text when Full Access is granted. No error is shown.
 - **Status banner**: the banner that relays dictation result messages is suppressed entirely when Full Access is absent.
@@ -475,7 +475,7 @@ The vocabulary boost is powered by a small additional on-device model (~100 MB) 
 A structured help reference is accessible from the home header or from [Settings → About](#6-5-about--support). It is presented as a modal sheet from the home screen or as a navigation push from Settings, so it fits naturally into both entry points.
 
 ### 9.2 Getting Started Guide
-The first section of the help screen walks through the basic Jot workflow — install keyboard, tap Dictate, speak, swipe back — in plain language for users who need a refresher after the wizard.
+The first section of the help screen walks through the basic Jot workflow — install keyboard, tap Jot down, speak, swipe back — in plain language for users who need a refresher after the wizard.
 
 ### 9.3 AI Rewrite Guide
 A separate section in the Help screen explains the optional [AI Rewrite](#7-ai-rewrite) feature. It covers three points: tapping the wand icon on any transcript or in the keyboard to trigger a rewrite; the model being fully on-device at about 2.5 GB so text never leaves the device; and enabling the feature via Settings to download the model. (The reassurance that the original transcript stays untouched appears in the [Prompt Picker sheet](#7-5-prompt-picker), not in Help.)

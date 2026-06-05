@@ -196,7 +196,7 @@ struct RecentsListCard: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Color.jotPageInk)
 
-            Text("Tap Dictate to record your first note.")
+            Text("Tap Jot down to record your first note.")
                 .font(.system(size: 14))
                 .foregroundStyle(Color.jotPageInkSecondary)
                 .multilineTextAlignment(.center)

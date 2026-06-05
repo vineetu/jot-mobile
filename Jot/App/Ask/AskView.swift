@@ -344,13 +344,9 @@ struct AskView: View {
 
     private var thinkingView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Cancel preserved from the pre-redesign banner — lets the user abort
-            // a slow retrieval / generation (calls `controller.cancel()`).
-            AskQuestionHeader(
-                question: controller.question,
-                trailingLabel: "Cancel",
-                trailingAction: { controller.cancel() }
-            )
+            // No header pill — closing the sheet (Done) is the way out; a
+            // separate Cancel pill was removed at the user's request.
+            AskQuestionHeader(question: controller.question)
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 10) {
                     AskPulse(duration: 1.1) {
@@ -391,15 +387,10 @@ struct AskView: View {
 
     private var answerView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // While streaming the in-progress answer the header offers Cancel
-            // (calls `controller.cancel()` — keeps the partial). Once done it
-            // shows NO header pill — the bottom "Ask another" CTA covers that,
-            // so a second pill next to the question would be redundant.
-            AskQuestionHeader(
-                question: controller.question,
-                trailingLabel: controller.phase == .done ? nil : "Cancel",
-                trailingAction: controller.phase == .done ? nil : { controller.cancel() }
-            )
+            // No header pill in any answer state — the bottom "Ask another" CTA
+            // covers a fresh question and Done closes the sheet. The Cancel pill
+            // was removed at the user's request.
+            AskQuestionHeader(question: controller.question)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -815,14 +806,17 @@ struct AskView: View {
         }
     }
 
-    /// Force-stop a recording started by the mic without submitting (sheet
-    /// dismissed mid-dictation, or switching to typing). Discards the audio.
+    /// Stop the mic without submitting (sheet dismissed mid-dictation, or
+    /// switching to typing). Uses the GENTLE stop — the same clean stop every
+    /// other surface uses, which honours Warm Hold per the user's setting —
+    /// NOT a force-stop. The in-progress question audio is dropped (never saved,
+    /// never submitted); only the mic is released.
     private func abortDictation() {
         isDictating = false
         stopSilenceMonitor()
         let session = dictationSession
         dictationSession = nil
-        session?.discard()
+        session?.stopGently()
     }
 
     /// Watches the live mic amplitude while dictating. Once the user has spoken

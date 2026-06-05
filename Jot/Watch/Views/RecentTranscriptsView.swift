@@ -77,7 +77,7 @@ struct RecentTranscriptsView: View {
             Text("No transcripts yet")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(JotDesignWatchSafe.jotPageInk)
-            Text("Tap Dictate to record one.")
+            Text("Tap Jot down to record one.")
                 .font(.caption2)
                 .foregroundStyle(JotDesignWatchSafe.jotPageInkSecondary)
                 .multilineTextAlignment(.center)

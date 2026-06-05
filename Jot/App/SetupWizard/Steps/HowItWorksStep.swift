@@ -33,7 +33,7 @@ struct HowItWorksStep: View {
     private let loopDuration: Double = 13
 
     private let steps: [(n: Int, text: String)] = [
-        (1, "Tap Dictate on your keyboard"),
+        (1, "Tap Jot down on your keyboard"),
         (2, "Jot opens and starts recording"),
         (3, "Swipe back to your app"),
         (4, "Stop from the keyboard when you're done"),
@@ -241,7 +241,7 @@ private struct HowScene: View {
         )
         .shadow(color: Color.black.opacity(0.5), radius: 24, x: 0, y: 18)
         .accessibilityElement()
-        .accessibilityLabel("Animation showing four steps: tap Dictate, Jot records, swipe back to your app, stop from the keyboard")
+        .accessibilityLabel("Animation showing four steps: tap Jot down, Jot records, swipe back to your app, stop from the keyboard")
     }
 
     /// Steps 2–3: the Jot recording panel — a clearly-bounded light card filling

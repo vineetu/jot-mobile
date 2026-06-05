@@ -146,7 +146,7 @@ struct HelpView: View {
             VStack(alignment: .leading, spacing: 22) {
                 useCase(
                     "Speak instead of typing, in any app",
-                    Text("You're in Messages, Mail, Slack, your browser — anywhere you'd normally type. Tap the globe key on your iPhone keyboard to switch to Jot, tap Dictate, and speak. Your voice goes straight into the text field you're already in.")
+                    Text("You're in Messages, Mail, Slack, your browser — anywhere you'd normally type. Tap the globe key on your iPhone keyboard to switch to Jot, tap Jot down, and speak. Your voice goes straight into the text field you're already in.")
                 )
 
                 useCase(
@@ -189,8 +189,8 @@ struct HelpView: View {
         editorialSection(title: "Getting started") {
             VStack(alignment: .leading, spacing: 14) {
                 bulletParagraph(
-                    "Tap the coral ",
-                    boldRun: "Dictate",
+                    "Tap the blue ",
+                    boldRun: "Jot down",
                     " button on the home screen to record a thought, anywhere — even when you're not in another app."
                 )
 
@@ -202,7 +202,7 @@ struct HelpView: View {
 
                 bulletParagraph(
                     "When you're in another app, tap ",
-                    boldRun: "Dictate",
+                    boldRun: "Jot down",
                     " on the Jot keyboard. Jot opens, records, transcribes, and pastes back automatically."
                 )
             }

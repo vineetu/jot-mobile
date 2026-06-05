@@ -114,18 +114,25 @@ final class AskController {
     private var orderedIDs: [UUID] = []
     private var transcriptsByID: [UUID: Transcript] = [:]
 
-    /// Top-K retrieval count. 15 is the v1 default — gives the LLM
-    /// enough context without blowing the ~4k-token budget. Tunable.
-    static let retrievalK = 15
+    /// Top-K retrieval count, sized to the answer backend's context window.
+    /// Apple FM is ~4k tokens, so 15 × 500-char snippets is near its ceiling.
+    /// The on-board Qwen has a much larger context, so when it's the effective
+    /// backend we retrieve more sources (and raise the prompt budget below to
+    /// match — a bigger k is pointless if the trimmer caps it back).
+    static let retrievalK = 15            // Apple Intelligence (~4k context)
+    static let retrievalKQwen = 50        // on-board Qwen (large context)
 
     /// Minimum number of plausibly-relevant transcripts before we
     /// invoke the LLM. Below this, we surface a "be more specific"
     /// hint instead of asking the model to confabulate.
     static let vagueThreshold: Int = 3
 
-    /// Hard ceiling on assembled user-turn payload. Keeps us inside
-    /// Apple FM's ~4k context window. See ask-mode.md §7.
-    private static let userTurnCharLimit = 12000
+    /// Hard ceiling on assembled user-turn payload, by backend. Apple FM stays
+    /// inside its ~4k context window (see ask-mode.md §7); Qwen's larger window
+    /// lets the extra `retrievalKQwen` sources actually reach the prompt instead
+    /// of being trimmed away.
+    private static let userTurnCharLimit = 12000        // Apple Intelligence
+    private static let userTurnCharLimitQwen = 40000    // on-board Qwen
 
     /// Per-snippet truncation point. See ask-mode.md §7.
     private static let snippetCharLimit = 500
@@ -233,19 +240,51 @@ final class AskController {
     // MARK: - Pipeline
 
     private func runPipeline(question: String) async {
-        // 1. Retrieve candidates. A deterministic date scope ("last 3
-        //    days", "May 26", "yesterday") takes precedence: a time query
-        //    wants *what I recorded then*, not *what's semantically
-        //    nearest*, so we fetch by `createdAt` range and skip the
-        //    embedding scan entirely. No date scope → semantic top-K.
+        // Pick the answer backend up front so retrieval can size to it: the
+        // on-board Qwen has a far larger context window than Apple FM (~4k
+        // tokens), so we retrieve more sources (`k`) and allow a bigger prompt
+        // budget (`charLimit`) when Qwen is the effective backend. (`.none` keeps
+        // Apple sizing; the unavailable case is still handled below, AFTER the
+        // local date-empty answer, so "you have no notes from X" still works.)
+        let backend = Self.pickBackend()
+        let k: Int
+        let charLimit: Int
+        if case .qwen = backend {
+            k = Self.retrievalKQwen
+            charLimit = Self.userTurnCharLimitQwen
+        } else {
+            k = Self.retrievalK
+            charLimit = Self.userTurnCharLimit
+        }
+
+        // 1. Retrieve candidates. A deterministic date scope ("last 3 days",
+        //    "May 26", "yesterday") is treated as a FILTER, not a separate path:
+        //    - date + a topic ("pricing last week") → rank the in-window notes by
+        //      relevance (the full hybrid vector+keyword ranker), so the topic is
+        //      honored and the top-k keeps the most *relevant* in-window notes.
+        //    - pure date summary, no topic ("summarize last week") → chronological
+        //      in-window (reads oldest→newest).
+        //    No date scope → semantic top-K over everything.
         let dateScope = Self.parseDateScope(from: question, now: Date())
 
         let retrieved: [Transcript]
         if let scope = dateScope {
-            retrieved = retrieveByDate(scope, k: Self.retrievalK)
+            if Self.queryHasTopicBeyondDate(question) {
+                do {
+                    let ranked = try await retrieveTopK(forQuery: question, k: k, dateInterval: scope.interval)
+                    // If nothing in the window matched the topic, fall back to the
+                    // chronological window rather than an empty result.
+                    retrieved = ranked.isEmpty ? retrieveByDate(scope, k: k) : ranked
+                } catch {
+                    Self.log.error("In-window retrieval failed; using chronological: \(error.localizedDescription, privacy: .public)")
+                    retrieved = retrieveByDate(scope, k: k)
+                }
+            } else {
+                retrieved = retrieveByDate(scope, k: k)
+            }
         } else {
             do {
-                retrieved = try await retrieveTopK(forQuery: question, k: Self.retrievalK)
+                retrieved = try await retrieveTopK(forQuery: question, k: k)
             } catch {
                 Self.log.error("Retrieval failed: \(error.localizedDescription, privacy: .public)")
                 phase = .error("Couldn't search your transcripts. Try again.")
@@ -276,8 +315,8 @@ final class AskController {
         transcriptsByID = Dictionary(uniqueKeysWithValues: retrieved.map { ($0.id, $0) })
         orderedIDs = retrieved.map { $0.id }
 
-        // 2. Pick the answer backend per the Settings toggle + availability.
-        let backend = Self.pickBackend()
+        // 2. Backend was picked up front (for sizing). Surface unavailability
+        //    now — AFTER the local date-empty answer above, which needs no model.
         switch backend {
         case .none(let reason):
             phase = .unavailable(reason)
@@ -291,7 +330,8 @@ final class AskController {
         let sanitizedQuestion = Self.stripControlCharacters(from: question)
         let userTurn = Self.buildUserTurn(
             question: sanitizedQuestion,
-            transcripts: retrieved
+            transcripts: retrieved,
+            charLimit: charLimit
         )
 
         do {
@@ -422,14 +462,24 @@ final class AskController {
 
     // MARK: - Retrieval
 
-    private func retrieveTopK(forQuery query: String, k: Int) async throws -> [Transcript] {
+    private func retrieveTopK(forQuery query: String, k: Int, dateInterval: DateInterval? = nil) async throws -> [Transcript] {
         let context = ModelContext(JotModelContainer.shared)
 
         // Brute-force lexical FLOOR over raw transcript text. Every note is
         // reachable this way — indexed or not — so search never goes blind on
         // notes the background indexer hasn't reached yet. Embeddings only
         // *improve* ranking on top of this; they're not a gate for findability.
-        let allTranscripts = (try? context.fetch(FetchDescriptor<Transcript>())) ?? []
+        var allTranscripts = (try? context.fetch(FetchDescriptor<Transcript>())) ?? []
+        // Date scope is a hard FILTER, not a separate path: restrict the candidate
+        // set to the window, then run the SAME hybrid vector+keyword ranking over
+        // it (ranked by the question's topic). So "pricing last week" keeps
+        // "pricing", and the top-k keeps the most *relevant* in-window notes — not
+        // the 15 newest. (Decided architecture — see
+        // docs/plans/ask-retrieval-source-limit-and-date-scope.md.) Half-open
+        // window `[start, end)` mirrors `retrieveByDate`.
+        if let interval = dateInterval {
+            allTranscripts = allTranscripts.filter { $0.createdAt >= interval.start && $0.createdAt < interval.end }
+        }
         let rawDocs = allTranscripts
             .map { (id: $0.id, text: $0.displayText) }
             .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -442,8 +492,14 @@ final class AskController {
 
         // Semantic + chunk-level lexical over CHUNKS (indexed notes only). Chunk
         // matching surfaces an idea buried in a long note that a whole-transcript
-        // vector would average into mush. Mapped up to parent transcripts.
-        let chunks = ChunkStore.allChunks(modelVersion: EmbeddingGemmaService.modelVersion)
+        // vector would average into mush. Mapped up to parent transcripts. When a
+        // date window is active, restrict chunks to in-window parents too so the
+        // ranking can't pull in out-of-window notes.
+        var chunks = ChunkStore.allChunks(modelVersion: EmbeddingGemmaService.modelVersion)
+        if dateInterval != nil {
+            let windowIDs = Set(allTranscripts.map { $0.id })
+            chunks = chunks.filter { windowIDs.contains($0.transcriptID) }
+        }
         if !chunks.isEmpty {
             let parentByChunk = Dictionary(uniqueKeysWithValues: chunks.map { ($0.id, $0.transcriptID) })
 
@@ -513,11 +569,69 @@ final class AskController {
         "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12
     ]
 
-    /// Deterministic, model-free extraction of a date range from the
-    /// question. Returns nil when there's no recognizable time reference
-    /// (the caller then falls back to semantic retrieval). Recognizes:
-    /// "today", "yesterday", "last/past N days/weeks", "this/last week",
-    /// "this/last month", and a specific "Month Day" (either order).
+    private static let weekdayNumbers: [String: Int] = [
+        "sunday": 1, "monday": 2, "tuesday": 3, "wednesday": 4,
+        "thursday": 5, "friday": 6, "saturday": 7
+    ]
+
+    /// Generic scaffolding / request / date words. When a date-scoped question
+    /// contains NOTHING beyond these, it's a pure summary (rank chronologically);
+    /// any remaining content word is the topic to rank by within the window.
+    private static let queryScaffolding: Set<String> = [
+        // interrogatives, pronouns, glue
+        "what", "whats", "which", "who", "whom", "when", "where", "why", "how",
+        "did", "do", "does", "doing", "done", "can", "could", "would", "should",
+        "i", "ive", "im", "id", "me", "my", "mine", "we", "our", "you", "your",
+        "the", "a", "an", "of", "from", "in", "on", "at", "by", "about", "around",
+        "is", "are", "am", "was", "were", "be", "been", "being", "have", "has", "had",
+        "that", "this", "these", "those", "there", "here", "it", "its",
+        "and", "or", "but", "to", "for", "with", "without", "into", "over", "up",
+        "get", "got", "any", "some", "more", "most",
+        "no", "so", "go", "ok", "us", "oh", "hi", "if", "as", "back",
+        "please", "just", "again", "really", "also", "then", "still", "like",
+        // note / recording vocabulary
+        "note", "notes", "record", "recorded", "recording", "recordings",
+        "dictate", "dictated", "dictation", "say", "said", "saying", "speak",
+        "spoke", "spoken", "talk", "talked", "talking", "jot", "jotted",
+        "write", "wrote", "written", "capture", "captured", "thought", "thoughts",
+        // request verbs / quantifiers
+        "summarize", "summarise", "summary", "give", "tell", "show", "list",
+        "pull", "find", "recap", "review", "everything", "all", "anything",
+        "something", "thing", "things", "stuff", "much", "many", "few",
+        // date / time words (so they never count as a topic)
+        "today", "yesterday", "day", "days", "week", "weeks", "weekend",
+        "month", "months", "year", "years", "morning", "afternoon", "evening",
+        "tonight", "night", "last", "past", "previous", "next", "ago", "recent",
+        "recently", "lately", "ever", "since", "between", "during", "until",
+        "through", "early", "late", "end", "beginning", "start", "first",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june", "july", "august",
+        "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    ]
+
+    /// True when a date-scoped question carries a subject to rank by beyond the
+    /// date/scaffolding words — so the in-window notes should be ranked by
+    /// relevance (hybrid) rather than chronology. Heuristic, deterministic.
+    private static func queryHasTopicBeyondDate(_ question: String) -> Bool {
+        // Letter-only tokens (numbers like "30" in "last 30 days" are date
+        // quantities, never topics). A 2+ char token outside the scaffolding set
+        // is a topic — so short real topics ("ai", "hr") still rank by relevance.
+        let tokens = question.lowercased().split { !$0.isLetter }.map(String.init)
+        return tokens.contains { $0.count >= 2 && !queryScaffolding.contains($0) }
+    }
+
+    /// Deterministic, model-free extraction of a date range from the question.
+    /// Returns nil when there's no recognizable time reference (the caller then
+    /// falls back to semantic retrieval). Recognizes: "today", "yesterday",
+    /// "last/past N days/weeks", a weekday ("last Tuesday"), "N days/weeks/months
+    /// ago", "this/last week" and "this/last month" (true CALENDAR week/month,
+    /// `this` ≠ `last`), a year ("last year", "2025"), a date RANGE ("between
+    /// May 1 and May 10"), and a specific "Month Day" (either order).
+    ///
+    /// Why deterministic: an on-device test (`docs/plans/ask-retrieval-source-limit-and-date-scope.md`)
+    /// showed Apple FM is non-deterministic and wrong on relative-date math, so
+    /// the parser owns this; the model is only a fallback for phrasings below.
     static func parseDateScope(from question: String, now: Date) -> DateScope? {
         let calendar = Calendar.current
         let lower = question.lowercased()
@@ -537,21 +651,159 @@ final class AskController {
                 label: "yesterday"
             )
         }
+        if let scope = matchWeekday(lower, startOfToday: startOfToday, calendar: calendar) {
+            return scope
+        }
+        if let scope = matchAgo(lower, now: now, startOfToday: startOfToday, calendar: calendar) {
+            return scope
+        }
         if let scope = matchRelativeRange(lower, now: now, startOfToday: startOfToday, calendar: calendar) {
             return scope
         }
-        if matches(#"\b(this|last|past|previous)\s+week\b"#),
-           let start = calendar.date(byAdding: .day, value: -6, to: startOfToday) {
-            return DateScope(interval: DateInterval(start: start, end: now), label: "the last week")
+        // True calendar week, `this` ≠ `last` (fixes the old "last 7 days" quirk).
+        if let m = lower.range(of: #"\b(this|last|past|previous)\s+week\b"#, options: .regularExpression),
+           let weekInterval = calendar.dateInterval(of: .weekOfYear, for: now) {
+            if lower[m].hasPrefix("this") {
+                return DateScope(interval: DateInterval(start: weekInterval.start, end: now), label: "this week")
+            } else if let prevStart = calendar.date(byAdding: .day, value: -7, to: weekInterval.start) {
+                return DateScope(interval: DateInterval(start: prevStart, end: weekInterval.start), label: "last week")
+            }
         }
-        if matches(#"\b(this|last|past|previous)\s+month\b"#),
-           let start = calendar.date(byAdding: .day, value: -29, to: startOfToday) {
-            return DateScope(interval: DateInterval(start: start, end: now), label: "the last month")
+        // True calendar month, `this` ≠ `last` (fixes the old "last 30 days" bug
+        // where `this month` and `last month` returned the same window).
+        if let m = lower.range(of: #"\b(this|last|past|previous)\s+month\b"#, options: .regularExpression),
+           let monthInterval = calendar.dateInterval(of: .month, for: now) {
+            if lower[m].hasPrefix("this") {
+                return DateScope(interval: DateInterval(start: monthInterval.start, end: now), label: "this month")
+            } else if let prevAnchor = calendar.date(byAdding: .month, value: -1, to: monthInterval.start),
+                      let prevInterval = calendar.dateInterval(of: .month, for: prevAnchor) {
+                return DateScope(interval: prevInterval, label: "last month")
+            }
+        }
+        if let scope = matchYear(lower, now: now, calendar: calendar) {
+            return scope
+        }
+        if let scope = matchDateRange(lower, now: now, calendar: calendar) {
+            return scope
         }
         if let scope = matchSpecificDate(lower, now: now, calendar: calendar) {
             return scope
         }
         return nil
+    }
+
+    /// "last/this/past <weekday>" → the most recent occurrence of that weekday
+    /// strictly before today (e.g. on Wed, "last Tuesday" = yesterday).
+    private static func matchWeekday(_ lower: String, startOfToday: Date, calendar: Calendar) -> DateScope? {
+        let alt = weekdayNumbers.keys.joined(separator: "|")
+        guard let m = lower.range(of: #"\b(?:last|this|past|previous)\s+(\#(alt))\b"#, options: .regularExpression) else {
+            return nil
+        }
+        let frag = String(lower[m])
+        guard let target = weekdayNumbers.first(where: { frag.contains($0.key) })?.value else { return nil }
+        var day = startOfToday
+        repeat {
+            guard let prev = calendar.date(byAdding: .day, value: -1, to: day) else { return nil }
+            day = prev
+        } while calendar.component(.weekday, from: day) != target
+        guard let end = calendar.date(byAdding: .day, value: 1, to: day) else { return nil }
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMM d"
+        return DateScope(interval: DateInterval(start: day, end: end), label: f.string(from: day))
+    }
+
+    /// "N days/weeks/months ago" (N as digit or word). Days → that day; weeks →
+    /// the calendar week N weeks back; months → that calendar month.
+    private static func matchAgo(_ lower: String, now: Date, startOfToday: Date, calendar: Calendar) -> DateScope? {
+        let numAlt = wordNumbers.keys.joined(separator: "|")
+        let pattern = #"\b(\d+|\#(numAlt))\s+(day|days|week|weeks|month|months)\s+ago\b"#
+        guard let rx = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = lower as NSString
+        guard let m = rx.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let numStr = ns.substring(with: m.range(at: 1)); let unit = ns.substring(with: m.range(at: 2))
+        let n = Int(numStr) ?? wordNumbers[numStr] ?? 1; guard n > 0 else { return nil }
+        if unit.hasPrefix("day") {
+            guard let day = calendar.date(byAdding: .day, value: -n, to: startOfToday),
+                  let end = calendar.date(byAdding: .day, value: 1, to: day) else { return nil }
+            return DateScope(interval: DateInterval(start: day, end: end), label: "\(n) day\(n == 1 ? "" : "s") ago")
+        } else if unit.hasPrefix("week") {
+            guard let anchor = calendar.date(byAdding: .day, value: -7 * n, to: startOfToday),
+                  let wi = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return nil }
+            return DateScope(interval: wi, label: "\(n) week\(n == 1 ? "" : "s") ago")
+        } else {
+            guard let anchor = calendar.date(byAdding: .month, value: -n, to: now),
+                  let mi = calendar.dateInterval(of: .month, for: anchor) else { return nil }
+            return DateScope(interval: mi, label: "\(n) month\(n == 1 ? "" : "s") ago")
+        }
+    }
+
+    /// "last year" / "this year" / an explicit "20xx" → that calendar year.
+    private static func matchYear(_ lower: String, now: Date, calendar: Calendar) -> DateScope? {
+        func yearScope(_ y: Int, openEnded: Bool) -> DateScope? {
+            guard let start = calendar.date(from: DateComponents(year: y, month: 1, day: 1)),
+                  let end = openEnded ? now : calendar.date(from: DateComponents(year: y + 1, month: 1, day: 1)) else { return nil }
+            return DateScope(interval: DateInterval(start: start, end: end), label: "\(y)")
+        }
+        let thisYear = calendar.component(.year, from: now)
+        if lower.range(of: #"\blast year\b"#, options: .regularExpression) != nil { return yearScope(thisYear - 1, openEnded: false) }
+        if lower.range(of: #"\bthis year\b"#, options: .regularExpression) != nil { return yearScope(thisYear, openEnded: true) }
+        // An explicit "20xx" only counts as a date scope when it follows a date
+        // preposition ("in/during/from/since/back in 2025"). A bare 4-digit year
+        // ("my 2025 goals", "the 2030 vision") is NOT a time scope — it would
+        // otherwise hijack retrieval and drop the topic.
+        if let rx = try? NSRegularExpression(pattern: #"\b(?:in|during|from|since|back in)\s+(20\d{2})\b"#) {
+            let ns = lower as NSString
+            if let m = rx.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)),
+               let y = Int(ns.substring(with: m.range(at: 1))) {
+                return yearScope(y, openEnded: y == thisYear)
+            }
+        }
+        return nil
+    }
+
+    /// "between May 1 and May 10" / "from May 1 to May 10" / "May 1 to May 10":
+    /// the inclusive span between two "Month Day" tokens that are DIRECTLY joined
+    /// by a range connector. The connector must sit between the two dates (a
+    /// stray "to"/"and" elsewhere in the sentence is ignored), so "remind me to
+    /// call may 5 and check jun 3" is NOT a range.
+    private static func matchDateRange(_ lower: String, now: Date, calendar: Calendar) -> DateScope? {
+        let mdAlt = monthNumbers.keys.joined(separator: "|")
+        let md = #"(?:(?:\#(mdAlt))\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s+(?:\#(mdAlt)))"#
+        // "between X and Y" requires the explicit "between" (a bare "X and Y" is a
+        // list, not a range); "X to/through/until/– Y" is a range on its own.
+        let patterns = [
+            #"\bbetween\s+(\#(md))\s+and\s+(\#(md))\b"#,
+            #"\b(\#(md))\s+(?:to|through|until|[-–—])\s+(\#(md))\b"#,
+        ]
+        for pattern in patterns {
+            guard let m = lower.range(of: pattern, options: .regularExpression) else { continue }
+            let dates = allMonthDays(String(lower[m]), now: now, calendar: calendar)
+            guard let first = dates.min(), let last = dates.max(), first != last,
+                  let end = calendar.date(byAdding: .day, value: 1, to: last) else { continue }
+            let f = DateFormatter(); f.dateFormat = "MMM d"
+            return DateScope(interval: DateInterval(start: first, end: end), label: "\(f.string(from: first))–\(f.string(from: last))")
+        }
+        return nil
+    }
+
+    /// Every "Month Day" / "Day Month" in the string, as start-of-day dates.
+    private static func allMonthDays(_ lower: String, now: Date, calendar: Calendar) -> [Date] {
+        let monthAlt = monthNumbers.keys.joined(separator: "|")
+        let patterns = [#"\b(\#(monthAlt))\s+(\d{1,2})(?:st|nd|rd|th)?\b"#, #"\b(\d{1,2})(?:st|nd|rd|th)?\s+(\#(monthAlt))\b"#]
+        var out: [Date] = []
+        for (idx, pattern) in patterns.enumerated() {
+            guard let rx = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = lower as NSString
+            for m in rx.matches(in: lower, range: NSRange(location: 0, length: ns.length)) {
+                let g1 = ns.substring(with: m.range(at: 1)); let g2 = ns.substring(with: m.range(at: 2))
+                let monthStr = idx == 0 ? g1 : g2; let dayStr = idx == 0 ? g2 : g1
+                guard let month = monthNumbers[monthStr], let day = Int(dayStr), (1...31).contains(day) else { continue }
+                var comps = calendar.dateComponents([.year], from: now); comps.month = month; comps.day = day
+                guard var dt = calendar.date(from: comps).map({ calendar.startOfDay(for: $0) }) else { continue }
+                if dt > now, let prev = calendar.date(byAdding: .year, value: -1, to: dt) { dt = calendar.startOfDay(for: prev) }
+                out.append(dt)
+            }
+        }
+        return out
     }
 
     /// "last/past/previous N day(s)/week(s)" with N as a digit or a word.
@@ -656,7 +908,7 @@ final class AskController {
         Output ONLY the answer text with inline citation markers. No preamble, no bullet headers, no commentary about the question, no "based on your notes" hedging at the front, no list of sources at the end.
         """
 
-    private static func buildUserTurn(question: String, transcripts: [Transcript]) -> String {
+    private static func buildUserTurn(question: String, transcripts: [Transcript], charLimit: Int) -> String {
         var lines: [String] = []
         lines.append("QUESTION:")
         lines.append(question)
@@ -679,7 +931,7 @@ final class AskController {
         // Trim to fit the budget.
         while !transcriptBlocks.isEmpty {
             let assembled = (lines + ["", transcriptBlocks.joined(separator: "\n\n")]).joined(separator: "\n")
-            if assembled.count <= userTurnCharLimit { break }
+            if assembled.count <= charLimit { break }
             transcriptBlocks.removeLast()
         }
 

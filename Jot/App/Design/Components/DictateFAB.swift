@@ -40,7 +40,7 @@ struct DictateFAB: View {
             HStack(spacing: 10) {
                 Image(systemName: "mic.fill")
                     .font(.system(size: 20, weight: .semibold))
-                Text("Dictate")
+                Text("Jot down")
                     .font(.system(size: 18, weight: .semibold))
             }
             .foregroundStyle(Color.white)
@@ -77,7 +77,7 @@ struct DictateFAB: View {
                 .onChanged { _ in isPressed = true }
                 .onEnded { _ in isPressed = false }
         )
-        .accessibilityLabel("Dictate")
+        .accessibilityLabel("Jot down")
         .accessibilityHint("Opens the recording surface")
         .accessibilityAddTraits(.isButton)
     }

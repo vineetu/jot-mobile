@@ -236,7 +236,7 @@ struct RootView: View {
             Text("No transcripts yet")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(JotDesignWatchSafe.jotPageInk)
-            Text("Tap Dictate to record one.")
+            Text("Tap Jot down to record one.")
                 .font(.caption2)
                 .foregroundStyle(JotDesignWatchSafe.jotPageInkSecondary)
                 .multilineTextAlignment(.center)
@@ -313,7 +313,7 @@ private struct MicButton: View {
             VStack(spacing: 4) {
                 Image(systemName: "mic.fill")
                     .font(.title2)
-                Text("Dictate")
+                Text("Jot down")
                     .font(.footnote)
                     .fontWeight(.semibold)
             }
@@ -333,7 +333,7 @@ private struct MicButton: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Start dictation")
+        .accessibilityLabel("Jot down")
         .accessibilityHint("Double-tap to begin recording.")
     }
 }

@@ -696,7 +696,7 @@ struct KeyboardView: View {
                         // Bug A fix: prior copy was "Unlock" — too cryptic.
                         // "Enable Full Access" tells the user exactly what
                         // tapping the pill is going to do.
-                        Text(hasFullAccess ? "Dictate" : "Enable Full Access")
+                        Text(hasFullAccess ? "Jot down" : "Enable Full Access")
                             .font(.system(size: 15, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
@@ -1054,7 +1054,7 @@ struct KeyboardView: View {
 
     private var micAccessibilityLabel: String {
         guard hasFullAccess else { return "Enable Full Access" }
-        return recordingState.isRecording ? "Stop recording" : "Tap to dictate"
+        return recordingState.isRecording ? "Stop recording" : "Jot down"
     }
 
     private var micAccessibilityHint: String {
