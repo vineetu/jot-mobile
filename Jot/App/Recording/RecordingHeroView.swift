@@ -28,11 +28,12 @@
 //  *display* of the live stream differs:
 //   - **App-Dictate** (`.startRecording` / `.adoptInFlight`): the user chose to
 //     be here, so the live stream shows immediately (full WS-A treatment).
-//   - **Cold-start keyboard** (`.coldStartFromExternalKeyboard`): Apple forces
-//     the app to foreground to record; this surface's job is to send the user
-//     BACK to their app, not to keep them watching a stream. So we WITHHOLD the
-//     live stream (and suppress the "Listening…/Loading…" placeholder) and show
-//     swipe-back coaching instead. The stream reveals on
+//   - **External-keyboard launch** (`.openedFromExternalKeyboard`): the keyboard
+//     had to foreground Jot from another app to get the mic (iOS won't let the
+//     keyboard start it) — cold OR warm process. This surface's job is to send
+//     the user BACK to their app, not to keep them watching a stream. So we
+//     WITHHOLD the live stream (and suppress the "Listening…/Loading…"
+//     placeholder) and show the swipe-back cue instead. The stream reveals on
 //     `max(coaching beat, first real partial token)` — gated on real text so the
 //     pane is never empty — then fades transparent → translucent. A recording
 //     indicator (red dot + timer) stays visible the whole withhold window so
@@ -173,27 +174,40 @@ struct RecordingHeroView: View {
     // meaningful starting element — the recording status (red dot + timer).
     @AccessibilityFocusState private var recordingStatusFocused: Bool
 
-    /// True while the cold-start swipe-back coaching overlay is visible.
-    /// Driven by `.onAppear` (when `intent == .coldStartFromExternalKeyboard`
-    /// AND show count is below the suppression limit). Auto-cleared by a timer
-    /// (≥ the coaching animation length) or by user tap on the overlay itself.
-    @State private var showColdStartNudge: Bool = false
+    /// Whether the swipe-back cue is shown. Pure derivation — no counter, no
+    /// timer, no dismissal: the cue is visible for exactly the external-keyboard
+    /// withhold window (we pulled the user in from another app) and loops until
+    /// the live transcript reveals. `revealStream()` flips `streamRevealed`
+    /// inside a 0.7s curve, so the cue fades out and the controls drop on that
+    /// same animation. Fires for both cold- and warm-process keyboard opens —
+    /// see `isExternalKeyboardLaunch`.
+    private var showsSwipeCue: Bool {
+        isExternalKeyboardLaunch && !streamRevealed
+    }
 
-    /// True on the cold-start keyboard path (`.coldStartFromExternalKeyboard`).
-    /// Cached at body level so the stream-withhold + coaching branches read a
-    /// single source.
-    private var isColdStartPath: Bool {
-        if case .coldStartFromExternalKeyboard = intent { return true }
+    /// Bottom inset for the transport-control row. During the swipe-cue window
+    /// the controls lift to lower-center, clearing the bottom-anchored cue band
+    /// (the cue's cards top out ~135pt above the device bottom edge); otherwise
+    /// they sit at the normal bottom. Animated via `streamRevealed`.
+    private var controlsBottomInset: CGFloat {
+        showsSwipeCue ? 196 : 36
+    }
+
+    /// True whenever the keyboard opened Jot from another app
+    /// (`.openedFromExternalKeyboard`) — cold OR warm process; NOT a process-
+    /// lifecycle distinction. Single source for the stream-withhold + swipe-cue
+    /// branches: whenever this is true, the user has an app to swipe back to.
+    private var isExternalKeyboardLaunch: Bool {
+        if case .openedFromExternalKeyboard = intent { return true }
         return false
     }
 
     /// §9 hero top-space "story" messages (sequenced H1→H4). H5 is the pinned
     /// stream-arrival caption (rendered separately once the stream reveals, not
     /// folded into rotation so it's actually seen).
-    // NOTE: the "head back — swipe right along the bottom" line lives in the
-    // dedicated `ColdStartNudgeOverlay` (shown first, at the bottom). It is
-    // intentionally NOT repeated here, so once the nudge dismisses these rotate
-    // through fresh value props rather than echoing what the user just read.
+    // NOTE: the "head back — swipe right along the bottom" guidance is carried
+    // wordlessly by the `SwipeBackCardCue` at the bottom, so these top lines
+    // stay focused on value props rather than repeating the return instruction.
     private static let heroTopMessages: [String] = [
         "Recording stays on while you go. Your words land back in that field.",
         "You don't have to watch this — looking away helps you find the words.",
@@ -225,30 +239,33 @@ struct RecordingHeroView: View {
                 Spacer(minLength: 24)
 
                 bottomControls
-                    .padding(.bottom, 36)
+                    // Cold-start window: the controls lift to lower-center so the
+                    // swipe-back cue owns the bottom band; on stream reveal they
+                    // glide back to the bottom. The travel rides revealStream()'s
+                    // 0.7s curve (both driven by `streamRevealed`) so it's smooth.
+                    .padding(.bottom, controlsBottomInset)
             }
 
-            if showColdStartNudge {
-                ColdStartNudgeOverlay(
-                    reduceMotion: reduceMotion,
-                    onTap: { showColdStartNudge = false }
-                )
-                .padding(.horizontal, 24)
-                // Anchored to the BOTTOM, just above the recording controls —
-                // the coaching is about "swipe right along the bottom," so the
-                // affordance belongs where the gesture happens. Shown first on
-                // cold open; the top message space stays empty until it dismisses
-                // (see `withheldTopSpace`) so the two never overlap.
-                .padding(.bottom, 130)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .transition(reduceMotion
-                    ? .opacity
-                    : .move(edge: .bottom).combined(with: .opacity))
-                .zIndex(1)
+            if showsSwipeCue {
+                // The looping two-card iOS app-switch demo. Non-interactive
+                // decoration — `allowsHitTesting(false)` so it never swallows the
+                // real home-indicator swipe. Bottom-anchored INTO the safe area
+                // (`ignoresSafeArea`) so its gray home bar lands on the device's
+                // real home indicator and the slide plays exactly where the user
+                // must swipe. No counter, no auto-dismiss: it loops until the
+                // transcript reveals (`showsSwipeCue` derives from `!streamRevealed`).
+                SwipeBackCardCue(reduceMotion: reduceMotion)
+                    .frame(height: 220)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .ignoresSafeArea(.container, edges: .bottom)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                    .accessibilityElement()
+                    .accessibilityLabel("Swipe right along the bottom of the screen to head back to your app. Jot keeps listening; your text pastes when you stop.")
+                    .zIndex(1)
             }
 
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showColdStartNudge)
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         // See TranscriptDetailView for rationale — re-apply AFTER hiding
@@ -261,7 +278,6 @@ struct RecordingHeroView: View {
             pauseHaptic.prepare()
             successHaptic.prepare()
             beginRecordingFlow()
-            maybeShowColdStartNudge()
             configureStreamReveal()
             beginTimerLoop()
             // Move VoiceOver focus to the live transcript card instead of
@@ -339,7 +355,7 @@ struct RecordingHeroView: View {
         // streamingText only changes on a partial, and the guard short-circuits
         // once `streamRevealed` is true.
         .onChange(of: streamingPartial.streamingText) { _, newText in
-            guard isColdStartPath, !streamRevealed, coachingBeatElapsed else { return }
+            guard isExternalKeyboardLaunch, !streamRevealed, coachingBeatElapsed else { return }
             if !newText.isEmpty {
                 revealStream()
             }
@@ -447,32 +463,30 @@ struct RecordingHeroView: View {
         // stream + placeholder are fully suppressed (the recording indicator in
         // the top bar carries the "still listening" proof). Once revealed (or
         // on the App-Dictate path), the stream owns the space.
-        if isColdStartPath && !streamRevealed {
+        if isExternalKeyboardLaunch && !streamRevealed {
             withheldTopSpace
         } else {
             streamingCard
         }
     }
 
-    /// Cold-start withhold window: sequenced rotating micro-messages (H1→H4)
-    /// occupying the freed top space, plus a soft instructional anchor. No live
-    /// stream, no "Listening…/Loading…" placeholder.
+    /// External-keyboard withhold window: the sequenced rotating micro-messages
+    /// (`heroTopMessages`) occupying the freed top space, shown above the
+    /// swipe-back cue. No live stream, no "Listening…/Loading…" placeholder.
     private var withheldTopSpace: some View {
         VStack(alignment: .leading, spacing: 18) {
-            // Held back while the bottom swipe-nudge is showing, so the two never
-            // collide on cold open. The rotator mounts only once the nudge has
-            // dismissed — it then starts fresh from the first message and fades in.
-            if !showColdStartNudge {
-                RotatingMessageView(
-                    messages: Self.heroTopMessages,
-                    dwell: 5,
-                    sequenced: true,
-                    font: JotType.displaySerif(22),
-                    color: .jotPageInk,
-                    alignment: .leading
-                )
-                .transition(.opacity)
-            }
+            // Rotating value-prop messages at the top. They coexist with the
+            // swipe-back cue (which lives in its own band pinned to the bottom),
+            // so there's nothing to hold back — text up top, gesture demo down low.
+            RotatingMessageView(
+                messages: Self.heroTopMessages,
+                dwell: 5,
+                sequenced: true,
+                font: JotType.displaySerif(22),
+                color: .jotPageInk,
+                alignment: .leading
+            )
+            .transition(.opacity)
 
             Spacer(minLength: 0)
         }
@@ -480,7 +494,6 @@ struct RecordingHeroView: View {
         .padding(.top, 26)
         .padding(.horizontal, 24)
         .padding(.bottom, 20)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: showColdStartNudge)
         .accessibilityElement(children: .combine)
     }
 
@@ -537,7 +550,7 @@ struct RecordingHeroView: View {
         // from transparent → translucent (rising out of the background, never
         // snapping on). On the App-Dictate path `streamRevealed` is already
         // true at appear, so this is a no-op (opacity 1, no transition fired).
-        .opacity(streamRevealed || !isColdStartPath ? 1 : 0)
+        .opacity(streamRevealed || !isExternalKeyboardLaunch ? 1 : 0)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             text.isEmpty
@@ -705,15 +718,14 @@ struct RecordingHeroView: View {
             } else {
                 startNewRecording()
             }
-        case .adoptInFlight, .coldStartFromExternalKeyboard:
+        case .adoptInFlight, .openedFromExternalKeyboard:
             // Same lifecycle for both — adopt the running session. The
-            // cold-start case additionally surfaces the swipe-back coaching
-            // overlay via `maybeShowColdStartNudge` (gated on the show-count
-            // limit) and withholds the stream (§2a). NEVER call `start()` from
-            // this path.
+            // external-keyboard case additionally surfaces the `SwipeBackCardCue`
+            // (derived from `showsSwipeCue`) and withholds the stream (§2a).
+            // NEVER call `start()` from this path.
             if recordingService.isRecording {
                 adoptInFlightRecording()
-            } else if case .coldStartFromExternalKeyboard = intent {
+            } else if case .openedFromExternalKeyboard = intent {
                 // The keyboard just initiated this recording, but on a fresh
                 // install / update it can be DEFERRED behind a cold speech-model
                 // load. Rather than treat "no recording yet" as stale and pop
@@ -754,7 +766,7 @@ struct RecordingHeroView: View {
     ///    owns the coaching-beat half (and, as a fallback, reveals on the
     ///    coaching beat if a partial already arrived).
     private func configureStreamReveal() {
-        guard isColdStartPath else {
+        guard isExternalKeyboardLaunch else {
             // App-Dictate: stream is shown immediately, full treatment.
             streamRevealed = true
             coachingBeatElapsed = true
@@ -784,35 +796,12 @@ struct RecordingHeroView: View {
     private func revealStream() {
         guard !streamRevealed else { return }
         revealTask?.cancel()
+        // Flipping `streamRevealed` inside this curve drives the whole reveal in
+        // one coordinated motion: the stream fades in, the swipe cue fades out,
+        // and the controls glide from lower-center back to the bottom — all
+        // because `showsSwipeCue` / `controlsBottomInset` derive from this flag.
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.7)) {
             streamRevealed = true
-        }
-        // The coaching overlay has done its job once the stream is up.
-        showColdStartNudge = false
-    }
-
-    /// Decides whether the cold-start swipe-back coaching overlay should appear
-    /// on this presentation. Conditions:
-    ///   1. Intent is `.coldStartFromExternalKeyboard`.
-    ///   2. The user has seen the overlay fewer than 7 times across the
-    ///      app's lifetime (UserDefaults `jot.hero.coldStartNudgeShownCount`).
-    /// When both hold, surfaces the overlay and increments the counter. The
-    /// overlay self-dismisses after a window ≥ its ~5s animation (round-2 D1),
-    /// or on user tap.
-    private func maybeShowColdStartNudge() {
-        guard case .coldStartFromExternalKeyboard = intent else { return }
-        let key = "jot.hero.coldStartNudgeShownCount"
-        let count = UserDefaults.standard.integer(forKey: key)
-        // Raised 7 → 50 so the "head back to your app" coaching reliably appears
-        // during early use / testing instead of self-suppressing after a week.
-        guard count < 50 else { return }
-        UserDefaults.standard.set(count + 1, forKey: key)
-        showColdStartNudge = true
-        // Auto-dismiss after 6s — raised from the prior 4s so the ~5s coaching
-        // animation isn't truncated mid-demo (round-2 D1 / WCAG 2.2.2).
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(6))
-            showColdStartNudge = false
         }
     }
 
@@ -1081,199 +1070,390 @@ private struct LoadingPlaceholderText: View {
     }
 }
 
-/// Cold-start "head back to your app" coaching overlay shown at the top of the
-/// Recording Hero on cold-start auto-nav from a third-party keyboard (round-2
-/// §2a / D1). Evolves the original glass-pill nudge into a finite, animated
-/// demonstration of the RIGHTWARD home-indicator return gesture, alternating
-/// (across the demo) with the "‹ Back to App" pill hint that iOS draws on this
-/// inter-app path.
-///
-/// Behavior:
-///   - Animates a rightward home-indicator drag (`Color.jotBlueTop` chevron +
-///     ghost touch-point + comet trail dragging left→right along a dimmed
-///     mini home-indicator pill). Finite — ~2 cycles, ≤5s total, clears
-///     WCAG 2.2.2.
-///   - Alternates with the "‹ Back to App" pill hint so both return methods
-///     are coached (D1: "once this, once that").
-///   - Reduce Motion → a STATIC end-frame (no perpetual motion).
-///   - VoiceOver → `.announcement` (does NOT use `.screenChanged`, which would
-///     fight the hero's `recordingStatusFocused`).
-///   - Tap to dismiss; the parent also auto-dismisses after a window ≥ this
-///     animation, and the 7-show suppression is enforced upstream
-///     (`maybeShowColdStartNudge`).
-private struct ColdStartNudgeOverlay: View {
-    let reduceMotion: Bool
-    let onTap: () -> Void
 
-    /// Toggles between the swipe-demo variant and the back-pill hint variant
-    /// (D1 — coach both return methods, alternating). Advanced on a slow timer
-    /// while the overlay lives; frozen on the swipe variant under Reduce Motion.
-    @State private var showPillVariant: Bool = false
-    /// 0→1 drag progress of the ghost touch-point along the home-indicator
-    /// pill, driving the rightward demo. Frozen at the end-frame under Reduce
-    /// Motion.
-    @State private var dragProgress: CGFloat = 0
-    @State private var variantTask: Task<Void, Never>?
+// MARK: - Swipe-back card cue
+
+/// The looping, wordless "swipe back to your app" demonstration pinned to the
+/// bottom of the cold-start recording surface. It reproduces the real iOS
+/// app-switch edge gesture: a finger presses the home-indicator bar and drags
+/// right; the current app (Jot) shrinks into a card and slides off to the right
+/// while the previous app's card follows in from the left. The motion is the
+/// whole message — there is no copy of its own (the reassurance text lives at
+/// the top of the screen).
+///
+/// Pixel-ported from `design_handoff_swipe_back_cue/prototype/gestures.css`:
+/// cards 122×104 r20, exactly 138pt apart; finger 40 + ripple ring; home bar
+/// 138×5; stage 150 tall; one loop = 4.25s, every segment eased with
+/// cubic-bezier(0.45, 0.02, 0.2, 1), repeating forever.
+///
+/// Non-interactive — the caller sets `allowsHitTesting(false)` so it never
+/// captures the user's real swipe. Reduce Motion → a static end-frame (two
+/// cards offset apart, finger centered, no ripple) per the handoff.
+private struct SwipeBackCardCue: View {
+    let reduceMotion: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// One loop in seconds (handoff: 3.4s ÷ 0.8 speed ≈ 4.25s).
+    private let period: Double = 4.25
+
+    // Geometry is BOTTOM-anchored: the cue extends into the bottom safe area
+    // (`ignoresSafeArea` at the call site) and the gray home-indicator bar is
+    // drawn directly on top of the device's real home indicator, so the slide
+    // demo plays exactly where the user must swipe. `homeBarInsetFromBottom` is
+    // the system home-indicator metric (bar bottom ~8pt + half its 5pt height).
+    private let homeBarInsetFromBottom: CGFloat = 11
+    /// Gap between the bottom edge of the (entirely-above) cards and the bar.
+    private let cardToHomeGap: CGFloat = 20
+    private let cardHeight: CGFloat = 104
+    /// Finger rides on the bar — pad sits ~12.5pt above its center (prototype),
+    /// so the contact reads as pressing the indicator while it drags along it.
+    private let fingerAboveBar: CGFloat = 12.5
+
+    /// All animated values for a single frame of the loop. Geometry/scale are
+    /// CGFloat (for `.position`/`.scaleEffect`); opacities are Double.
+    private struct CueFrame {
+        var jotX, jotScale: CGFloat
+        var jotOpacity: Double
+        var prevX, prevScale: CGFloat
+        var prevOpacity: Double
+        var touchX, touchY, touchScale: CGFloat
+        var touchOpacity: Double
+        var rippleScale: CGFloat
+        var rippleOpacity: Double
+    }
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 12) {
-                headline
-
-                if showPillVariant {
-                    backPillHint
-                        .transition(.opacity)
-                } else {
-                    swipeDemo
-                        .transition(.opacity)
+        GeometryReader { geo in
+            let cx = geo.size.width / 2
+            // Anchor everything to the band's true bottom (= device bottom edge,
+            // since the cue ignores the bottom safe area).
+            let homeY = geo.size.height - homeBarInsetFromBottom
+            let cardY = homeY - cardToHomeGap - cardHeight / 2   // cards float fully above the bar
+            let fingerY = homeY - fingerAboveBar
+            if reduceMotion {
+                cueBody(Self.reducedMotionFrame, centerX: cx, homeY: homeY, cardY: cardY, fingerY: fingerY)
+            } else {
+                TimelineView(.animation) { tl in
+                    cueBody(Self.frames(at: Self.loopPhase(tl.date, period: period)),
+                            centerX: cx, homeY: homeY, cardY: cardY, fingerY: fingerY)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                // Bumped opacity vs. the standard `jotKeyboardGlassHairline`
-                // token so the pill reads crisply on the Recording Hero's
-                // tinted wallpaper in both modes. Same mitigation pattern
-                // as the keyboard Cancel button.
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(
-                        Color(uiColor: UIColor { trait in
-                            trait.userInterfaceStyle == .dark
-                                ? UIColor(white: 1.0, alpha: 0.12)
-                                : UIColor(white: 0.0, alpha: 0.08)
-                        }),
-                        lineWidth: 0.5
+        }
+    }
+
+    private func cueBody(_ f: CueFrame, centerX cx: CGFloat,
+                         homeY: CGFloat, cardY: CGFloat, fingerY: CGFloat) -> some View {
+        ZStack {
+            // Gray home-indicator bar (back layer) — sits on the device's real
+            // home indicator; the finger slides right along it.
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(railColor)
+                .frame(width: 138, height: 5)
+                .position(x: cx, y: homeY)
+
+            // Previous app card — follows in from the left.
+            previousAppCard
+                .scaleEffect(f.prevScale)
+                .opacity(f.prevOpacity)
+                .position(x: cx + f.prevX, y: cardY)
+
+            // Jot card — above the previous card in z so it slides over it.
+            jotAppCard
+                .scaleEffect(f.jotScale)
+                .opacity(f.jotOpacity)
+                .position(x: cx + f.jotX, y: cardY)
+
+            // Finger contact + ripple (front layer) — drags right along the bar.
+            ZStack {
+                Circle()
+                    .strokeBorder(rippleColor, lineWidth: 2)
+                    .frame(width: 58, height: 58)
+                    .scaleEffect(f.rippleScale)
+                    .opacity(f.rippleOpacity)
+                fingerContact
+                    .scaleEffect(f.touchScale)
+            }
+            .opacity(f.touchOpacity)
+            .position(x: cx + f.touchX, y: fingerY + f.touchY)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    // MARK: Cards
+
+    private var jotAppCard: some View {
+        cardContainer(border: cardBorder, background: { jotCardBackground }) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    jotIcon
+                    bar(width: 30, height: 7, radius: 4, color: inkSub.opacity(0.5))
+                    Spacer(minLength: 0)
+                }
+                .padding(.bottom, 9)
+                // ac-head — 80% width header bar.
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.6), inkSub],
+                            startPoint: .leading, endPoint: .trailing
+                        )
                     )
-            )
+                    .opacity(0.5)
+                    .frame(height: 13)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, 20)   // ≈ 80% of the 98pt inner width
+                    .padding(.bottom, 9)
+                fullRow(color: inkSub.opacity(0.32))
+                    .padding(.bottom, 7)
+                shortRow(color: inkSub.opacity(0.32))
+                Spacer(minLength: 0)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        // VoiceOver: announce without stealing focus from the hero's
-        // recordingStatusFocused (round-2 D1 — `.announcement`, not
-        // `.screenChanged`).
-        .accessibilityAddTraits(.isButton)
-        .onAppear {
-            UIAccessibility.post(notification: .announcement, argument: accessibilityLabel)
-            startAnimating()
-        }
-        .onDisappear { variantTask?.cancel() }
     }
 
-    private var headline: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(showPillVariant ? "Tap “‹ Back” to return to your app" : "Head back to your app")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-            Text("Jot keeps listening — your text pastes when you stop.")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(Color.jotInk.opacity(0.65))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Animated rightward home-indicator drag demo. A ghost touch-point with a
-    /// short comet trail rides a dimmed mini home-indicator pill from left to
-    /// right, a `jotBlueTop` chevron pointing the way. Reduce Motion freezes
-    /// the touch-point at the end-frame (right edge) with no trail motion.
-    private var swipeDemo: some View {
-        GeometryReader { geo in
-            let pillWidth = geo.size.width
-            let dotSize: CGFloat = 26
-            let travel = max(0, pillWidth - dotSize)
-            let x = reduceMotion ? travel : dragProgress * travel
-
-            ZStack(alignment: .leading) {
-                // Dimmed mini home-indicator pill.
-                Capsule(style: .continuous)
-                    .fill(Color.jotInk.opacity(0.12))
-                    .frame(height: 5)
-                    .frame(maxWidth: .infinity)
-                    .frame(maxHeight: .infinity, alignment: .center)
-
-                // Comet trail behind the touch-point (suppressed under Reduce
-                // Motion — it implies motion).
-                if !reduceMotion {
-                    Capsule(style: .continuous)
+    private var previousAppCard: some View {
+        cardContainer(border: prevBorder, background: { prevCardBackground }) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [Color.jotBlueTop.opacity(0.0), Color.jotBlueTop.opacity(0.35)],
-                                startPoint: .leading,
-                                endPoint: .trailing
+                                colors: [Color(red: 0.557, green: 0.592, blue: 0.651),
+                                         Color(red: 0.431, green: 0.463, blue: 0.525)],
+                                startPoint: .top, endPoint: .bottom
                             )
                         )
-                        .frame(width: max(0, x), height: 10)
-                        .frame(maxHeight: .infinity, alignment: .center)
+                        .frame(width: 18, height: 18)
+                    bar(width: 34, height: 7, radius: 4, color: Color(red: 0.078, green: 0.157, blue: 0.314).opacity(0.22))
+                    Spacer(minLength: 0)
                 }
-
-                // Ghost touch-point + rightward chevron.
-                ZStack {
-                    Circle()
-                        .fill(Color.jotBlueTop.opacity(0.18))
-                        .frame(width: dotSize, height: dotSize)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.jotBlueTop)
-                }
-                .frame(maxHeight: .infinity, alignment: .center)
-                .offset(x: x)
+                .padding(.bottom, 9)
+                fullRow(color: prevRowColor).padding(.bottom, 7)
+                fullRow(color: prevRowColor).padding(.bottom, 7)
+                shortRow(color: prevRowColor)
+                Spacer(minLength: 0)
             }
         }
-        .frame(height: 26)
-        .accessibilityHidden(true)
     }
 
-    /// "‹ Back to App" pill hint — the breadcrumb iOS draws top-left on the
-    /// inter-app cold-start path (D1). Static; coached alongside the swipe.
-    private var backPillHint: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.jotBlueTop)
-            Text("Back to App")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(Color.jotInk.opacity(0.8))
+    private func cardContainer<B: View, C: View>(
+        border: Color,
+        @ViewBuilder background: () -> B,
+        @ViewBuilder content: () -> C
+    ) -> some View {
+        content()
+            .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
+            .frame(width: 122, height: 104, alignment: .topLeading)
+            .background { background() }
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(border, lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.5), radius: 18, x: 0, y: 12)
+    }
+
+    // MARK: Card pieces
+
+    private var jotIcon: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(blueGradient)
+            .frame(width: 18, height: 18)
+            .overlay(
+                Text("j")
+                    .font(Font.custom(JotType.frauncesItalic, size: 12))
+                    .foregroundStyle(.white)
+            )
+            .shadow(color: Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.44), radius: 3, x: 0, y: 2)
+    }
+
+    private var fingerContact: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: Color(red: 0.227, green: 0.612, blue: 1.0), location: 0.0),
+                        .init(color: Color(red: 0.102, green: 0.549, blue: 1.0), location: 0.58),
+                        .init(color: Color(red: 0.0, green: 0.392, blue: 0.8), location: 1.0)
+                    ]),
+                    center: UnitPoint(x: 0.5, y: 0.4), startRadius: 0, endRadius: 20
+                )
+            )
+            .frame(width: 40, height: 40)
+            .overlay(
+                Circle()
+                    .fill(.white.opacity(0.55))
+                    .frame(width: 22, height: 6)
+                    .blur(radius: 3)
+                    .offset(y: -12)
+            )
+            .shadow(color: Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.44), radius: 11, x: 0, y: 8)
+    }
+
+    private func bar(width: CGFloat, height: CGFloat, radius: CGFloat, color: Color) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(color)
+            .frame(width: width, height: height)
+    }
+
+    private func fullRow(color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(color)
+            .frame(height: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func shortRow(color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(color)
+            .frame(height: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 37)   // ≈ 62% of the 98pt inner width
+    }
+
+    // MARK: Backgrounds & colors (handoff hex is the source of truth)
+
+    @ViewBuilder private var jotCardBackground: some View {
+        let rr = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        if colorScheme == .dark {
+            rr.fill(
+                LinearGradient(
+                    colors: [Color(red: 0.106, green: 0.173, blue: 0.310),
+                             Color(red: 0.075, green: 0.125, blue: 0.227)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            .overlay(
+                RadialGradient(
+                    colors: [Color(red: 0.180, green: 0.455, blue: 0.769).opacity(0.55), .clear],
+                    center: UnitPoint(x: 0.5, y: -0.1), startRadius: 0, endRadius: 110
+                )
+            )
+        } else {
+            rr.fill(
+                LinearGradient(
+                    colors: [Color(red: 0.854, green: 0.918, blue: 0.990),
+                             Color(red: 0.933, green: 0.949, blue: 0.976)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            .overlay(
+                RadialGradient(
+                    colors: [Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.26), .clear],
+                    center: UnitPoint(x: 0.5, y: -0.1), startRadius: 0, endRadius: 110
+                )
+            )
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            Capsule(style: .continuous).fill(Color.jotInk.opacity(0.06))
+    }
+
+    private var prevCardBackground: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(Color(red: 0.957, green: 0.965, blue: 0.980))
+    }
+
+    private var blueGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color(red: 0.180, green: 0.608, blue: 1.0),
+                     Color(red: 0.055, green: 0.478, blue: 0.902),
+                     Color(red: 0.0, green: 0.392, blue: 0.8)],
+            startPoint: .top, endPoint: .bottom
         )
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityHidden(true)
     }
 
-    private var accessibilityLabel: String {
-        "Head back to your app by swiping right along the bottom of the screen, or tap the Back button at the top left. Jot keeps listening; your text pastes when you stop. Tap to dismiss."
+    private var inkSub: Color {
+        colorScheme == .dark
+            ? Color(red: 0.914, green: 0.933, blue: 0.969).opacity(0.66)
+            : Color(red: 0.086, green: 0.125, blue: 0.204).opacity(0.62)
+    }
+    private var railColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.914, green: 0.933, blue: 0.969).opacity(0.30)
+            : Color(red: 0.086, green: 0.125, blue: 0.204).opacity(0.26)
+    }
+    private var cardBorder: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.11)
+            : Color(red: 0.078, green: 0.157, blue: 0.314).opacity(0.10)
+    }
+    private var prevBorder: Color { Color(red: 0.078, green: 0.157, blue: 0.314).opacity(0.10) }
+    private var prevRowColor: Color { Color(red: 0.078, green: 0.157, blue: 0.314).opacity(0.13) }
+    private var rippleColor: Color { Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.55) }
+
+    // MARK: Keyframe sampling
+
+    /// cubic-bezier(0.45, 0.02, 0.2, 1) — the shared per-segment easing.
+    private static func ease(_ x: Double) -> Double {
+        let x1 = 0.45, y1 = 0.02, x2 = 0.20, y2 = 1.0
+        func curveX(_ t: Double) -> Double {
+            let mt = 1 - t
+            return 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t
+        }
+        func curveY(_ t: Double) -> Double {
+            let mt = 1 - t
+            return 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t
+        }
+        var lo = 0.0, hi = 1.0, t = x
+        for _ in 0..<24 {
+            let xe = curveX(t)
+            if abs(xe - x) < 0.0004 { return curveY(t) }
+            if xe < x { lo = t } else { hi = t }
+            t = (lo + hi) * 0.5
+        }
+        return curveY(t)
     }
 
-    /// Drives the finite drag demo + variant alternation. Under Reduce Motion
-    /// nothing animates — the swipe demo is shown as a static end-frame and the
-    /// variant never flips (no perpetual motion, WCAG 2.2.2).
-    private func startAnimating() {
-        guard !reduceMotion else { return }
-        variantTask?.cancel()
-        variantTask = Task { @MainActor in
-            // Two drag cycles on the swipe variant (~2.8s each — the slide is
-            // slowed 50% for legibility), then a beat on the pill hint, then
-            // back. Alternation continues until the parent's auto-dismiss.
-            while !Task.isCancelled {
-                // Swipe demo: two rightward drags.
-                showPillVariant = false
-                for _ in 0..<2 {
-                    dragProgress = 0
-                    withAnimation(.easeInOut(duration: 2.4)) { dragProgress = 1 }
-                    try? await Task.sleep(for: .milliseconds(2800))
-                    guard !Task.isCancelled else { return }
-                }
-                // Pill hint beat.
-                withAnimation(.easeInOut(duration: 0.3)) { showPillVariant = true }
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeInOut(duration: 0.3)) { showPillVariant = false }
+    /// Piecewise sample of a keyframe track, easing each segment.
+    private static func sample(_ stops: [(Double, Double)], _ t: Double) -> Double {
+        guard let first = stops.first else { return 0 }
+        if t <= first.0 { return first.1 }
+        for i in 1..<stops.count {
+            let (t1, v1) = stops[i]
+            if t <= t1 {
+                let (t0, v0) = stops[i - 1]
+                let span = t1 - t0
+                let local = span > 0 ? (t - t0) / span : 1
+                return v0 + (v1 - v0) * ease(local)
             }
         }
+        return stops.last!.1
     }
+
+    private static func loopPhase(_ date: Date, period: Double) -> Double {
+        let s = date.timeIntervalSinceReferenceDate
+        let m = s.truncatingRemainder(dividingBy: period)
+        return (m < 0 ? m + period : m) / period
+    }
+
+    // Tracks (fractions of the loop) — transcribed straight from gestures.css.
+    private static let jotXStops: [(Double, Double)]      = [(0, 0), (0.06, 0), (0.18, 0), (0.56, 138), (0.66, 180), (1, 180)]
+    private static let jotScaleStops: [(Double, Double)]  = [(0, 0.97), (0.06, 1), (0.18, 0.93), (0.56, 0.93), (0.66, 0.9), (1, 0.9)]
+    private static let jotOpacityStops: [(Double, Double)] = [(0, 0), (0.06, 1), (0.18, 1), (0.56, 1), (0.66, 0), (1, 0)]
+    private static let prevXStops: [(Double, Double)]     = [(0, -138), (0.18, -138), (0.56, 0), (1, 0)]
+    private static let prevScaleStops: [(Double, Double)] = [(0, 0.93), (0.18, 0.93), (0.56, 0.93), (0.70, 0.96), (0.82, 0.98), (1, 0.98)]
+    private static let prevOpacityStops: [(Double, Double)] = [(0, 0), (0.18, 0), (0.25, 1), (0.56, 1), (0.70, 1), (0.82, 0), (1, 0)]
+    private static let touchXStops: [(Double, Double)]    = [(0, -66), (0.06, -66), (0.18, -66), (0.56, 72), (0.66, 72), (1, 72)]
+    private static let touchYStops: [(Double, Double)]    = [(0, 4), (0.06, 0), (0.18, -2), (0.56, -2), (0.66, 4), (1, 4)]
+    private static let touchScaleStops: [(Double, Double)] = [(0, 0.6), (0.06, 1), (0.18, 1.05), (0.56, 1.05), (0.66, 0.62), (1, 0.6)]
+    private static let touchOpacityStops: [(Double, Double)] = [(0, 0), (0.06, 1), (0.18, 1), (0.56, 1), (0.66, 0), (1, 0)]
+    private static let rippleScaleStops: [(Double, Double)] = [(0, 0.5), (0.06, 0.5), (0.16, 1), (0.30, 1.5), (1, 1.5)]
+    private static let rippleOpacityStops: [(Double, Double)] = [(0, 0), (0.06, 0), (0.16, 0.7), (0.30, 0), (1, 0)]
+
+    private static func frames(at t: Double) -> CueFrame {
+        CueFrame(
+            jotX: CGFloat(sample(jotXStops, t)), jotScale: CGFloat(sample(jotScaleStops, t)), jotOpacity: sample(jotOpacityStops, t),
+            prevX: CGFloat(sample(prevXStops, t)), prevScale: CGFloat(sample(prevScaleStops, t)), prevOpacity: sample(prevOpacityStops, t),
+            touchX: CGFloat(sample(touchXStops, t)), touchY: CGFloat(sample(touchYStops, t)),
+            touchScale: CGFloat(sample(touchScaleStops, t)), touchOpacity: sample(touchOpacityStops, t),
+            rippleScale: CGFloat(sample(rippleScaleStops, t)), rippleOpacity: sample(rippleOpacityStops, t)
+        )
+    }
+
+    /// Reduce Motion static end-frame (gestures.css `prefers-reduced-motion`).
+    private static let reducedMotionFrame = CueFrame(
+        jotX: 70, jotScale: 0.92, jotOpacity: 1,
+        prevX: -70, prevScale: 0.92, prevOpacity: 1,
+        touchX: 0, touchY: -2, touchScale: 1, touchOpacity: 1,
+        rippleScale: 1, rippleOpacity: 0
+    )
 }

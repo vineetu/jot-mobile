@@ -45,7 +45,7 @@ register the `isRecording` dependency while the body was unevaluated (background
 invalidation is missed until some *other* state change forces a recompute — e.g. the FAB
 tap. Matches "rare/intermittent" and "tapping Dictate is what surfaces it."
 
-**Secondary suspects (lower confidence):** a residual `pendingColdStartHeroNudge == true`
+**Secondary suspects (lower confidence):** a residual `pendingExternalKeyboardHero == true`
 or a leaked `ownsActiveRecording == true` — both appear in `isLiveRecordingInline`'s
 negative guards (`ContentView.swift:578,581`) and would suppress the pill; both are known
 intermittent-leak offenders (multiple sites defensively clear `ownsActiveRecording` before
@@ -70,8 +70,8 @@ an on-device repro with state instrumentation (`RECORDING START FROM: warmResume
 Two reachable mechanisms. **Not yet 101% certain which one(s) fire** — needs an on-device repro
 that logs the four `isLiveRecordingInline` terms. Do not fix before that.
 
-**Candidate 1 — stuck `pendingColdStartHeroNudge` (code-provable; LEAD).** The pill is suppressed
-while `pendingColdStartHeroNudge == true` (`ContentView.swift:581`). That flag is cleared in ONLY
+**Candidate 1 — stuck `pendingExternalKeyboardHero` (code-provable; LEAD).** The pill is suppressed
+while `pendingExternalKeyboardHero == true` (`ContentView.swift:581`). That flag is cleared in ONLY
 two places — `onAppear` (`:490-496`) and `onChange` (`:519-524`) — and **both clears are guarded by
 `!showRecordingHero && !isWizardPresented`.** So if a cold `jot://dictate` keyboard start sets the
 flag **while a hero is already presented (`showRecordingHero == true`) or the wizard is up**, the
@@ -90,7 +90,7 @@ invalidation is missed until another redraw (the Dictate tap). `@Observable` sho
 this — hence unprovable from static reading.
 
 **Path to 101% (diagnostic, NOT a fix):** log the four `isLiveRecordingInline` terms
-(`isRecording`, `ownsActiveRecording`, `showRecordingHero`, `pendingColdStartHeroNudge`) at the moment
+(`isRecording`, `ownsActiveRecording`, `showRecordingHero`, `pendingExternalKeyboardHero`) at the moment
 home renders idle during a live keyboard recording (and the warm-resume start, already logged as
 `RECORDING START FROM: warmResumeObserver`). The "wrong" term identifies the mechanism. Note:
 `ownsActiveRecording` is explicitly cleared by warm-resume at `JotApp.swift:115`, so it's the LEAST
@@ -103,3 +103,39 @@ by-design**; **warm-hold-specific** (only the warm-resume path records without f
 Jot). Confidence: home-pill-is-not-trigger-gated and warm-resume-sets-`isRecording` are
 **Confirmed** in code; the backgrounded-scene render-gap as the specific trigger is
 **Likely** but needs an on-device repro to separate from the two stuck-flag suspects.
+
+---
+
+## Update 2026-06-06 (owner re-report — a distinct sibling manifestation: lands on home, NO hero/cue)
+
+Owner hit a second, related failure while testing the new swipe-back cue (build 107). **Trigger:**
+the mic is **stolen by another app DURING a warm-hold window**. The main app's
+`AVAudioSession` interruption handler fires `exitWarmHold()` (`RecordingService.swift:1659-1662`),
+clearing the warm keys — so the keyboard correctly sees `warmWindowOpen == false`, falls through
+the ping/pong, and **URL-bounces to open Jot** (`startColdViaURLBounce`,
+`JotKeyboardViewController.swift:1684`). Jot opens **and recording starts**, but the user is left on
+the **home / recents page** — the **recording hero is never presented**, so the new
+`SwipeBackCardCue` is never shown either. Tapping **Dictate** then *adopts* the already-running
+session (correct), confirming the recording was live the whole time.
+
+**Why this is a sibling, not the same bug:** the entry above is the *warm-resume* path (mic still
+warm, app intentionally NOT opened — only the home pill is wrong). THIS is the *URL-bounce* path:
+the app WAS opened (so `pendingExternalKeyboardHero` should have been set in `JotApp.onOpenURL` and
+consumed by `presentExternalKeyboardHeroIfPending()`), yet the hero didn't present. So the suspect
+is the **hero-presentation handshake on the URL-bounce-open path**, not just the pill:
+
+- **Candidate A — flag set before the observer is live, AND first-appear re-check missed.** On a
+  *warm process* the `.onChange(of: pendingExternalKeyboardHero)` should fire; on a *cold process*
+  the `.onAppear` re-check (`presentExternalKeyboardHeroIfPending`) should catch it. If the open
+  lands in a window where neither fires (e.g. the flag is set, consumed/cleared by one path, but
+  `showRecordingHero` was transiently true, or the wizard guard, or a SwiftData/scene transition
+  swallows the `.onChange`), the hero is skipped and we sit on home.
+- **Candidate B — recording adopts before the flag is processed**, and some path clears
+  `pendingExternalKeyboardHero` (or `showRecordingHero` guard trips) so the present is a no-op.
+- **Rare + intermittent**, like its sibling. Needs an on-device repro with logging around
+  `pendingExternalKeyboardHero` set→consume and the `presentExternalKeyboardHeroIfPending` guards
+  (`!showRecordingHero`, `!isWizardPresented`) at the moment of the mic-stolen open.
+
+**Deferred (owner: "weird bug, look into it later — don't waste time now").** Consequence to note:
+until fixed, the swipe-back cue (build 107) won't appear in the mic-stolen-mid-warm case even though
+the rest of the path works — that's why the cue looked "missing" in that test, not a cue bug.

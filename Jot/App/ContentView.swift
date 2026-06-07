@@ -85,13 +85,19 @@ enum HeroIntent {
     /// presentation is stale and the hero should pop immediately
     /// (NEVER call `start()` from this path).
     case adoptInFlight
-    /// Auto-nav from a third-party keyboard URL bounce (cold-start path).
-    /// Same lifecycle as `.adoptInFlight` — adopt the running session —
-    /// but the hero also surfaces a temporary "Swipe back to your app"
-    /// nudge overlay so the user knows to return to the host where the
-    /// auto-paste will land. Suppressed after the user has seen it 7
-    /// times via `jot.hero.coldStartNudgeShownCount`.
-    case coldStartFromExternalKeyboard
+    /// The keyboard pulled the user into Jot from ANOTHER app. iOS won't let a
+    /// keyboard extension start the mic, so with no warm mic the keyboard
+    /// `jot://dictate`-bounces to open the app — which yanks the user out of the
+    /// app they were typing in. This fires for that open whether the Jot process
+    /// was stone-cold OR already alive in the background (warm process, expired
+    /// warm mic) — it is NOT a process-lifecycle distinction, it's "we had to
+    /// bring you here." Same lifecycle as `.adoptInFlight` (adopt the running
+    /// session), but the hero also surfaces the looping `SwipeBackCardCue` (a
+    /// wordless two-card app-switch demo) so the user knows to swipe back to the
+    /// host where the auto-paste will land. Shown for the whole withhold window
+    /// and loops until the live transcript reveals. NOT set by in-Jot starts (the
+    /// FAB) — there's no other app to return to there.
+    case openedFromExternalKeyboard
 }
 
 struct ContentView: View {
@@ -110,9 +116,9 @@ struct ContentView: View {
     /// One-shot signal from `JotApp` that the next recording-start was
     /// triggered by a `jot://dictate*` URL bounce from a third-party
     /// keyboard. ContentView's auto-push reads + clears this so the Hero
-    /// is presented with the `.coldStartFromExternalKeyboard` intent and
+    /// is presented with the `.openedFromExternalKeyboard` intent and
     /// the "Swipe back to your app" nudge overlay shows.
-    @Binding var pendingColdStartHeroNudge: Bool
+    @Binding var pendingExternalKeyboardHero: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
@@ -295,7 +301,7 @@ struct ContentView: View {
                 // recording), EXCEPT the cold-start-about-to-present window:
                 // on a `jot://dictate` cold launch, `isRecording` flips true
                 // before `.onAppear` / `.onChange` pushes the hero; while
-                // `pendingColdStartHeroNudge` is still pending the pill would
+                // `pendingExternalKeyboardHero` is still pending the pill would
                 // flash for one frame in that gap, so we suppress it there
                 // (see `isLiveRecordingInline`).
                 if isSelectionMode {
@@ -484,22 +490,14 @@ struct ContentView: View {
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
             }
-            // Cold-launch hero (SOURCE-BASED — the only first-appear hero path).
-            // The keyboard's `jot://dictate` bounce set `pendingColdStartHeroNudge`
+            // External-keyboard hero — FIRST-APPEAR re-check (cold process). The
+            // keyboard's `jot://dictate` bounce set `pendingExternalKeyboardHero`
             // during launch, BEFORE this view's `.onChange` was installed, so a
-            // freshly-launched process must re-check it here. The hero is presented
-            // because a COLD keyboard dictate explicitly asked for it — NOT because
-            // `isRecording` happened to flip. Inline / Ask / warm / Action-Button
-            // recordings never set this flag, so they can never reach the hero.
-            // Guards are LIVE reads only (is a hero already up? is the wizard up?) —
-            // no provenance flags to keep in sync.
-            if pendingColdStartHeroNudge,
-               !showRecordingHero,
-               !isWizardPresented {
-                pendingColdStartHeroNudge = false
-                heroIntent = .coldStartFromExternalKeyboard
-                showRecordingHero = true
-            }
+            // freshly-launched process must re-check it here. The warm-process
+            // case (app already alive in the background) is handled by the
+            // `.onChange` below. Both call the SAME helper so cold and warm can
+            // never diverge — see `presentExternalKeyboardHeroIfPending`.
+            presentExternalKeyboardHeroIfPending()
         }
         .onChange(of: keyboardRewriteRouter.pendingTarget) { _, newTarget in
             guard let newTarget else { return }
@@ -514,19 +512,16 @@ struct ContentView: View {
         .onDisappear {
             copyResetTask?.cancel()
         }
-        // Cold keyboard-dictate just initiated (the keyboard set this flag via
-        // jot://dictate while Jot was already alive in the background). This is
-        // the SOLE cold-hero trigger for a warm process — present the hero NOW,
-        // the instant the URL signal lands, decoupled from whether the recording
-        // actually starts (on a fresh install / update it can be deferred behind
-        // a cold speech-model load). The hero enters its "getting ready" state
-        // and adopts once recording begins, so the user is never stranded on home.
-        // Guards are LIVE reads only — no provenance flags.
-        .onChange(of: pendingColdStartHeroNudge) { _, pending in
-            guard pending, !showRecordingHero, !isWizardPresented else { return }
-            pendingColdStartHeroNudge = false
-            heroIntent = .coldStartFromExternalKeyboard
-            showRecordingHero = true
+        // External-keyboard hero — WARM-process path. The keyboard set the flag
+        // via `jot://dictate` while Jot was already alive in the background (no
+        // warm mic, so it had to open the app). Present the hero the instant the
+        // URL signal lands, decoupled from whether the recording actually starts
+        // (on a fresh install / update it can be deferred behind a cold speech-
+        // model load). The hero enters its "getting ready" state and adopts once
+        // recording begins, so the user is never stranded on home. Same helper as
+        // the cold-process first-appear path — they must stay identical.
+        .onChange(of: pendingExternalKeyboardHero) { _, _ in
+            presentExternalKeyboardHeroIfPending()
         }
         // Hero TEARDOWN only. The hero is never *pushed* from `isRecording`
         // anymore (source-based presentation lives at the FAB tap, the cold
@@ -569,7 +564,7 @@ struct ContentView: View {
     /// One exception — the cold-start-about-to-present window: on a
     /// `jot://dictate` cold launch, `isRecording` flips true *before*
     /// `.onAppear` / `.onChange` pushes the hero. While
-    /// `pendingColdStartHeroNudge` is still pending (not yet consumed) the
+    /// `pendingExternalKeyboardHero` is still pending (not yet consumed) the
     /// pill would flash for a single frame in that gap, so suppress it there.
     /// Wizard stays suppressed too (its mic test owns its own surface).
     ///
@@ -584,7 +579,28 @@ struct ContentView: View {
             && !recordingService.ownsActiveRecording
             && !showRecordingHero
             && !isWizardPresented
-            && !pendingColdStartHeroNudge
+            && !pendingExternalKeyboardHero
+    }
+
+    /// Presents the recording hero for a keyboard-originated launch — the ONLY
+    /// way the keyboard pulls the user into Jot from another app. iOS won't let
+    /// a keyboard extension start the mic, so when there's no warm mic the
+    /// keyboard `jot://dictate`-bounces to open the app; that sets
+    /// `pendingExternalKeyboardHero` (`JotApp.onOpenURL`). This presents the hero
+    /// with `.openedFromExternalKeyboard`, which lights the swipe-back cue so the
+    /// user knows to return to the app they were typing in.
+    ///
+    /// Single source of truth: BOTH the cold-process first-appear (`.onAppear`)
+    /// and the warm-process flag flip (`.onChange`) call this, so the two process
+    /// states can never diverge. Idempotent; guards are LIVE reads only (hero
+    /// already up? wizard up?) — no provenance flags to keep in sync.
+    private func presentExternalKeyboardHeroIfPending() {
+        guard pendingExternalKeyboardHero,
+              !showRecordingHero,
+              !isWizardPresented else { return }
+        pendingExternalKeyboardHero = false
+        heroIntent = .openedFromExternalKeyboard
+        showRecordingHero = true
     }
 
     // MARK: - WS-B unified keyboard-dictate receiver
@@ -1241,7 +1257,7 @@ private struct RecordingReturnPill: View {
 }
 
 #Preview {
-    ContentView(pendingColdStartHeroNudge: .constant(false))
+    ContentView(pendingExternalKeyboardHero: .constant(false))
         .environment(RecordingService())
         .environment(KeyboardRewriteRouter())
         .environment(TranscriptionService())

@@ -33,12 +33,14 @@ struct JotApp: App {
     @State private var autoStartPendingPipelineFinish = false
     @State private var autoStartPipelineDrainTimeoutTask: Task<Void, Never>?
     @State private var autoStartMicPermissionRequestInFlight = false
-    /// One-shot signal that the next recording-start was triggered by a
-    /// `jot://dictate*` URL bounce from a third-party keyboard. ContentView's
-    /// auto-push reads + clears this so the Hero is presented with the
-    /// `.coldStartFromExternalKeyboard` intent (which surfaces the "Swipe
-    /// back to your app" nudge overlay). Cleared after one Hero presentation.
-    @State private var pendingColdStartHeroNudge: Bool = false
+    /// One-shot signal that the keyboard opened Jot from another app via a
+    /// `jot://dictate*` URL bounce (the only way it can — iOS won't let the
+    /// keyboard start the mic, so with no warm mic it foregrounds the app). Set
+    /// on EVERY such open, cold OR warm process. ContentView's
+    /// `presentExternalKeyboardHeroIfPending` reads + clears this and presents
+    /// the Hero with `.openedFromExternalKeyboard`, which surfaces the looping
+    /// swipe-back cue. Cleared after one Hero presentation.
+    @State private var pendingExternalKeyboardHero: Bool = false
     /// User-facing message for a failed dictate auto-start (mic busy,
     /// session error, etc.) Set from the catch path in `triggerAutoStart`
     /// so the foregrounded main app can show an alert — the existing
@@ -339,7 +341,7 @@ struct JotApp: App {
         WindowGroup {
             ContentView(
                 isWizardPresented: showSetupWizard,
-                pendingColdStartHeroNudge: $pendingColdStartHeroNudge
+                pendingExternalKeyboardHero: $pendingExternalKeyboardHero
             )
                 .environment(recordingService)
                 .environment(transcriptionService)
@@ -438,11 +440,11 @@ struct JotApp: App {
                        let sid = UUID(uuidString: sessionParam) {
                         pendingKeyboardSessionID = sid
                     }
-                    // Mark this start as a cold-start-from-external-keyboard so
-                    // ContentView's auto-push presents the Hero with the
-                    // "Swipe back to your app" nudge overlay. Flag is one-shot;
-                    // ContentView clears it after consuming.
-                    pendingColdStartHeroNudge = true
+                    // The keyboard opened Jot from another app (any jot://dictate
+                    // open = no warm mic, cold OR warm process). Flag it so
+                    // ContentView presents the Hero with the looping swipe-back
+                    // cue. One-shot; ContentView clears it after consuming.
+                    pendingExternalKeyboardHero = true
                     triggerAutoStart(reason: "url open: \(url.absoluteString)")
                 }
                 .onReceive(
