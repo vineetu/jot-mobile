@@ -184,8 +184,8 @@ targets:
           - audio
           # `processing` enables BGProcessingTask scheduling. Kept after
           # the classifier rip-out because future heavy BG work may want
-          # the longer (~10-min) budget. The current MiniLM backfill task
-          # is a BGAppRefreshTask (lighter, no charging requirement) —
+          # the longer (~10-min) budget. The current EmbeddingGemma backfill
+          # task is a BGAppRefreshTask (lighter, no charging requirement) —
           # see `EmbeddingBackfillTask`.
           - processing
         BGTaskSchedulerPermittedIdentifiers:
