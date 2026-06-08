@@ -80,20 +80,9 @@ struct ActionsPopover: View {
                 enabled: canRedo,
                 action: handle(onRedo)
             )
-            divider
-            row(
-                title: "Move up",
-                systemImage: "arrow.up",
-                enabled: true,
-                action: handle(onJumpToStart)
-            )
-            divider
-            row(
-                title: "Move down",
-                systemImage: "arrow.down",
-                enabled: true,
-                action: handle(onJumpToEnd)
-            )
+            // Move up / Move down removed for now (user request) — the
+            // `onJumpToStart` / `onJumpToEnd` plumbing is kept dormant so the two
+            // rows can be re-added later without re-wiring the controller.
         }
         .frame(width: Self.popoverWidth)
         .modifier(JotDesign.Surface.heavy.modifier(cornerRadius: 16))
@@ -124,7 +113,11 @@ struct ActionsPopover: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 14)
-            .frame(minHeight: 44) // ≥44pt HIG hit target
+            // Compact rows so the 4-row popover fits the top region of the
+            // 200pt keyboard ABOVE the control row (see KeyboardView — the
+            // popover replaces the recents strip and never overlays the
+            // dictate/controls row).
+            .frame(minHeight: 38)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

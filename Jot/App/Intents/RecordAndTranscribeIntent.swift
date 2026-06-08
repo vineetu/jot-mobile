@@ -103,7 +103,7 @@ import Foundation
 /// If the two paths stay lock-step after binding + runtime verification,
 /// consolidation is a clean follow-up.
 struct RecordAndTranscribeIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Jot Dictation"
+    static let title: LocalizedStringResource = "Jot down a note"
 
     static let description = IntentDescription(
         """
@@ -127,7 +127,7 @@ struct RecordAndTranscribeIntent: AppIntent {
     /// binding daemon renders the summary during the commit step; its
     /// absence surfaces a generic "Something went wrong" error to the user).
     static var parameterSummary: some ParameterSummary {
-        Summary("Start Jot Dictation")
+        Summary("Jot down a note")
     }
 
     init() {}

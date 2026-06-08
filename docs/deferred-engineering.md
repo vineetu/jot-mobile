@@ -131,3 +131,179 @@ There's no in-app surface that shows the user the **full list** of features the 
 **Status.** Captured 2026-05-21. Direction confirmed by user — option 1 from the donation-prompt discussion. Not on the critical path; defer until donations engagement data motivates building.
 
 ---
+
+## 5. Ask RAG redesign — temporary scaffolding cleanup
+
+Tracking the deliberately-temporary bits introduced by the Ask retrieval redesign
+(design: `docs/plans/ask-retrieval-architecture.md`; plan: `docs/plans/ask-rag-phase1-plan.md`).
+These were the right calls to ship incrementally and safely. **Most of the cleanup
+has since landed** (the full EmbeddingGemma chunk pipeline shipped, builds 65–69) —
+only the V8 schema drop and the eval harness remain. The done/remaining split below
+is reconciled against code as of build 107.
+
+**Why it matters.** The cutover landed in safe, independently-testable increments
+(additive schema, interim embedder, reduced UI) rather than one big risky change.
+The cost was a few "we'll finish this later" seams; all but the schema drop and
+eval harness are now closed.
+
+**Cleanup items — status.**
+
+1. **Drop the two dormant schema entities — mint `JotSchemaV8`.** *(REMAINING.)*
+   V7 retained `TranscriptEmbedding` (deprecated — replaced by `TranscriptChunk`)
+   and `TranscriptCategory` (dormant — the tag classifier was removed) so the
+   V6→V7 migration could stay additive `.lightweight` and never risk transcripts.
+   Both tables are still carried in `JotSchemaV7`. Once the chunk pipeline is
+   confirmed healthy in the field, mint V8 with **one `.custom` V7→V8 stage that
+   drops both tables** (`willMigrate` nukes the rows; nothing to carry forward).
+   One migration, one device upgrade-test, both tables gone.
+
+2. **Swap the interim embedder → EmbeddingGemma-300M.** ✅ **DONE (shipped builds
+   65–69).** The pipeline now runs on **EmbeddingGemma-300M via Core ML/ANE**
+   behind the `EmbeddingGemmaService` seam; the model is **bundled** at
+   `Jot/Resources/Models/EmbeddingGemma/` (gitignored weights) and the `CoreMLLLM`
+   package is wired in `project.yml`. `MiniLMEmbeddingService` and the
+   `SwiftEmbeddings` package were **deleted** (zero references remain).
+
+3. **Wire the "Rebuild index" button.** ✅ **DONE.** `EmbeddingsPanelView` now
+   carries a live indexed-chunk counter and a cancellable, foreground "Rebuild
+   search index" pass with progress UI.
+
+4. **Reconcile `features.md`.** ✅ **DONE.** The Ask Jot section ships as `§14`
+   (entry-point gating, citations, date-scoped + hybrid retrieval) and the
+   classification/tagging feature entry was removed.
+
+5. **Cosmetic — empty `Classification/` dirs.** ✅ **DONE.** Both
+   `Jot/App/Classification/` and `Jot/Shared/Classification/` were removed
+   (build 107 cleanup).
+
+**Also deferred (separate, already documented — pointers, not duplicated here):**
+- **Phase 2 retrieval polish** (cross-encoder reranker, HyDE/multi-query,
+  sentence-window expansion, timestamp deep-links, int8 vector quantization) —
+  design doc §3 / §2.B.
+- **Eval harness** (Recall@k / MRR + context-budget memory+latency sweep on-device)
+  — design doc §3 / §2.B.4.
+- **Memory garden / garden of ideas + related-notes + Collections** — future
+  *features* (not cleanup), the only reason tags ever existed. **Architecture
+  decided (design doc §6, "Two-layer"):** the garden = a distilled-memory LAYER on
+  the Phase-1 chunk substrate — NOT a separate build and NOT a second embedder.
+  Reuses the same EmbeddingGemma encoder + vector machinery + Qwen + raw notes;
+  net-new is only a small `Memory`/idea-card `@Model`, the extract+consolidate
+  engine, and the garden UI. Nodes = LLM-distilled idea cards (clusters → titled
+  memories), each citing its source chunks; raw notes stay verbatim underneath.
+  **The consolidation engine is the hard, researched part — port Mem0's
+  methodology (ADD/UPDATE/DELETE, dedup, contradiction-resolution), don't reinvent;
+  their lib is Python/server so adopt the approach, not the code.** Build only
+  after the Phase-1 RAG lands.
+
+**Trigger to pull forward.** Item 1 (V8 drop): after the next 1–2 builds confirm
+the chunk pipeline is healthy in the field. Eval harness: opportunistically, or
+before any retrieval-quality tuning pass (you want the metric before you tune).
+
+**Estimated size.** Item 1 ~half a day (mint V8 + custom stage + device test).
+Eval harness ~1 day (Recall@k / MRR fixture + on-device latency/memory sweep).
+
+**Status.** Captured 2026-05-28; updated build 107. The EmbeddingGemma chunk
+pipeline is **shipped and verified on-device** (builds 65–69 and onward —
+EmbeddingGemma encoder, chunk-and-embed indexer, BM25 + RRF hybrid retrieval,
+chunk→transcript citations, date-scoped retrieval). What's left from this effort:
+
+**Remaining work (the two open seams):**
+- **V8 schema drop.** `TranscriptEmbedding` + `TranscriptCategory` are still
+  carried as dormant tables in `JotSchemaV7`. Mint `JotSchemaV8` with one `.custom`
+  V7→V8 stage that drops both (see item 1 above and the schema discipline in
+  `Jot/CLAUDE.md`). Gate: 1–2 more builds confirming the chunk pipeline is healthy.
+- **Eval harness.** Recall@k / MRR fixture + context-budget memory+latency sweep
+  on-device (design doc §3 / §2.B.4). Not yet built — needed before any Phase 2
+  retrieval-quality tuning so changes can be measured rather than guessed.
+
+---
+
+## 6. Ask UX — voice-first mic + "ask about a real transcript" suggestions
+
+Two friction points in the now-shipped Ask, designed in discussion (2026-05-28); parked.
+
+**Why it matters.** Ask is voice-over-voice-notes — but you can't easily *speak* a
+question, and the starter suggestions are weak.
+
+**What we'd build.**
+
+1. **Voice-first mic in the Ask sheet.** Tap a mic → dictation starts via Jot's OWN
+   on-device transcription pipeline (`RecordingService`/`TranscriptionService`), NOT
+   the system/Jot keyboard, no keyboard opened. Decisions (locked with user):
+   - **Tap-to-stop** (NO silence auto-stop — explicitly rejected).
+   - **Live transcribing shown in the question field, exactly like the keyboard's live dictation.**
+   - On stop → **auto-runs the answer** (no separate submit tap).
+   - The dictated question is **NEVER saved as a transcript** (it's a query, not a note —
+     avoids the corpus pollution we discussed; just don't call the save path).
+   - **Keep the text field as a typing fallback.**
+   - This is a focused, ephemeral instance of deferred item #2 (in-app dictation).
+   - **Retires a bug:** today, dictating into the Ask field via the keyboard doesn't
+     start — you must leave Ask → home → dictate → stop → reopen Ask → type → stop.
+     The mic bypasses that path entirely.
+
+2. **Suggestions = "ask about one of your real recent transcripts"** (replaces the
+   hard-coded/templated date pills, which can dead-end — e.g. "summarize May 26" when
+   nothing was recorded then). Pick a recent *substantive* transcript (skip tiny /
+   meta ones via the usefulness signal), show **date + snippet** as the pill; tapping
+   **auto-asks a fixed framing** — *"What else have I said about this?"* — which
+   retrieves that note **+ related notes**, showcasing the connection (the RAG's real
+   superpower). "Ask another" rotates to a different note. Empty corpus → one pill:
+   *"Summarize everything I've recorded so far."* Later upgrade (needs the clustering /
+   garden): a real emergent-topic pill — *"What have you been saying about <theme>?"*.
+
+**Trigger.** Next Ask polish pass, or when the voice-first interaction becomes the
+priority over the typed one.
+
+**Estimated size.** Mic ~half a day (reuses the recording/transcription pipeline +
+the ephemeral no-save tweak). Suggestions ~a couple hours (recent-substantive-transcript
+picker + the fixed "what else about this" framing).
+
+**Status.** Captured 2026-05-28. Designed in discussion; not started. Pairs with the
+shipped Ask RAG (build 65).
+
+---
+
+## 7. Single-mic takeover prompt — ask before stealing a live recording
+
+**Context.** There is exactly ONE microphone in the app — every surface shares
+`RecordingService.shared`. So whenever you navigate into a recording-capable surface
+while a recording is *already* live somewhere else, that's a conflict over a single
+resource. Today the surfaces silently fight over it (auto-start stomps, or the second
+start no-ops). The user's call: **don't assume — ask.**
+
+**The behavior.** When you open a surface that wants the mic and a recording is already
+running, surface a prompt instead of auto-grabbing it:
+
+> *"You're already recording. Stop & save that first, then dictate here?"*  —
+> primary **"Stop & save, dictate here"** (finalize+save the live one, then start),
+> secondary **"Keep recording"** (dismiss; stay in typed mode / go back).
+
+Lead with the **non-destructive** option (stop = save), because the live recording was
+deliberately started and a one-tap discard would be data loss. A straight "cancel &
+discard" can be an option but should not be the headline.
+
+**Where it applies (all the same pattern):**
+1. **Ask Jot** — opening Ask wants the mic. *Do this one first; keep it simple.* Live-check
+   at Ask-open: Ask hasn't started its own mic yet, so if `recordingService.isRecording`
+   is true it is **by definition foreign** — no ownership flag needed. Show the prompt
+   instead of auto-starting; gate the silence-auto-send until Ask is actually recording.
+2. **Transcription / edit pane** — same prompt. Plus the deeper piece: the
+   **save-vs-don't-save decision is made at STOP time by context** — a recording you
+   stop while editing a transcript **pastes inline and does NOT save a new transcript**.
+   That ephemeral-at-stop semantics is the real work here.
+3. **Send Feedback** — same prompt. (Also has a separate flaky-start bug: feedback-field
+   dictation sometimes doesn't begin at all — triage alongside.)
+
+**Depends on.** The source-based hero redesign (shipped) — once the hero only presents
+from the FAB / cold-URL / return-pill, the "one mic" conflict is the only remaining
+cross-surface recording concern, and it's a clean live-check + dialog.
+
+**Estimated size.** Ask prompt ~half a day (contained to `AskView` / `AskController`,
+one `.confirmationDialog`). Edit-pane ephemeral-at-stop ~1–2 days (stop-time save
+routing). Feedback ~half a day + the flaky-start triage.
+
+**Status.** Captured 2026-05-31. Designed in discussion; not started. The keyboard
+status row was also generalized into a reusable container (`StreamingStrip.statusLine`)
+in the same session — future "Won't be saved" (edit / feedback) statuses plug into it.
+
+---

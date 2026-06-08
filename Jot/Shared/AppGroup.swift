@@ -85,12 +85,35 @@ enum AppGroup {
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
-        /// Set to `true` when the user is running a foreground "Classify
-        /// now" loop from the Lab dashboard. The BG classifier task
-        /// reads this on `submitIfEnabled()` and bails when set, so the
-        /// two paths don't double-classify (or even worse, race-write)
-        /// the same rows. Foreground clears it in `defer`.
-        static let classifierForegroundInFlight = "jot.classifier.foregroundInFlight"
+        /// Warm-hold switching-nudge state (UX-overhaul round 2 §4 / R10).
+        /// All three live in App-Group `UserDefaults` (no schema bump) so the
+        /// app's streak math and the keyboard's render of the nudge share one
+        /// source of truth across processes.
+        ///
+        /// `captureStopRing`: JSON-encoded ring buffer of the last ~4
+        /// `(startedAt, stoppedAt, sessionID)` clean-stop pairs. The app
+        /// derives the qualifying-return streak from this (R16 — self-expiring
+        /// across app kills because it's capped). Written ONLY at the clean
+        /// `stop()` site by `RecordingService`. The keyboard never reads it.
+        static let captureStopRing = "jot.warmHold.captureStopRing"
+        /// `warmHoldNudgeShouldShow`: boolean projection the app sets when the
+        /// streak crosses threshold; the keyboard (which can't run the math)
+        /// renders the nudge off this and clears it via the two actions.
+        /// Mirrors the `pipelinePhase` projection pattern.
+        static let warmHoldNudgeShouldShow = "jot.warmHold.nudgeShouldShow"
+        /// `warmHoldNudgeSuppressed`: permanent one-tap "Don't show again"
+        /// flag (§4). Once true the nudge never re-shows; turning warm hold ON
+        /// is the other terminal state. Passive ignore does NOT set this.
+        static let warmHoldNudgeSuppressed = "jot.warmHold.nudgeSuppressed"
+
+        /// Default-ON Lab kill-switch for the MiniLM embedding writer.
+        /// Read by `TranscriptStore.append`, `PhoneSideWCSession.saveTranscript`,
+        /// and `EmbeddingBackfillTask` before any encode work. Default `true`
+        /// (treated as ON by `AppGroup.isEmbeddingsEnabled`). Stored here in
+        /// `AppGroup.defaults` for symmetry with the prior classifier toggle.
+        /// Surfaced in Settings → About as a one-row toggle. See
+        /// `docs/plans/minilm-embeddings.md` §Lab kill-switch for rationale.
+        static let embeddingsEnabled = "jot.embeddings.enabled"
 
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
@@ -124,6 +147,31 @@ enum AppGroup {
         /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
+
+        /// Which LLM answers Ask-mode questions. `"appleIntelligence"` (default —
+        /// no download) or `"qwen"` (on-board, better answers, needs the 2.5 GB
+        /// download). Read by `AskController.pickBackend()`; bound to the
+        /// Settings → AI "Use on-board Qwen for Ask" toggle.
+        static let askBackend = "jot.ask.backend"
+    }
+
+    /// MiniLM embedding writer toggle. **Default `true`** — users opt OUT
+    /// rather than in, because embeddings are foundation work the rest of
+    /// Jot will depend on. Surfaced in Settings → About as an emergency
+    /// kill-switch if a field MLTensor OOM regression slips past the
+    /// pre-merge memory gate.
+    ///
+    /// Custom getter (not `bool(forKey:)`) so the missing-key state reads
+    /// as `true` (default-ON). Setter writes through to the underlying
+    /// `Bool` so the SwiftUI `Toggle` binding works naturally.
+    static var isEmbeddingsEnabled: Bool {
+        get {
+            guard defaults.object(forKey: Keys.embeddingsEnabled) != nil else {
+                return true
+            }
+            return defaults.bool(forKey: Keys.embeddingsEnabled)
+        }
+        set { defaults.set(newValue, forKey: Keys.embeddingsEnabled) }
     }
 
     /// User-facing master toggle for the warm-hold feature. Default
@@ -131,7 +179,7 @@ enum AppGroup {
     /// (Phase 2) or Settings toggle (Phase 1).
     ///
     /// When enabled, the audio session stays active for the user-configured
-    /// duration (see `warmHoldDurationSeconds`, default 60s) after each
+    /// duration (see `warmHoldDurationSeconds`, default 120s (2 minutes)) after each
     /// successful dictation so the next dictation skips cold-start latency.
     /// The iOS orange microphone indicator stays on during that window.
     ///
@@ -142,7 +190,7 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
     }
 
-    /// User-configurable warm-hold duration in seconds. Default `60` when
+    /// User-configurable warm-hold duration in seconds. Default `120` (2 minutes) when
     /// unset; values are clamped to `[60, 300]` on both read and write.
     ///
     /// `RecordingService.enterWarmHold()` reads this once at warm-hold
@@ -152,7 +200,7 @@ enum AppGroup {
     static var warmHoldDurationSeconds: TimeInterval {
         get {
             guard defaults.object(forKey: Keys.warmHoldDurationSeconds) != nil else {
-                return 60
+                return 120
             }
             let raw = defaults.double(forKey: Keys.warmHoldDurationSeconds)
             return min(max(raw, 60), 300)
@@ -195,6 +243,34 @@ enum AppGroup {
         }
     }
 
+    /// Ring buffer of recent clean-stop `(startedAt, stoppedAt, sessionID)`
+    /// pairs backing the warm-hold switching-nudge streak math (§4 / R10 /
+    /// R16). Stored as JSON `Data`; `RecordingService` owns the encode/decode
+    /// (it owns the `CaptureStopEntry` shape and the iso8601 coder pair).
+    /// Returns `nil` when no stop has ever been recorded — the app treats a
+    /// `nil`/undecodable blob as an empty ring (self-healing).
+    static var captureStopRing: Data? {
+        get { defaults.data(forKey: Keys.captureStopRing) }
+        set { defaults.set(newValue, forKey: Keys.captureStopRing) }
+    }
+
+    /// Boolean projection the app sets when the switching-nudge streak crosses
+    /// threshold (§4 / R10). The keyboard process can't run the streak math,
+    /// so it renders the nudge off this flag and clears it when the user acts.
+    /// `bool(forKey:)` because the missing-key default is `false` (no nudge).
+    static var warmHoldNudgeShouldShow: Bool {
+        get { defaults.bool(forKey: Keys.warmHoldNudgeShouldShow) }
+        set { defaults.set(newValue, forKey: Keys.warmHoldNudgeShouldShow) }
+    }
+
+    /// Permanent "Don't show this again" flag for the switching nudge (§4).
+    /// Set by the nudge's dismiss action (one tap, no confirm); once `true`
+    /// the nudge never re-shows. `bool(forKey:)` — missing-key default `false`.
+    static var warmHoldNudgeSuppressed: Bool {
+        get { defaults.bool(forKey: Keys.warmHoldNudgeSuppressed) }
+        set { defaults.set(newValue, forKey: Keys.warmHoldNudgeSuppressed) }
+    }
+
     /// Selected AI rewrite backend. Currently the only valid value is
     /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values (`"phi4"`,
     /// `"gemma"`, `"appleIntelligence"`) are recognized but treated as
@@ -204,6 +280,13 @@ enum AppGroup {
         get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "qwen35" }
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
     }
+
+    /// Ask-mode answer backend: `"appleIntelligence"` (default) or `"qwen"`.
+    static var askBackend: String {
+        get { defaults.string(forKey: Keys.askBackend) ?? "appleIntelligence" }
+        set { defaults.set(newValue, forKey: Keys.askBackend) }
+    }
+
 
     /// Raw JSON `Data` blob backing the saved-prompts list. Prefer the
     /// `SavedPromptStore` API (encodes/decodes and seeds the default entry)

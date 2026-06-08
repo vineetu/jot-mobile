@@ -80,7 +80,7 @@ import os
 ///   before the user can start recording audio." (DTS Engineer, 2024)
 /// ² Empirically observed on iPhone 15 Pro, iOS 26.
 struct DictateIntent: AppIntent {
-    static let title: LocalizedStringResource = "Dictate with Jot"
+    static let title: LocalizedStringResource = "Jot down a note"
 
     static let description = IntentDescription(
         """

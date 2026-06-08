@@ -2,9 +2,44 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## ✅ DICTATION ARCHITECTURE — unification COMPLETE
+
+The keyboard-dictation unification (`docs/plans/unify-keyboard-dictation.md`) is **done**.
+The custom inline-dictation engine has been removed. In-Jot keyboard dictation now behaves
+like the keyboard in **any other app**: record in the app, insert the result into the focused
+field on stop. Jot's fields are *just fields* — no registration layer, no live-partial
+streaming, no hero fallback band-aid.
+
+**What was removed:** `InlineDictationReceiver` (the whole registration layer, `register`/
+`deregister`/`heroFallbackRequest`), `EditDictationController`, and the Edit / Feedback inline
+wiring. The `keyboardDictateTapped` → inline-session routing was replaced by a normal
+background capture started in `ContentView.updateDictateTapObserver`.
+
+**Current model:**
+- Every stop **ends the transcription cleanly** (recording state flips off → home + keyboard
+  reset, next Dictate tap starts fresh) and **leaves the mic warm-held exactly as before**.
+  "End the transcription" and "release the mic / warm-hold" are SEPARATE axes — do not conflate.
+- **A transcript is saved only when you stop OUTSIDE Jot** (another app) or from the **hero**.
+  Stop inside a Jot field (feedback/edit/settings/wizard) → paste, **no** save. Fate is decided
+  at the *stop*, not stamped at the *start*.
+
+**Survivors — do NOT touch / do NOT delete:**
+- **Warm-hold** — orthogonal; untouched.
+- **Ask** — keeps its own `InlineDictationSession` and is now its SOLE user (the one intentional
+  exception). Do not add new callers of that type outside Ask.
+- **Wizard** — its W5 keyboard test uses its own `keyboardDictateTapped` observer and starts a
+  pipeline recording; it never used the (now-removed) inline receiver.
+- **FAB / cold-keyboard / Action Button / DictateIntent / warm-resume** captures — still save.
+
+---
+
 ## Feature work: consult `features.md` FIRST
 
 `features.md` is the single source of truth for what Jot does at a product level — ~100 user-facing features across 13 surfaces, with anchor cross-links between related ones. It was hand-verified across many review rounds; treat it as authoritative.
+
+**Known bugs & planned work live in [`known-bugs-and-plans.md`](known-bugs-and-plans.md)** — the canonical registry (split out of `features.md` to keep that doc user-facing only). It tracks unresolved bugs and the plans index; each entry links an elaborated doc in `docs/plans/`. When recording a NEW bug or plan, follow the protocol: write the `docs/plans/<slug>.md` doc AND add a dual entry here (a detailed entry + a one-line index entry) — a stray `docs/plans/` doc alone is not discoverable. Start here for "what's planned / known bugs" questions.
 
 **Before adding, modifying, or removing any user-facing behavior, do these steps in order and report results to the user BEFORE writing code:**
 
@@ -30,7 +65,7 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 
 ## Wizard / setup-flow conventions
 
-- The 9-panel wizard (7 core W1–W7 + 2 optional follow-ons) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`.
+- The 7-panel wizard (W1–W7) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`. (The optional AI-offer follow-on was removed; the wizard is now exactly W1–W7.)
 - **Wizard contract:** any recording started inside the wizard (W5 keyboard test triggered via the keyboard's Dictate-tap notification) MUST be force-stopped before the wizard dismisses. Failing this leaks a zombie recording into the home view. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks. Don't bypass.
 
 ## Build / run

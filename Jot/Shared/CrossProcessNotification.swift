@@ -83,6 +83,53 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.warm-resume-requested"
     )
 
+    /// Posted by the keyboard extension when the user taps Pause during an
+    /// active dictation (UX-overhaul round 2 §10.2). The keyboard never runs
+    /// the audio engine; the main app's `RecordingService` is the single owner
+    /// and executes `pauseRecording()` in response. Pause keeps the mic warm
+    /// (Option A) and gates the slice router so nothing is captured; the
+    /// `.paused` pipeline phase is published so both surfaces render a Resume
+    /// control + frozen elapsed clock.
+    static let pauseRequested = Name(
+        rawValue: "com.vineetu.jot.mobile.recording-pause-requested"
+    )
+
+    /// Posted by the keyboard extension when the user taps Resume on a paused
+    /// dictation (UX-overhaul round 2 §10.2). The main app's `RecordingService`
+    /// calls `resumeRecording()`, re-arming capture against the same slice so
+    /// samples concatenate and the streaming partial appends to its committed
+    /// prefix.
+    static let resumeRequested = Name(
+        rawValue: "com.vineetu.jot.mobile.recording-resume-requested"
+    )
+
+    /// Posted by the main app when the warm-hold switching-nudge state flips
+    /// (UX-overhaul round 2 §4 / R10). The keyboard process can't run the
+    /// streak math, so the app writes the `AppGroup.warmHoldNudgeShouldShow`
+    /// boolean projection and posts this so the keyboard re-reads and renders
+    /// (or hides) the nudge. Mirrors the `pipelinePhaseChanged` projection +
+    /// notification pattern.
+    static let warmHoldNudgeChanged = Name(
+        rawValue: "com.vineetu.jot.mobile.warm-hold-nudge-changed"
+    )
+
+    /// Live foreground handshake ("ping/pong") that decides whether a keyboard
+    /// Dictate tap records INLINE (Jot is the foreground host) or cold-starts via
+    /// the URL bounce (Jot is backgrounded / another app is foreground).
+    ///
+    /// The keyboard posts `keyboardForegroundPing`; a FOREGROUND app receives it
+    /// and immediately posts `appForegroundPong`. A suspended / backgrounded app
+    /// does NOT process Darwin notifications in real time, so it never pongs. If
+    /// the keyboard hears the pong within its short window → Jot is foreground →
+    /// inline; otherwise → cold start. A live check, immune to the stale-flag /
+    /// scenePhase fragility of `AppGroup.isJotAppForeground()`.
+    static let keyboardForegroundPing = Name(
+        rawValue: "com.vineetu.jot.mobile.keyboard-foreground-ping"
+    )
+    static let appForegroundPong = Name(
+        rawValue: "com.vineetu.jot.mobile.app-foreground-pong"
+    )
+
     static func post(name: Name) {
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),

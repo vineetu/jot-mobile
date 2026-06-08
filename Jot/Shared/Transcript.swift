@@ -11,7 +11,51 @@ import SwiftData
 /// `Jot/Shared/Schema/JotSchemaV1.swift`. Computed properties live in
 /// the extension below so they automatically apply to whichever VN is
 /// current.
-typealias Transcript = JotSchemaV4.Transcript
+typealias Transcript = JotSchemaV7.Transcript
+
+/// **DEPRECATED (V7).** Old per-whole-transcript MiniLM 384-d embedding row.
+/// Retained through V7 so the V6→V7 migration stays additive; not read or
+/// written by the chunk pipeline. Dropped in a future migration.
+typealias TranscriptEmbedding = JotSchemaV7.TranscriptEmbedding
+
+/// **DORMANT (V7).** Former on-device classifier output row. The
+/// classifier/tagging feature was removed — nothing reads or writes this
+/// table anymore. The entity is retained in the schema (same deprecation
+/// pattern as `TranscriptEmbedding`) so the V6→V7 migration stays additive;
+/// it carries no live data and may be dropped in a future migration.
+typealias TranscriptCategory = JotSchemaV7.TranscriptCategory
+
+/// Chunk-level embedding row (V7+) — the substrate for the Ask RAG pipeline.
+/// One row per ~256-token window of a transcript. Read the packed vector via
+/// the `vector: [Float]` extension below; written via `ChunkStore`.
+typealias TranscriptChunk = JotSchemaV7.TranscriptChunk
+
+extension TranscriptEmbedding {
+    /// Unpacks the stored `vectorData` blob into a `[Float]`. Returns an empty
+    /// array on size mismatch (defensive). Deprecated alongside the type.
+    var vector: [Float] {
+        let count = vectorData.count / MemoryLayout<Float>.size
+        guard count > 0 else { return [] }
+        return vectorData.withUnsafeBytes { raw -> [Float] in
+            let buffer = raw.bindMemory(to: Float.self)
+            return Array(buffer)
+        }
+    }
+}
+
+extension TranscriptChunk {
+    /// Unpacks the stored `vectorData` blob into a `[Float]` (length depends on
+    /// the active embedding model — 256 for EmbeddingGemma). Returns an empty
+    /// array on size mismatch (defensive — a bad write shouldn't crash a read).
+    var vector: [Float] {
+        let count = vectorData.count / MemoryLayout<Float>.size
+        guard count > 0 else { return [] }
+        return vectorData.withUnsafeBytes { raw -> [Float] in
+            let buffer = raw.bindMemory(to: Float.self)
+            return Array(buffer)
+        }
+    }
+}
 
 extension Transcript {
     /// Preferred surface text. Priority:

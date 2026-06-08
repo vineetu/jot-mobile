@@ -8,9 +8,12 @@ import Foundation
 /// transcript to the keyboard's pending intent — replacing the v6
 /// `pendingAutoPasteMaxAge: 600s` wall-clock ceiling that this design retires.
 ///
-/// `hostKeyboardTypeRaw` and `hostDocumentIdentifier` are best-effort
-/// same-input-context guards captured at tap time so the keyboard avoids
-/// inserting into a different field the user has navigated to since the tap.
+/// `hostKeyboardTypeRaw` and `hostDocumentIdentifier` are captured at tap time.
+/// They are NO LONGER used to gate the paste: the "same-input-context" reject
+/// guards were removed so the keyboard pastes wherever the cursor is at flush
+/// time (iOS only presents the keyboard over a focused input). The fields are
+/// retained for diagnostics / backward-compatible decoding of persisted
+/// sessions; they can be dropped in a future cleanup.
 struct PendingPasteSession: Codable, Sendable, Equatable {
     let id: UUID
     let createdAt: Date

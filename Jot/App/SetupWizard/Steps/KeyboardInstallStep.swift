@@ -39,13 +39,18 @@ struct KeyboardInstallStep: View {
 
                 WizardItalicTitle(text: titleText)
 
-                WizardBody(text: "In Settings, add Jot as a keyboard, then turn on Full Access so dictations can paste into other apps.")
+                WizardBody(text: bodyText)
+
+                if !keyboardInstalled {
+                    checklistCard
+                        .padding(.top, 4)
+                }
 
                 Spacer(minLength: 16)
             }
         } footer: {
             WizardPrimaryButton(
-                title: keyboardInstalled ? "Continue" : "Open Keyboard Settings",
+                title: keyboardInstalled ? "Continue" : "Open Settings",
                 action: {
                     if keyboardInstalled {
                         onAdvance()
@@ -59,7 +64,7 @@ struct KeyboardInstallStep: View {
             // keyboard installed — once detected, "Continue" is enough and
             // the secondary button is redundant noise.
             if !keyboardInstalled {
-                WizardSecondaryTextButton(title: "I've already done this", action: onAdvance)
+                WizardSecondaryTextButton(title: "I've already added it", action: onAdvance)
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -73,7 +78,50 @@ struct KeyboardInstallStep: View {
     }
 
     private var titleText: String {
-        keyboardInstalled ? "Jot keyboard detected" : "Set up Jot Keyboard"
+        keyboardInstalled ? "Keyboard ready" : "Add the Jot keyboard"
+    }
+
+    private var bodyText: String {
+        keyboardInstalled
+            ? "The Jot keyboard is added with Full Access — your dictations can paste into any app."
+            : "Two quick toggles in Settings let Jot paste your dictation into any app."
+    }
+
+    // MARK: - Checklist card (first-run only)
+
+    private var checklistCard: some View {
+        VStack(spacing: 0) {
+            checklistRow(number: 1, label: "Add 'Jot' under Keyboards")
+
+            Divider()
+                .padding(.leading, 38)
+
+            checklistRow(number: 2, label: "Turn on Allow Full Access")
+        }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+    }
+
+    private func checklistRow(number: Int, label: String) -> some View {
+        HStack(spacing: 12) {
+            Text("\(number)")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.jotAccent)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.jotAccent.opacity(0.14)))
+
+            Text(label)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color.jotInk)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
     }
 
     // MARK: - Tile

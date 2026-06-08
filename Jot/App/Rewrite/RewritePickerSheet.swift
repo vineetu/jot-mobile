@@ -60,6 +60,12 @@ struct RewritePickerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    /// Resizable detent (WS-G). The smallest stays `.height(360)` — the
+    /// Dynamic-Type floor that keeps the header/subline/footer (which live
+    /// OUTSIDE the inner ScrollView) from clipping on small devices — with
+    /// two larger detents to drag up into.
+    @State private var detent: PresentationDetent = .height(360)
+
     // Bundled default identification now flows through `SavedPrompt.defaultKind`
     // and the `RowKind` enum below — no per-id constants needed in this view.
 
@@ -96,8 +102,11 @@ struct RewritePickerSheet: View {
         .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(WallpaperBackground())
-        .presentationDetents([.height(360)])
+        .presentationDetents([.height(360), .fraction(0.72), .large], selection: $detent)
         .presentationDragIndicator(.visible)
+        // At the floor detent a content swipe resizes the sheet up; once
+        // expanded it scrolls the prompt list (WS-G).
+        .presentationContentInteraction(detent == .height(360) ? .resizes : .scrolls)
         .presentationCornerRadius(JotDesign.Spacing.sheetRadius)
     }
 
@@ -225,7 +234,7 @@ struct RewritePickerSheet: View {
 
         var iconTint: Color {
             switch self {
-            case .articulate:  return Color.jotAccent
+            case .articulate:  return Color.jotCoralTop
             case .aiPrompt:    return Color.jotPromptTeal
             case .actionItems: return Color.jotPromptPurple
             case .email:       return Color.jotSuccess
@@ -276,7 +285,7 @@ struct RewritePickerSheet: View {
                 Text("New prompt")
                     .font(.system(size: 14, weight: .semibold))
             }
-            .foregroundStyle(Color.jotAccent)
+            .foregroundStyle(Color.jotCoralTop)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
@@ -302,7 +311,7 @@ struct RewritePickerSheet: View {
 
 extension Color {
     /// Purple icon used for the "Bullet points" / user-prompt rows in the
-    /// rewrite picker (Mockup 10). Distinct from `jotAccent` (coral) so the
+    /// rewrite picker (Mockup 10). Distinct from `jotCoralTop` (coral) so the
     /// seeded default row reads as the visually primary option. Not part of
     /// Phase 1 tokens because nothing else in the system uses it yet;
     /// scoped to this file so the design system stays single-accent.

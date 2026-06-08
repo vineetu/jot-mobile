@@ -37,8 +37,7 @@ struct WallpaperBackground: View {
             Color.jotPageBase
 
             if colorScheme == .dark {
-                // Designer spec (design_handoff_jot_ux/design/screens.jsx:370+):
-                // dark wallpaper drops the third radial entirely and uses two
+                // Dark wallpaper drops the third radial entirely and uses two
                 // higher-opacity blue radials at top-left and bottom-right
                 // over a #15171C base (jotPageBase in dark).
                 RadialGradient(

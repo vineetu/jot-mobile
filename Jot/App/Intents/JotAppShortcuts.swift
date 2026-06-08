@@ -79,13 +79,11 @@ struct JotAppShortcuts: AppShortcutsProvider {
                 // `\(.applicationName)` is required — AppShortcuts metadata
                 // validation rejects phrases without the placeholder (the
                 // literal "Jot" doesn't satisfy the validator). The phrase
-                // Siri matches against therefore reads "Start Jot
-                // Dictation" — same words, same ergonomics, just expressed
-                // through the placeholder so the extractor accepts it.
-                // `shortTitle` is unaffected and remains "Start Dictation".
-                "Start \(.applicationName) Dictation"
+                // Siri matches against therefore reads "New Jot note" —
+                // expressed through the placeholder so the extractor accepts it.
+                "New \(.applicationName) note"
             ],
-            shortTitle: "Start Dictation",
+            shortTitle: "Jot down",
             // Coherent `waveform.*` family across all three Jot intents so
             // the Shortcuts picker reads as one app, not three. The mic
             // badge communicates "captures via mic, outputs transcription"

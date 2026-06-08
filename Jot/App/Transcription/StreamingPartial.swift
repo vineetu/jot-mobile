@@ -45,6 +45,16 @@ final class StreamingPartial {
     /// BEFORE `streamingManager.finish()` per prototype rounds 3-4.
     private(set) var currentSessionID: UUID?
 
+    /// Committed text from BEFORE the current streaming session, carried
+    /// across a Pause/Resume boundary (UX-overhaul round 2 §10.5). When a
+    /// recording is paused, `RecordingService` finalizes the live preview and
+    /// re-seeds this prefix on resume; subsequent partials from the fresh
+    /// streaming session render as `resumePrefix + newPartial` so the user
+    /// sees one continuous transcript rather than a restart-from-empty.
+    /// Empty for an un-paused recording (the common case), so it's a no-op on
+    /// the hot path. Cleared by `beginSession()` / `reset()`.
+    private(set) var resumePrefix: String = ""
+
     private let log = Logger(
         subsystem: "com.vineetu.jot.mobile.Jot",
         category: "streaming-partial"
@@ -60,6 +70,10 @@ final class StreamingPartial {
         currentSessionID = id
         streamingText = ""
         streamingIsVolatile = false
+        // A brand-new dictation has no carried-over pause prefix. (Resume
+        // re-seeds it via `seedResumePrefix(_:)` AFTER calling beginSession
+        // on the fresh streaming engine.)
+        resumePrefix = ""
         // Publish an empty projection immediately so a fast re-record never
         // shows the previous session's final text in the keyboard's
         // streaming strip during the brief gap before the first partial
@@ -84,11 +98,15 @@ final class StreamingPartial {
             log.debug("Dropping partial from stale session \(sessionID, privacy: .public)")
             return
         }
-        streamingText = text
+        // Prepend any committed pause prefix (§10.5) so a resumed dictation
+        // reads as one continuous transcript. No-op (empty prefix) on the
+        // common un-paused path.
+        let joined = Self.join(prefix: resumePrefix, tail: text)
+        streamingText = joined
         streamingIsVolatile = !isFinal
         // Force-publish on `isFinal` so the keyboard's volatile→primary
         // visual handoff isn't dropped by the throttle.
-        Self.publishProjection(text, force: isFinal)
+        Self.publishProjection(joined, force: isFinal)
         // Diagnostic visibility into whether the streaming engine is
         // actually emitting partials during recording. The Help →
         // Diagnostics card surfaces these entries so a user reporting
@@ -130,11 +148,36 @@ final class StreamingPartial {
     /// update — kept distinct from `update(...)` so call sites read the
     /// intent clearly.
     func applyFinalSnapshot(_ text: String) {
-        streamingText = text
+        let joined = Self.join(prefix: resumePrefix, tail: text)
+        streamingText = joined
         streamingIsVolatile = false
         // Terminal event — bypass the throttle so the final-snapshot text
         // always reaches the keyboard.
-        Self.publishProjection(text, force: true)
+        Self.publishProjection(joined, force: true)
+    }
+
+    /// Seed the committed pause prefix on resume (UX-overhaul round 2 §10.5).
+    /// Called by `RecordingService.resumeRecording()` AFTER the fresh
+    /// streaming session's `beginSession()` (which clears `resumePrefix`), so
+    /// subsequent partials render `prefix + newPartial`. Immediately shows the
+    /// prefix so the strip isn't momentarily blank between resume and the first
+    /// new partial.
+    func seedResumePrefix(_ prefix: String) {
+        resumePrefix = prefix
+        streamingText = prefix
+        streamingIsVolatile = true
+        Self.publishProjection(prefix, force: true)
+    }
+
+    /// Join a committed prefix with a live tail, inserting a single separating
+    /// space only when neither side already supplies whitespace and both are
+    /// non-empty.
+    private static func join(prefix: String, tail: String) -> String {
+        guard !prefix.isEmpty else { return tail }
+        guard !tail.isEmpty else { return prefix }
+        let needsSpace = !(prefix.last?.isWhitespace ?? false)
+            && !(tail.first?.isWhitespace ?? false)
+        return needsSpace ? prefix + " " + tail : prefix + tail
     }
 
     /// Full reset of UI state. Called by the recording flow once the batch
@@ -143,6 +186,7 @@ final class StreamingPartial {
         currentSessionID = nil
         streamingText = ""
         streamingIsVolatile = false
+        resumePrefix = ""
         // Terminal event — bypass throttle so the keyboard always sees the
         // clear-strip transition.
         Self.publishProjection("", force: true)

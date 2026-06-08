@@ -94,15 +94,17 @@ struct TranscriptDetailView: View {
     @State private var editorText: String = ""
     @State private var editTargetTab: DetailTab = .original
     @State private var editError: String?
-    @FocusState private var editorFocused: Bool
+    // Plain @State (not @FocusState) so it can drive `InlineEditTextView`'s
+    // first-responder via a Binding. The custom UITextView editor renders text
+    // added/changed this session in italic; see `InlineEditTextView`.
+    @State private var editorFocused: Bool = false
+    /// Bumped on each `beginEdit` so the inline editor re-baselines the loaded
+    /// text as "original" (regular) and clears its new-range (italic) tracking.
+    @State private var editSessionToken: Int = 0
 
-    /// Mirror of the classifier Lab toggle. Read on appear so the
-    /// category chip in the subline only renders when the user has
-    /// opted into the classifier feature. Public-build users (toggle
-    /// off) never see the chip.
-    @State private var classifierLabEnabled: Bool = AppGroup.defaults.bool(
-        forKey: TranscriptClassifierTask.labKey
-    )
+    /// The live caret/selection in the Edit editor, bound to `InlineEditTextView`
+    /// so the italic-tracking editor can report and restore the caret.
+    @State private var editorSelection: TextSelection?
 
     // MARK: - Phase 4 sheet state
     //
@@ -331,9 +333,6 @@ struct TranscriptDetailView: View {
         .onAppear {
             copyHaptic.prepare()
             refreshRewriteAvailability()
-            classifierLabEnabled = AppGroup.defaults.bool(
-                forKey: TranscriptClassifierTask.labKey
-            )
             // Default to Rewrite tab when a rewrite already exists — the
             // user almost always cares about their latest pass once they've
             // run one. Falls back to Original when no rewrite is saved.
@@ -349,17 +348,6 @@ struct TranscriptDetailView: View {
             // `client.status` while the detail surface is off-window.
             // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
             clientAdapter?.stop()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            // Pick up Lab-toggle flips that happen while Detail is open
-            // (e.g. user opens Settings sheet, toggles ON, dismisses).
-            // Without this the chip stays hidden until Detail is left
-            // and re-entered, because .onAppear doesn't fire on sheet
-            // dismissal in iOS 17+ when the parent view never lost focus.
-            let newValue = AppGroup.defaults.bool(forKey: TranscriptClassifierTask.labKey)
-            if newValue != classifierLabEnabled {
-                classifierLabEnabled = newValue
-            }
         }
         .task {
             refreshRewriteAvailability()
@@ -428,15 +416,6 @@ struct TranscriptDetailView: View {
             .foregroundStyle(Color.jotMute)
             .monospacedDigit()
             .accessibilityElement(children: .combine)
-
-            // Category chip — only shown when the classifier Lab toggle is
-            // on. Lets the user see what the BG classifier picked AND
-            // override it inline. Hidden during edit mode so the editor
-            // gets clean focus. User overrides are sticky — the classifier
-            // only writes rows where `category == nil`.
-            if classifierLabEnabled && !isEditing {
-                CategoryChip(transcript: transcript, shape: .detailSubline)
-            }
 
             Spacer(minLength: 0)
         }
@@ -576,21 +555,29 @@ struct TranscriptDetailView: View {
     /// Cancel discards local state.
     @ViewBuilder
     private var transcriptEditor: some View {
-        TextEditor(text: $editorText)
-            .font(.system(size: 17, weight: .regular, design: .default))
-            .tracking(-0.1)
-            .lineSpacing(4)
-            .foregroundStyle(Color.jotPageInk)
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .focused($editorFocused)
-            .accessibilityLabel(
-                editTargetTab == .original
-                    ? "Edit original transcript"
-                    : "Edit rewrite"
-            )
+        // Custom UITextView-backed editor: text ADDED or CHANGED this edit
+        // session renders italic; the original (loaded at edit-start) stays
+        // regular; Save persists the plain `String` (italic is session-only).
+        // Same editor for both Original and Rewrite tabs (they share
+        // `editorText`). See `InlineEditTextView` + docs/plans/inline-edit-italics.md.
+        // `isEditable: true` keeps the editor editable while the keyboard (and
+        // its Stop control) drive an in-Jot dictation through the normal capture
+        // path, which inserts the result via the keyboard on stop.
+        InlineEditTextView(
+            text: $editorText,
+            selection: $editorSelection,
+            sessionToken: editSessionToken,
+            isEditable: true,
+            baseFont: .systemFont(ofSize: 17, weight: .regular),
+            textColor: UIColor(Color.jotPageInk),
+            isFocused: $editorFocused
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel(
+            editTargetTab == .original
+                ? "Edit original transcript"
+                : "Edit rewrite"
+        )
     }
 
     /// Scrollable body text styled to match Recents row typography (system
@@ -801,7 +788,7 @@ struct TranscriptDetailView: View {
             ],
             primary: ActionBarItem(
                 systemImage: "sparkles",
-                label: "Transform",
+                label: "Articulate",
                 accessibilityLabel: rewriteAccessibilityLabel,
                 isEnabled: isMagicEnabled
             ) {
@@ -863,7 +850,7 @@ struct TranscriptDetailView: View {
             Spacer(minLength: 6)
 
             // Center label can shrink/disappear; the side buttons must not.
-            Text(editTargetTab == .original ? "Editing Original" : "Editing Rewrite")
+            Text(editBarCenterLabel)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.jotMute)
                 .lineLimit(1)
@@ -903,6 +890,16 @@ struct TranscriptDetailView: View {
             )
         )
     }
+
+    /// Center label of the EditBar.
+    private var editBarCenterLabel: String {
+        editTargetTab == .original ? "Editing Original" : "Editing Rewrite"
+    }
+
+    // Dictation while editing is driven by the keyboard's own Dictate tap: the
+    // keyboard posts `keyboardDictateTapped`, the app starts a normal background
+    // capture (the same path used in any other app), and on Stop the keyboard
+    // inserts the transcribed text into this focused field. No in-editor mic.
 
     /// Inline warning card shown when Save validation fails (e.g. Original
     /// text empty). Stays visible until the user types something valid or
@@ -1109,6 +1106,9 @@ struct TranscriptDetailView: View {
         }
         editError = nil
         isEditing = true
+        // New edit session → the inline editor re-baselines the just-loaded text
+        // as "original" (regular) and clears italic tracking.
+        editSessionToken += 1
         // Focus on the next runloop so the TextEditor has installed its
         // text view by the time we ask for first responder. Without the
         // hop the keyboard occasionally doesn't pop on first tap.
@@ -1204,6 +1204,7 @@ struct TranscriptDetailView: View {
     /// Common exit path for both Save and Cancel. Drops the keyboard,
     /// clears local edit state, and brings the regular ActionBar back.
     private func exitEditMode() {
+        editorSelection = nil
         editorFocused = false
         isEditing = false
         editError = nil

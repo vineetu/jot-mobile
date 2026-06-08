@@ -1,0 +1,102 @@
+/* gestures.css — the looping "swipe back to your app" cue at the very bottom of
+   the recording surface. No text: the motion is the whole message.
+
+   It mirrors the real iOS app-switch edge gesture — a finger presses the home
+   bar and drags right; the current app (Jot) shrinks into a card and slides
+   right, while the previous app's card follows in from the left. Both cards
+   track the finger together, then the loop resets. */
+
+.cue{ position:relative; height:150px; flex:none; }
+.cue .stage{ position:absolute; inset:6px 0 30px; overflow:hidden; }
+
+/* shared iOS home-indicator bar */
+.cue .home{ position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+  width:138px; height:5px; border-radius:3px; background:var(--rail); }
+
+/* ── app cards ───────────────────────────────────────────────────────── */
+.cueB .appcard{ position:absolute; top:4px; left:50%; width:122px; height:104px;
+  border-radius:20px; padding:11px 12px; box-sizing:border-box;
+  box-shadow:0 18px 40px -16px rgba(0,0,0,0.5), 0 1px 0 0 rgba(255,255,255,0.05) inset;
+  overflow:hidden; will-change:transform,opacity; }
+
+/* the previous app — its own light chrome, like any real app in the switcher */
+.cueB .prev{ background:#F4F6FA; border:0.5px solid rgba(20,40,80,0.10);
+  animation:prevCard 4.25s cubic-bezier(.45,.02,.2,1) infinite; }
+/* Jot — soft branded card */
+.cueB .jot{ border:0.5px solid var(--card-bord);
+  background:
+    radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--blueflat) 26%, transparent) 0%, transparent 60%),
+    linear-gradient(180deg, color-mix(in oklab, var(--blueflat) 12%, #F4F7FC) 0%, #EEF2F9 100%);
+  animation:jotCard 4.25s cubic-bezier(.45,.02,.2,1) infinite; }
+.screen.dark .cueB .jot{
+  background:
+    radial-gradient(120% 80% at 50% -10%, rgba(46,116,196,0.55) 0%, transparent 60%),
+    linear-gradient(180deg,#1b2c4f 0%,#13203a 100%); }
+
+/* card innards */
+.cueB .ac-bar{ display:flex; align-items:center; gap:6px; margin-bottom:9px; }
+.cueB .ac-ic{ width:18px; height:18px; border-radius:6px; flex:none; display:flex; align-items:center;
+  justify-content:center; font-family:var(--serif); font-style:italic; font-weight:600; font-size:12px; color:#fff; }
+.cueB .ac-j{ background:var(--blue-grad); box-shadow:0 2px 6px -1px var(--glow); }
+.cueB .ac-grey{ background:linear-gradient(180deg,#8E97A6,#6E7686); }
+.cueB .ac-name{ width:34px; height:7px; border-radius:4px; background:rgba(20,40,80,0.22); }
+.cueB .ac-name.jot{ width:30px; background:var(--ink-sub); opacity:.5; }
+.cueB .ac-head{ display:block; width:80%; height:13px; border-radius:5px; margin-bottom:9px;
+  background:linear-gradient(90deg, color-mix(in oklab, var(--blueflat) 50%, var(--ink)) 0%, var(--ink-sub) 100%); opacity:.5; }
+.cueB .ac-row{ display:block; height:8px; border-radius:4px; margin-bottom:7px; }
+.cueB .prev .ac-row{ background:rgba(20,40,80,0.13); }
+.cueB .jot .ac-row{ background:var(--ink-sub); opacity:.32; }
+.cueB .ac-row.s{ width:62%; }
+
+/* ── the finger contact driving the swipe ────────────────────────────── */
+.cueB .touch{ position:absolute; left:50%; bottom:9px; width:40px; height:40px; border-radius:50%;
+  background:radial-gradient(circle at 50% 40%, color-mix(in oklab, var(--blueflat) 86%, white) 0%, var(--blueflat) 58%, var(--blue3) 100%);
+  box-shadow:0 8px 22px -4px var(--glow), inset 0 2px 2px rgba(255,255,255,0.55);
+  animation:touchB 4.25s cubic-bezier(.45,.02,.2,1) infinite; }
+.cueB .touch::after{ content:""; position:absolute; inset:-9px; border-radius:50%;
+  border:2px solid color-mix(in oklab, var(--blueflat) 55%, transparent);
+  animation:rippleB 4.25s cubic-bezier(.45,.02,.2,1) infinite; }
+
+/* travel = card width (122) + gap (16) = 138.
+   Beat 1 (0–18%): Jot is the ONLY card, centered, full — a finger lands.
+   Beat 2 (18–56%): the drag begins; Jot slides right and only NOW the previous
+   app's card follows in from the left, glued one card-width behind.
+   Beat 3 (56–82%): the previous app settles centered, Jot exits; reset. */
+@keyframes jotCard{
+  0%   { transform:translateX(-50%) scale(.97); opacity:0; }
+  6%   { transform:translateX(-50%) scale(1);   opacity:1; }   /* the current app, alone */
+  18%  { transform:translateX(-50%) scale(.93); opacity:1; }   /* pressed — shrinks, still centered */
+  56%  { transform:translateX(calc(-50% + 138px)) scale(.93); opacity:1; } /* dragged right */
+  66%  { transform:translateX(calc(-50% + 180px)) scale(.9);  opacity:0; } /* exits right */
+  100% { transform:translateX(calc(-50% + 180px)) scale(.9);  opacity:0; }
+}
+@keyframes prevCard{
+  0%   { transform:translateX(calc(-50% - 138px)) scale(.93); opacity:0; }
+  18%  { transform:translateX(calc(-50% - 138px)) scale(.93); opacity:0; } /* hidden while Jot is alone */
+  25%  { opacity:1; }                                                      /* appears AS the drag starts */
+  56%  { transform:translateX(-50%) scale(.93); opacity:1; }               /* lands centered */
+  70%  { transform:translateX(-50%) scale(.96); opacity:1; }               /* settle / hold */
+  82%  { transform:translateX(-50%) scale(.98); opacity:0; }               /* fade for reset */
+  100% { opacity:0; }
+}
+@keyframes touchB{
+  0%   { transform:translate(-66px,4px) scale(.6); opacity:0; }
+  6%   { transform:translate(-66px,0)   scale(1);  opacity:1; } /* land  */
+  18%  { transform:translate(-66px,-2px) scale(1.05); opacity:1; } /* press — Jot still centered */
+  56%  { transform:translate(72px,-2px)  scale(1.05); opacity:1; } /* drag right */
+  66%  { transform:translate(72px,4px)   scale(.62); opacity:0; }  /* release */
+  100% { transform:translate(72px,4px)   scale(.6);  opacity:0; }
+}
+@keyframes rippleB{
+  0%,6%{ transform:scale(.5); opacity:0; }
+  16%  { transform:scale(1);  opacity:.7; }
+  30%,100%{ transform:scale(1.5); opacity:0; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .cueB .appcard,.cueB .touch,.cueB .touch::after{ animation:none; }
+  .cueB .jot{ transform:translateX(calc(-50% + 70px)) scale(.92); opacity:1; }
+  .cueB .prev{ transform:translateX(calc(-50% - 70px)) scale(.92); opacity:1; }
+  .cueB .touch{ transform:translate(0,-2px); opacity:1; }
+  .cueB .touch::after{ opacity:0; }
+}

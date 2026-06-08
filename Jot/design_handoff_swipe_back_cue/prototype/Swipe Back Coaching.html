@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot · Swipe-Back Coaching</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="coaching.css">
+<link rel="stylesheet" href="gestures.css">
+<style>
+  html,body{ margin:0; height:100%; }
+  body{ background:#0c0f15; overflow:hidden; }
+  body.lightbg{ background:#dfe5ee; }
+  #root{ position:fixed; inset:0; display:grid; place-items:center; }
+  .stagewrap{ transform-origin:center center; }
+  /* device shell around the authored screen */
+  .device{ position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden;
+    box-shadow:0 1px 0 2px rgba(255,255,255,0.07), 0 50px 110px -36px rgba(0,0,0,0.72); }
+  .device .screen{ border-radius:54px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="recording-surface.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "gestureSpeed": 0.8
+}/*EDITMODE-END*/;
+
+function App(){
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const dur = (3.4 / (t.gestureSpeed || 1)).toFixed(2);
+  const wrapRef = useRef(null);
+
+  // keep the body backdrop in sync with the screen theme
+  useEffect(() => {
+    document.body.classList.toggle('lightbg', t.theme === 'light');
+  }, [t.theme]);
+
+  // scale the fixed 393×852 device to fit any viewport
+  useEffect(() => {
+    const fit = () => {
+      const el = wrapRef.current; if(!el) return;
+      const s = Math.min(window.innerWidth / (393 + 48), window.innerHeight / (852 + 48), 1);
+      el.style.transform = `scale(${s})`;
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+
+  return (
+    <React.Fragment>
+      <style>{`
+        .cueB .appcard, .cueB .touch, .cueB .touch::after{ animation-duration:${dur}s !important; }
+      `}</style>
+
+      <div className="stagewrap" ref={wrapRef}>
+        <div className="device">
+          <RecordingSurface theme={t.theme} />
+        </div>
+      </div>
+
+      <TweaksPanel>
+        <TweakSection label="Appearance" />
+        <TweakRadio label="Theme" value={t.theme} options={['dark','light']}
+          onChange={(v)=>setTweak('theme', v)} />
+        <TweakSection label="Gesture cue" />
+        <TweakSlider label="Speed" value={t.gestureSpeed} min={0.5} max={1.6} step={0.1} unit="×"
+          onChange={(v)=>setTweak('gestureSpeed', v)} />
+      </TweaksPanel>
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

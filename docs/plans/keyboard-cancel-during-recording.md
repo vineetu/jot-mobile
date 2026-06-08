@@ -11,7 +11,7 @@ Today the Jot keyboard's action row exposes three controls (per `features.md §5
 
 Worse: **there's no way to abort a dictation from the keyboard.** Stop commits (saves + auto-pastes). The Hero's Cancel pill (§2.6) is the only abort affordance, but users in the warm-hold path (`§13.2`) never see the Hero. So warm-hold dictations are commit-only from the user's perspective.
 
-This also leaves the in-app dictation plan ([docs/plans/in-app-tap-to-record.md](./in-app-tap-to-record.md)) without a clean abort path — which the user explicitly didn't want to special-case there.
+This also leaves the in-app dictation plan ([docs/plans/unify-keyboard-dictation.md](./unify-keyboard-dictation.md)) without a clean abort path — which the user explicitly didn't want to special-case there.
 
 ## Goal
 
@@ -102,5 +102,5 @@ Matches §2.6 (Hero's Cancel pill):
 ## Cross-Links
 
 - Touches: `features.md §5.6` (Actions Popover lifecycle), `§5.4` (Dictate/Stop control), `§2.6` (Cancel semantics)
-- Related: [in-app-tap-to-record.md](./in-app-tap-to-record.md) — this plan provides the Cancel affordance the in-app plan no longer needs to invent.
+- Related: [unify-keyboard-dictation.md](./unify-keyboard-dictation.md) — this plan provides the Cancel affordance the in-app plan no longer needs to invent.
 - Code: `Jot/Keyboard/KeyboardView.swift`, `Jot/Keyboard/JotKeyboardViewController.swift`, `RecordingService.cancel()`

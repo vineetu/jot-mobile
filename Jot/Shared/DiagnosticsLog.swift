@@ -75,6 +75,11 @@ enum DiagnosticsCategory: String, Codable {
     /// aborting + evicting Qwen. Distinct from the transcription-service
     /// `memoryWarning` so the user can see WHICH subsystem responded.
     case classifyMemoryWarning
+    /// Keyboard tapped a recording control (Stop/Pause/Cancel/Resume) but the
+    /// main app never refreshed the pipeline projection within the liveness
+    /// ceiling — i.e. the app was jetsammed mid-recording. The keyboard
+    /// recovered itself out of the zombie "recording" UI back to idle.
+    case appUnresponsiveRecovery
 }
 
 struct DiagnosticsEntry: Codable, Identifiable, Equatable {

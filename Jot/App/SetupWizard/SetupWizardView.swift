@@ -2,20 +2,19 @@
 //  SetupWizardView.swift
 //  Jot
 //
-//  Phase 6 of the UX overhaul — 8-panel setup wizard reskin (7 core +
-//  1 optional). The in-app try-it (formerly W5) was dropped so the
-//  keyboard try-it is the only try-it step — users dictate from the
-//  real keyboard instead of practicing in the wizard first.
+//  Phase 6 of the UX overhaul — 7-panel setup wizard reskin (W1–W7).
+//  The in-app try-it (formerly W5) was dropped so the keyboard try-it
+//  is the only try-it step — users dictate from the real keyboard
+//  instead of practicing in the wizard first.
 //
-//  Step state machine: an 8-case enum covers seven core and one optional
-//  visual surface. The old W3 "Download speech model" panel was retired
-//  earlier (Parakeet ships bundled in the IPA, App Review 4.2.3(ii)). The
-//  "vocabulary seed" optional step was also retired — the feature stayed
-//  available in Settings → Vocabulary, but it was reclassified as
-//  experimental (it only takes effect on the bundled 110M variant) and
-//  was no longer worth promoting in onboarding. Each case maps to a
-//  small per-step view file under `Steps/`. Shared chrome (wallpaper,
-//  progress dots, close X, primary CTA pill, home indicator) lives in
+//  Step state machine: a 7-case enum covers the seven core visual
+//  surfaces (W1–W7). The old W3 "Download speech model" panel was
+//  retired earlier (Parakeet ships bundled in the IPA, App Review
+//  4.2.3(ii)). The optional AI-offer follow-on step was also dropped —
+//  AI rewrite is now set up from Settings, not onboarding — so W7
+//  ("You're ready") is terminal. Each case maps to a small per-step
+//  view file under `Steps/`. Shared chrome (wallpaper, progress dots,
+//  close X, primary CTA pill, home indicator) lives in
 //  `Components/WizardChrome.swift`.
 //
 //  Backend wiring is preserved end-to-end:
@@ -27,8 +26,6 @@
 //    - W5 keyboard test  → polls `ClipboardHandoff.readFresh()` for a
 //                          fresh handoff newer than W5 entry.
 //    - W6 warm hold      → writes `AppGroup.warmHoldEnabled`.
-//    - Optional Step 1 AI offer   → `LLMClientUIAdapter.warm()` against
-//                                  `LLMClientFactory.shared.client()`.
 //
 //  Setup completion is gated by `SetupCompletion.markCompleted()`, which
 //  is unchanged from before — its persistence key remains the source of
@@ -129,15 +126,7 @@ struct SetupWizardView: View {
                 YoureReadyStep(
                     onClose: closeAndComplete,
                     onBack: goBack,
-                    onAdvanceToOptional: { advance(to: .aiOffer) },
-                    onSkipOptional: closeAndComplete
-                )
-
-            case .aiOffer:
-                AIOfferStep(
-                    onClose: closeAndComplete,
-                    onBack: goBack,
-                    onComplete: closeAndComplete
+                    onFinish: closeAndComplete
                 )
             }
         }
@@ -194,6 +183,14 @@ struct SetupWizardView: View {
         Task { @MainActor in
             do {
                 wizardLog.notice("RECORDING START FROM: SetupWizardView.handleKeyboardDictateTapped (W5 keyboard mic)")
+                // A normal capture must never inherit a stale inline-ownership
+                // flag. `ownsActiveRecording` is set ONLY by Ask's
+                // `InlineDictationSession`; a leaked `true` would make the
+                // keyboard Stop bail out of `handleStopRequested` before
+                // stopping the mic. Mirror `ContentView`'s in-Jot observer and
+                // clear it defensively before starting. The wizard W5 field then
+                // receives the in-process transient insert on stop.
+                RecordingService.shared.ownsActiveRecording = false
                 try await recordingService.start()
             } catch {
                 // Expected on already-recording / pipeline-in-flight
@@ -226,8 +223,7 @@ struct SetupWizardView: View {
     }
 
     /// Marks the setup wizard complete and dismisses. The "X" close
-    /// button and the "Maybe later"/"Skip" buttons on W7 and the optional
-    /// steps all share this exit path.
+    /// button and the W7 "Start jotting." button share this exit path.
     private func closeAndComplete() {
         // Wizard contract: any recording the wizard started (W5
         // keyboard handoff) dies with the wizard. After this dismissal
@@ -244,13 +240,13 @@ struct SetupWizardView: View {
     }
 }
 
-/// 8-case step machine — one case per core or optional visual surface. Cases are
+/// 7-case step machine — one case per core visual surface (W1–W7). Cases are
 /// ordered to mirror the visual sequence exactly, which keeps the progress-dot
 /// row in lockstep with the step transitions. The old W3 "Download speech
 /// model" case is gone (Parakeet ships bundled in the IPA); the old W5 in-app
 /// try-it case is also gone — users dictate from the real keyboard instead.
-/// The former Optional Step 1 (vocab seed) is gone too — vocabulary biasing
-/// is now an experimental feature in Settings only, not in onboarding.
+/// The optional AI-offer follow-on case is gone too — AI rewrite is now set up
+/// from Settings, not onboarding — so W7 is terminal.
 private enum SetupStep: Hashable {
     case welcome           // W1
     case microphone        // W2
@@ -259,7 +255,6 @@ private enum SetupStep: Hashable {
     case tryKeyboard       // W5
     case warmHold          // W6
     case youreReady        // W7
-    case aiOffer           // Optional Step 1
 }
 
 #Preview {

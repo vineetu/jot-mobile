@@ -32,11 +32,14 @@ struct DonationCard: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 16) {
-                // Coral gradient CTA per `design_handoff_jot_ux/design/donation.jsx`
-                // (DONATION_CORAL → DONATION_CORAL_DEEP, with a soft coral glow).
-                // We don't reuse `CoralActionButton` here — its 24h/14v padding is
-                // sized for primary CTAs, and the donation card needs the smaller
-                // inline 16h/10v footprint that matches the original neutral pill.
+                // Soft tinted blue capsule — the donation card is a gentle
+                // reminder, not a primary action. A loud gradient + drop
+                // shadow (originally coral, briefly blue) made this CTA
+                // compete with the Dictate FAB for visual weight, which is
+                // wrong for the moment. Same aesthetic as the category chip
+                // in TranscriptDetailView: subtle tinted background, deep
+                // blue text, no shadow. Adapts to light/dark via fixed-RGB
+                // blue at low opacity — reads in both schemes.
                 Button(action: onSeeDonations) {
                     HStack(spacing: 6) {
                         Text("See donations")
@@ -44,20 +47,13 @@ struct DonationCard: View {
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .font(.system(.callout, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color.jotBlueBottom)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background {
                         Capsule(style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [.jotCoralTop, .jotCoralBottom],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
+                            .fill(Color.jotBlueTop.opacity(0.15))
                     }
-                    .shadow(color: Color.jotCoralTop.opacity(0.40), radius: 12, x: 0, y: 4)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("See donations")

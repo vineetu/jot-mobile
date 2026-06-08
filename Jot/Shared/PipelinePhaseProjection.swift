@@ -17,6 +17,16 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     enum Phase: String, Codable, Sendable {
         case idle
         case recording
+        /// Mid-dictation pause (UX-overhaul round 2, §10). The audio engine
+        /// keeps running and the mic stays warm, but the slice router drops
+        /// buffers so nothing is captured. Distinct from `.recording` so the
+        /// hero and keyboard can both render a paused UI (Resume control,
+        /// frozen elapsed clock) cross-process. `isRecording` stays `true`
+        /// while paused — it is a sub-state of an active recording, terminated
+        /// only by Resume or Stop/Cancel. The keyboard treats `.paused` as a
+        /// live-but-not-capturing state (mic CTA shows Resume, not the in-
+        /// flight spinner).
+        case paused
         case transcribing
         case processing
         case cleaning
@@ -35,11 +45,15 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     let lastUpdatedAt: Date
     let failureReason: String?
 
-    /// Heartbeat: every 10s while non-idle, the writer process refreshes
-    /// `lastUpdatedAt`. The reader treats a non-idle projection older than
-    /// 30s (3× heartbeat) as the writer being dead and synthesizes a
-    /// `.failed` view without mutating storage.
-    static let heartbeatInterval: TimeInterval = 10
+    /// Heartbeat: every 3s while non-idle, the writer process refreshes
+    /// `lastUpdatedAt`. A fast cadence (well under the keyboard's 5s
+    /// control-tap liveness ceiling) lets the keyboard treat "no refresh
+    /// within 5s of a control tap" as a clean dead-app signal — a live app,
+    /// foreground or background, always stamps within 3s. The reader still
+    /// treats a non-idle projection older than `heartbeatStaleThreshold` as
+    /// the writer being dead and synthesizes a `.failed` view without
+    /// mutating storage (the passive, non-tap recovery path).
+    static let heartbeatInterval: TimeInterval = 3
     static let heartbeatStaleThreshold: TimeInterval = 30
 
     static func write(_ projection: PipelinePhaseProjection) {
@@ -61,7 +75,7 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         switch projection.phase {
         case .idle, .failed:
             return projection
-        case .recording, .transcribing, .processing, .cleaning, .rewriting, .publishing:
+        case .recording, .paused, .transcribing, .processing, .cleaning, .rewriting, .publishing:
             let age = Date().timeIntervalSince(projection.lastUpdatedAt)
             if age > heartbeatStaleThreshold {
                 return PipelinePhaseProjection(

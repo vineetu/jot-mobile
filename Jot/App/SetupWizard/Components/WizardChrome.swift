@@ -4,15 +4,16 @@
 //
 //  Phase 6 of the UX overhaul — Setup Wizard reskin.
 //
-//  Reusable chrome bits the 8 wizard panels share: the standard v0.9
-//  wallpaper backdrop, progress dot rows (core 7 + optional 1), the top-right
-//  glass close button, the coral primary CTA pill, secondary text
+//  Reusable chrome bits the 7 wizard panels share: the standard v0.9
+//  wallpaper backdrop, the 7-dot progress row, the top-right
+//  glass close button, the blue brand primary CTA pill, secondary text
 //  button, the bottom home-indicator bar, and the wizard title/body
 //  typography helpers that every panel uses.
 //
 //  Tokens are pulled from Phase 1 / Phase 4 (`JotDesign`, `Color`
 //  extensions, `JotType`). The wallpaper is the app-wide v0.9
-//  `WallpaperBackground`; CTA gradient stops use the shared coral tokens.
+//  `WallpaperBackground`; CTA gradient stops use the shared blue
+//  `jotCtaBlue*` tokens.
 //
 
 import SwiftUI
@@ -23,6 +24,35 @@ import SwiftUI
 struct WizardWallpaper: View {
     var body: some View {
         WallpaperBackground()
+    }
+}
+
+// MARK: - Brand mark
+
+/// The Jot brand mark — the **real app-icon art** (heavy `j` stem + thin 3-bar
+/// voice waveform on the brand-blue gradient tile), rendered from the shipped
+/// `JotBrandTile` icon asset so the W1 welcome hero matches the Home Screen
+/// icon exactly. `size:` lets the call site pick the hero size.
+///
+/// Previously this was a hand-drawn SwiftUI reconstruction (a `22 6 72 148`
+/// viewBox `j` stem + a symmetric 3-bar tittle). Its proportions drifted from
+/// the designed logo — a shorter/thicker `j` and an even short-tall-short
+/// tittle instead of the logo's slim `j` and varied voice-wave — so it read as
+/// "off." Using the actual icon raster removes the drift entirely. Clipped to
+/// the iOS-squircle rounded square with a soft ambient shadow.
+struct WizardBrandMark: View {
+    var size: CGFloat = 84
+
+    var body: some View {
+        Image("JotBrandTile")
+            .resizable()
+            .interpolation(.high)
+            .frame(width: size, height: size)
+            // 0.2237 ≈ the iOS app-icon superellipse corner ratio, so the tile
+            // reads as the same squircle the user sees on their Home Screen.
+            .clipShape(RoundedRectangle(cornerRadius: 0.2237 * size, style: .continuous))
+            .shadow(color: Color.black.opacity(0.18), radius: size * 0.14, x: 0, y: size * 0.06)
+            .accessibilityHidden(true)
     }
 }
 
@@ -67,36 +97,6 @@ struct WizardProgressDots: View {
     }
 }
 
-/// 7 muted dots + dash separator + 1 active dot — the Optional Step
-/// indicator. Mirrors the JSX `WizDotsB` shape (7 muted dots after the
-/// W3 speech-model step and W5 in-app try-it step were both removed).
-/// The former second optional step (vocab seed) was retired when
-/// vocabulary biasing was reclassified as experimental, so only the
-/// AI Rewrite optional step remains.
-struct WizardProgressDotsOptional: View {
-    let current: Int  // always 0 — only one optional step remains
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(0..<wizardCoreStepCount, id: \.self) { _ in
-                Circle()
-                    .fill(Color.jotPageInk.opacity(0.22))
-                    .frame(width: 5, height: 5)
-            }
-            Rectangle()
-                .fill(Color.jotPageInk.opacity(0.22))
-                .frame(width: 12, height: 1.5)
-                .padding(.horizontal, 3)
-            // Single optional step: render one accent dot.
-            Circle()
-                .fill(Color.jotAccent)
-                .frame(width: 7, height: 7)
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Optional step 1 of 1")
-    }
-}
-
 // MARK: - Back button
 
 /// 32pt top-left glass circle with a leading chevron. On tap, calls
@@ -110,18 +110,14 @@ struct WizardBackButton: View {
 
     var body: some View {
         Button(action: onBack) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                Circle()
-                    .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
-                Image(systemName: "chevron.backward")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.jotInk)
-            }
-            .frame(width: 32, height: 32)
-            .contentShape(Circle())
-            .padding(8)
+            Image(systemName: "chevron.backward")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.jotInk)
+                .frame(width: 32, height: 32)
+                // Shared design-language chrome treatment (light glass / dark grey).
+                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 16))
+                .contentShape(Circle())
+                .padding(8)
         }
         .accessibilityLabel("Back")
         .accessibilityHint("Return to the previous step.")
@@ -141,20 +137,16 @@ struct WizardCloseButton: View {
         Button {
             showingConfirm = true
         } label: {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                Circle()
-                    .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.jotInk)
-            }
-            .frame(width: 32, height: 32)
-            .contentShape(Circle())
-            // Apple HIG: ≥44pt hit target — extend the tap region without
-            // moving the visual chrome.
-            .padding(8)
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.jotInk)
+                .frame(width: 32, height: 32)
+                // Shared design-language chrome treatment (light glass / dark grey).
+                .modifier(JotDesign.Surface.key.modifier(cornerRadius: 16))
+                .contentShape(Circle())
+                // Apple HIG: ≥44pt hit target — extend the tap region without
+                // moving the visual chrome.
+                .padding(8)
         }
         .accessibilityLabel("Close setup")
         .confirmationDialog(
@@ -174,9 +166,9 @@ struct WizardCloseButton: View {
 
 // MARK: - Primary CTA
 
-/// Coral pill, full-width minus 20pt margins, ~52pt tall, white text 16pt
-/// SemiBold. Coral-red gradient + inset highlight + drop shadow per the
-/// JSX `WizPrimary`. Disabled state dims the gradient.
+/// Blue brand pill, full-width minus 20pt margins, ~64pt tall, white text
+/// 18pt SemiBold. 3-stop blue CTA gradient + inset highlight + blue drop
+/// glow per the handoff `WizPrimary`. Disabled state dims the gradient.
 struct WizardPrimaryButton: View {
     let title: String
     var leadingSystemImage: String? = nil
@@ -190,20 +182,21 @@ struct WizardPrimaryButton: View {
                 HStack(spacing: 10) {
                     if let leadingSystemImage {
                         Image(systemName: leadingSystemImage)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(.white)
                     }
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .frame(maxWidth: .infinity, minHeight: 28)
-                .padding(.vertical, 12)
+                .padding(.vertical, 18)
                 .background(
                     LinearGradient(
                         colors: [
-                            Color.jotCoralTop,
-                            Color.jotCoralBottom
+                            Color.jotCtaBlueTop,
+                            Color.jotCtaBlueMid,
+                            Color.jotCtaBlueBottom
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -218,7 +211,7 @@ struct WizardPrimaryButton: View {
                         .allowsHitTesting(false)
                 )
                 .shadow(
-                    color: Color(red: 1.00, green: 0.23, blue: 0.19).opacity(0.35),
+                    color: Color(red: 0x1A / 255, green: 0x8C / 255, blue: 0xFF / 255).opacity(0.44),
                     radius: 10,
                     x: 0,
                     y: 8
@@ -234,28 +227,6 @@ struct WizardPrimaryButton: View {
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(Color.jotMute)
             }
-        }
-    }
-}
-
-/// Glass-pill secondary button used by the Optional Step 1 AI rewrite CTA.
-struct WizardGlassButton: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.jotInk)
-                .frame(maxWidth: .infinity, minHeight: 28)
-                .padding(.vertical, 12)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 }
@@ -295,8 +266,8 @@ struct WizardHomeIndicator: View {
 // MARK: - Typography helpers
 
 /// Editorial title used at the top of most panels — Fraunces SemiBold
-/// at a tunable size (defaults to 32pt, W1 overrides to 80pt, W5/W6/W7 and
-/// Optional Step 1 override to 26-28pt).
+/// at a tunable size (defaults to 32pt, W1 overrides to 80pt, W5/W6/W7
+/// override to 26-28pt).
 struct WizardTitle: View {
     let text: String
     var size: CGFloat = 32
@@ -463,7 +434,6 @@ struct WizardPanel<Content: View, Footer: View>: View {
 struct WizardHeader {
     enum DotsStyle {
         case core(current: Int)
-        case optional(current: Int)
     }
 
     let style: DotsStyle
@@ -481,8 +451,6 @@ struct WizardHeader {
         switch style {
         case .core(let current):
             WizardProgressDots(current: current)
-        case .optional(let current):
-            WizardProgressDotsOptional(current: current)
         }
     }
 }

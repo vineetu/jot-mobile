@@ -78,6 +78,22 @@ final class RecordingService {
     private(set) var isWarm: Bool = false
     private(set) var warmExpiresAt: Date?
 
+    /// True while a recording is PAUSED (UX-overhaul round 2 §10). Observable
+    /// so the hero/keyboard can render a Resume control and a frozen elapsed
+    /// clock. Pause is a sub-state of an active recording: `isRecording` stays
+    /// `true` the entire time we're paused. Set by `pauseRecording()`, cleared
+    /// by `resumeRecording()` and by every terminal teardown path (stop /
+    /// cancel / forceStop / internalStop / exitWarmHold).
+    private(set) var isPaused: Bool = false
+
+    /// True while an *inline* in-app surface (Ask, Edit, the keyboard-while-in-Jot
+    /// receiver) owns the current recording — i.e. it is dictating into a field,
+    /// not a targetless hero capture. The home view's hero-adoption guards check
+    /// this so they don't snatch an inline recording into a full-screen hero
+    /// while the inline surface is mid-teardown (the build-72 leak fix,
+    /// generalized for WS-B). Set/cleared by `InlineDictationSession`.
+    var ownsActiveRecording: Bool = false
+
     /// Single source of truth for cross-process pipeline phase. Reads as
     /// `.idle` when no pipeline activity is in flight; transitions through
     /// `.recording → .transcribing → .processing → .cleaning → .publishing`
@@ -159,6 +175,75 @@ final class RecordingService {
     private var streamingQueue: StreamingBufferQueue?
     private var streamingDrainTask: Task<Void, Never>?
 
+    // MARK: - Pause / Resume (UX-overhaul round 2 §10)
+    //
+    // Pause keeps the engine + tap running and gates the slice router
+    // (`pauseSlice()` drops buffers without ending the slice); Resume re-arms
+    // capture against the SAME `CaptureContext` so samples concatenate. The
+    // following fields support the two derived behaviors §10 requires:
+    // an elapsed clock that freezes during the pause gap (§10.4), and a live
+    // streaming partial that persists across pause and appends on resume
+    // (§10.5).
+
+    /// Sum of completed active-capture spans, in seconds, for the current
+    /// session. Updated on each `pauseRecording()` (we add the just-ended
+    /// active span) so the displayed elapsed = `accumulatedActiveSeconds +
+    /// (now − currentActiveSpanStartedAt)` while active, and exactly
+    /// `accumulatedActiveSeconds` while paused (the clock freezes). Reset on
+    /// every fresh `start()` / warm-resume and cleared on terminal teardown.
+    private var accumulatedActiveSeconds: TimeInterval = 0
+
+    /// Wall-clock anchor of the CURRENT active-capture span. While active this
+    /// is the moment capture (re)started; while paused it is `nil`. The
+    /// published `recordingStartedAt` is back-dated to
+    /// `now − totalElapsed` so the keyboard's existing wall-clock elapsed
+    /// renderer naturally shows accumulated-active time and freezes on pause
+    /// (we re-publish a back-dated anchor on resume). See `pausedAwareStartedAt()`.
+    private var currentActiveSpanStartedAt: Date?
+
+    /// Committed streaming text captured at pause time (§10.5). On pause we
+    /// tear down the current slice's streaming session and promote its preview
+    /// to a final snapshot; that text is held here as a prefix. On resume a
+    /// fresh streaming session feeds new partials that the presenter renders as
+    /// `committedStreamingPrefix + newPartial`. Empty between sessions.
+    private var committedStreamingPrefix: String = ""
+
+    /// The async pause-teardown Task (streaming session teardown + committed-
+    /// prefix snapshot). `resumeRecording()` MUST await this before it installs
+    /// a fresh streaming queue and reads `committedStreamingPrefix`: a very fast
+    /// pause→resume could otherwise (a) read an empty prefix before this Task
+    /// sets it (the pre-pause text would be lost), and (b) have this Task's
+    /// `tearDownStreamingSession()` nil `streamingQueue` AFTER resume installed
+    /// its fresh queue, so the resumed tail never streams. Awaiting serializes
+    /// both hazards. Cleared by every terminal teardown via `clearPauseState()`.
+    private var pauseTeardownTask: Task<Void, Never>?
+
+    /// Upper safety ceiling for a paused session (§10.3). Because Option A
+    /// keeps the mic warm for the entire pause, a forgotten pause would hold
+    /// the mic (and the orange indicator) indefinitely. This task arms at
+    /// `pauseRecording()` and auto-finalizes the session via `internalStop`
+    /// if Resume/Stop never arrives within `pauseSafetyCeiling`. Cancelled on
+    /// resume / stop / any teardown.
+    ///
+    /// NOTE: the round-2 plan §10.3 says to "reuse the existing 15-min
+    /// recording cap as the safety ceiling," but no such global recording cap
+    /// exists in this file today (verified by grep). Rather than invent a
+    /// whole-session cap out of scope, this implements the pause-specific
+    /// ceiling the §10.3 hazard actually requires, sized to match the plan's
+    /// stated 15-minute intent. If a global recording cap lands later, fold
+    /// this into it.
+    private var pauseSafetyTask: Task<Void, Never>?
+    private static let pauseSafetyCeiling: TimeInterval = 15 * 60
+
+    /// True wall-clock start of the current dictation session, captured once
+    /// at recording start and NOT re-anchored on resume (unlike
+    /// `currentRecordingStartedAt`, which is back-dated for the pause-aware
+    /// display clock). Used by the warm-hold switching nudge (§4 / R16) to
+    /// store the `(startedAt, stoppedAt)` ring-buffer pair — the streak math
+    /// compares this session's start against the previous session's stop, so
+    /// it must be the true wall-clock anchor, not the display-frozen value.
+    private var nudgeSessionStartedAtValue: Date?
+
     /// Live partial-transcript presenter, injected by `JotApp` at app
     /// construction via `setStreamingPresenter(_:)`. Headless paths
     /// (Shortcuts intent, AppIntent surfaces) leave this nil — streaming
@@ -188,7 +273,45 @@ final class RecordingService {
         self.streamingPresenter = presenter
     }
 
+    /// Darwin observers for keyboard-initiated Pause/Resume (§10.2). The
+    /// keyboard never runs the engine; it posts `pauseRequested` /
+    /// `resumeRequested` and this single owner (the app's `RecordingService`)
+    /// executes them. Held for the service's lifetime. Installed lazily on
+    /// first `start()` (and idempotently re-checkable) so headless callers that
+    /// never record don't pay for them — but also safe to install eagerly via
+    /// `installCrossProcessPauseResumeObservers()`.
+    private var pauseRequestObserver: CrossProcessNotification.Observer?
+    private var resumeRequestObserver: CrossProcessNotification.Observer?
+
     init() {}
+
+    /// Install the keyboard Pause/Resume Darwin observers (§10.2). Idempotent.
+    /// The foreground app (`JotApp`) may call this at construction so the
+    /// single-owner contract is established before the first keyboard tap; it
+    /// is also called lazily from `start()` so any recording path is covered.
+    func installCrossProcessPauseResumeObservers() {
+        if pauseRequestObserver == nil {
+            pauseRequestObserver = CrossProcessNotification.addObserver(
+                name: CrossProcessNotification.pauseRequested
+            ) { [weak self] in
+                self?.pauseRecording()
+            }
+        }
+        if resumeRequestObserver == nil {
+            resumeRequestObserver = CrossProcessNotification.addObserver(
+                name: CrossProcessNotification.resumeRequested
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.resumeRecording()
+                    } catch {
+                        self.log.error("Keyboard-initiated resume failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            }
+        }
+    }
 
     // MARK: - Streaming session lifecycle (dual-model-streaming)
     //
@@ -297,6 +420,10 @@ final class RecordingService {
     func start() async throws {
         guard !isRecording else { throw RecordingError.alreadyRunning }
 
+        // Ensure the keyboard Pause/Resume Darwin observers exist before this
+        // recording can be paused from the keyboard (§10.2). Idempotent.
+        installCrossProcessPauseResumeObservers()
+
         if isPipelineInFlight {
             if isWarm {
                 log.info("Warm-resume blocked - prior pipeline still in flight; caller should cold-launch")
@@ -366,6 +493,15 @@ final class RecordingService {
         subscribeSystemObservers(engine: engine)
         let startedAt = Date()
         isRecording = true
+        // Seed the pause-aware elapsed accounting (§10.4): one fresh active
+        // span begins now, with no prior accumulated time. Must precede the
+        // `.recording` publish — the projection's `recordingStartedAt` is
+        // assembled there.
+        resetActiveElapsed()
+        beginActiveSpan(at: startedAt)
+        // True session-start anchor for the warm-hold nudge (R16) — NOT
+        // re-anchored on resume, unlike the display clock.
+        nudgeSessionStartedAtValue = startedAt
         // `setCurrentRecordingStartedAt` MUST precede `publishPipelinePhase(.recording)`
         // — the helper reads `currentRecordingStartedAt` when assembling the
         // projection, and the keyboard's elapsed-time clock renders off that
@@ -420,6 +556,9 @@ final class RecordingService {
         subscribeSystemObservers(engine: engine)
         let startedAt = Date()
         isRecording = true
+        resetActiveElapsed()
+        beginActiveSpan(at: startedAt)
+        nudgeSessionStartedAtValue = startedAt
         setCurrentRecordingStartedAt(startedAt)
         publishPipelinePhase(.recording)
         log.info("Warm recording resumed at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
@@ -448,6 +587,244 @@ final class RecordingService {
         isCapturingSlice = false
         _ = tapRouter.endSlice()
         capture = nil
+    }
+
+    // MARK: - Pause / Resume (UX-overhaul round 2 §10)
+
+    /// Begin a fresh active-capture span (§10.4). Called on every recording
+    /// start, warm-resume, and on `resumeRecording()`. Sets the wall-clock
+    /// anchor for the current span; `accumulatedActiveSeconds` is the running
+    /// total of prior completed spans (reset to 0 by callers that start a
+    /// brand-new session).
+    private func beginActiveSpan(at date: Date) {
+        currentActiveSpanStartedAt = date
+    }
+
+    /// Fold the just-ended active span into `accumulatedActiveSeconds` and
+    /// clear the span anchor (§10.4). Called on pause. Idempotent: a nil
+    /// anchor (already paused) is a no-op.
+    private func endActiveSpan(at date: Date) {
+        guard let started = currentActiveSpanStartedAt else { return }
+        accumulatedActiveSeconds += max(0, date.timeIntervalSince(started))
+        currentActiveSpanStartedAt = nil
+    }
+
+    /// Total active (capturing) elapsed for the current session, excluding
+    /// pause gaps (§10.4). Equal to `accumulatedActiveSeconds` while paused
+    /// (frozen) and growing with wall-clock while active.
+    private func totalActiveElapsed() -> TimeInterval {
+        if let started = currentActiveSpanStartedAt {
+            return accumulatedActiveSeconds + max(0, Date().timeIntervalSince(started))
+        }
+        return accumulatedActiveSeconds
+    }
+
+    /// A back-dated `recordingStartedAt` so the keyboard's existing wall-clock
+    /// elapsed renderer (`now − recordingStartedAt`) naturally shows
+    /// pause-excluded active time. While active, re-anchoring on resume makes
+    /// the keyboard's clock pick up exactly where it froze. While paused we
+    /// don't move the clock at all (we publish `.paused` without re-anchoring),
+    /// so the keyboard sees the same frozen value until resume.
+    private func pausedAwareStartedAt() -> Date {
+        Date().addingTimeInterval(-totalActiveElapsed())
+    }
+
+    /// Reset the pause-aware elapsed accounting to a clean slate. Called on
+    /// terminal teardown so the next session starts from zero.
+    private func resetActiveElapsed() {
+        accumulatedActiveSeconds = 0
+        currentActiveSpanStartedAt = nil
+    }
+
+    /// Pause the current recording (§10). Keeps the engine + tap running and
+    /// the mic warm (Option A) — only the slice router is gated so buffers are
+    /// dropped without ending the slice. The accumulated samples + streaming
+    /// preview persist; the elapsed clock freezes; a safety-ceiling task arms
+    /// so a forgotten pause auto-finalizes rather than holding the mic forever.
+    ///
+    /// No-op (logged) when not actively recording, already paused, or
+    /// mid-stop. Cannot be called while warm-held — warm-hold is a post-stop
+    /// idle state, not a live recording (§10.6).
+    func pauseRecording() {
+        guard isRecording, !isPaused, !isStopInFlight else {
+            log.notice("Pause skipped — isRecording=\(self.isRecording, privacy: .public) isPaused=\(self.isPaused, privacy: .public) isStopInFlight=\(self.isStopInFlight, privacy: .public)")
+            return
+        }
+        guard !isWarm else {
+            log.notice("Pause skipped — warm-hold is a post-stop idle state, not a live recording.")
+            return
+        }
+
+        log.notice("RECORDING PAUSE FROM: pauseRecording()")
+
+        // Freeze the elapsed clock: fold the active span into the accumulator
+        // and drop the span anchor (§10.4).
+        endActiveSpan(at: Date())
+
+        // Gate the router WITHOUT ending the slice (§10.1): buffers are now
+        // dropped, but `capture` + accumulated samples survive for resume.
+        isCapturingSlice = false
+        tapRouter.pauseSlice()
+
+        isPaused = true
+        currentAmplitude = nil
+        AmplitudeProjection.clear()
+
+        // Promote the live streaming preview to a committed prefix (§10.5):
+        // tear down THIS slice's streaming session (its preview is finalized
+        // via engine.finish() inside teardown), snapshot the finalized text,
+        // and hold it so resume can render `prefix + newPartial`. Done async
+        // because teardown awaits the drain; the paused phase is published
+        // first so the UI flips immediately.
+        publishPausedPhase()
+        armPauseSafetyCeiling()
+
+        // Hold the teardown Task so `resumeRecording()` can await it before
+        // installing a fresh queue / reading the committed prefix (see the
+        // field doc — serializes the fast pause→resume race).
+        pauseTeardownTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Snapshot whatever the presenter currently shows BEFORE teardown
+            // so a finish() that returns nothing still keeps the visible text.
+            let visiblePrefix = self.streamingPresenter?.streamingText ?? ""
+            await self.tearDownStreamingSession()
+            // Prefer the post-finish snapshot the presenter now holds; fall
+            // back to the pre-teardown visible text.
+            let finalized = self.streamingPresenter?.streamingText ?? ""
+            self.committedStreamingPrefix = finalized.isEmpty ? visiblePrefix : finalized
+            self.log.info("Pause committed streaming prefix — chars=\(self.committedStreamingPrefix.count, privacy: .public)")
+        }
+    }
+
+    /// Resume a paused recording (§10). Re-arms capture against the SAME
+    /// `CaptureContext` (samples concatenate, pause gap absent), re-anchors the
+    /// elapsed clock, and starts a fresh streaming session that renders
+    /// post-resume partials appended to the committed prefix.
+    ///
+    /// Throws `.notRunning` if there is no paused session to resume or the
+    /// engine has since been torn down (e.g. an interruption while paused
+    /// already routed to `internalStop`).
+    func resumeRecording() async throws {
+        guard isRecording, isPaused else {
+            log.notice("Resume skipped — isRecording=\(self.isRecording, privacy: .public) isPaused=\(self.isPaused, privacy: .public)")
+            throw RecordingError.notRunning
+        }
+        guard let engine, engine.isRunning, isTapInstalled, let capture else {
+            log.error("Resume requested but engine/tap/capture missing — finalizing.")
+            // The mic-warm engine went away under us (interruption raced the
+            // resume). Treat as a hard stop of the accumulated audio.
+            isPaused = false
+            cancelPauseSafetyCeiling()
+            internalStop(reason: "resume-without-engine")
+            throw RecordingError.notRunning
+        }
+
+        log.notice("RECORDING RESUME FROM: resumeRecording()")
+        cancelPauseSafetyCeiling()
+
+        // Serialize against the pause-teardown Task (see `pauseTeardownTask`):
+        // on a fast pause→resume it may still be mid-flight, and its
+        // `tearDownStreamingSession()` nils `streamingQueue` + sets
+        // `committedStreamingPrefix`. Awaiting it here guarantees the fresh
+        // queue we install below isn't clobbered and the committed prefix is
+        // populated before we seed it. No-op when teardown already finished.
+        if let pending = pauseTeardownTask {
+            await pending.value
+            pauseTeardownTask = nil
+        }
+
+        // Fresh streaming session for the resumed tail (§10.5). A new queue is
+        // installed into the router via `resumeSlice` so post-resume partials
+        // flow to the new engine; the presenter renders prefix + newPartial.
+        let resumedQueue = StreamingBufferQueue()
+        self.streamingQueue = resumedQueue
+
+        // Re-arm capture against the SAME capture context (§10.1).
+        isCapturingSlice = true
+        tapRouter.resumeSlice(streamingQueue: resumedQueue)
+        // `capture` is unchanged; keep the local binding alive so the compiler
+        // sees the guard's unwrap is load-bearing.
+        _ = capture
+
+        isPaused = false
+
+        // Re-anchor the elapsed clock: a new active span starts now; the
+        // accumulated total carries the paused-excluded time (§10.4).
+        beginActiveSpan(at: Date())
+        setCurrentRecordingStartedAt(pausedAwareStartedAt())
+        publishPipelinePhase(.recording)
+
+        log.info("Recording resumed; committed prefix chars=\(self.committedStreamingPrefix.count, privacy: .public)")
+
+        // Spin up the fresh streaming session against the new queue, THEN
+        // seed the committed prefix. Ordering is load-bearing:
+        // `kickOffStreamingSession()` calls `presenter.beginSession()`, which
+        // clears `resumePrefix`; seeding afterward means the first post-resume
+        // partial renders as `prefix + newPartial` rather than restarting from
+        // empty.
+        let prefix = committedStreamingPrefix
+        Task { [weak self] in
+            guard let self else { return }
+            await self.kickOffStreamingSession()
+            if !prefix.isEmpty {
+                self.streamingPresenter?.seedResumePrefix(prefix)
+            }
+        }
+    }
+
+    /// Publish the `.paused` phase (§10.2). Mirrors `publishPipelinePhase` but
+    /// pins the projection's `recordingStartedAt` to the FROZEN pause-aware
+    /// anchor so the keyboard's wall-clock elapsed renderer stays frozen at the
+    /// active-time total. We intentionally do NOT route through
+    /// `publishPipelinePhase` for the recordingStartedAt because that helper
+    /// publishes the live `currentRecordingStartedAt`; here the displayed clock
+    /// must freeze.
+    private func publishPausedPhase() {
+        // Freeze the projected start anchor at the accumulated active time.
+        let frozenAnchor = pausedAwareStartedAt()
+        setCurrentRecordingStartedAt(frozenAnchor)
+        publishPipelinePhase(.paused)
+    }
+
+    /// Arm the pause safety ceiling (§10.3). If neither Resume nor Stop arrives
+    /// within `pauseSafetyCeiling`, auto-finalize the accumulated audio via
+    /// `internalStop` so a forgotten pause never holds the mic indefinitely.
+    private func armPauseSafetyCeiling() {
+        pauseSafetyTask?.cancel()
+        pauseSafetyTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(RecordingService.pauseSafetyCeiling))
+            } catch {
+                return
+            }
+            guard let self, self.isPaused else { return }
+            self.log.notice("Pause safety ceiling reached — auto-finalizing paused recording.")
+            // Drop paused state so internalStop's normal path runs (it bails
+            // early when isPaused-only state would confuse teardown).
+            self.isPaused = false
+            self.pauseSafetyTask = nil
+            self.internalStop(reason: "pause-safety-ceiling")
+        }
+    }
+
+    private func cancelPauseSafetyCeiling() {
+        pauseSafetyTask?.cancel()
+        pauseSafetyTask = nil
+    }
+
+    /// Clear all Pause/Resume-derived state on any terminal teardown so the
+    /// next recording starts clean (§10). Idempotent. Does NOT itself publish
+    /// a phase — callers own the terminal phase transition.
+    private func clearPauseState() {
+        isPaused = false
+        cancelPauseSafetyCeiling()
+        resetActiveElapsed()
+        committedStreamingPrefix = ""
+        // Drop any in-flight pause-teardown handle. The Task is already
+        // operating on the (now-superseded) streaming refs; a terminal path
+        // installs its own teardown, so we just stop tracking it for the
+        // resume-serialization await.
+        pauseTeardownTask = nil
     }
 
     private func removeTapIfInstalled(from input: AVAudioInputNode) {
@@ -504,12 +881,49 @@ final class RecordingService {
         isStopInFlight = true
         isPipelineInFlight = true
 
+        // A Stop from the paused state is a clean final stop (§10.6): the
+        // open slice's accumulated samples drain normally below. Drop the
+        // paused flag + safety ceiling so teardown runs the standard path.
+        let wasPaused = isPaused
+        isPaused = false
+        cancelPauseSafetyCeiling()
+
+        // If a Stop lands while the pause-teardown Task is still tearing down
+        // the streaming session, await it first so its `tearDownStreamingSession()`
+        // (which nils the streaming refs) fully completes before our own
+        // teardown below runs — otherwise two concurrent teardowns race the
+        // same `streamingEngine`/`streamingQueue`. After the await our teardown
+        // is a clean no-op on already-nil refs.
+        if let pending = pauseTeardownTask {
+            await pending.value
+            pauseTeardownTask = nil
+        }
+
+        // Snapshot ownership at stop() ENTRY (before any terminal clears it):
+        // inline (in-field) sessions — Edit, Ask, keyboard-while-in-Jot — set
+        // `ownsActiveRecording`, and they must NOT feed the warm-hold switching
+        // nudge. The nudge (§4 / R10) detects the *targetless* keyboard/hero
+        // record-and-bounce pattern only; an in-field dictation is not a bounce
+        // (it saves no transcript, decision #3; bypasses DictationStats, R7), so
+        // two quick inline Edits must not manufacture a false streak.
+        let isInlineStop = ownsActiveRecording
+
         do {
+            // Snapshot the recording's true start time + session ID at stop()
+            // ENTRY for the warm-hold nudge (R16): `currentRecordingStartedAt`
+            // is back-dated/nil'd later, so we use the dedicated session
+            // anchor. Defaults to now if a start somehow skipped seeding it.
+            let nudgeStartedAt = nudgeSessionStartedAtValue ?? Date()
+            let nudgeSessionID = currentSessionID
+
             // Tolerant of the case where an interruption / route change already
             // tore down the engine internally: the UI still calls stop() and
             // expects whatever samples we collected. Only throw `.notRunning` if
             // we have no capture at all — there was nothing to stop.
-            guard let capture = endActiveSlice() else { throw RecordingError.notRunning }
+            guard let capture = endActiveSlice() else {
+                resetActiveElapsed()
+                throw RecordingError.notRunning
+            }
 
             let samples = capture.drain()
 
@@ -528,6 +942,29 @@ final class RecordingService {
             isRecording = false
             currentAmplitude = nil
             AmplitudeProjection.clear()
+            // Pause-aware elapsed accounting is per-session; clear it now that
+            // the session is ending so the next recording starts from zero.
+            resetActiveElapsed()
+            committedStreamingPrefix = ""
+            _ = wasPaused
+
+            // Warm-hold switching nudge (§4 / R10 / R16). Pinned to THIS one
+            // clean-stop site (NOT markPipelineFinished) and deduped on the
+            // session ID so a single stop appends exactly one ring entry.
+            // Cancelled recordings (`cancel()`) and interruption-recovered
+            // stops (`internalStop`) deliberately do NOT count toward the
+            // streak (§4 "cancelled recordings don't count"; R10 explicit
+            // decision to exclude interruption-recovered dictations — only a
+            // clean user Stop reflects the record-and-bounce behavior the
+            // nudge targets). Inline (in-field) stops are likewise excluded —
+            // see `isInlineStop` above.
+            if !isInlineStop {
+                detectWarmHoldSwitchingNudge(
+                    startedAt: nudgeStartedAt,
+                    stoppedAt: Date(),
+                    sessionID: nudgeSessionID
+                )
+            }
 
             let cooldownDuration = warmHoldCooldownDuration()
             let shouldEnterWarmHold = cooldownDuration > 0
@@ -656,6 +1093,10 @@ final class RecordingService {
         AppGroup.warmHoldExpiresAt = nil
         AppGroup.warmHoldHeartbeat = nil
         isWarm = false
+        // Warm-hold is post-stop idle, mutually exclusive with pause (§10.6),
+        // so paused state should already be clear — but clear defensively in
+        // case a cold-start fallback routed here mid-pause.
+        clearPauseState()
 
         fullyTeardownEngine()
 
@@ -663,6 +1104,18 @@ final class RecordingService {
             log.notice("[WARM-HOLD-DEBUG] warm hold exited / cooled")
             log.info("Warm hold exited; audio session restored.")
         }
+    }
+
+    /// Gently release a warm-held microphone — exit warm-hold and restore the
+    /// audio session — when a surface that warm-held it is dismissed (e.g.
+    /// closing Ask Jot after asking a question). No-op unless the mic is
+    /// currently warm-held; this is NOT `forceStop` and never tears down an
+    /// active recording. Ask is a query, not a dictation to continue, so its
+    /// sheet-close releases the held mic rather than leaving the orange
+    /// indicator on (Warm Hold §13.2 still governs the normal dictation flow).
+    func releaseWarmHold() {
+        guard isWarm else { return }
+        exitWarmHold()
     }
 
     private func fullyTeardownEngine() {
@@ -783,6 +1236,17 @@ final class RecordingService {
         isStopInFlight = true
         defer { isStopInFlight = false }
 
+        // If a Cancel lands while a pause-teardown Task is still tearing down
+        // the streaming session (cancel-from-paused, fast pause→cancel), await
+        // it first — otherwise its `tearDownStreamingSession()` races our own
+        // below over the same `streamingEngine`/`streamingQueue`. Mirrors the
+        // identical guard in `stop()`. After the await our teardown is a clean
+        // no-op on already-nil refs.
+        if let pending = pauseTeardownTask {
+            await pending.value
+            pauseTeardownTask = nil
+        }
+
         guard let capture = endActiveSlice() else {
             log.notice("Cancel called with no active slice; nothing to discard.")
             return
@@ -792,8 +1256,15 @@ final class RecordingService {
         await tearDownStreamingSession()
 
         isRecording = false
+        // Robustness backstop (warm-resume "won't stop" regression): cancel is a
+        // terminal — clear inline ownership so no later capture inherits a stale
+        // `ownsActiveRecording`.
+        ownsActiveRecording = false
         currentAmplitude = nil
         AmplitudeProjection.clear()
+        // Cancel-from-paused is valid; clear pause/elapsed state. Cancelled
+        // recordings deliberately do NOT touch the warm-hold nudge ring (§4).
+        clearPauseState()
 
         let cooldownDuration = warmHoldCooldownDuration()
         let shouldEnterWarmHold = cooldownDuration > 0
@@ -818,6 +1289,12 @@ final class RecordingService {
     /// Discards captured samples silently. If the caller needs the samples,
     /// they must call `stop()` on the happy path, not this.
     func forceStop() {
+        // Robustness backstop (warm-resume "won't stop" regression): a force-stop
+        // is a terminal teardown — clear inline ownership so no later capture
+        // inherits a stale `ownsActiveRecording`. Done before the warm-hold
+        // early-return so it covers both the release-warm-mic and the
+        // discard/interruption paths.
+        ownsActiveRecording = false
         if isWarm {
             exitWarmHold()
             return
@@ -828,6 +1305,10 @@ final class RecordingService {
             return
         }
 
+        // Discards captured samples — a paused session being force-stopped
+        // (scene-disconnect / hard interruption) drops its accumulated audio
+        // too. Clear pause/elapsed state so the next recording starts clean.
+        clearPauseState()
         clearActiveSliceRouting()
         if let engine {
             removeTapIfInstalled(from: engine.inputNode)
@@ -899,6 +1380,16 @@ final class RecordingService {
     func markPipelineFinished() {
         log.notice("[WARM-HOLD-DEBUG] markPipelineFinished, pendingWarmHoldPublish=\(self.pendingWarmHoldPublish, privacy: .public)")
         isPipelineInFlight = false
+        // Robustness backstop (warm-resume "won't stop" regression): clear inline
+        // ownership at every pipeline terminal so no LATER capture inherits a
+        // stale `ownsActiveRecording` and makes the keyboard Stop bail out of
+        // `handleStopRequested` before stopping the mic. Ask sets this true only
+        // for the duration of its own active session and clears it on
+        // finalize/discard; this runs only after the pipeline has finished (the
+        // recording is no longer active), so clearing here is consistent and
+        // does not disturb a live Ask recording. `stop()` already read the flag
+        // for its warm-hold-nudge classification before this point.
+        ownsActiveRecording = false
         if pendingWarmHoldPublish {
             pendingWarmHoldPublish = false
             publishWarmHoldState()
@@ -929,7 +1420,7 @@ final class RecordingService {
     // projected to the App Group so the keyboard extension can read it
     // without a polling loop. Every phase transition writes the projection +
     // posts a Darwin notification (`pipelinePhaseChanged`) so the keyboard
-    // wakes and re-reads. While non-terminal, a 10s heartbeat re-writes the
+    // wakes and re-reads. While non-terminal, a 3s heartbeat re-writes the
     // projection's `lastUpdatedAt` so the keyboard can detect a dead writer
     // (the synthetic-`.failed` view inside `PipelinePhaseProjection.read()`).
     //
@@ -1063,6 +1554,18 @@ final class RecordingService {
     private func republishHeartbeat() {
         guard currentPipelinePhase != .idle, currentPipelinePhase != .failed else {
             return
+        }
+        // Paused-clock freeze (§10.4). The keyboard derives the frozen elapsed
+        // as `projection.lastUpdatedAt − recordingStartedAt`. Each heartbeat
+        // advances `lastUpdatedAt` by `heartbeatInterval`, so re-publishing the
+        // SAME frozen anchor would make that difference grow ~3s per tick —
+        // the "frozen" keyboard clock would jump forward every heartbeat. While
+        // paused, re-back-date the anchor against the fresh `lastUpdatedAt` so
+        // `lastUpdatedAt − recordingStartedAt` stays pinned to the accumulated
+        // active-time total. (The in-app hero is unaffected — it reads
+        // `currentRecordingStartedAt` directly and freezes via `isPaused`.)
+        if currentPipelinePhase == .paused {
+            currentRecordingStartedAt = pausedAwareStartedAt()
         }
         PipelinePhaseProjection.write(
             PipelinePhaseProjection(
@@ -1202,6 +1705,143 @@ final class RecordingService {
         exitWarmHold()
     }
 
+    // MARK: - Warm-hold switching nudge (UX-overhaul round 2 §4 / R10 / R16)
+    //
+    // After a CLEAN stop (this is the only site that appends, per R10), record
+    // the `(startedAt, stoppedAt)` pair to a small App-Group ring buffer. Then
+    // compute the streak of consecutive "qualifying returns" — a return where
+    // `start[i] − stop[i−1] ≤ min(W, 120)` (W = live warm-hold duration). When
+    // the streak reaches 3 AND warm hold is off AND the user hasn't permanently
+    // suppressed the nudge, set the App-Group `warmHoldNudgeShouldShow` flag and
+    // post `warmHoldNudgeChanged`. The keyboard process can't run this math
+    // (R10b), so the app writes the boolean projection + Darwin post; the
+    // keyboard renders off the boolean and writes back the two actions.
+
+    /// One stop event in the ring buffer. `Codable` so the whole `[Entry]`
+    /// serializes to the `AppGroup.captureStopRing` `Data` slot. Keyed dedupe
+    /// uses `sessionID` (R10): a stop that re-fires for the same session must
+    /// not double-append.
+    struct CaptureStopEntry: Codable, Sendable, Equatable {
+        let startedAt: Date
+        let stoppedAt: Date
+        let sessionID: UUID?
+    }
+
+    /// Number of recent stop pairs retained (~4 per contract). The streak math
+    /// only ever needs the last few; a fixed cap keeps the App-Group write
+    /// bounded and makes the streak self-expiring across app kills (R16).
+    private static let captureStopRingCapacity = 4
+
+    /// Streak threshold: fire the nudge at 3 consecutive qualifying returns
+    /// (≈4 record-and-bounce recordings in tight succession) — §4.
+    private static let warmHoldNudgeStreakThreshold = 3
+
+    /// Hard clamp on the qualifying-return window (R16): even if the user has a
+    /// stale 5-min warm-hold duration set on a disabled feature, the detection
+    /// window can't exceed 120s — otherwise slow-motion streaks get manufactured.
+    private static let warmHoldNudgeWindowClamp: TimeInterval = 120
+
+    /// Append the just-finished clean stop to the ring buffer and re-evaluate
+    /// the switching-nudge streak (§4 / R10 / R16). Called ONLY from the clean
+    /// `stop()` site, after `endActiveSlice()`. Cancelled + interruption-
+    /// recovered stops deliberately don't reach here.
+    private func detectWarmHoldSwitchingNudge(
+        startedAt: Date,
+        stoppedAt: Date,
+        sessionID: UUID?
+    ) {
+        var ring = Self.loadCaptureStopRing()
+
+        // Dedupe on session ID (R10): if the last entry already carries this
+        // session's ID, a duplicate stop fired — don't double-append.
+        if let sessionID, let last = ring.last, last.sessionID == sessionID {
+            log.notice("[WARM-HOLD-NUDGE] duplicate stop for session \(sessionID, privacy: .public) — skipping ring append")
+            return
+        }
+
+        ring.append(
+            CaptureStopEntry(startedAt: startedAt, stoppedAt: stoppedAt, sessionID: sessionID)
+        )
+        if ring.count > Self.captureStopRingCapacity {
+            ring.removeFirst(ring.count - Self.captureStopRingCapacity)
+        }
+        Self.saveCaptureStopRing(ring)
+
+        // The nudge is an OFF-state affordance — meaningless when warm hold is
+        // already on, and silenced once the user permanently dismissed it.
+        guard !AppGroup.warmHoldEnabled else {
+            log.notice("[WARM-HOLD-NUDGE] warm hold already on — not evaluating")
+            return
+        }
+        guard !AppGroup.warmHoldNudgeSuppressed else {
+            log.notice("[WARM-HOLD-NUDGE] permanently suppressed — not evaluating")
+            return
+        }
+
+        // Window = min(live W, 120) (R16). W is the user's live picker value.
+        let window = min(AppGroup.warmHoldDurationSeconds, Self.warmHoldNudgeWindowClamp)
+
+        // Streak derived from the timestamp buffer (R16): walk newest→oldest,
+        // counting consecutive qualifying returns. A qualifying return is a
+        // start within `window` of the PREVIOUS stop.
+        let streak = Self.qualifyingReturnStreak(ring: ring, window: window)
+        log.notice("[WARM-HOLD-NUDGE] streak=\(streak, privacy: .public) window=\(window, privacy: .public) ringCount=\(ring.count, privacy: .public)")
+
+        if streak >= Self.warmHoldNudgeStreakThreshold {
+            // Re-shows on every qualifying burst (§4) — set the flag even if it
+            // was previously auto-hidden (passive ignore ≠ suppression). The
+            // keyboard/hero render off this boolean projection.
+            AppGroup.warmHoldNudgeShouldShow = true
+            CrossProcessNotification.post(name: CrossProcessNotification.warmHoldNudgeChanged)
+            log.notice("[WARM-HOLD-NUDGE] threshold reached — nudge flagged + posted")
+        }
+    }
+
+    /// Count consecutive qualifying returns from the newest pair backward.
+    /// A pair qualifies when its `startedAt` is within `window` of the
+    /// immediately-preceding pair's `stoppedAt`. A gap > window resets (a real
+    /// break — not the record-and-bounce pattern). Static + pure so it's
+    /// trivially testable.
+    static func qualifyingReturnStreak(ring: [CaptureStopEntry], window: TimeInterval) -> Int {
+        guard ring.count >= 2 else { return 0 }
+        var streak = 0
+        var i = ring.count - 1
+        while i >= 1 {
+            let gap = ring[i].startedAt.timeIntervalSince(ring[i - 1].stoppedAt)
+            if gap <= window {
+                streak += 1
+                i -= 1
+            } else {
+                break
+            }
+        }
+        return streak
+    }
+
+    /// Decode the ring from the App-Group `Data` slot; empty on miss / decode
+    /// failure (self-healing).
+    private static func loadCaptureStopRing() -> [CaptureStopEntry] {
+        guard let data = AppGroup.captureStopRing else { return [] }
+        return (try? Self.ringDecoder.decode([CaptureStopEntry].self, from: data)) ?? []
+    }
+
+    private static func saveCaptureStopRing(_ ring: [CaptureStopEntry]) {
+        guard let data = try? Self.ringEncoder.encode(ring) else { return }
+        AppGroup.captureStopRing = data
+    }
+
+    private static let ringEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    private static let ringDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
     /// Tear down the engine and session AND auto-drain captured samples
     /// through the post-recording pipeline. Per `tmp/research-warm-resume-design.md`
     /// §6.1 (Cut A bug-fix bundle): the prior shape "retained samples for
@@ -1240,6 +1880,14 @@ final class RecordingService {
         let snapshotSessionID = currentSessionID
         let snapshotStartedAt = currentRecordingStartedAt ?? Date()
         let snapshotCapture = endActiveSlice()
+
+        // Interruption-while-paused routes here (§10.7): finalize whatever was
+        // accumulated rather than silently staying paused through a call that
+        // seized the mic. Clear pause/elapsed state so the dispatched pipeline
+        // and the next recording start clean. The accumulated samples are in
+        // `snapshotCapture` (the open slice survived the pause); they drain via
+        // the dispatch phase below.
+        clearPauseState()
 
         // ===== Teardown phase =====
         removeTapIfInstalled(from: engine.inputNode)
@@ -1366,6 +2014,34 @@ private final class AudioTapRouter: @unchecked Sendable {
         streamingQueue = nil
         lock.unlock()
         return activeCapture
+    }
+
+    /// Pause routing WITHOUT ending the slice (UX-overhaul round 2 §10.1).
+    /// Flips `isCapturingSlice` to `false` so `route(_:)` drops buffers (same
+    /// zero-per-buffer-work path as warm-hold idle), but KEEPS `capture` +
+    /// `streamingQueue` so the accumulated samples and the live presenter
+    /// survive the pause. `resumeSlice()` flips capture back on against the
+    /// SAME `CaptureContext`, so post-resume buffers concatenate naturally —
+    /// the pause gap is simply absent from the audio, no sample stitching.
+    func pauseSlice() {
+        lock.lock()
+        isCapturingSlice = false
+        lock.unlock()
+    }
+
+    /// Resume routing against the already-open slice (UX-overhaul round 2
+    /// §10.1). Re-arms `isCapturingSlice` so `route(_:)` ingests buffers into
+    /// the SAME `capture` the pause left in place. The caller is responsible
+    /// for swapping in a fresh `streamingQueue` (a new streaming session feeds
+    /// post-resume partials as `prefix + newPartial`); pass it here so the tap
+    /// fan-out targets the new queue. Passing `nil` keeps the existing queue.
+    func resumeSlice(streamingQueue: StreamingBufferQueue?) {
+        lock.lock()
+        if let streamingQueue {
+            self.streamingQueue = streamingQueue
+        }
+        isCapturingSlice = true
+        lock.unlock()
     }
 
     /// Returns `false` when warm-held and idle so the tap block can do

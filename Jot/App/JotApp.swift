@@ -1,7 +1,9 @@
 @preconcurrency import AVFAudio
+import BackgroundTasks
 import Combine
 import SwiftUI
 import SwiftData
+import UIKit
 import os.log
 
 private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "app-lifecycle")
@@ -12,6 +14,10 @@ struct JotApp: App {
     private let stopRequestObserver: CrossProcessNotification.Observer
     private let cancelRequestObserver: CrossProcessNotification.Observer
     private let warmResumeObserver: CrossProcessNotification.Observer
+    /// Live foreground handshake responder: pongs the keyboard's
+    /// `keyboardForegroundPing` iff we're genuinely foreground, so the keyboard
+    /// can decide inline-vs-cold-start without trusting a stale flag.
+    private let foregroundPingObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var streamingService: StreamingTranscriptionService
@@ -27,12 +33,14 @@ struct JotApp: App {
     @State private var autoStartPendingPipelineFinish = false
     @State private var autoStartPipelineDrainTimeoutTask: Task<Void, Never>?
     @State private var autoStartMicPermissionRequestInFlight = false
-    /// One-shot signal that the next recording-start was triggered by a
-    /// `jot://dictate*` URL bounce from a third-party keyboard. ContentView's
-    /// auto-push reads + clears this so the Hero is presented with the
-    /// `.coldStartFromExternalKeyboard` intent (which surfaces the "Swipe
-    /// back to your app" nudge overlay). Cleared after one Hero presentation.
-    @State private var pendingColdStartHeroNudge: Bool = false
+    /// One-shot signal that the keyboard opened Jot from another app via a
+    /// `jot://dictate*` URL bounce (the only way it can — iOS won't let the
+    /// keyboard start the mic, so with no warm mic it foregrounds the app). Set
+    /// on EVERY such open, cold OR warm process. ContentView's
+    /// `presentExternalKeyboardHeroIfPending` reads + clears this and presents
+    /// the Hero with `.openedFromExternalKeyboard`, which surfaces the looping
+    /// swipe-back cue. Cleared after one Hero presentation.
+    @State private var pendingExternalKeyboardHero: Bool = false
     /// User-facing message for a failed dictate auto-start (mic busy,
     /// session error, etc.) Set from the catch path in `triggerAutoStart`
     /// so the foregrounded main app can show an alert — the existing
@@ -74,6 +82,19 @@ struct JotApp: App {
             CrossProcessRecordingStopCoordinator.shared.handleCancelRequested()
         }
 
+        foregroundPingObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.keyboardForegroundPing
+        ) {
+            // Live foreground handshake (ping/pong). Pong ONLY if we're genuinely
+            // foreground. Receiving the ping proves we're not suspended, but a
+            // just-backgrounded (not-yet-suspended) app can briefly receive it —
+            // the applicationState check suppresses the pong there so the keyboard
+            // correctly cold-starts to the hero instead of recording inline.
+            if UIApplication.shared.applicationState != .background {
+                CrossProcessNotification.post(name: CrossProcessNotification.appForegroundPong)
+            }
+        }
+
         warmResumeObserver = CrossProcessNotification.addObserver(
             name: CrossProcessNotification.warmResumeRequested
         ) {
@@ -86,6 +107,14 @@ struct JotApp: App {
                 let startedAt = Date()
                 do {
                     lifecycleLog.notice("RECORDING START FROM: warmResumeObserver (JotApp.init)")
+                    // A warm-resumed capture must never carry a stale inline-
+                    // ownership flag. `ownsActiveRecording` is set ONLY by Ask's
+                    // `InlineDictationSession`; warm-resume calls `start()`
+                    // directly (no cold-start cleanup), so a leaked `true` would
+                    // survive into this capture and make the keyboard Stop bail
+                    // out of `handleStopRequested` before stopping the mic
+                    // (the warm-resume "won't stop" regression). Clear it here.
+                    RecordingService.shared.ownsActiveRecording = false
                     try await RecordingService.shared.start()
                     // Refresh the coordinator's recording-start timestamp
                     // so the hero adopts THIS recording's start time, not
@@ -177,14 +206,35 @@ struct JotApp: App {
         // directory doesn't exist (user hasn't downloaded any variant yet).
         BackupExclusion.excludeFluidAudioModels()
 
-        // Register the background-classifier BGProcessingTask identifier.
-        // MUST happen during process startup BEFORE any submission — the
-        // BGTaskScheduler refuses to submit a request whose identifier
-        // hasn't been registered. Identifier is also declared in
-        // Info.plist's BGTaskSchedulerPermittedIdentifiers. The task body
-        // only runs work when the Lab toggle `jot.classifier.enabled` is
-        // on; see `TranscriptClassifierTask` for the lifecycle doc.
-        TranscriptClassifierTask.register()
+        // One-shot cleanup: drop any stale `classify-transcripts`
+        // `BGProcessingTaskRequest` iOS may still hold from a pre-build-47
+        // install. The previous build called `cancelAllTaskRequests()`
+        // unconditionally — which also wiped our OWN pending
+        // `backfill-embeddings` request on every launch, defeating the
+        // BG backstop. Specific-identifier cancel + one-shot guard means
+        // (a) we only drop the legacy classifier request, and
+        // (b) we only do it once per install.
+        let bgCleanupKey = "jot.didCleanLegacyClassifierBGRequest_v1"
+        if !UserDefaults.standard.bool(forKey: bgCleanupKey) {
+            BGTaskScheduler.shared.cancel(
+                taskRequestWithIdentifier: "com.vineetu.jot.mobile.Jot.classify-transcripts"
+            )
+            UserDefaults.standard.set(true, forKey: bgCleanupKey)
+        }
+
+        // Register the MiniLM embedding backfill identifier
+        // (`com.vineetu.jot.mobile.Jot.backfill-embeddings`,
+        // `BGAppRefreshTask`). Replaces the deprecated Qwen classifier
+        // task. iOS requires registration before any submission;
+        // identifier is declared in Info.plist's
+        // BGTaskSchedulerPermittedIdentifiers. See `EmbeddingBackfillTask`.
+        EmbeddingBackfillTask.register()
+
+        // One-shot UserDefaults cleanup: drop the residual `jot.classifier.enabled`
+        // key from devices that had the Qwen classifier Lab toggle ON in
+        // a prior build. Idempotent — `removeObject` on a missing key is
+        // a no-op, so leaving this call in place forever is safe.
+        AppGroup.defaults.removeObject(forKey: "jot.classifier.enabled")
 
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
@@ -254,6 +304,17 @@ struct JotApp: App {
             }
         }
 
+        // Pre-warm the MiniLM embedding model so the first dictation
+        // doesn't pay the 3-10s cold load tax inline on the detached
+        // task. `.utility` priority so this doesn't compete with the
+        // userInitiated Parakeet warm-up above. `prewarm()` coalesces
+        // concurrent callers internally, so a dictation that races this
+        // task shares the same in-flight load instead of triggering a
+        // second one.
+        Task(priority: .utility) {
+            try? await EmbeddingGemmaService.shared.prewarm()
+        }
+
         // Reset any leftover non-terminal pipeline-phase projection from a
         // crashed previous launch. Without this reset, the keyboard would
         // observe a stale non-idle phase on first appearance and only recover
@@ -268,14 +329,11 @@ struct JotApp: App {
         // could linger for up to 60s and mislead the keyboard into posting Darwin
         // into a dead listener. Clear on launch.
         AppGroup.warmHoldExpiresAt = nil
-        // Classifier mutex stale-clear: the foreground "Classify now" path
-        // sets `classifierForegroundInFlight = true` then clears in its
-        // Task's `defer`. iOS jetsam / force-quit / Swift crash skips
-        // `defer`, so the flag persists in App Group UserDefaults and
-        // permanently blocks `TranscriptClassifierTask.submitIfEnabled()`.
-        // By definition no foreground classify can be in flight before
-        // this process started — clear at cold launch.
-        AppGroup.defaults.set(false, forKey: AppGroup.Keys.classifierForegroundInFlight)
+        // Activate the phone-side WatchConnectivity session so the
+        // paired watch can transfer audio files in + the iPhone can
+        // push top-10 transcripts back. Safe to call even if no watch
+        // is paired (WCSession.isSupported() guards inside).
+        PhoneSideWCSession.shared.activate()
         lifecycleLog.info("JotApp init — services constructed (no I/O)")
     }
 
@@ -283,7 +341,7 @@ struct JotApp: App {
         WindowGroup {
             ContentView(
                 isWizardPresented: showSetupWizard,
-                pendingColdStartHeroNudge: $pendingColdStartHeroNudge
+                pendingExternalKeyboardHero: $pendingExternalKeyboardHero
             )
                 .environment(recordingService)
                 .environment(transcriptionService)
@@ -382,11 +440,11 @@ struct JotApp: App {
                        let sid = UUID(uuidString: sessionParam) {
                         pendingKeyboardSessionID = sid
                     }
-                    // Mark this start as a cold-start-from-external-keyboard so
-                    // ContentView's auto-push presents the Hero with the
-                    // "Swipe back to your app" nudge overlay. Flag is one-shot;
-                    // ContentView clears it after consuming.
-                    pendingColdStartHeroNudge = true
+                    // The keyboard opened Jot from another app (any jot://dictate
+                    // open = no warm mic, cold OR warm process). Flag it so
+                    // ContentView presents the Hero with the looping swipe-back
+                    // cue. One-shot; ContentView clears it after consuming.
+                    pendingExternalKeyboardHero = true
                     triggerAutoStart(reason: "url open: \(url.absoluteString)")
                 }
                 .onReceive(
@@ -428,21 +486,28 @@ struct JotApp: App {
                     // the modifier wires up — without it, `onChange` would
                     // never fire on initial render and the keyboard's
                     // `isJotAppForeground()` would return false during a cold
-                    // W7 entry. The .background/.inactive teardown path is
-                    // unaffected — initial-fire on `.active` just kicks the
-                    // same flow that would normally fire on transition.
+                    // W7 entry. Initial-fire on `.active` just kicks the same
+                    // flow that would normally fire on transition.
                     if newPhase == .active {
                         handleSceneActive()
                         startForegroundHeartbeat()
-                    } else {
+                    } else if newPhase == .background {
+                        // Tear down ONLY on a true background. `.inactive` is
+                        // transient — a custom keyboard taking focus, a banner,
+                        // Control Center — and Jot is still effectively the
+                        // foreground app. Clearing the heartbeat on `.inactive`
+                        // made `isJotAppForeground()` read false while the Jot
+                        // keyboard was up, so a Dictate tap INSIDE Jot bounced to
+                        // the hero instead of recording inline. Keep it alive
+                        // through `.inactive`; only `.background` clears it.
                         stopForegroundHeartbeat()
                     }
                     if newPhase == .background {
-                        // Submit a BGProcessingTask request for the
-                        // transcript classifier. No-op when the Lab toggle
-                        // is off or there's nothing to classify. See
-                        // `TranscriptClassifierTask` for lifecycle details.
-                        TranscriptClassifierTask.submitIfEnabled()
+                        // Submit a BGAppRefreshTask request for the MiniLM
+                        // embedding backfill. No-op when the kill switch
+                        // is off or there's nothing to embed. See
+                        // `EmbeddingBackfillTask` for lifecycle details.
+                        EmbeddingBackfillTask.submitIfBacklog()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes
@@ -988,6 +1053,22 @@ private final class CrossProcessRecordingStopCoordinator {
             return
         }
 
+        // Ask owns this recording via its own `InlineDictationSession`. The
+        // keyboard cannot tell Ask's inline session from a capture —
+        // `RecordingService.start()` publishes `.recording` for both, so the
+        // keyboard's second tap posts `stopRequested` either way. Discriminate
+        // here on the in-process ownership flag: an Ask stop finalizes inside
+        // Ask (no saved Transcript) — never run the capture pipeline. We just
+        // bail before the saving path and clear the keyboard's pending paste so
+        // it doesn't hang waiting for a publish that won't come. (In-Jot keyboard
+        // taps now take the NORMAL capture path and do NOT set this flag, so
+        // they fall through to the saving path below like any other app.)
+        if RecordingService.shared.ownsActiveRecording {
+            ClipboardHandoff.clearPendingPasteSession()
+            log.info("Cross-process stop: inline session owns the recording — finalizing inline, no transcript saved.")
+            return
+        }
+
         // v7 auto-paste (per design §4.2 round-2 BLOCKER #4 closure): widen
         // the guard to `(isRecording || isPipelineInFlight)` so the duplicate-
         // stop branch ALSO runs while transcription/cleaning is still in
@@ -1059,6 +1140,27 @@ private final class CrossProcessRecordingStopCoordinator {
             ?? projection?.recordingStartedAt
             ?? Date()
 
+        // unify-keyboard-dictation §3/§4 — the save/no-save discriminator lives
+        // HERE, at the keyboard stop site, not at the recording's birth. This
+        // method runs ONLY for keyboard-initiated stops (the hero stops by
+        // calling `completeEndOfRecording` directly — `RecordingHeroView` — and
+        // never reaches this coordinator). So:
+        //   • Jot main app ACTIVE at stop  → the user is dictating INTO a Jot
+        //     field (Feedback / transcript edit / settings); paste, but write NO
+        //     Transcript → `transient = true`.
+        //   • Otherwise (.inactive / .background) → cold dictation from ANOTHER
+        //     app; paste AND save exactly as today → `transient = false`.
+        // We gate on `.active` SPECIFICALLY (not `!= .background`) to make data
+        // loss impossible: a cold-from-another-app stop can reach Jot while it is
+        // mid-transition / briefly `.inactive`, and treating `.inactive` as
+        // transient would DROP that transcript. `.active` is only ever true when a
+        // Jot field is the live foreground host, so cold stops never read it and
+        // always save. Worst case is the SAFE direction — a Jot-field stop during a
+        // rare `.inactive` blip saves a spurious transcript rather than losing one.
+        // The hero never funnels through here, so its save is untouched.
+        let jotActiveAtStop = UIApplication.shared.applicationState == .active
+        log.info("Cross-process stop: jotActiveAtStop=\(jotActiveAtStop, privacy: .public) → transient(no-save)=\(jotActiveAtStop, privacy: .public)")
+
         // v7 auto-paste: peek the keyboard's pending paste session synchronously
         // at task entry into a local. A subsequent keyboard tap that overwrites
         // the App Group key cannot affect this in-flight stop. Adoption is
@@ -1094,7 +1196,8 @@ private final class CrossProcessRecordingStopCoordinator {
                 sessionID: resolvedSessionID,
                 startedAt: startedAt,
                 stoppedAt: result.stoppedAt,
-                controller: controller
+                controller: controller,
+                transient: jotActiveAtStop
             )
 
         case .idle:
@@ -1102,7 +1205,8 @@ private final class CrossProcessRecordingStopCoordinator {
             try await stopStandaloneRecording(
                 startedAt: startedAt,
                 sessionID: resolvedSessionID,
-                controller: controller
+                controller: controller,
+                transient: jotActiveAtStop
             )
 
         case .transcribing, .processing, .cleaning:
@@ -1134,7 +1238,8 @@ private final class CrossProcessRecordingStopCoordinator {
     private func stopStandaloneRecording(
         startedAt: Date,
         sessionID: UUID,
-        controller: any DictationController
+        controller: any DictationController,
+        transient: Bool = false
     ) async throws {
         let recording = RecordingService.shared
         guard recording.isRecording else {
@@ -1152,7 +1257,8 @@ private final class CrossProcessRecordingStopCoordinator {
                 sessionID: sessionID,
                 startedAt: startedAt,
                 stoppedAt: stoppedAt,
-                controller: controller
+                controller: controller,
+                transient: transient
             )
         } catch {
             recording.markPipelineFinished()

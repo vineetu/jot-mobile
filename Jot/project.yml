@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.vineetu.jot.mobile
   deploymentTarget:
     iOS: "26.0"
+    watchOS: "26.0"
   createIntermediateGroups: true
   defaultConfig: Debug
   generateEmptyDirectories: true
@@ -12,9 +13,19 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     CODE_SIGN_STYLE: Automatic
-    ENABLE_USER_SCRIPT_SANDBOXING: YES
-    CURRENT_PROJECT_VERSION: "30"
-    MARKETING_VERSION: "1.0.3"
+    # Xcode 15+ wraps all user scripts in a sandbox that only grants
+    # access to declared inputFiles / outputFiles and their direct
+    # ancestors. Our "Embed Watch Content" postBuildScript needs to
+    # `ditto` an entire .app bundle (recursive write to many nested
+    # paths inside Jot.app/Watch/JotWatch.app/) which the sandbox
+    # denies as "Operation not permitted". This is a well-known issue
+    # affecting many CocoaPods/Carthage/custom scripts; standard fix
+    # is to disable script sandboxing at the project level. The risk
+    # is minimal — scripts can already do anything they want during a
+    # build; the sandbox is defense-in-depth, not a security boundary.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CURRENT_PROJECT_VERSION: "107"
+    MARKETING_VERSION: "1.0.4"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -45,11 +56,78 @@ packages:
   # top-level Vendor dir promoted from the prototype.
   MLXSwiftStructured:
     path: ../Vendor/mlx-swift-structured
+  # EmbeddingGemma-300M sentence embedder via CoreML/ANE — the Ask RAG
+  # retrieval substrate (chunk + query embeddings). Model is bundled
+  # out-of-band in Resources/Models (not downloaded at runtime). Main-app
+  # only — keyboard never embeds (60MB extension ceiling). Replaces the
+  # MiniLM/swift-embeddings path. See docs/plans/ask-retrieval-architecture.md.
+  CoreMLLLM:
+    url: https://github.com/john-rocky/CoreML-LLM
+    exactVersion: "1.9.0"
 
 targets:
   Jot:
     type: application
     platform: iOS
+    # Embed the paired watch app inside the iPhone IPA at the
+    # canonical `Payload/Jot.app/Watch/JotWatch.app/` location. Apple's
+    # distribution model: the watch app rides as a nested bundle
+    # inside the iPhone IPA, and on install the system pushes the
+    # watch app onto the paired Apple Watch automatically.
+    #
+    # Why a postBuildScript instead of xcodegen's `embed: true`:
+    # xcodegen issue #1463 (open and confirmed in source) — xcodegen's
+    # auto-embed logic for watchOS-app-inside-iOS-app was written for
+    # the legacy `application.watchapp2` target type. For the modern
+    # WKApplication standalone single-target watch app (what we use for
+    # watchOS 26), the auto-embed silently does nothing. The explicit
+    # `copy:` workaround per ProjectSpec.md is also silently ignored
+    # for target dependencies — verified empirically by inspecting the
+    # generated pbxproj (no PBXCopyFilesBuildPhase with dstPath=Watch
+    # appears regardless of `copy:` directive).
+    #
+    # The post-build script bypasses xcodegen entirely and writes the
+    # nested bundle directly. Uses `ditto` (Apple's recommended bundle
+    # copy tool — preserves symlinks, metadata, code signatures intact).
+    # The `dependencies` declaration with `embed: false` exists only to
+    # establish the build-graph ordering (JotWatch builds first).
+    dependencies:
+      - target: JotWatch
+        embed: false
+        link: false
+    postBuildScripts:
+      - name: Embed Watch Content
+        # `inputFiles` makes Xcode re-run this script when the watch
+        # bundle changes, and emits the path for incremental rebuilds.
+        inputFiles:
+          - $(BUILD_DIR)/$(CONFIGURATION)-watchos/JotWatch.app
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Watch/JotWatch.app
+        script: |
+          set -eu
+          echo "[Embed Watch Content] starting"
+          echo "[Embed Watch Content] BUILD_DIR=$BUILD_DIR"
+          echo "[Embed Watch Content] CONFIGURATION=$CONFIGURATION"
+          echo "[Embed Watch Content] TARGET_BUILD_DIR=$TARGET_BUILD_DIR"
+          echo "[Embed Watch Content] WRAPPER_NAME=$WRAPPER_NAME"
+          WATCH_APP_SRC="$BUILD_DIR/$CONFIGURATION-watchos/JotWatch.app"
+          WATCH_APP_DST="$TARGET_BUILD_DIR/$WRAPPER_NAME/Watch"
+          echo "[Embed Watch Content] src=$WATCH_APP_SRC"
+          echo "[Embed Watch Content] dst=$WATCH_APP_DST"
+          if [ ! -e "$WATCH_APP_SRC" ]; then
+            echo "error: watch app not found at $WATCH_APP_SRC — JotWatch must build first"
+            exit 1
+          fi
+          mkdir -p "$WATCH_APP_DST"
+          rm -rf "$WATCH_APP_DST/JotWatch.app"
+          # `ditto` deep-copies a bundle preserving xattrs + code sig.
+          # Top-level symlinks are resolved (so we copy the real bundle
+          # contents, not a dangling link into a build dir that may not
+          # survive archive packaging).
+          ditto "$WATCH_APP_SRC" "$WATCH_APP_DST/JotWatch.app"
+          echo "[Embed Watch Content] copy complete — listing destination:"
+          ls -la "$WATCH_APP_DST/JotWatch.app/" | head -10
+          echo "[Embed Watch Content] done"
     sources:
       - path: App
       - path: Shared
@@ -104,14 +182,22 @@ targets:
         NSMicrophoneUsageDescription: "Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone."
         UIBackgroundModes:
           - audio
-          # `processing` enables BGProcessingTask scheduling — used by the
-          # transcript classifier (Lab feature, charging-only). The
-          # identifier `…classify-transcripts` is registered in
-          # `JotApp.init` and gated by the `jot.classifier.enabled`
-          # UserDefaults toggle.
+          # `processing` enables BGProcessingTask scheduling. Kept after
+          # the classifier rip-out because future heavy BG work may want
+          # the longer (~10-min) budget. The current EmbeddingGemma backfill
+          # task is a BGAppRefreshTask (lighter, no charging requirement) —
+          # see `EmbeddingBackfillTask`.
           - processing
         BGTaskSchedulerPermittedIdentifiers:
-          - com.vineetu.jot.mobile.Jot.classify-transcripts
+          # BGAppRefreshTask handler registered in `JotApp.init`. Drains
+          # any transcripts whose inline embedding write missed (app
+          # backgrounded before the detached encode completed). 30s budget
+          # per fire; gated by the `jot.embeddings.enabled` Lab toggle
+          # (default ON). The prior `classify-transcripts` identifier was
+          # removed when the Qwen classifier was ripped out; any pending
+          # iOS-scheduled requests under the old ID are cleared at
+          # `JotApp.init` via `BGTaskScheduler.shared.cancelAllTaskRequests()`.
+          - com.vineetu.jot.mobile.Jot.backfill-embeddings
         CFBundleURLTypes:
           - CFBundleURLName: com.vineetu.jot.mobile
             CFBundleURLSchemes:
@@ -163,6 +249,11 @@ targets:
       # transcript cleanup. It is NOT a rewrite provider — Qwen 3.5 on
       # MLX is the sole rewrite backend.
       - sdk: FoundationModels.framework
+      # EmbeddingGemma-300M sentence encoder (CoreML/ANE). Main-app-only —
+      # `JotKeyboard` and `JotWatch` never link this. Hides the package API
+      # behind `EmbeddingGemmaService` (single import site).
+      - package: CoreMLLLM
+        product: CoreMLLLM
       - target: JotKeyboard
     settings:
       base:
@@ -306,11 +397,144 @@ targets:
         TEST_HOST: ""
         BUNDLE_LOADER: ""
 
+  # Standalone Apple Watch app (watchOS 26+). Records dictation directly
+  # on the watch, queues audio locally as AAC 16kHz mono, syncs to the
+  # paired iPhone via WatchConnectivity when reachable. Read-only viewer
+  # of the most recent 10 transcripts (push-synced back from the phone).
+  # Design spec: docs/plans/watch-dictation-design.md
+  # Architecture spec: docs/plans/watch-dictation.md
+  JotWatch:
+    type: application
+    platform: watchOS
+    # Embed the widget extension inside the watch app bundle. WatchKit
+    # apps host their widgets as nested app extensions, same shape as
+    # iOS apps + iOS widgets.
+    dependencies:
+      - target: JotWatchWidgets
+        embed: true
+    sources:
+      # Watch-app SwiftUI views + recorder + sync client.
+      - path: Watch
+      # Platform-agnostic schema (Transcript V5) + watch-safe design
+      # tokens. EXPLICITLY enumerated rather than globbing Shared/
+      # because most files in Shared/ import UIKit and won't compile
+      # for watchOS. Only these files are watch-safe.
+      - path: Shared/Schema/JotSchemaV1.swift
+      - path: Shared/Schema/JotSchemaV2.swift
+      - path: Shared/Schema/JotSchemaV3.swift
+      - path: Shared/Schema/JotSchemaV4.swift
+      - path: Shared/Schema/JotSchemaV5.swift
+      - path: Shared/Schema/JotSchemaV6.swift
+      - path: Shared/Schema/JotSchemaV7.swift
+      - path: Shared/Schema/JotMigrationPlan.swift
+      - path: Shared/Transcript.swift
+      - path: Shared/JotDesignWatchSafe.swift
+      # Watch AppIcon — single 1024x1024 universal (modern watchOS 10+
+      # asset catalog format). Xcode renders the per-size watch faces
+      # at build time. Required for App Store / TestFlight upload —
+      # without it, the App Store Connect API rejects with iris 90391
+      # ("Missing Icons. No icons found for watch application"). Reuses
+      # the iOS app's 1024x1024 master (alpha-free, watchOS-compliant).
+      - path: Watch/Assets.xcassets
+    info:
+      path: Resources/Watch-Info.plist
+      properties:
+        CFBundleDisplayName: Jot
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        WKApplication: true
+        WKWatchOnly: false  # Companion-mode (paired with iOS app)
+        WKRunsIndependentlyOfCompanionApp: true  # Recording works without iPhone
+        # Links this watch app to its iOS companion. Xcode auto-adds this
+        # when you set up a watch app via the "Watch App" target template,
+        # but xcodegen does not — has to be declared explicitly. Without
+        # it, iOS may not recognize the embedded bundle as a paired app
+        # and the install-on-paired-watch flow silently fails.
+        WKCompanionAppBundleIdentifier: com.vineetu.jot.mobile.Jot
+        NSMicrophoneUsageDescription: "Jot records your voice on the watch so you can dictate text. Audio syncs to your iPhone for transcription. Nothing leaves your devices."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Background audio: needed for WKExtendedRuntimeSession to keep
+        # AVAudioRecorder running while the wrist is lowered during a
+        # 15-min recording session. Note: watchOS uses UIBackgroundModes
+        # for audio (same key as iOS) — WKBackgroundModes is restricted
+        # to "workout-processing" only and App Store Connect rejects
+        # uploads with WKBackgroundModes = audio (iris-90362).
+        UIBackgroundModes:
+          - audio
+        # Deep-link from widget / complication into the recording view.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.vineetu.jot.mobile.watch
+            CFBundleURLSchemes:
+              - jot-watch
+    # No entitlements file — the watch app doesn't share state with the
+    # iPhone app via App Groups. All cross-device data flows through
+    # WatchConnectivity (WCSession.transferFile / transferUserInfo).
+    # Watch-side persistence (top-10 cache, pending queue) lives in the
+    # watch app's own UserDefaults.standard.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.watch
+        TARGETED_DEVICE_FAMILY: "4"  # Apple Watch
+        SUPPORTS_MACCATALYST: NO
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "26.0"
+        # SKIP_INSTALL must be YES so the watch app's product does NOT
+        # get copied to Products/Applications/ as a top-level standalone.
+        # Without this the .xcarchive contains TWO copies of JotWatch.app
+        # (one nested correctly inside Jot.app/Watch/, one alongside
+        # Jot.app at the top), which makes xcodebuild reject every
+        # distribution method during export ("Available distribution
+        # methods: { SaveBuiltProducts, ExportArchive }" only) because
+        # it can't identify a single primary app. The watch app still
+        # builds and the postBuildScript still finds it at
+        # BUILD_DIR/Release-watchos/JotWatch.app — SKIP_INSTALL only
+        # affects InstallationBuildProductsLocation copy, not BUILD_DIR.
+        SKIP_INSTALL: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  # WidgetKit extension for the watch app. Provides:
+  # - Corner / circular / inline complications for watch faces
+  # - Smart Stack tile (relevance 0.5 always-on for v1; history-based
+  #   escalation deferred to v1.1)
+  # Both deep-link via `jot-watch://record` to launch the watch app
+  # directly into the recording sheet (one-tap capture).
+  JotWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: WatchWidgets
+      - path: Shared/JotDesignWatchSafe.swift
+    info:
+      path: Resources/WatchWidgets-Info.plist
+      properties:
+        CFBundleDisplayName: Jot Widgets
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    # No entitlements file — widgets read no shared state. Their tap
+    # action just deep-links to the watch app via URL.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.watch.widgets
+        TARGETED_DEVICE_FAMILY: "4"  # Apple Watch
+        SUPPORTS_MACCATALYST: NO
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "26.0"
+        SKIP_INSTALL: YES
+
 schemes:
   Jot:
     build:
       targets:
         Jot: all
+        # Force the watch target to build during the iOS archive action.
+        # Without this, xcodebuild archive doesn't compile JotWatch
+        # and the iOS IPA ships without the paired watch app.
+        JotWatch: all
+        JotWatchWidgets: all
     run:
       config: Debug
     test:
@@ -327,6 +551,15 @@ schemes:
     build:
       targets:
         JotKeyboard: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  JotWatch:
+    build:
+      targets:
+        JotWatch: all
+        JotWatchWidgets: all
     run:
       config: Debug
     archive:

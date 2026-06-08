@@ -6,18 +6,19 @@ struct RecentsNavBar: View {
     let onHelp: () -> Void
     let onCancelSelection: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "j.circle.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.jotBlueTop, Color.jotBlueBottom],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                // Brand mark — the app/watch icon art clipped to a circle (the
+                // watch's circular masking), matching the icon on the Home
+                // Screen. Replaces the old `j.circle.fill` SF monogram.
+                Image("JotBrandTile")
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 20, height: 20)
+                    .clipShape(Circle())
                     .accessibilityHidden(true)
 
                 Text("Jot")
@@ -36,44 +37,33 @@ struct RecentsNavBar: View {
                     action: onHelp
                 )
 
+                // WS-E §1.9: the "JS" initials avatar is replaced by a bigger
+                // gear glyph, light/dark aware. The gear reads as "settings"
+                // without faking a user-account avatar Jot doesn't have.
                 Button(action: onSettings) {
-                    Text("JS")
-                        .font(.system(size: 13, weight: .bold, design: .default))
-                        .foregroundStyle(Color.jotBlueBottom)
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(
+                            colorScheme == .dark
+                                ? Color.jotPageInk
+                                : Color.jotPageInkSecondary
+                        )
                         .frame(width: 36, height: 36)
-                        .background(Color.jotBlueTop.opacity(0.14), in: Circle())
+                        .background(.regularMaterial, in: Circle())
                         .overlay(
                             Circle()
-                                .strokeBorder(Color.jotBlueTop.opacity(0.24), lineWidth: 0.5)
+                                .strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
                         )
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
                 .accessibilityHint("Opens Settings")
-
-                if isSelectionMode {
-                    cancelSelectionButton
-                }
             }
         }
-    }
-
-    private var cancelSelectionButton: some View {
-        Button {
-            onCancelSelection()
-        } label: {
-            Text("Cancel")
-                .font(.system(size: 15, weight: .semibold, design: .default))
-                .foregroundStyle(Color.jotBlueTop)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .padding(.horizontal, 6)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Cancel selection")
+        // Selection-mode Cancel now floats at the top of the home view
+        // (`ContentView.floatingCancelButton`) so it stays reachable when the
+        // header scrolls away — it is no longer rendered inline here.
     }
 
     private func glassIconButton(

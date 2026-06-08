@@ -2,8 +2,7 @@ import SwiftUI
 
 /// Phase 5 (v0.9 redesign) — AI Settings screen.
 ///
-/// Re-skinned to match `design_handoff_jot_ux/design/ai.jsx`'s
-/// `AISettingsScreen`. The behavioral surface is unchanged:
+/// Re-skinned for the v0.9 AI Settings screen. The behavioral surface is unchanged:
 ///   - Download CTA on the model strip is the single on-ramp to AI
 ///     Rewrite — no separate master toggle. Tapping Download is what
 ///     enables the feature.

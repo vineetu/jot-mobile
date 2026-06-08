@@ -85,13 +85,19 @@ enum HeroIntent {
     /// presentation is stale and the hero should pop immediately
     /// (NEVER call `start()` from this path).
     case adoptInFlight
-    /// Auto-nav from a third-party keyboard URL bounce (cold-start path).
-    /// Same lifecycle as `.adoptInFlight` — adopt the running session —
-    /// but the hero also surfaces a temporary "Swipe back to your app"
-    /// nudge overlay so the user knows to return to the host where the
-    /// auto-paste will land. Suppressed after the user has seen it 7
-    /// times via `jot.hero.coldStartNudgeShownCount`.
-    case coldStartFromExternalKeyboard
+    /// The keyboard pulled the user into Jot from ANOTHER app. iOS won't let a
+    /// keyboard extension start the mic, so with no warm mic the keyboard
+    /// `jot://dictate`-bounces to open the app — which yanks the user out of the
+    /// app they were typing in. This fires for that open whether the Jot process
+    /// was stone-cold OR already alive in the background (warm process, expired
+    /// warm mic) — it is NOT a process-lifecycle distinction, it's "we had to
+    /// bring you here." Same lifecycle as `.adoptInFlight` (adopt the running
+    /// session), but the hero also surfaces the looping `SwipeBackCardCue` (a
+    /// wordless two-card app-switch demo) so the user knows to swipe back to the
+    /// host where the auto-paste will land. Shown for the whole withhold window
+    /// and loops until the live transcript reveals. NOT set by in-Jot starts (the
+    /// FAB) — there's no other app to return to there.
+    case openedFromExternalKeyboard
 }
 
 struct ContentView: View {
@@ -110,9 +116,9 @@ struct ContentView: View {
     /// One-shot signal from `JotApp` that the next recording-start was
     /// triggered by a `jot://dictate*` URL bounce from a third-party
     /// keyboard. ContentView's auto-push reads + clears this so the Hero
-    /// is presented with the `.coldStartFromExternalKeyboard` intent and
+    /// is presented with the `.openedFromExternalKeyboard` intent and
     /// the "Swipe back to your app" nudge overlay shows.
-    @Binding var pendingColdStartHeroNudge: Bool
+    @Binding var pendingExternalKeyboardHero: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
@@ -126,6 +132,22 @@ struct ContentView: View {
 
     @State private var navPath = NavigationPath()
     @State private var searchText = ""
+    /// Semantic-search controller driving the "meaning" half of the
+    /// hybrid Recents filter. Substring matching still happens inline
+    /// in `filteredTranscripts`; this controller publishes the set of
+    /// transcript IDs whose embedding cosine ≥ 0.50 to the query.
+    @State private var semanticSearch = SemanticSearchController()
+
+    /// "Ask Jot" sheet — natural-language Q&A over transcript history
+    /// (Apple FM + MiniLM embeddings). See `docs/plans/ask-mode.md`.
+    @State private var showAskSheet = false
+    @State private var askController = AskController()
+    /// Whether the Ask entry point (the sparkles pill) is shown. Gated on
+    /// the on-board Qwen weights being *downloaded* (on disk) — not loaded
+    /// into memory — so Ask only appears once the user has a capable
+    /// on-device model. Re-evaluated on appear and whenever the Settings
+    /// sheet (where the download happens) is dismissed.
+    @State private var askAvailable = AskController.isAvailable
     @State private var showSettings = false
     /// Drives the modal Help sheet from the home header's "?" glass-circle
     /// button. Help is also reachable via Settings → ABOUT → "Help & Support"
@@ -161,10 +183,6 @@ struct ContentView: View {
     /// Set to true when the user taps the back chevron on the hero while a
     /// recording is in progress. While this is true the auto-push observers
     /// (`onAppear` and `onChange(of: isRecording)`) skip pushing the hero
-    /// even though `isRecording == true`, so the user can stay on home with
-    /// the recording running. Cleared automatically when the recording ends,
-    /// or when the user taps the home "return to recording" pill.
-    @State private var userDismissedHeroDuringRecording = false
     /// Mirrors `DictationStats.shouldShowDonationCard` into a SwiftUI-watchable
     /// flag. Re-evaluated on `onAppear` and on every transition to `.active`
     /// scene phase — that covers (a) a fresh app launch, (b) returning to
@@ -181,6 +199,22 @@ struct ContentView: View {
     /// future code path pushes the hero without configuring `heroIntent`,
     /// we'd rather pop back than spuriously start a recording.
     @State private var heroIntent: HeroIntent = .adoptInFlight
+
+    /// Darwin observer for the keyboard-dictate tap, installed only while the
+    /// wizard is NOT presented (the wizard owns its own observer during its
+    /// lifetime — see `SetupWizardView`). Re-installed / torn down by the
+    /// `isWizardPresented`-aware `.onChange` + `.onAppear` below.
+    @State private var dictateTapObserver: CrossProcessNotification.Observer?
+
+    /// WS-F: home-side mirror of `AppGroup.warmHoldNudgeShouldShow`. The app's
+    /// streak math (RecordingService, at the clean `stop()` site) flips that
+    /// projection and posts `warmHoldNudgeChanged`; we cache it into this
+    /// SwiftUI-watchable flag so `WarmHoldNudgeView` can render after a
+    /// qualifying record-and-bounce burst that ended on home. Re-read on appear,
+    /// on `.active`, and on the cross-process notification.
+    @State private var warmHoldNudgeVisible = false
+    /// Darwin observer for the warm-hold switching-nudge projection flip.
+    @State private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -199,7 +233,15 @@ struct ContentView: View {
 
                         heroTitle
 
-                        searchBar
+                        HStack(spacing: 8) {
+                            searchBar
+                                .onChange(of: searchText) { _, new in
+                                    semanticSearch.search(query: new)
+                                }
+                            if askAvailable {
+                                askPill
+                            }
+                        }
 
                         if donationCardVisible {
                             DonationCard(
@@ -209,18 +251,30 @@ struct ContentView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         }
 
+                        // WS-F: the warm-hold switching nudge. Surfaces here when
+                        // the record-and-bounce streak crossed threshold and the
+                        // burst ended on home (the app set the projection). The
+                        // view owns its own state writes + cross-process post; we
+                        // just drop it from the tree on resolve.
+                        if warmHoldNudgeVisible {
+                            WarmHoldNudgeView(onResolve: { warmHoldNudgeVisible = false })
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+
                         RecentsListCard(
                             transcripts: transcripts,
                             groups: transcriptGroups,
                             isSearching: !searchText.isEmpty,
                             copiedTranscriptID: copiedTranscriptID,
-                            isLiveRecording: isLiveRecordingInline,
-                            liveStreamingText: streamingPartial.streamingText,
                             isSelectionMode: $isSelectionMode,
                             selectedTranscriptIDs: $selectedTranscriptIDs,
                             navPath: $navPath,
                             onCopy: copy,
-                            onDelete: { pendingDeletion = $0 },
+                            // Swipe-Delete deletes immediately — the swipe-reveal +
+                            // tap is already deliberate, so the extra confirmation
+                            // dialog was redundant (user request). Bulk delete and
+                            // combine keep their confirmations.
+                            onDelete: { delete($0) },
                             onEnterSelectionMode: { enterSelectionMode(selecting: $0) }
                         )
                     }
@@ -242,13 +296,14 @@ struct ContentView: View {
                 // test sets `isRecording == true` and we don't want a stray pill
                 // leaking through the wizard overlay or driving a stale timer.
                 //
-                // Also gated on `userDismissedHeroDuringRecording` — the pill
-                // is ONLY a re-entry affordance for an explicit back-out, not
-                // a generic "recording is active" badge. On cold launch with
-                // a URL-bounce recording, `isRecording` flips true before
-                // `.onAppear` pushes the hero; without this gate the pill
-                // would flash briefly in that gap. Auto-push paths cover the
-                // "no flag set, recording active" case before any pixel ships.
+                // The pill now surfaces for ANY live recording while home is
+                // showing (so the FAB never reads "Start" while something is
+                // recording), EXCEPT the cold-start-about-to-present window:
+                // on a `jot://dictate` cold launch, `isRecording` flips true
+                // before `.onAppear` / `.onChange` pushes the hero; while
+                // `pendingExternalKeyboardHero` is still pending the pill would
+                // flash for one frame in that gap, so we suppress it there
+                // (see `isLiveRecordingInline`).
                 if isSelectionMode {
                     recentsSelectionToolbar
                         .padding(.horizontal, JotDesign.Spacing.pageGutter)
@@ -256,10 +311,8 @@ struct ContentView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if isLiveRecordingInline {
                     RecordingReturnPill {
-                        // Re-enter the hero. Clear the dismissal flag so the
-                        // next back-tap arms it fresh, and adopt the running
-                        // session rather than `start()`-ing a second one.
-                        userDismissedHeroDuringRecording = false
+                        // Re-enter the hero, adopting the running session rather
+                        // than `start()`-ing a second one.
                         heroIntent = .adoptInFlight
                         showRecordingHero = true
                     }
@@ -277,6 +330,15 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            // Floating selection-Cancel: pinned to the top so it's reachable
+            // anywhere in a long list (the in-header Cancel scrolled away). Glass
+            // so the list reads through it.
+            .overlay(alignment: .topTrailing) {
+                if isSelectionMode {
+                    floatingCancelButton
+                        .transition(.opacity)
+                }
+            }
             .animation(.easeInOut(duration: 0.25), value: recordingService.isRecording)
             .animation(.easeInOut(duration: 0.25), value: showRecordingHero)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSelectionMode)
@@ -284,9 +346,6 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showRecordingHero) {
                 RecordingHeroView(
                     showRecordingHero: $showRecordingHero,
-                    onBackgrounded: {
-                        userDismissedHeroDuringRecording = true
-                    },
                     intent: heroIntent
                 )
             }
@@ -324,6 +383,13 @@ struct ContentView: View {
         }
         .enableInteractivePopGesture()
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        // Install / tear down the keyboard-dictate observer in lockstep with the
+        // wizard. While the wizard is up it owns the tap (W5); the moment it's
+        // down the unified receiver takes over. Identity-checked Observer means
+        // re-installing is idempotent.
+        .onChange(of: isWizardPresented) { _, wizardUp in
+            updateDictateTapObserver(wizardPresented: wizardUp)
+        }
         .sheet(isPresented: $showSettings, onDismiss: handleSettingsDismissed) {
             SettingsView(onRerunRequested: { pendingRerunAfterDismiss = true })
         }
@@ -334,6 +400,19 @@ struct ContentView: View {
             NavigationStack {
                 HelpView(isModal: true)
             }
+        }
+        .sheet(isPresented: $showAskSheet) {
+            // Ask-mode sheet — natural-language Q&A. Citation taps
+            // dismiss this sheet and push into the same `navPath`
+            // Recents uses, so Detail resolves through the existing
+            // `.navigationDestination(for: UUID.self)` modifier above.
+            //
+            // The `askController` is intentionally PERSISTENT (not reset on
+            // dismiss): closing Ask — e.g. tapping a source to read the note —
+            // and reopening keeps the previous answer on screen, so the user can
+            // pick up where they left off and tap "Ask another" when they want a
+            // fresh session. Only the mic is released on close (AskView.onDisappear).
+            AskView(controller: askController, navPath: $navPath)
         }
         .confirmationDialog(
             "Delete this entry?",
@@ -393,28 +472,32 @@ struct ContentView: View {
             copyHaptic.prepare()
             selectionHaptic.prepare()
             refreshDonationCardVisibility()
+            askAvailable = AskController.isAvailable
+            // WS-B: arm the unified keyboard-dictate observer unless the wizard
+            // is currently presenting (it owns the tap then).
+            updateDictateTapObserver(wizardPresented: isWizardPresented)
+            // WS-F: arm the warm-hold-nudge projection observer + read the
+            // current state (a qualifying burst may have crossed threshold while
+            // we were backgrounded).
+            if warmHoldNudgeObserver == nil {
+                warmHoldNudgeObserver = CrossProcessNotification.addObserver(
+                    name: CrossProcessNotification.warmHoldNudgeChanged
+                ) {
+                    refreshWarmHoldNudge()
+                }
+            }
+            refreshWarmHoldNudge()
             if let target = keyboardRewriteRouter.consumePending() {
                 navPath.append(target)
             }
-            // Cold-launch / first-appear adoption: if `JotApp.onOpenURL`
-            // already kicked the recording before our nav stack rendered,
-            // we land here with `isRecording == true`. Push the hero on
-            // the next runloop so the recording surface owns the timer +
-            // streaming preview from the user's POV. Tag the intent as
-            // adoption — the hero must not call `start()` here.
-            //
-            // Suppress while the wizard is presenting — W6's mic test is
-            // recording-driven and we don't want a zombie hero accumulating
-            // on the nav stack behind the wizard. See `isWizardPresented`
-            // doc above.
-            if recordingService.isRecording,
-               !isWizardPresented,
-               !userDismissedHeroDuringRecording {
-                let isColdStart = pendingColdStartHeroNudge
-                pendingColdStartHeroNudge = false
-                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
-                showRecordingHero = true
-            }
+            // External-keyboard hero — FIRST-APPEAR re-check (cold process). The
+            // keyboard's `jot://dictate` bounce set `pendingExternalKeyboardHero`
+            // during launch, BEFORE this view's `.onChange` was installed, so a
+            // freshly-launched process must re-check it here. The warm-process
+            // case (app already alive in the background) is handled by the
+            // `.onChange` below. Both call the SAME helper so cold and warm can
+            // never diverge — see `presentExternalKeyboardHeroIfPending`.
+            presentExternalKeyboardHeroIfPending()
         }
         .onChange(of: keyboardRewriteRouter.pendingTarget) { _, newTarget in
             guard let newTarget else { return }
@@ -429,45 +512,30 @@ struct ContentView: View {
         .onDisappear {
             copyResetTask?.cancel()
         }
-        // Auto-nav: any time recording comes alive outside our control
-        // (URL bounce, future entry points), surface the hero. The hero's
-        // own `beginRecordingFlow` adopts the in-flight session rather
-        // than calling `start()` a second time. Pipeline-tail transitions
-        // (`.transcribing` / `.cleaning`) deliberately do NOT trigger this
-        // — see the docblock above for the reasoning.
-        //
-        // Suppressed while the wizard is presenting — W5's "Try it once"
-        // step calls `recordingService.start()` to drive an in-wizard mic
-        // test. Without this gate, that start fires this observer and a
-        // hero gets pushed onto the home view's nav stack behind the
-        // wizard. When the user taps stop inside W5 the recording cleanly
-        // ends, but the hero on the home nav stack has no symmetric pop
-        // path — it sits there frozen in `.recording` phase. The user
-        // then dismisses the wizard and lands on a zombie "Listening"
-        // surface with no underlying capture. See `isWizardPresented`
-        // doc above.
+        // External-keyboard hero — WARM-process path. The keyboard set the flag
+        // via `jot://dictate` while Jot was already alive in the background (no
+        // warm mic, so it had to open the app). Present the hero the instant the
+        // URL signal lands, decoupled from whether the recording actually starts
+        // (on a fresh install / update it can be deferred behind a cold speech-
+        // model load). The hero enters its "getting ready" state and adopts once
+        // recording begins, so the user is never stranded on home. Same helper as
+        // the cold-process first-appear path — they must stay identical.
+        .onChange(of: pendingExternalKeyboardHero) { _, _ in
+            presentExternalKeyboardHeroIfPending()
+        }
+        // Hero TEARDOWN only. The hero is never *pushed* from `isRecording`
+        // anymore (source-based presentation lives at the FAB tap, the cold
+        // `jot://dictate` URL, and the return-pill tap). This observer just
+        // handles the end-of-recording reset: a recording that was *not* a hero
+        // recording (inline edit, Ask, warm, Action Button, the wizard mic test)
+        // simply never had a hero to begin with, so there is nothing to adopt
+        // and nothing to suppress — the whole veto-flag stack is gone.
         .onChange(of: recordingService.isRecording) { _, isRecording in
-            if isRecording,
-               !isWizardPresented,
-               !userDismissedHeroDuringRecording {
-                // Auto-nav adoption — never `start()` from this path.
-                let isColdStart = pendingColdStartHeroNudge
-                pendingColdStartHeroNudge = false
-                heroIntent = isColdStart ? .coldStartFromExternalKeyboard : .adoptInFlight
-                showRecordingHero = true
-            } else if !isRecording {
-                // Recording ended (user stopped, cancelled, errored, or the
-                // pipeline finished). Reset the user-dismissal flag so the
-                // NEXT recording auto-pushes the hero normally. Without this
-                // the flag would stay armed and the user would have to tap
-                // the FAB explicitly forever after one back-out.
-                userDismissedHeroDuringRecording = false
-                // A successful end-of-recording is also the moment the
-                // donation card threshold could have just been crossed —
-                // re-evaluate so the card can animate in for the user as
-                // they land back on home.
-                refreshDonationCardVisibility()
-            }
+            guard !isRecording else { return }
+            // Recording ended (stopped, cancelled, errored, or pipeline done).
+            // Re-check the donation-card threshold for the user landing back
+            // on home.
+            refreshDonationCardVisibility()
         }
         // Keyboard dictations increment the stats counter from another
         // process without ever opening Jot.app. When the user returns to
@@ -476,6 +544,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 refreshDonationCardVisibility()
+                refreshWarmHoldNudge()
             }
         }
         .onChange(of: visibleTranscriptIDs) { _, visibleIDs in
@@ -485,34 +554,170 @@ struct ContentView: View {
 
     // MARK: - Recording state
 
-    /// True when a recording is hot AND the user has backed out of the hero
-    /// — i.e. the moment to surface the live streaming preview inline at the
-    /// top of the Recents list. Also drives the swap from FAB to blue
-    /// "Return to recording" pill. Wizard-presented state stays suppressed:
-    /// W6's in-wizard mic test runs `isRecording == true` and the wizard
-    /// owns its own surface during its lifetime.
+    /// True for ANY live recording while home is showing — the moment to swap
+    /// the FAB for the blue "Return to recording" pill so the FAB never reads
+    /// "Start" while something is recording. Tapping the pill opens the hero,
+    /// which adopts whatever recording is in flight. We deliberately do NOT
+    /// gate on how the recording started (the old narrow "backgrounded hero"
+    /// key was dropped in unify-keyboard-dictation §5 Stage 1).
+    ///
+    /// One exception — the cold-start-about-to-present window: on a
+    /// `jot://dictate` cold launch, `isRecording` flips true *before*
+    /// `.onAppear` / `.onChange` pushes the hero. While
+    /// `pendingExternalKeyboardHero` is still pending (not yet consumed) the
+    /// pill would flash for a single frame in that gap, so suppress it there.
+    /// Wizard stays suppressed too (its mic test owns its own surface).
+    ///
+    /// Also excludes `ownsActiveRecording` recordings: Ask owns its own
+    /// `InlineDictationSession` and has its own in-sheet UI, and its `discard()`
+    /// teardown is async — without this guard, dismissing the Ask sheet leaves a
+    /// brief window where home is visible with `isRecording` still true, flashing
+    /// a stray pill. Normal in-Jot captures and warm-resume do NOT set this flag,
+    /// so they still surface the pill as intended.
     private var isLiveRecordingInline: Bool {
         recordingService.isRecording
+            && !recordingService.ownsActiveRecording
             && !showRecordingHero
             && !isWizardPresented
-            && userDismissedHeroDuringRecording
+            && !pendingExternalKeyboardHero
+    }
+
+    /// Presents the recording hero for a keyboard-originated launch — the ONLY
+    /// way the keyboard pulls the user into Jot from another app. iOS won't let
+    /// a keyboard extension start the mic, so when there's no warm mic the
+    /// keyboard `jot://dictate`-bounces to open the app; that sets
+    /// `pendingExternalKeyboardHero` (`JotApp.onOpenURL`). This presents the hero
+    /// with `.openedFromExternalKeyboard`, which lights the swipe-back cue so the
+    /// user knows to return to the app they were typing in.
+    ///
+    /// Single source of truth: BOTH the cold-process first-appear (`.onAppear`)
+    /// and the warm-process flag flip (`.onChange`) call this, so the two process
+    /// states can never diverge. Idempotent; guards are LIVE reads only (hero
+    /// already up? wizard up?) — no provenance flags to keep in sync.
+    private func presentExternalKeyboardHeroIfPending() {
+        guard pendingExternalKeyboardHero,
+              !showRecordingHero,
+              !isWizardPresented else { return }
+        pendingExternalKeyboardHero = false
+        heroIntent = .openedFromExternalKeyboard
+        showRecordingHero = true
+    }
+
+    // MARK: - WS-B unified keyboard-dictate receiver
+
+    /// Install or tear down the `keyboardDictateTapped` observer so it is live
+    /// exactly when the wizard is NOT presented. The wizard installs its OWN
+    /// observer for its lifetime (W5); running both at once would double-handle
+    /// a single tap. When the wizard is down we route the tap into a normal
+    /// background capture (Stage 2 — same path the keyboard uses in any other
+    /// app). When the wizard comes up we drop our observer.
+    private func updateDictateTapObserver(wizardPresented: Bool) {
+        if wizardPresented {
+            dictateTapObserver = nil
+        } else if dictateTapObserver == nil {
+            dictateTapObserver = CrossProcessNotification.addObserver(
+                name: CrossProcessNotification.keyboardDictateTapped
+            ) {
+                // NEW MODEL (unify-keyboard-dictation §6 / Stage 2): an in-Jot
+                // keyboard Dictate tap starts a NORMAL background capture — the
+                // exact same path as dictation from any other app — instead of
+                // routing to the custom inline session. No hero is presented
+                // (nothing adopts `isRecording`; the hero presents only from the
+                // FAB, a cold `jot://dictate`, or the return pill). The keyboard
+                // shows its own streaming strip via the cross-process projection,
+                // and on Stop the keyboard's pending-paste → `insertText`
+                // mechanism lands the final text in the focused Jot field. Save /
+                // no-save is decided at the STOP site (foreground → no save), not
+                // here. Modeled on JotApp's warm-resume observer's `start()`.
+                Task { @MainActor in
+                    let recording = RecordingService.shared
+                    // Don't start over a prior dictation's tail — a second tap
+                    // arriving while the recorder is busy would either throw
+                    // `.alreadyRunning` or stack a second capture.
+                    guard !recording.isRecording, !recording.isPipelineInFlight else {
+                        contentLog.notice("keyboardDictateTapped (in-Jot) while recorder busy; ignoring")
+                        return
+                    }
+                    do {
+                        contentLog.notice("RECORDING START FROM: ContentView.keyboardDictateTapped (in-Jot keyboard tap)")
+                        let startedAt = Date()
+                        // A capture must never inherit a stale inline-ownership
+                        // flag. `ownsActiveRecording` is set ONLY by Ask's
+                        // `InlineDictationSession`; if Ask ever leaves it true,
+                        // a later capture that starts via `start()` directly would
+                        // carry it, and the keyboard Stop would bail out of
+                        // `handleStopRequested` BEFORE stopping the mic (the
+                        // warm-resume "won't stop" regression). This is a normal
+                        // capture, so clear it defensively before starting.
+                        recording.ownsActiveRecording = false
+                        try await recording.start()
+                        // Seed the activity coordinator's start anchor so any
+                        // later hero adoption reads THIS recording's start time
+                        // (mirrors the warm-resume observer in JotApp.init).
+                        await DictationActivityCoordinator.shared.start(startedAt: startedAt)
+                    } catch {
+                        contentLog.error("keyboardDictateTapped (in-Jot) start failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - WS-F warm-hold switching nudge
+
+    /// Re-read the App-Group projection and update the SwiftUI-watchable flag.
+    /// Shows only when the app set `warmHoldNudgeShouldShow` AND the user hasn't
+    /// permanently suppressed it (`WarmHoldNudgeView` writes suppression on the
+    /// "Don't show again" tap). Cheap UserDefaults reads — fine to call from
+    /// every entry point. Animated so it eases in rather than snapping.
+    private func refreshWarmHoldNudge() {
+        let next = AppGroup.warmHoldNudgeShouldShow && !AppGroup.warmHoldNudgeSuppressed
+        guard next != warmHoldNudgeVisible else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            warmHoldNudgeVisible = next
+        }
     }
 
     // MARK: - Hero
 
+    /// WS-E: the editorial "Recents." headline is replaced by a rotating CTA
+    /// that doubles as the home micro-messaging surface (§9 home CTA pool, D2 —
+    /// both `.anywhere` and `.universal` lines shown to everyone this cycle).
+    /// "What do you want to dictate today?" is the anchor line; the rotator
+    /// shuffles the full pool. The date sub-line is retained for context.
     private var heroTitle: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Recents.")
-                .font(JotType.displaySerif(44))
-                .tracking(-1.6)
-                .foregroundStyle(Color.jotPageInk)
-                .accessibilityAddTraits(.isHeader)
+            RotatingMessageView(
+                messages: Self.homeCTAPool,
+                dwell: 14,
+                sequenced: false,
+                font: JotType.displaySerif(34),
+                color: .jotPageInk,
+                alignment: .leading
+            )
+            .tracking(-1.0)
+            .accessibilityAddTraits(.isHeader)
 
             Text(formattedDate)
                 .font(.system(size: 13, weight: .regular, design: .default))
                 .foregroundStyle(Color.jotPageInkSecondary)
         }
     }
+
+    /// Home CTA rotation pool (§9 — `.anywhere` + `.universal`, D2 resolved:
+    /// show both buckets to everyone in v1). Line 6 is the anchor.
+    private static let homeCTAPool: [String] = [
+        "Speak it straight into your app.",
+        "Your keyboard can talk — anywhere you type.",
+        "Skip the typing. Dictate into any app you're in.",
+        "A thought mid-run? Jot it on your watch.",
+        "Dictate into Mail, Notes, Messages — anywhere a keyboard goes.",
+        "What do you want to dictate today?",
+        "Say it out loud and let your hands rest.",
+        "Think out loud — no need to slow down.",
+        "Talk faster than you type. Start here.",
+        "Say the messy version — tidy the wording later."
+    ]
 
     private var formattedDate: String {
         Date().formatted(.dateTime.weekday(.wide).month(.wide).day())
@@ -567,16 +772,46 @@ struct ContentView: View {
         .accessibilityLabel("Search transcripts")
     }
 
+    /// Companion to the search bar — opens Ask mode (natural-language
+    /// Q&A over transcript history via Apple Foundation Models +
+    /// MiniLM embeddings). Single 44×44 glass-circle button with a
+    /// sparkles glyph so the affordance reads as "AI-powered" without
+    /// stealing visual weight from search.
+    private var askPill: some View {
+        Button {
+            showAskSheet = true
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.jotBlueBottom)
+                .frame(width: 44, height: 44)
+                .background(.regularMaterial, in: Circle())
+                .overlay(
+                    Circle().strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ask Jot")
+        .accessibilityHint("Ask a natural-language question about your transcript history.")
+    }
+
     // MARK: - Grouping
 
-    /// Source of truth for what gets rendered in the grouped list. When
-    /// `searchText` is non-empty we filter case-insensitively across both
-    /// the cleaned/displayed text and the raw transcript text.
+    /// Source of truth for what gets rendered in the grouped list.
+    /// Hybrid filter (build 53): a transcript matches if it's a literal
+    /// substring hit OR if `SemanticSearchController` has classified it
+    /// as semantically similar to the query (cosine ≥ 0.50).
+    /// Substring hits surface immediately on keystroke; semantic hits
+    /// fill in ~250-400ms later after the debounce + embed + cosine
+    /// pass completes. Date-grouping downstream preserves chronological
+    /// ordering regardless of match source.
     private var filteredTranscripts: [Transcript] {
         guard !searchText.isEmpty else { return transcripts }
+        let semanticIDs = semanticSearch.semanticMatches
         return transcripts.filter { transcript in
-            transcript.displayText.localizedCaseInsensitiveContains(searchText)
+            let substring = transcript.displayText.localizedCaseInsensitiveContains(searchText)
                 || transcript.text.localizedCaseInsensitiveContains(searchText)
+            return substring || semanticIDs.contains(transcript.id)
         }
     }
 
@@ -620,12 +855,27 @@ struct ContentView: View {
 
     // MARK: - Actions
 
-    /// Maximum number of entries that can be combined in one operation.
-    /// Keeps the resulting single transcript from blowing past UI readability
-    /// (long scrolling block) and gives the user a soft prompt to be
-    /// intentional. The picker UX in `recentsSelectionToolbar` disables the
-    /// Combine button beyond this count.
-    private static let combineMaxSelection = 5
+    /// Translucent floating "Cancel" pinned at the top during selection mode so
+    /// the user can exit from anywhere in a long list (the header Cancel scrolled
+    /// away). Glass capsule — the list reads through it.
+    private var floatingCancelButton: some View {
+        Button(action: exitSelectionMode) {
+            Text("Cancel")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.jotBlueTop)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 38)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, JotDesign.Spacing.pageGutter)
+        .padding(.top, 6)
+        .accessibilityLabel("Cancel selection")
+    }
 
     private var recentsSelectionToolbar: some View {
         HStack(spacing: 12) {
@@ -655,7 +905,7 @@ struct ContentView: View {
             .frame(minHeight: 44)
             .contentShape(Rectangle())
             .disabled(!isCombineEnabled)
-            .accessibilityHint("Merge selected entries into one. Up to \(Self.combineMaxSelection).")
+            .accessibilityHint("Merge selected entries into one.")
 
             Button("Delete \(selectedTranscriptIDs.count)", role: .destructive) {
                 prepareBulkDelete()
@@ -681,8 +931,9 @@ struct ContentView: View {
     }
 
     private var isCombineEnabled: Bool {
-        let count = selectedTranscriptIDs.count
-        return count >= 2 && count <= Self.combineMaxSelection
+        // No upper cap — combine as many as you've selected (hundreds is fine).
+        // Just need ≥2 to have something to merge.
+        selectedTranscriptIDs.count >= 2
     }
 
     private func enterSelectionMode(selecting transcript: Transcript) {
@@ -719,6 +970,9 @@ struct ContentView: View {
     /// prevents the wizard's fullScreenCover from racing the sheet
     /// dismiss animation.
     private func handleSettingsDismissed() {
+        // Re-check Ask availability — the user may have just downloaded
+        // the Qwen weights in the Settings sheet they're dismissing.
+        askAvailable = AskController.isAvailable
         guard pendingRerunAfterDismiss else { return }
         pendingRerunAfterDismiss = false
         SettingsRerunTrigger.shared.requestRerun()
@@ -1003,7 +1257,7 @@ private struct RecordingReturnPill: View {
 }
 
 #Preview {
-    ContentView(pendingColdStartHeroNudge: .constant(false))
+    ContentView(pendingExternalKeyboardHero: .constant(false))
         .environment(RecordingService())
         .environment(KeyboardRewriteRouter())
         .environment(TranscriptionService())

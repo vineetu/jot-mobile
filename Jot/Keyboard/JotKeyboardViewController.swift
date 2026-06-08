@@ -51,47 +51,34 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var hostingController: UIHostingController<AnyView>?
     private let recordingState = KeyboardRecordingState()
 
-    // MARK: - Phase 2.5 collapsed-keyboard state
+    // MARK: - Keyboard height
     //
-    // Height transitions are driven by an explicit `NSLayoutConstraint`
-    // on `self.view.heightAnchor` (priority 999, long-lived). We mutate
-    // `.constant` between `expandedHeight` and `collapsedHeight` and
-    // animate via `UIView.animate(...)` + `layoutIfNeeded()`. SwiftUI's
-    // `withAnimation` is deliberately NOT used for the envelope because
-    // `UIHostingController` on iOS 17+ mis-handles height-affecting
-    // animations (Apple Developer Forums thread 776712); SwiftUI only
-    // owns the inner content cross-fade.
-    //
-    // Persistence: `UserDefaults.standard`, scoped to the appex
-    // sandbox. We deliberately do NOT share this preference with the
-    // main app via App Group — collapse is a keyboard-only affordance.
+    // The keyboard's height is pinned by an explicit `NSLayoutConstraint`
+    // on `self.view.heightAnchor` (priority 999, long-lived). The
+    // minimize/expand affordance (and its 58pt collapsed envelope) was
+    // removed in the UX-overhaul round 2 WS-D restructure — the keyboard
+    // is a fixed-height surface now. The constraint stays as the single
+    // height pin so SwiftUI's intrinsic-size machinery doesn't emit
+    // "Unable to simultaneously satisfy constraints" console spam.
 
-    private static let collapsedHeight: CGFloat = 58
-    // Bug 8 (2026-05-11): keyboard was too tall at 450pt — recents strip
-    // alone was 268pt. After Bug 8/9/11 fixes the strip drops to ~128pt
-    // (3 visible rows + scroll) and the bottom row loses the globe key,
-    // so total envelope can shrink to the native-keyboard band (~310pt).
-    private static let expandedHeight: CGFloat = 310
-
-    /// User-preferred collapsed state, persisted across keyboard
-    /// presentations. Seeded from `UserDefaults.standard` so a user who
-    /// last left the keyboard collapsed re-opens to the same surface.
-    private var isCollapsed: Bool = UserDefaults.standard.bool(
-        forKey: "jot.keyboard.collapsed"
-    )
+    // MUST equal `KeyboardView`'s `.frame(minHeight:)`. This 999-priority
+    // `heightAnchor` pin sets the keyboard height, BUT the edge-pinned
+    // `UIHostingController` lets the hosted SwiftUI content's intrinsic height
+    // propagate up into `self.view`; when that intrinsic height exceeds this
+    // pin it can override the 999 constraint, so the host lays out a taller
+    // input view and the bottom controls fall below the visible envelope — the
+    // "strip shows but the buttons are clipped / untappable" bug (was a 310
+    // SwiftUI minHeight vs a 204 pin). Keeping the two equal removes the
+    // disagreement. Derived from content, not guessed: top 8 + RecentsStrip 129
+    // + spacing 6 + controls ~49 + bottom 4 ≈ 196pt idle; recording is shorter
+    // (StreamingStrip 124 ⇒ ~191). Pin 200; the Spacer absorbs the slack.
+    private static let expandedHeight: CGFloat = 200
 
     /// Long-lived height pin on `self.view`. Installed in `viewDidLoad`,
-    /// mutated by `applyCollapsedHeight(animated:)`, re-applied on
-    /// rotation to defend against any platform-side constraint solver
-    /// resets.
+    /// re-applied on rotation to defend against any platform-side
+    /// constraint solver resets.
     private var heightConstraint: NSLayoutConstraint?
 
-    /// Safety timer fallback for the status-banner auto-expand. The
-    /// banner's SwiftUI `.task` normally calls `clearStatusBannerSlot()`
-    /// at ~2.5s, but if the banner is dropped without that callback
-    /// firing (e.g. external clear path) we still want to drop back to
-    /// the collapsed bar — this Task enforces that.
-    private var bannerAutoExpandResetTask: Task<Void, Never>?
     /// Observer for `historyMirrorUpdated`. Posted by the main app AFTER
     /// `TranscriptHistoryMirror.refresh(...)` finishes writing — see
     /// `CrossProcessNotification.swift`. We listen here instead of
@@ -106,6 +93,24 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
     private var streamingPartialObserver: CrossProcessNotification.Observer?
     private var streamingLoadingObserver: CrossProcessNotification.Observer?
+    /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
+    /// The keyboard process can't run the streak math, so the app writes the
+    /// `AppGroup.warmHoldNudgeShouldShow` boolean projection and posts this
+    /// notification; the keyboard re-reads + re-renders the nudge strip. The
+    /// two nudge actions write back (`warmHoldEnabled` / `nudgeSuppressed`).
+    private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
+
+    /// Live foreground-handshake state. On a Dictate "start", the keyboard pings
+    /// the app and waits `foregroundPongTimeout` for `appForegroundPong`: a pong
+    /// means Jot is the foreground host → record INLINE; silence means Jot is
+    /// backgrounded → cold-start via URL bounce. Replaces the stale-flag
+    /// `AppGroup.isJotAppForeground()` read with a live request/response.
+    private var foregroundPongObserver: CrossProcessNotification.Observer?
+    private var pendingForegroundPing: UUID?
+    private var foregroundPongReceived = false
+    /// 120ms: a foreground app pongs in a few ms; this leaves generous headroom
+    /// for Darwin round-trip + MainActor scheduling while staying imperceptible.
+    private static let foregroundPongTimeout: TimeInterval = 0.12
 
     // MARK: - v7 auto-paste deadline tasks
     //
@@ -127,11 +132,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var pipelineStaleDeadlineTask: Task<Void, Never>?
     private var pendingLaunchDeadlineTask: Task<Void, Never>?
 
+    // `deadAppWatchdogTask` — armed on a recording-control tap (Stop / Pause /
+    // Cancel / Resume). The keyboard drives those controls by posting Darwin
+    // requests the MAIN app must handle; if iOS jetsammed the app mid-recording
+    // there is no live handler, the projection is frozen at `.recording`, and
+    // the keyboard would otherwise hang until the 30s stale path. This watchdog
+    // snapshots the projection's `lastUpdatedAt` at the tap and, after the 5s
+    // ceiling, recovers the keyboard to idle if it never advanced. A live app —
+    // foreground or background — refreshes within the 3s heartbeat (and
+    // immediately when it processes the control), so it never trips this.
+    private var deadAppWatchdogTask: Task<Void, Never>?
+
+    // After a dead-app recovery, the shared `PipelinePhaseProjection` is still
+    // frozen at `.recording` (the jetsammed writer never wrote a terminal phase,
+    // and the 30s stale synth hasn't fired). Tombstone that exact session +
+    // frozen timestamp so a keyboard dismiss/re-present inside that window does
+    // NOT resurrect the zombie recording UI when `refreshPipelinePhase` re-reads
+    // the projection. Cleared the moment the projection advances or a new
+    // session appears (a live writer is back).
+    private var recoveredZombieFreeze: (sessionID: UUID, frozenAt: Date)?
+
     /// Bound on cold-launch / URL-delivery latency. iOS delivers a URL to a
     /// foreground-target target in O(seconds), not O(minutes), so 15s is a
     /// state question ("did the pipeline ever come up?"), not a workload-
     /// latency guess. Per design §4.6.G.
     private static let launchDeadline: TimeInterval = 15
+
+    /// Hard ceiling on how long the keyboard waits for proof the main app is
+    /// alive after a recording-control tap before recovering itself to idle.
+    /// The 3s projection heartbeat (`PipelinePhaseProjection.heartbeatInterval`)
+    /// sits comfortably under this, so a live app always clears it; only a
+    /// jetsammed app — which stamps nothing — trips it.
+    private static let controlTapLivenessCeiling: TimeInterval = 5
 
     // MARK: - Jot affordance state
 
@@ -197,6 +229,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `refreshPipelinePhase` once projection moves off `.recording`.
     private var stopRequestPosted = false
 
+    /// Whether the warm-hold switching nudge should render on the strip
+    /// (UX-overhaul round 2 §4 / WS-F). Mirrors `AppGroup.warmHoldNudgeShouldShow`,
+    /// refreshed on appearance and on each `warmHoldNudgeChanged` post. The app
+    /// owns the streak math; the keyboard just renders off this boolean and
+    /// writes the two terminal actions back.
+    private var showWarmHoldNudge = false
+
     // MARK: - Haptic + audio feedback
 
     /// Owns the long-lived `UISelectionFeedbackGenerator` and
@@ -232,15 +271,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingPipelinePhase()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
-        // [KB-COLLAPSE-DEBUG] One-time static-config snapshot. The
-        // UIInputView.allowsSelfSizing flag is set in loadView() and
-        // never mutated; logging it once at startup tells us whether
-        // self-sizing is the suspect when the collapse height fails to
-        // visibly apply (Symptom 2 — outer envelope stays expanded).
-        let allowsSelfSizing = (self.view as? UIInputView)?.allowsSelfSizing ?? false
-        keyboardLog.log(
-            "[KB-COLLAPSE-DEBUG] viewDidLoad allowsSelfSizing=\(allowsSelfSizing, privacy: .public)"
-        )
+        startObservingWarmHoldNudge()
+        startObservingForegroundPong()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -259,6 +291,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingPipelinePhase()
         startObservingStreamingPartial()
         startObservingStreamingLoading()
+        startObservingWarmHoldNudge()
+        startObservingForegroundPong()
+        refreshWarmHoldNudgeFromProjection()
         refreshPipelinePhase()
         refreshStreamingPartialFromProjection()
         refreshStreamingLoadingFromProjection()
@@ -284,12 +319,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         pipelinePhaseObserver = nil
         streamingPartialObserver = nil
         streamingLoadingObserver = nil
+        warmHoldNudgeObserver = nil
+        foregroundPongObserver = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
         pendingLaunchDeadlineTask?.cancel()
         pendingLaunchDeadlineTask = nil
+        deadAppWatchdogTask?.cancel()
+        deadAppWatchdogTask = nil
         cancelBackspaceRepeat()
-        cancelBannerAutoExpandReset()
     }
 
     override func textDidChange(_ textInput: (any UITextInput)?) {
@@ -342,210 +380,48 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         renderedKeyboardAppearance = textDocumentProxy.keyboardAppearance ?? .default
     }
 
-    // MARK: - Phase 2.5 collapsed-keyboard plumbing
+    // MARK: - Keyboard height
 
     /// Installs the long-lived height pin on `self.view`. Priority
     /// `.required - 1` (999) so iOS's own input-view geometry
     /// constraints (system-imposed, priority 1000) always win in any
     /// hypothetical edge case — but at 999 our value drives the layout
-    /// pass under normal conditions. Long-lived: never deactivated,
-    /// only its `.constant` mutates.
+    /// pass under normal conditions. Fixed at `expandedHeight`; the
+    /// minimize/expand affordance was removed in the WS-D restructure so
+    /// there is no second height to switch to.
     private func installHeightConstraint() {
         guard heightConstraint == nil else { return }
         let constraint = view.heightAnchor.constraint(
-            equalToConstant: isCollapsed
-                ? Self.collapsedHeight
-                : Self.expandedHeight
+            equalToConstant: Self.expandedHeight
         )
         constraint.priority = UILayoutPriority(999)
         constraint.isActive = true
         heightConstraint = constraint
     }
 
-    /// User-initiated flip between collapsed (58pt) and standard
-    /// (450pt). Persists the new state to `UserDefaults` so the next
-    /// keyboard presentation honors the user's choice, announces the
-    /// transition over VoiceOver, then animates the height. The
-    /// SwiftUI tree picks up the new `isCollapsed` via `renderRootView`
-    /// and does its own cross-fade (the `withAnimation` keyed on
-    /// `isCollapsed` inside `KeyboardView.body`).
-    func toggleCollapsed() {
-        // [KB-COLLAPSE-DEBUG] Entry log captures the PRE-toggle state plus
-        // the full geometry snapshot. A second toggleCollapsed call within
-        // ~250ms (Symptom 1 — double-tap race) shows up here as two entries
-        // back-to-back with matching `isCollapsed=old` values.
-        logCollapseGeometry(label: "toggleCollapsed entry isCollapsed=\(isCollapsed)")
-        isCollapsed.toggle()
-        UserDefaults.standard.set(isCollapsed, forKey: "jot.keyboard.collapsed")
-        UIAccessibility.post(
-            notification: .announcement,
-            argument: isCollapsed ? "Keyboard minimized" : "Keyboard expanded"
-        )
-        // Re-render BEFORE the animate block so the SwiftUI branch swap
-        // begins immediately; UIKit handles the height envelope.
-        renderRootView()
-        applyCollapsedHeight(animated: true)
-    }
-
-    /// Mutates the height constraint to match the current `isCollapsed`
-    /// value. Honors Reduce Motion (no-animate branch). The
-    /// `layoutIfNeeded()` call is what actually drives the visible
-    /// height change — without it AutoLayout would batch the constant
-    /// change to the next layout pass.
-    private func applyCollapsedHeight(animated: Bool) {
-        guard let constraint = heightConstraint else { return }
-        let target: CGFloat = isCollapsed ? Self.collapsedHeight : Self.expandedHeight
-        // [KB-COLLAPSE-DEBUG] Entry: what we are about to ask the
-        // constraint solver for. Compare the post-settle bounds against
-        // `target` to know whether the solver actually honored our pin.
-        logCollapseGeometry(
-            label: "applyCollapsedHeight target=\(Int(target)) animated=\(animated)"
-        )
-        constraint.constant = target
-
-        let runImmediate = !animated || UIAccessibility.isReduceMotionEnabled
-        if runImmediate {
-            view.layoutIfNeeded()
-            // [KB-COLLAPSE-DEBUG] Post-layout in the immediate (no-animate)
-            // path so we capture the same moment as the animated branch.
-            logCollapseGeometry(label: "post-layoutIfNeeded (immediate)")
-            DispatchQueue.main.async { [weak self] in
-                self?.logCollapseGeometry(label: "post-settle (next runloop, immediate)")
-            }
-            return
-        }
-        UIView.animate(
-            withDuration: 0.25,
-            delay: 0,
-            options: [.curveEaseInOut, .beginFromCurrentState]
-        ) { [weak self] in
-            self?.view.layoutIfNeeded()
-            // [KB-COLLAPSE-DEBUG] Inside the animate block, immediately
-            // after `layoutIfNeeded()` — bounds here should reflect the
-            // post-layout state for the in-flight animation pass.
-            self?.logCollapseGeometry(label: "post-layoutIfNeeded")
-        }
-        // [KB-COLLAPSE-DEBUG] Schedule a post-settle snapshot on the
-        // NEXT runloop tick (NOT in the animate completion handler — we
-        // want the steady-state value after the system input-view host
-        // gets a chance to re-evaluate intrinsicContentSize / its own
-        // size constraints, which Symptom 2 suggests is the failure
-        // mode for the outer envelope).
-        DispatchQueue.main.async { [weak self] in
-            self?.logCollapseGeometry(label: "post-settle (next runloop)")
-        }
-    }
-
-    /// [KB-COLLAPSE-DEBUG] Single value-capture helper so every log point
-    /// records the same geometry fields. Centralizing the snapshot keeps
-    /// the call sites tiny and guarantees a consistent format for the
-    /// user's Console.app filter. Pure read — no side effects, no
-    /// layout triggers.
-    private func logCollapseGeometry(label: String) {
-        let constraintConstant = heightConstraint?.constant ?? -1
-        let bounds = view.bounds.height
-        let intrinsic = view.intrinsicContentSize.height
-        let hostingHeight = hostingController?.view.bounds.height ?? -1
-        keyboardLog.log(
-            "[KB-COLLAPSE-DEBUG] \(label, privacy: .public) isCollapsed=\(self.isCollapsed, privacy: .public) constraint.constant=\(constraintConstant, privacy: .public) view.bounds.h=\(bounds, privacy: .public) view.intrinsic.h=\(intrinsic, privacy: .public) hosting.bounds.h=\(hostingHeight, privacy: .public)"
-        )
-    }
-
     /// Defensive re-application of the height after a rotation /
     /// trait-collection change. The system input-view container may
     /// reset solver state across orientation changes; re-asserting our
     /// preferred constant inside the transition coordinator keeps the
-    /// collapsed state visually consistent.
+    /// height stable.
     override func viewWillTransition(
         to size: CGSize,
         with coordinator: UIViewControllerTransitionCoordinator
     ) {
         super.viewWillTransition(to: size, with: coordinator)
-        // [KB-COLLAPSE-DEBUG] viewWillTransition fires on rotation /
-        // trait-collection change. If Symptom 1 (failed maximize) ever
-        // correlates with an unexpected transition right at tap time
-        // (e.g. the system input-view host re-sizing us underneath the
-        // animate block), it should show up here interleaved with the
-        // toggleCollapsed entry log.
-        logCollapseGeometry(label: "viewWillTransition to=\(size.width)x\(size.height)")
         coordinator.animate(alongsideTransition: { [weak self] _ in
             guard let self else { return }
-            self.heightConstraint?.constant = self.isCollapsed
-                ? Self.collapsedHeight
-                : Self.expandedHeight
+            self.heightConstraint?.constant = Self.expandedHeight
             self.view.layoutIfNeeded()
         })
     }
 
-    /// Central setter for `statusBanner`. Routes every write through a
-    /// single seam so the Phase 2.5 auto-expand hook fires consistently:
-    /// when a banner needs to render and the user is in collapsed mode,
-    /// we temporarily lift the height to `expandedHeight` so the banner
-    /// is visible, then collapse back after the banner lifecycle ends
-    /// (either via `clearStatusBannerSlot()` from the SwiftUI `.task`
-    /// or via the 2.5s safety timer).
-    ///
-    /// The user's `isCollapsed` preference is NOT mutated by this auto-
-    /// expand — only the live height constraint is. When the banner
-    /// clears we restore the height to whatever `isCollapsed` says it
-    /// should be (per plan §14.2).
+    /// Central setter for `statusBanner`. With collapsed mode removed the
+    /// banner always renders in the (fixed-height) standard surface, so this
+    /// is now a plain store — kept as a seam so call sites don't reach into
+    /// the field directly.
     private func setStatusBanner(_ message: String?) {
-        let previous = statusBanner
         statusBanner = message
-
-        let wasNil = (previous == nil)
-        let isNonNil = (message != nil && !(message?.isEmpty ?? true))
-        let nowNil = (message == nil || (message?.isEmpty ?? true))
-
-        if wasNil, isNonNil, isCollapsed {
-            // nil → non-nil while collapsed: temporary expand for the
-            // banner lifetime so the user actually sees the message.
-            temporarilyExpandForBanner()
-        } else if !wasNil, nowNil, isCollapsed {
-            // non-nil → nil while user preference is collapsed: snap
-            // back to the collapsed envelope.
-            cancelBannerAutoExpandReset()
-            applyCollapsedHeight(animated: true)
-        }
-    }
-
-    /// Lifts the height to `expandedHeight` so a status banner is
-    /// visible in collapsed mode. Arms a 2.5s safety reset Task that
-    /// restores the collapsed height even if `clearStatusBannerSlot()`
-    /// never fires (defensive — the banner's SwiftUI `.task` should
-    /// always fire, but a host that tears the keyboard down mid-banner
-    /// would skip the callback).
-    private func temporarilyExpandForBanner() {
-        guard isCollapsed, let constraint = heightConstraint else { return }
-        constraint.constant = Self.expandedHeight
-        if UIAccessibility.isReduceMotionEnabled {
-            view.layoutIfNeeded()
-        } else {
-            UIView.animate(
-                withDuration: 0.25,
-                delay: 0,
-                options: [.curveEaseInOut, .beginFromCurrentState]
-            ) { [weak self] in
-                self?.view.layoutIfNeeded()
-            }
-        }
-        cancelBannerAutoExpandReset()
-        bannerAutoExpandResetTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(2_500))
-            guard let self, !Task.isCancelled else { return }
-            // Only collapse back if the user still prefers collapsed —
-            // a user-initiated expand during the banner lifetime should
-            // win.
-            if self.isCollapsed {
-                self.applyCollapsedHeight(animated: true)
-            }
-            self.bannerAutoExpandResetTask = nil
-        }
-    }
-
-    private func cancelBannerAutoExpandReset() {
-        bannerAutoExpandResetTask?.cancel()
-        bannerAutoExpandResetTask = nil
     }
 
     private func renderRootViewIfActionAvailabilityChanged() {
@@ -599,7 +475,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             lastPastedAt: lastPastedAt,
             isStopRequestPending: stopRequestPosted,
             statusBanner: statusBanner,
-            isCollapsed: isCollapsed,
+            showWarmHoldNudge: showWarmHoldNudge,
             // v2 retheme (2026-05-11): host's `keyboardAppearance` hint.
             // Some hosts (dark Mail, dark Notes, Spotlight) force
             // `.dark` even when the system itself is in light mode. We
@@ -624,9 +500,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onStatusBannerRendered: { [weak self] in self?.clearStatusBannerSlot() },
             onOpenHome: { [weak self] in self?.openHostHome() },
             onOpenHistoryEntryInApp: { [weak self] entry in self?.openHistoryEntryInApp(entry) },
-            onToggleCollapsed: { [weak self] in self?.toggleCollapsed() },
             onActionsTapped: { [weak self] in self?.handleActionsTapped() },
             onCancelRecording: { [weak self] in self?.handleCancelRecording() },
+            onPauseRecording: { [weak self] in self?.handlePauseRecording() },
+            onResumeRecording: { [weak self] in self?.handleResumeRecording() },
+            onWarmHoldNudgeKeepMicReady: { [weak self] in self?.handleWarmHoldNudgeAccept() },
+            onWarmHoldNudgeDismiss: { [weak self] in self?.handleWarmHoldNudgeDismiss() },
             feedback: feedback
         )
     }
@@ -653,6 +532,53 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleCancelRecording() {
         keyboardLog.info("Posted cross-process recording cancel request")
         CrossProcessNotification.post(name: CrossProcessNotification.cancelRequested)
+        armDeadAppWatchdog(reason: "cancel")
+    }
+
+    /// Called when the user taps Pause during an active dictation (WS-C / §10).
+    /// Posts a Darwin notification; the main app's `RecordingService` (the
+    /// single engine owner) runs `pauseRecording()` and publishes the `.paused`
+    /// pipeline phase, which flips this keyboard's `recordingState.isPaused`
+    /// and swaps the Pause control to Resume. The keyboard never touches the
+    /// engine itself.
+    private func handlePauseRecording() {
+        keyboardLog.info("Posted cross-process recording pause request")
+        CrossProcessNotification.post(name: CrossProcessNotification.pauseRequested)
+        armDeadAppWatchdog(reason: "pause")
+    }
+
+    /// Called when the user taps Resume on a paused dictation (WS-C / §10).
+    /// Posts a Darwin notification; the main app's `RecordingService` calls
+    /// `resumeRecording()`, re-arms capture against the same slice (samples
+    /// concatenate), and publishes `.recording` again.
+    private func handleResumeRecording() {
+        keyboardLog.info("Posted cross-process recording resume request")
+        CrossProcessNotification.post(name: CrossProcessNotification.resumeRequested)
+        armDeadAppWatchdog(reason: "resume")
+    }
+
+    /// Accept the warm-hold switching nudge (WS-F / §4). One tap, no confirm:
+    /// flip warm hold ON (the satisfied terminal — never nudges again), clear
+    /// the show flag, and post `warmHoldNudgeChanged` so the app re-reads.
+    private func handleWarmHoldNudgeAccept() {
+        AppGroup.warmHoldEnabled = true
+        resolveWarmHoldNudge()
+    }
+
+    /// Dismiss the warm-hold nudge (WS-F / §4). One tap, no confirm: set the
+    /// permanent suppression flag so it never shows again, then clear + post.
+    private func handleWarmHoldNudgeDismiss() {
+        AppGroup.warmHoldNudgeSuppressed = true
+        resolveWarmHoldNudge()
+    }
+
+    /// Shared terminal for both nudge actions: clear the App-Group show flag,
+    /// drop the local render flag, post the cross-process change, and re-render.
+    private func resolveWarmHoldNudge() {
+        AppGroup.warmHoldNudgeShouldShow = false
+        showWarmHoldNudge = false
+        CrossProcessNotification.post(name: CrossProcessNotification.warmHoldNudgeChanged)
+        renderRootView()
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -836,30 +762,43 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// required here; cursor jumps are not recording events.
     private func handleJumpToStart() {
         fireMenuSelectionFeedback()
-        let proxy = textDocumentProxy
-        // Symmetric with handleJumpToEnd. Jump by EXACT before.count + 1
-        // each iter (with a 64-char floor for stingy hosts). The +1 hits
-        // boundaries cleanly without overshooting into "offset out of
-        // range" territory — Apple's docs say iOS clamps over-range
-        // offsets to the boundary, but in practice WebView-backed hosts
-        // (Slack/Notion-style) silently NO-OP out-of-range offsets,
-        // which is what caused "Move up doesn't move when cursor is
-        // near start." Exact-count + 1 stays in range, hits the
-        // boundary, and the next iter's empty-before guard exits.
-        var moved = 0
-        for i in 0..<50 {
-            guard let before = proxy.documentContextBeforeInput, !before.isEmpty else {
-                keyboardLog.info("move-up iter=\(i, privacy: .public) early-exit reason=empty-before; total-moved=\(moved, privacy: .public)")
-                return
-            }
-            let step = max(before.count + 1, 64)
-            if i < 5 {
-                keyboardLog.info("move-up iter=\(i, privacy: .public) before.count=\(before.count, privacy: .public) step=\(step, privacy: .public)")
-            }
-            proxy.adjustTextPosition(byCharacterOffset: -step)
-            moved += step
+        // Iterate ASYNC across runloop ticks. The earlier synchronous
+        // 50-iter loop didn't actually advance — iOS hosts coalesce
+        // rapid `adjustTextPosition` calls into a single UI cycle, so
+        // only one window's worth (often only one visible line) shifted
+        // per tap. Dispatching each iteration with a small delay lets
+        // the host update `documentContextBeforeInput` between calls so
+        // the next iteration sees fresh context and can advance further.
+        // 200-iter cap + no-progress guard prevents infinite loops on
+        // hosts that don't honor offsets.
+        moveUpStep(iter: 0, totalMoved: 0, prevBeforeLen: -1)
+    }
+
+    /// Recursive async step for `handleJumpToStart`. Continues until:
+    /// - `documentContextBeforeInput` is empty (we hit the top), OR
+    /// - the before-length didn't change since last iter (host won't
+    ///   advance further — common on WebView-backed hosts), OR
+    /// - we exhaust the 200-iter safety cap.
+    private func moveUpStep(iter: Int, totalMoved: Int, prevBeforeLen: Int) {
+        guard iter < 200 else {
+            keyboardLog.info("move-up max iters; total-moved=\(totalMoved, privacy: .public)")
+            return
         }
-        keyboardLog.info("move-up completed 50 iters; total-moved=\(moved, privacy: .public)")
+        let proxy = textDocumentProxy
+        let beforeLen = proxy.documentContextBeforeInput?.count ?? 0
+        guard beforeLen > 0 else {
+            keyboardLog.info("move-up iter=\(iter, privacy: .public) reached start; total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        if iter > 0 && beforeLen == prevBeforeLen {
+            keyboardLog.info("move-up iter=\(iter, privacy: .public) no-progress (host buffered); total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        let step = max(beforeLen + 1, 64)
+        proxy.adjustTextPosition(byCharacterOffset: -step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
+            self?.moveUpStep(iter: iter + 1, totalMoved: totalMoved + step, prevBeforeLen: beforeLen)
+        }
     }
 
     /// Shifts the host caret forward through the focused text field.
@@ -868,32 +807,33 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// each tap shifts approximately one window, not to the true end.
     private func handleJumpToEnd() {
         fireMenuSelectionFeedback()
-        let proxy = textDocumentProxy
-        // Symmetric with handleJumpToStart. Use EXACT after.count + 1
-        // each iter, floored at 64 chars for stingy hosts. The previous
-        // `max(after.count, 1024)` over-jumped past the document end on
-        // some hosts that refuse out-of-range offsets — Move down would
-        // sit still even when there were a few words ahead of the
-        // cursor. Exact-count + 1 hits the end cleanly and the next
-        // iter's empty-after guard exits the loop.
-        //
-        // The 64-char floor still keeps progress fast (~3200 chars per
-        // tap minimum) on hosts where `documentContextAfterInput`
-        // returns a tiny window per iter.
-        var moved = 0
-        for i in 0..<50 {
-            guard let after = proxy.documentContextAfterInput, !after.isEmpty else {
-                keyboardLog.info("move-down iter=\(i, privacy: .public) early-exit reason=empty-after; total-moved=\(moved, privacy: .public)")
-                return
-            }
-            let step = max(after.count + 1, 64)
-            if i < 5 {
-                keyboardLog.info("move-down iter=\(i, privacy: .public) after.count=\(after.count, privacy: .public) step=\(step, privacy: .public)")
-            }
-            proxy.adjustTextPosition(byCharacterOffset: step)
-            moved += step
+        // See `handleJumpToStart` — same async-iteration rationale to
+        // defeat host coalescing of rapid `adjustTextPosition` calls.
+        moveDownStep(iter: 0, totalMoved: 0, prevAfterLen: -1)
+    }
+
+    /// Recursive async step for `handleJumpToEnd`. Mirror of
+    /// `moveUpStep`. Same termination conditions, opposite direction.
+    private func moveDownStep(iter: Int, totalMoved: Int, prevAfterLen: Int) {
+        guard iter < 200 else {
+            keyboardLog.info("move-down max iters; total-moved=\(totalMoved, privacy: .public)")
+            return
         }
-        keyboardLog.info("move-down completed 50 iters; total-moved=\(moved, privacy: .public)")
+        let proxy = textDocumentProxy
+        let afterLen = proxy.documentContextAfterInput?.count ?? 0
+        guard afterLen > 0 else {
+            keyboardLog.info("move-down iter=\(iter, privacy: .public) reached end; total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        if iter > 0 && afterLen == prevAfterLen {
+            keyboardLog.info("move-down iter=\(iter, privacy: .public) no-progress (host buffered); total-moved=\(totalMoved, privacy: .public)")
+            return
+        }
+        let step = max(afterLen + 1, 64)
+        proxy.adjustTextPosition(byCharacterOffset: step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
+            self?.moveDownStep(iter: iter + 1, totalMoved: totalMoved + step, prevAfterLen: afterLen)
+        }
     }
 
     private func fireMenuSelectionFeedback() {
@@ -1140,47 +1080,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
         // Happy path: payload session ID matches our pending session.
         if let payload, payload.sessionID == session.id {
-            // Best-effort same-input-context guard. The actual API on
-            // UITextDocumentProxy is `documentIdentifier` (UUID-typed);
-            // `textInputContextIdentifier` is on UIResponder and isn't
-            // accessible via the proxy abstraction. Fall back to
-            // `keyboardType` rawValue when documentIdentifier is nil.
-            if let claimedDoc = session.hostDocumentIdentifier {
-                let nowDoc = textDocumentProxy.documentIdentifier
-                if nowDoc != claimedDoc {
-                    keyboardLog.info("Skipped auto-paste because document identifier changed since tap")
-                    DiagnosticsLog.record(
-                        source: "keyboard",
-                        category: .pasteSkipDocumentMismatch,
-                        message: "Doc identifier changed since tap",
-                        metadata: [
-                            "claimedDoc": claimedDoc.uuidString,
-                            "nowDoc": nowDoc.uuidString,
-                            "sessionID": session.id.uuidString
-                        ]
-                    )
-                    clearPendingPasteSession()
-                    renderRootView()
-                    return
-                }
-            } else if let claimedKbRaw = session.hostKeyboardTypeRaw,
-                      let nowKb = textDocumentProxy.keyboardType?.rawValue,
-                      nowKb != claimedKbRaw {
-                keyboardLog.info("Skipped auto-paste because keyboard type changed since tap")
-                DiagnosticsLog.record(
-                    source: "keyboard",
-                    category: .pasteSkipKeyboardTypeMismatch,
-                    message: "Keyboard type changed since tap",
-                    metadata: [
-                        "claimedKb": String(claimedKbRaw),
-                        "nowKb": String(nowKb),
-                        "sessionID": session.id.uuidString
-                    ]
-                )
-                clearPendingPasteSession()
-                renderRootView()
-                return
-            }
+            // Single paste path: iOS only presents the keyboard when a text
+            // input is focused, so if we're flushing there IS an input — paste
+            // wherever the cursor is now. The old documentIdentifier /
+            // keyboardType "same-field" guards were removed deliberately: they
+            // rejected a valid paste whenever Jot re-rendered its own field on
+            // stop, which is what forced the in-process side-door insert and
+            // produced the in-app double paste.
             // Empty-text diagnostic: an empty payload would no-op inside
             // `insertTrackedText` and silently fall through the rest of the
             // happy-path cleanup. Surface it explicitly in the log so a
@@ -1201,33 +1107,43 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
 
-            // Probe the host's textDocumentProxy state immediately
-            // BEFORE the insert so we can compare context length after.
-            // `documentContextBeforeInput` is documented as nil when the
-            // proxy has no active connection (e.g., the host's text
-            // field just lost focus, or this keyboard isn't currently
-            // the active input view). When it's nil at insert time,
-            // `insertText(_:)` silently no-ops on the host — but the
-            // call itself returns void and looks indistinguishable from
-            // a successful insert. See features.md §14.3.
-            let beforeContext = textDocumentProxy.documentContextBeforeInput
-            let beforeLen = beforeContext?.count ?? -1
-            let afterContextLenPre = textDocumentProxy.documentContextAfterInput?.count ?? -1
-            let proxyHadContextBefore = (beforeContext != nil)
+            // Detect whether the insert LANDED by reading the proxy AFTER it —
+            // not before. The pre-insert read can't tell an empty-but-live
+            // field from a disconnected proxy: BOTH report
+            // `documentContextBeforeInput == nil` (an empty field has no text
+            // before the caret). After a REAL insert, the pre-caret context is
+            // non-nil (it now holds at least the text we just inserted); after
+            // a no-op into a disconnected proxy it stays nil.
+            //
+            // This fixes the build-105 EMPTY-FIELD double-paste: an empty field
+            // read nil before the insert, so the old "proxyHadContextBefore"
+            // check misread a SUCCESSFUL insert as "not landed", kept the
+            // payload, and a second flush (the `.publishing` post racing to run
+            // after the payload landed) re-inserted → duplicate. Only on empty
+            // fields, exactly as observed. A speculative insert is harmless when
+            // it no-ops (adds nothing); reading the AFTER state means we
+            // re-insert ONLY when the previous attempt genuinely added nothing.
+            let proxyHadContextBefore = (textDocumentProxy.documentContextBeforeInput != nil)
 
             insertTrackedText(payload.text)
 
-            // Re-read after the insert. On a healthy host the
-            // pre-caret context grows by `payload.text.count`. If it
-            // doesn't grow at all, the host silently rejected the
-            // insert — most commonly because the proxy was disconnected
-            // (Slack's draft-saving compose loses focus mid-flight) or
-            // because iOS gated the call (keyboard not the active
-            // input view at insert time).
-            let afterLen = textDocumentProxy.documentContextBeforeInput?.count ?? -1
-            let contextGrew = (beforeLen >= 0 && afterLen >= 0)
-                ? (afterLen - beforeLen)
-                : -1
+            let proxyHasContextAfter = (textDocumentProxy.documentContextBeforeInput != nil)
+            let landed = proxyHadContextBefore || proxyHasContextAfter
+
+            guard landed else {
+                // Insert no-op'd into a disconnected proxy — keep the transcript
+                // pending (don't burn it) so the settled `.idle` flush lands it.
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteSkipProxyDisconnected,
+                    message: "Insert no-op'd — proxy not connected; kept pending",
+                    metadata: [
+                        "sessionID": session.id.uuidString,
+                        "chars": "\(payload.text.count)",
+                    ]
+                )
+                return
+            }
 
             DiagnosticsLog.record(
                 source: "keyboard",
@@ -1237,10 +1153,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     "chars": "\(payload.text.count)",
                     "sessionID": session.id.uuidString,
                     "proxyHadContextBefore": "\(proxyHadContextBefore)",
-                    "beforeLen": "\(beforeLen)",
-                    "afterLen": "\(afterLen)",
-                    "afterContextLenPre": "\(afterContextLenPre)",
-                    "contextGrew": "\(contextGrew)",
+                    "proxyHasContextAfter": "\(proxyHasContextAfter)",
                 ]
             )
             // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
@@ -1334,6 +1247,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         recordingState.updateStreamingPartial(text)
     }
 
+    /// Clear the live-transcript projection (local + App Group) the instant a
+    /// NEW dictation is initiated. The previous session can leave its final
+    /// text in the projection — the keyboard-dictation path doesn't reliably
+    /// receive the main app's post-batch `reset()` — and because that stale
+    /// text is non-empty, the streaming strip renders it verbatim (skipping the
+    /// "Loading…/Listening…" placeholder) for the beat between the strip
+    /// reappearing and the new session's first partial. Clearing on start makes
+    /// the strip open clean every time.
+    private func clearStreamingPartialForNewSession() {
+        recordingState.updateStreamingPartial("")
+        if hasFullAccess {
+            AppGroup.defaults.set("", forKey: AppGroup.Keys.streamingPartialText)
+        }
+    }
+
     // MARK: - Streaming load-state mirror
 
     /// Mirrors `AppGroup.streamingLoadingVariantLabel` (written by the
@@ -1359,6 +1287,41 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         recordingState.updateLoadingVariantLabel(AppGroup.streamingLoadingVariantLabel)
     }
 
+    // MARK: - Warm-hold switching nudge (WS-F / §4 R10)
+
+    /// Observes `warmHoldNudgeChanged`, posted by the main app whenever the
+    /// record-and-bounce streak math flips the `warmHoldNudgeShouldShow`
+    /// projection. The keyboard can't run the streak math (no SwiftData, no
+    /// engine), so it renders purely off the boolean and writes the two
+    /// terminal actions back.
+    private func startObservingWarmHoldNudge() {
+        guard warmHoldNudgeObserver == nil else { return }
+        warmHoldNudgeObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.warmHoldNudgeChanged
+        ) { [weak self] in
+            self?.refreshWarmHoldNudgeFromProjection()
+        }
+    }
+
+    /// Reads the App-Group boolean projection and re-renders only on change.
+    /// Gated on Full Access — without it App-Group reads are sandboxed and
+    /// return stale/false values, so the nudge simply never shows (the app
+    /// owns the source of truth and can't reach an FA-off keyboard anyway).
+    private func refreshWarmHoldNudgeFromProjection() {
+        // Mirror the app's predicate (`shouldShow && !suppressed`,
+        // ContentView.refreshWarmHoldNudge) so the two renderers can't diverge:
+        // today the app never sets `shouldShow` while suppressed (detection
+        // guards on it), but checking `suppressed` here too is a cheap defense
+        // against a future path that sets `shouldShow` without re-checking, or a
+        // stale `shouldShow=true` blob surviving alongside `suppressed=true`.
+        let shouldShow = hasFullAccess
+            && AppGroup.warmHoldNudgeShouldShow
+            && !AppGroup.warmHoldNudgeSuppressed
+        guard shouldShow != showWarmHoldNudge else { return }
+        showWarmHoldNudge = shouldShow
+        renderRootView()
+    }
+
     // MARK: - Pipeline phase observer (v7 auto-paste design)
 
     private func startObservingPipelinePhase() {
@@ -1377,7 +1340,23 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// runs the flush. Per design §4.6 + §4.6.G.
     private func refreshPipelinePhase() {
         guard hasFullAccess else { return }
-        let projection = PipelinePhaseProjection.read()
+        var projection = PipelinePhaseProjection.read()
+        // Suppress a recovered dead-app zombie. After `recoverFromUnresponsiveApp`
+        // the shared projection can still read `.recording`/`.paused` (the dead
+        // writer never went terminal). If this is that same frozen session, treat
+        // it as idle so a re-present can't resurrect it. Once the projection
+        // advances past the frozen timestamp or a new session appears, the writer
+        // is alive again — drop the tombstone and resume normal handling.
+        if let freeze = recoveredZombieFreeze {
+            if let p = projection,
+               p.sessionID == freeze.sessionID,
+               p.lastUpdatedAt <= freeze.frozenAt,
+               p.phase == .recording || p.phase == .paused {
+                projection = nil
+            } else {
+                recoveredZombieFreeze = nil
+            }
+        }
         recordingState.applyPipelineProjection(projection)
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
@@ -1424,6 +1403,74 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             self?.refreshPipelinePhase()
         }
+    }
+
+    /// Arm the dead-app watchdog after a recording-control tap. Snapshots the
+    /// pipeline projection's freshness; if `lastUpdatedAt` has not advanced
+    /// within `controlTapLivenessCeiling`, the main app was jetsammed
+    /// mid-recording and we recover the keyboard to idle. A live app refreshes
+    /// the projection within the 3s heartbeat (and immediately when it processes
+    /// the control), so it never trips this. Tap-triggered only — no polling. A
+    /// newer control tap (or a recovery) supersedes any in-flight watchdog.
+    private func armDeadAppWatchdog(reason: String) {
+        deadAppWatchdogTask?.cancel()
+        let baseline = PipelinePhaseProjection.read()?.lastUpdatedAt
+        deadAppWatchdogTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(Self.controlTapLivenessCeiling))
+            } catch {
+                return  // cancelled: keyboard dismissed, superseded, or recovered
+            }
+            guard let self, !Task.isCancelled else { return }
+            let latest = PipelinePhaseProjection.read()
+            // Recover ONLY on the unambiguous zombie signal: the projection is
+            // STILL an active recording/paused phase AND its timestamp has not
+            // advanced past the tap-time baseline. A live writer — even
+            // backgrounded — stamps a heartbeat within 3s, so any advance means
+            // alive; a terminal (.idle/.failed) / cleared / missing projection
+            // means the app (or the normal path) already handled it — stand down
+            // and never clear a still-valid pending paste.
+            if let baseline, let latest,
+               latest.lastUpdatedAt <= baseline,
+               latest.phase == .recording || latest.phase == .paused {
+                self.recoverFromUnresponsiveApp(reason: reason)
+            } else {
+                self.deadAppWatchdogTask = nil
+            }
+        }
+    }
+
+    /// Reset the keyboard out of a zombie "recording" UI after the main app was
+    /// found unresponsive on a control tap. Does NOT write the shared projection
+    /// blob (writer-owns-clears — `PipelinePhaseProjection`); it resets only the
+    /// keyboard's local mirror + stuck control state, mirroring the synthetic
+    /// `.failed` recovery the 30s stale path runs, just fired early.
+    private func recoverFromUnresponsiveApp(reason: String) {
+        keyboardLog.notice("Liveness: main app silent after \(reason, privacy: .public) tap — recovering keyboard to idle")
+        DiagnosticsLog.record(
+            source: "keyboard",
+            category: .appUnresponsiveRecovery,
+            message: "App unresponsive after \(reason) — recovered to idle",
+            metadata: ["reason": reason]
+        )
+        // Tombstone this exact frozen session so a keyboard dismiss/re-present
+        // within the 30s stale window can't resurrect it from the still-active
+        // shared projection (the dead writer never goes terminal).
+        if let frozen = PipelinePhaseProjection.read(),
+           frozen.phase == .recording || frozen.phase == .paused,
+           let frozenSession = frozen.sessionID {
+            recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
+        }
+        stopRequestPosted = false
+        recordingState.applyPipelineProjection(nil)
+        clearStreamingPartialForNewSession()
+        recordingState.updateLoadingVariantLabel("")
+        clearPendingPasteSession()
+        pipelineStaleDeadlineTask?.cancel()
+        pipelineStaleDeadlineTask = nil
+        deadAppWatchdogTask?.cancel()
+        deadAppWatchdogTask = nil
+        renderRootView()
     }
 
     // MARK: - Selection state
@@ -1587,6 +1634,76 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         return .start
     }
 
+    // MARK: - Live foreground handshake (ping/pong)
+
+    private func startObservingForegroundPong() {
+        guard foregroundPongObserver == nil else { return }
+        foregroundPongObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.appForegroundPong
+        ) { [weak self] in
+            self?.foregroundPongReceived = true
+        }
+    }
+
+    /// Ping the app, then after `foregroundPongTimeout` branch on whether a pong
+    /// arrived: pong → Jot is foreground → record INLINE; silence → Jot is
+    /// backgrounded → cold-start via the URL bounce. The `pendingForegroundPing`
+    /// nonce makes a superseding double-tap cancel the older resolution.
+    private func resolveForegroundThenStart() {
+        let ping = UUID()
+        pendingForegroundPing = ping
+        foregroundPongReceived = false
+        CrossProcessNotification.post(name: CrossProcessNotification.keyboardForegroundPing)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(Self.foregroundPongTimeout * 1_000_000_000)
+            )
+            guard let self, self.pendingForegroundPing == ping else { return }
+            self.pendingForegroundPing = nil
+            if self.foregroundPongReceived {
+                self.startInlineViaDarwin()
+            } else {
+                self.startColdViaURLBounce()
+            }
+        }
+    }
+
+    /// Jot is foreground → post the Darwin Dictate tap. The app starts a normal
+    /// background capture (the same path the keyboard uses in any other app) and
+    /// inserts the transcribed result into the focused field on stop. The wizard
+    /// (W5) handles this tap with its own observer while it is presented.
+    private func startInlineViaDarwin() {
+        clearStreamingPartialForNewSession()
+        CrossProcessNotification.post(name: CrossProcessNotification.keyboardDictateTapped)
+        keyboardLog.info("ping/pong: pong received -> inline tap (host=Jot)")
+    }
+
+    /// Jot is NOT foreground → cold-start by URL-bouncing into the app (the
+    /// hero's swipe-back coaching path). Stamps a pending-paste session so the
+    /// app's `onOpenURL` can `adoptSession(_:)` before recording-start.
+    private func startColdViaURLBounce() {
+        clearStreamingPartialForNewSession()
+        let session = beginPendingPasteSession()
+        DiagnosticsLog.record(
+            source: "keyboard",
+            category: .sessionStarted,
+            message: "Pending session written at start (cold start, no pong)",
+            metadata: ["sessionID": session.id.uuidString]
+        )
+        let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
+            ?? Self.containingAppLaunchURL
+        openContainingApp(url, onFailure: { [weak self] in
+            // The pong window missed but Jot is actually foreground (iOS refuses
+            // to URL-open an already-foreground app). Don't strand the tap: drop
+            // the now-moot cold paste session and fall back to the inline Darwin
+            // path. If a field is focused it records inline; if not, the app's
+            // no-target fallback presents the hero. Either way — never dead.
+            ClipboardHandoff.clearPendingPasteSession()
+            self?.startInlineViaDarwin()
+        })
+        keyboardLog.info("ping/pong: no pong -> URL bounce (cold start)")
+    }
+
     private func handleMicCTATap() {
         // Warm-resume fast-path. Gated on TWO signals:
         //   1. `warmHoldExpiresAt` still in the future (the 60s window)
@@ -1611,12 +1728,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         let now = Date()
         let expiresAtSnapshot = AppGroup.warmHoldExpiresAt
         let heartbeatSnapshot = AppGroup.warmHoldHeartbeat
-        if let expiresAt = expiresAtSnapshot, expiresAt > now,
-           let heartbeat = heartbeatSnapshot,
-           now.timeIntervalSince(heartbeat) < 4.0 {
-            CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
-            keyboardLog.info("Posted warm-resume; skipping URL bounce")
-            return
+        let warmWindowOpen = (expiresAtSnapshot.map { $0 > now } ?? false)
+            && (heartbeatSnapshot.map { now.timeIntervalSince($0) < 4.0 } ?? false)
+
+        if warmWindowOpen {
+            // Warm-hold is ONLY a "start faster" optimisation — it must not change
+            // WHERE a keyboard dictation goes. If Jot is FOREGROUND, the user is
+            // dictating inside the app, which must record INLINE (insert at the
+            // cursor, save NO transcript) exactly as it does without warm-hold. So
+            // do NOT take the warm-RESUME *capture* path here (it saves a transcript
+            // and was the cause of in-app dictations being saved); fall through to
+            // the normal ping/pong, which routes the tap inline. The warm engine
+            // still makes that inline start fast — so warm-hold keeps its speed
+            // benefit without changing behaviour. Only when Jot is NOT foreground do
+            // we warm-resume in the background (the no-foreground fast path). The
+            // warm-hold keys are left intact so leaving the app still resumes warm.
+            if !AppGroup.isJotAppForeground() {
+                clearStreamingPartialForNewSession()
+                CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
+                keyboardLog.info("Posted warm-resume (Jot backgrounded); skipping URL bounce")
+                return
+            }
+            keyboardLog.info("Warm window open but Jot is foreground -> routing inline (no warm capture)")
+            // fall through to decideMicTap → inline
         } else if expiresAtSnapshot != nil || heartbeatSnapshot != nil {
             // Ghost cleanup — main app is gone (or just exited warm-hold).
             // Log includes deltas so we can distinguish stale-jetsam from
@@ -1652,16 +1786,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // `decideMicTap()`'s state machine here keeps the two paths in
         // lock-step — if the decision says "this tap should start a new
         // recording", it's safe to delegate that to the wizard observer.
-        let decision = decideMicTap()
-        if hasFullAccess && AppGroup.isJotAppForeground(),
-           case .start = decision {
-            CrossProcessNotification.post(
-                name: CrossProcessNotification.keyboardDictateTapped
-            )
-            keyboardLog.info("mic tap routed via Darwin notification (host=Jot)")
-            return
-        }
-        switch decision {
+        switch decideMicTap() {
         case .noop(let reason):
             // The mic CTA is also `.disabled(...)` at the SwiftUI layer for
             // these states — this guard is defense-in-depth against
@@ -1676,25 +1801,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             return
 
         case .start:
-            // Write the App Group pending-paste session ONLY in the start
-            // branch. Moving the write inside the decision switch (vs.
-            // calling it before the branch as the prior shape did) closes
-            // the rapid-double-tap race where a tap arriving while a stop
-            // was in flight would silently overwrite the pending session
-            // the app is about to capture.
-            //
-            // Stamp the session ID into the URL so the app's `onOpenURL`
-            // can `adoptSession(_:)` before recording-start.
-            let session = beginPendingPasteSession()
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .sessionStarted,
-                message: "Pending session written at start",
-                metadata: ["sessionID": session.id.uuidString]
-            )
-            let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
-                ?? Self.containingAppLaunchURL
-            openContainingApp(url)
+            // Live foreground handshake (ping/pong) replaces the old stale-flag
+            // `isJotAppForeground()` read: ping the app, and on a pong within the
+            // window record INLINE (Jot is the foreground host); on silence,
+            // cold-start via the URL bounce (Jot is backgrounded / another app is
+            // foreground). See `resolveForegroundThenStart()`.
+            resolveForegroundThenStart()
 
         case .stop:
             // Arm the App Group pending-paste session BEFORE posting the
@@ -1724,6 +1836,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // the disabled-CTA path, and the inbound `pipelinePhaseChanged`
             // will replace `.recording` with the in-flight phase shortly.
             keyboardLog.info("Posted cross-process recording stop request")
+            armDeadAppWatchdog(reason: "stop")
 
             // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
             // the case where the immediate `pipelinePhaseChanged` is dropped
@@ -1782,16 +1895,30 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// Walks the entire responder chain (not first-match) — a private
     /// view subclass can respond to the selector without being a usable
     /// opener.
-    private func openContainingApp(_ url: URL) {
+    private func openContainingApp(_ url: URL, onFailure: (@MainActor @Sendable () -> Void)? = nil) {
         let selector = sel_registerName("openURL:options:completionHandler:")
 
-        let completion: @MainActor @Sendable (Bool) -> Void = { [weak self, url] success in
+        // Shared failure handling — the open was refused (most commonly: Jot is
+        // ALREADY foreground, which iOS refuses to URL-open, e.g. when a Dictate
+        // tap's pong was missed by timing jitter) or no opener exists in the
+        // responder chain. When the caller supplies `onFailure`, it owns recovery
+        // (the cold-dictate path falls back to the inline Darwin tap so the tap is
+        // never a silent dead-end); otherwise we clear the pending paste + banner.
+        let handleFailure: @MainActor @Sendable () -> Void = { [weak self] in
+            if let onFailure {
+                onFailure()
+            } else {
+                ClipboardHandoff.clearPendingPasteSession()
+                self?.surfaceDictationStatusBanner("Couldn't open Jot - tap again")
+            }
+        }
+
+        let completion: @MainActor @Sendable (Bool) -> Void = { [url] success in
             if success {
                 keyboardLog.info("Opened containing app for url=\(url.absoluteString, privacy: .public)")
             } else {
                 keyboardLog.error("openURL completion=false for url=\(url.absoluteString, privacy: .public)")
-                ClipboardHandoff.clearPendingPasteSession()
-                self?.surfaceDictationStatusBanner("Couldn't open Jot - tap again")
+                handleFailure()
             }
         }
 
@@ -1811,8 +1938,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
 
         keyboardLog.error("No UIApplication/UIWindowScene in responder chain for url=\(url.absoluteString, privacy: .public)")
-        ClipboardHandoff.clearPendingPasteSession()
-        surfaceDictationStatusBanner("Couldn't open Jot - tap again")
+        handleFailure()
     }
 
     /// "See all" link in the recents card header. Brings the containing
@@ -2009,14 +2135,31 @@ final class KeyboardRecordingState {
     /// transcribing / processing / cleaning / rewriting / publishing. Drives
     /// the mic CTA's `.disabled` state at the SwiftUI layer (per design
     /// §4.6.D). v0.4 added `.rewriting` for the chained LLM rewrite branch.
+    /// `.paused` is NOT in-flight — it is a live-but-not-capturing sub-state
+    /// of recording (§10.2), so the mic CTA stays interactive (Stop) and the
+    /// Resume control is offered separately.
     var isInflightPostRecording: Bool {
         switch phase {
         case .transcribing, .processing, .cleaning, .rewriting, .publishing:
             return true
-        case .idle, .recording, .failed:
+        case .idle, .recording, .paused, .failed:
             return false
         }
     }
+
+    /// True while the active dictation is paused (UX-overhaul round 2 §10).
+    /// Derived solely from `phase == .paused`. While paused, `isRecording`
+    /// stays `true` (we're still in a live session, just not capturing) so the
+    /// keyboard keeps rendering the recording chrome — only the Pause control
+    /// swaps to Resume and the elapsed clock freezes.
+    private(set) var isPaused = false
+
+    /// Frozen elapsed seconds captured at the moment the `.paused` projection
+    /// was published (§10.4). The app back-dates `recordingStartedAt` to the
+    /// pause-aware active-time anchor; we snapshot `lastUpdatedAt − anchor`
+    /// here so the keyboard's clock shows a STILL value rather than continuing
+    /// to tick against a fixed anchor + live `now`. Nil while not paused.
+    private(set) var pausedElapsedSeconds: TimeInterval?
 
     /// Single canonical surface: writes `phase` and derives `isRecording` /
     /// `startedAt` from the same projection. Pipeline phase is the only
@@ -2024,14 +2167,30 @@ final class KeyboardRecordingState {
     func applyPipelineProjection(_ projection: PipelinePhaseProjection?) {
         guard let projection else {
             phase = .idle
+            isPaused = false
+            pausedElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
             return
         }
         phase = projection.phase
         switch projection.phase {
         case .recording:
+            isPaused = false
+            pausedElapsedSeconds = nil
+            update(isRecording: true, startedAt: projection.recordingStartedAt)
+        case .paused:
+            // Stay "recording" so the chrome persists; freeze the clock by
+            // snapshotting the active-time total at publish (§10.4).
+            isPaused = true
+            if let anchor = projection.recordingStartedAt {
+                pausedElapsedSeconds = max(0, projection.lastUpdatedAt.timeIntervalSince(anchor))
+            } else {
+                pausedElapsedSeconds = nil
+            }
             update(isRecording: true, startedAt: projection.recordingStartedAt)
         case .idle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
+            isPaused = false
+            pausedElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
         }
     }

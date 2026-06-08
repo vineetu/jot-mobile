@@ -1,0 +1,84 @@
+/* coaching.css — Jot cold-start recording surface + "swipe back" coaching cue
+   Authored in iPhone-logical px (393×852). Tokens mirror the Jot app system. */
+
+:root{
+  --blue1:#2E9BFF; --blue2:#0E7AE6; --blue3:#0064CC; --blueflat:#1A8CFF;
+  --blue-grad:linear-gradient(180deg,#2E9BFF 0%,#0E7AE6 54%,#0064CC 100%);
+  --blue-soft:rgba(26,140,255,0.20);
+  --glow:rgba(26,140,255,0.44);
+  --red:#FF5B4D;
+  --serif:'Fraunces', Georgia, serif;
+  --sys:-apple-system,'SF Pro Text','SF Pro Display',system-ui,'Segoe UI',sans-serif;
+}
+
+/* ---- dark (default app appearance) ---- */
+.screen.dark{
+  --ink:#FFFFFF;
+  --ink-sub:rgba(233,238,247,0.66);
+  --ink-cap:rgba(233,238,247,0.42);
+  --card:rgba(255,255,255,0.06);
+  --card-bord:rgba(255,255,255,0.11);
+  --chrome-fill:rgba(255,255,255,0.08);
+  --chrome-bord:rgba(255,255,255,0.16);
+  --rail:rgba(233,238,247,0.30);
+  --peek:rgba(255,255,255,0.10);
+  --peek-bord:rgba(255,255,255,0.16);
+  background:
+    radial-gradient(128% 72% at 50% -8%, rgba(64,116,196,0.50) 0%, rgba(40,74,128,0.16) 36%, rgba(18,30,52,0) 60%),
+    radial-gradient(120% 84% at 88% 112%, rgba(120,72,56,0.20) 0%, rgba(120,72,56,0) 52%),
+    linear-gradient(177deg,#1b2c4f 0%,#15233c 32%,#0e1827 72%,#0a1019 100%);
+}
+/* ---- light ---- */
+.screen.light{
+  --ink:#10151F;
+  --ink-sub:rgba(22,32,52,0.62);
+  --ink-cap:rgba(22,32,52,0.40);
+  --card:rgba(255,255,255,0.66);
+  --card-bord:rgba(20,40,80,0.10);
+  --chrome-fill:rgba(255,255,255,0.72);
+  --chrome-bord:rgba(20,40,80,0.12);
+  --rail:rgba(22,32,52,0.26);
+  --peek:rgba(20,40,80,0.06);
+  --peek-bord:rgba(20,40,80,0.12);
+  background:
+    radial-gradient(128% 74% at 50% -8%, rgba(150,184,232,0.62) 0%, rgba(150,184,232,0.12) 40%, rgba(150,184,232,0) 62%),
+    radial-gradient(120% 84% at 88% 112%, rgba(222,170,150,0.24) 0%, rgba(222,170,150,0) 52%),
+    linear-gradient(177deg,#EEF2F9 0%,#E2E8F1 44%,#D4DAE4 100%);
+}
+
+.screen{ position:relative; width:393px; height:852px; overflow:hidden; font-family:var(--sys);
+  color:var(--ink); -webkit-font-smoothing:antialiased; }
+
+/* ---- status bar ---- */
+.sb{ position:absolute; top:0; left:0; right:0; height:54px; padding:0 34px; display:flex; align-items:center;
+  justify-content:space-between; z-index:6; }
+.sb .t{ font-weight:600; font-size:16px; letter-spacing:0.2px; font-variant-numeric:tabular-nums; }
+.sb .island{ position:absolute; left:50%; top:11px; transform:translateX(-50%); width:118px; height:34px; border-radius:18px; background:#000; }
+.sb .rt{ display:flex; align-items:center; gap:7px; }
+.sb .ico{ display:block; }
+
+/* ============================ RECORDING SURFACE ======================= */
+.rec{ position:absolute; inset:0; padding:60px 18px 22px; display:flex; flex-direction:column; }
+.rec .back{ width:42px; height:42px; border-radius:21px; background:var(--chrome-fill); border:0.5px solid var(--chrome-bord);
+  display:flex; align-items:center; justify-content:center; flex:none; }
+
+/* reassurance header — the "you don't have to watch this" copy */
+.rec .reassure{ padding:22px 8px 0; }
+.rec .reassure h1{ margin:0; font-family:var(--serif); font-style:italic; font-weight:500; font-size:30px;
+  line-height:1.2; letter-spacing:-0.4px; color:var(--ink); text-wrap:pretty; }
+.rec .reassure p{ margin:13px 0 0; font-size:15.5px; line-height:1.5; color:var(--ink-sub); letter-spacing:-0.1px; max-width:300px; }
+
+/* the recording surface stays empty in the middle — the live transcript only
+   appears ~10s later, after the swipe cue has done its job */
+.spacer{ flex:1; }
+
+/* controls — rebalanced: trash · pause · STOP primary */
+.lctrls{ display:flex; align-items:center; justify-content:center; gap:14px; padding:20px 0 4px; }
+.cbtn{ width:56px; height:56px; border-radius:28px; background:var(--chrome-fill); border:0.5px solid var(--chrome-bord);
+  display:flex; align-items:center; justify-content:center; color:var(--ink); flex:none; }
+.cbtn.trash{ color:var(--red); }
+.stoppill{ flex:1; max-width:190px; height:56px; border-radius:28px; background:var(--blue-grad); color:#fff; font-weight:700;
+  font-size:19px; display:flex; align-items:center; justify-content:center; gap:11px; box-shadow:0 12px 30px -8px var(--glow);
+  font-variant-numeric:tabular-nums; }
+.stoppill .sq{ width:16px; height:16px; border-radius:4px; background:#fff; }
+.stoppill .tm{ font-variant-numeric:tabular-nums; letter-spacing:0.3px; }

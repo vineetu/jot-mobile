@@ -140,12 +140,21 @@ enum DictationPipeline {
     /// transcript ID without a separate `@Observable` property. Intent
     /// call sites discard the return via `@discardableResult`.
     @discardableResult
+    /// - Parameter transient: when `true`, run the full publish + terminal-phase
+    ///   path (so the keyboard's auto-paste lands and the cross-process projection
+    ///   ends the transcription cleanly) but persist NOTHING — no `Transcript`
+    ///   row, no follow-up supersession, no usage stats. This is the in-Jot
+    ///   keyboard-stop case (unify-keyboard-dictation §3/§4: "stop inside a Jot
+    ///   field → paste, no save"). Defaults to `false` so the hero, cold-from-
+    ///   another-app, Action Button, DictateIntent and warm-resume callers keep
+    ///   saving exactly as before.
     static func completeEndOfRecording(
         transcript: String,
         sessionID: UUID? = nil,
         startedAt: Date,
         stoppedAt: Date,
-        controller: any DictationController
+        controller: any DictationController,
+        transient: Bool = false
     ) async throws -> PublishedTranscriptOutcome {
         let duration = max(0, stoppedAt.timeIntervalSince(startedAt))
         // Record usage stats up-front, before any cleanup / publish branching.
@@ -156,7 +165,15 @@ enum DictationPipeline {
         // so the App Group counter sees every successful dictation in one
         // place. Empty transcripts (silent sessions) still count because the
         // duration is meaningful for the "time spent dictating" metric.
-        DictationStats.record(durationSeconds: duration)
+        //
+        // Transient (in-Jot keyboard stop): skip stats. The user dictated INTO a
+        // Jot field — it's treated like the keyboard in any other app where Jot
+        // simply pastes; no Transcript is written, so it must not inflate the
+        // "time spent dictating" counter either (parity with the inline path's
+        // R7: in-field dictation bypasses DictationStats).
+        if !transient {
+            DictationStats.record(durationSeconds: duration)
+        }
 
         let cleanup = CleanupSettings.load()
         let postProcessing = DictationPostProcessingCoordinator.shared
@@ -323,6 +340,24 @@ enum DictationPipeline {
 
             let transcriptID = UUID()
 
+            // Transient (in-Jot keyboard stop): clear the keyboard's pending
+            // paste session BEFORE the publish + phase flip below. The publish
+            // wakes the keyboard's `flushPendingAutoPasteIfPossible` in its own
+            // process; clearing first means it finds no pending session and skips
+            // (its `guard let session = readPendingPasteSession()` returns early),
+            // leaving the in-process `FocusedFieldInsert` (further down) as the
+            // SOLE in-app deliverer — no keyboard/in-process double-insert, and no
+            // race (the App Group clear is persisted before the notification that
+            // wakes the keyboard). The non-transient (other-app) path keeps its
+            // pending session so the keyboard pastes into the host as usual.
+            // BRIDGE: in-app needs the in-process insert because the host's
+            // re-render on stop disconnects the keyboard proxy and the flush would
+            // drop. The root-decoupling refactor will isolate the field and let us
+            // delete this and reach a true single paste path.
+            if transient {
+                ClipboardHandoff.clearPendingPasteSession()
+            }
+
             // Step A: publish FIRST. The keyboard's auto-paste cares about
             // the publish; the ledger row is a separate concern that must
             // not gate it.
@@ -344,6 +379,26 @@ enum DictationPipeline {
             )
             CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
 
+            // In-Jot (transient) stop: Jot is the foreground host, so insert the
+            // text IN-PROCESS into Jot's own focused field. The keyboard's pending
+            // paste was already cleared above, so its flush no-ops — this is the
+            // SOLE in-app deliverer (lands exactly once). "Stop inside Jot = no
+            // save" still holds via the `if !transient` guards below.
+            if transient {
+                // `completeEndOfRecording` is `@MainActor`, so this UIKit
+                // first-responder insert is already on the main actor.
+                let inserted = FocusedFieldInsert.insertIntoFocusedField(publishedText)
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .publishCompleted,
+                    message: "In-Jot transient paste (in-process insert)",
+                    metadata: [
+                        "sessionID": resolvedSessionID.uuidString,
+                        "inserted": "\(inserted)"
+                    ]
+                )
+            }
+
             updateFollowUpDiscoveryState(
                 wasFollowUpUtterance: uiFollowUpActive,
                 resolvedAsCommand: false
@@ -355,17 +410,23 @@ enum DictationPipeline {
             // silent paste loss. The only user-visible consequence is that
             // the just-pasted dictation won't appear as a chained-follow-up
             // parent on the very next utterance.
-            do {
-                try TranscriptStore.append(
-                    id: transcriptID,
-                    raw: transcript,
-                    cleaned: cleanedText,
-                    duration: duration
-                )
-            } catch {
-                logger.error(
-                    "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"
-                )
+            //
+            // Transient (in-Jot keyboard stop): publish already pasted into the
+            // focused Jot field above; we persist NO Transcript (the save/no-save
+            // decision lives at the stop site — Jot foreground → no save).
+            if !transient {
+                do {
+                    try TranscriptStore.append(
+                        id: transcriptID,
+                        raw: transcript,
+                        cleaned: cleanedText,
+                        duration: duration
+                    )
+                } catch {
+                    logger.error(
+                        "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
             }
 
             let preview = String(publishedText.prefix(60))
@@ -411,17 +472,20 @@ enum DictationPipeline {
                     resolvedAsCommand: false
                 )
 
-                do {
-                    try TranscriptStore.append(
-                        id: transcriptID,
-                        raw: transcript,
-                        cleaned: nil,
-                        duration: duration
-                    )
-                } catch {
-                    logger.error(
-                        "ledger append failed on command-cancelled path; publish already succeeded: \(error.localizedDescription, privacy: .public)"
-                    )
+                // Transient (in-Jot keyboard stop): paste, but persist nothing.
+                if !transient {
+                    do {
+                        try TranscriptStore.append(
+                            id: transcriptID,
+                            raw: transcript,
+                            cleaned: nil,
+                            duration: duration
+                        )
+                    } catch {
+                        logger.error(
+                            "ledger append failed on command-cancelled path; publish already succeeded: \(error.localizedDescription, privacy: .public)"
+                        )
+                    }
                 }
 
                 let preview = String(transcript.prefix(60))
@@ -475,18 +539,25 @@ enum DictationPipeline {
             let transcriptID = UUID()
 
             do {
-                if let priorID {
-                    try TranscriptStore.markSuperseded(id: priorID)
-                }
+                // Transient (in-Jot keyboard stop): publish the transformed
+                // command `result` so it pastes into the focused Jot field, but
+                // persist NOTHING — do not write the child Transcript and, just
+                // as importantly, do NOT mark the prior superseded (a transient
+                // in-field dictation must never mutate saved history).
+                if !transient {
+                    if let priorID {
+                        try TranscriptStore.markSuperseded(id: priorID)
+                    }
 
-                try TranscriptStore.append(
-                    id: transcriptID,
-                    raw: transcript,
-                    cleaned: result,
-                    duration: duration,
-                    derivedFrom: priorID,
-                    instruction: instruction
-                )
+                    try TranscriptStore.append(
+                        id: transcriptID,
+                        raw: transcript,
+                        cleaned: result,
+                        duration: duration,
+                        derivedFrom: priorID,
+                        instruction: instruction
+                    )
+                }
 
                 updateFollowUpDiscoveryState(
                     wasFollowUpUtterance: uiFollowUpActive,

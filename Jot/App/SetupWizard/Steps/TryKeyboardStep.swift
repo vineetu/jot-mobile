@@ -29,6 +29,12 @@ struct TryKeyboardStep: View {
     @State private var detectedFreshDictation = false
     @State private var pollTask: Task<Void, Never>?
 
+    /// Drives the blue focus ring: the accent outline + soft glow appear only
+    /// while the field is focused (tapped), and disappear when it resigns —
+    /// matching the handoff (the ring is a focus affordance, not a permanent
+    /// border).
+    @FocusState private var fieldFocused: Bool
+
     var body: some View {
         WizardPanel(
             header: WizardHeader(style: .core(current: 4), onClose: onClose, onBack: onBack)
@@ -39,7 +45,7 @@ struct TryKeyboardStep: View {
                 WizardItalicTitle(text: "Now try the keyboard", size: 28)
                     .padding(.bottom, 4)
 
-                WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Dictate.")
+                WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Jot down.")
 
                 sampleField
                     .padding(.top, 12)
@@ -102,13 +108,23 @@ struct TryKeyboardStep: View {
             .lineLimit(3, reservesSpace: true)
             .font(.system(size: 14, weight: .regular))
             .foregroundStyle(Color.jotInk)
+            .focused($fieldFocused)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.jotAccent.opacity(0.4), lineWidth: 2)
+                    .strokeBorder(
+                        fieldFocused ? Color.jotAccent : Color.jotInk.opacity(0.12),
+                        lineWidth: fieldFocused ? 2 : 1
+                    )
             )
+            // Soft blue focus glow (handoff: `0 0 0 4px a.soft`) — focused only.
+            .shadow(
+                color: fieldFocused ? Color.jotAccent.opacity(0.35) : .clear,
+                radius: 6
+            )
+            .animation(.easeInOut(duration: 0.18), value: fieldFocused)
             .frame(minHeight: 76)
     }
 

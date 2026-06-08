@@ -1,15 +1,5 @@
 import SwiftUI
 import UIKit
-import OSLog
-
-// [KB-COLLAPSE-DEBUG] File-scope logger used only by the diagnostic
-// instrumentation in `collapseToggle`'s tap handler. Same subsystem /
-// category as the controller's `keyboardLog` so Console.app filters
-// see both streams together.
-private let kbCollapseLog = Logger(
-    subsystem: "com.vineetu.jot.mobile.Jot.Keyboard",
-    category: "keyboard"
-)
 
 /// Compact Jot keyboard surface — Phase 2 of the UX overhaul.
 ///
@@ -56,10 +46,11 @@ struct KeyboardView: View {
     /// Transient status banner text (e.g. "Rewrite timed out").
     let statusBanner: String?
 
-    /// Phase 2.5 — when true, the keyboard renders the 58pt
-    /// `CollapsedBarView` instead of the standard mode body. Driven by
-    /// the controller's persisted `jot.keyboard.collapsed` flag.
-    let isCollapsed: Bool
+    /// WS-F — when true, the keyboard renders the warm-hold switching nudge
+    /// over the strip area (the app computes the streak math and sets the
+    /// `warmHoldNudgeShouldShow` App-Group projection; the keyboard renders
+    /// off this boolean and writes the two terminal actions back).
+    let showWarmHoldNudge: Bool
 
     /// v2 retheme (2026-05-11) — host's `keyboardAppearance` hint
     /// (`UIKeyboardAppearance.default` / `.light` / `.dark`). Some
@@ -104,12 +95,6 @@ struct KeyboardView: View {
     /// (paste-at-cursor on the row body) — the row carries two zones.
     let onOpenHistoryEntryInApp: (TranscriptHistoryMirror.Entry) -> Void
 
-    /// Phase 2.5 — fired by the small chevron-down button in the
-    /// standard-mode chrome (and by the collapsed bar's chevron-up).
-    /// The controller flips `isCollapsed`, persists it, and mutates the
-    /// host view's height constraint.
-    let onToggleCollapsed: () -> Void
-
     /// Fired when the user taps the Actions button to OPEN the popover.
     /// Lets the controller refresh state that's stale between keyboard
     /// presentations — currently the clipboard read in `refreshPasteState`,
@@ -121,11 +106,31 @@ struct KeyboardView: View {
     let onActionsTapped: () -> Void
 
     /// Fired when the user taps the Cancel button while a dictation is
-    /// actively recording. The Cancel button replaces the Actions button
-    /// in the action row during recording; once Stop is tapped (or cancel
-    /// completes), Actions returns. Cancel discards the partial — no
-    /// transcript saved, no auto-paste.
+    /// actively recording. During recording the trash-can Cancel control sits
+    /// on the LEFT of the control cluster (WS-D / §2.6); once Stop is tapped
+    /// (or cancel completes), the controls return to the idle Actions layout.
+    /// Cancel discards the partial — no transcript saved, no auto-paste.
     let onCancelRecording: () -> Void
+
+    /// WS-C / §10 — fired when the user taps Pause during an active (non-
+    /// paused) dictation. Posts `pauseRequested` to the main app; the engine
+    /// keeps running but the slice router drops buffers (mic stays warm,
+    /// nothing captured). The app publishes `.paused`, flipping the control
+    /// to Resume.
+    let onPauseRecording: () -> Void
+
+    /// WS-C / §10 — fired when the user taps Resume on a paused dictation.
+    /// Posts `resumeRequested`; capture re-arms against the same slice so
+    /// samples concatenate.
+    let onResumeRecording: () -> Void
+
+    /// WS-F / §4 — warm-hold nudge "Keep mic ready" (accept). One tap, no
+    /// confirm: flips warm hold on for next time.
+    let onWarmHoldNudgeKeepMicReady: () -> Void
+
+    /// WS-F / §4 — warm-hold nudge "Don't show this again" (dismiss). One tap,
+    /// no confirm: permanent suppression.
+    let onWarmHoldNudgeDismiss: () -> Void
 
     let feedback: KeyboardFeedback
 
@@ -141,35 +146,8 @@ struct KeyboardView: View {
     /// because the popover dismisses itself after every tap.
     @State private var showActionsPopover: Bool = false
 
-    private let punctuationKeys: [KeyboardKeyDescriptor] = [
-        .literal("@"),
-        .literal("."),
-        .literal(","),
-        .literal("?"),
-        .literal("!"),
-        .literal("'"),
-        .backspace,
-    ]
-
     var body: some View {
-        ZStack {
-            if isCollapsed {
-                CollapsedBarView(
-                    hasFullAccess: hasFullAccess,
-                    recordingState: recordingState,
-                    isStopRequestPending: isStopRequestPending,
-                    keyboardAppearance: keyboardAppearance,
-                    onTapToSpeak: onTapToSpeak,
-                    onOpenFullAccess: onOpenFullAccess,
-                    onToggleCollapsed: onToggleCollapsed,
-                    feedback: feedback
-                )
-                .transition(.opacity)
-            } else {
-                standardModeBody
-                    .transition(.opacity)
-            }
-        }
+        standardModeBody
         // v2 retheme: force the SwiftUI color-scheme env to the resolved
         // effective scheme so every adaptive `Color(uiColor: UIColor { ... })`
         // token below — chrome stops, glass fills, key faces — resolves
@@ -177,27 +155,24 @@ struct KeyboardView: View {
         // (keyboardAppearance == .dark) but the system is in light, we
         // still want dark tokens; .environment(...) accomplishes that.
         .environment(\.colorScheme, effectiveColorScheme)
-        // The internal content cross-fade — UIKit owns the height
-        // transition (an explicit NSLayoutConstraint on
-        // `JotKeyboardViewController.view.heightAnchor`); SwiftUI only
-        // animates the branch swap. We deliberately do NOT animate the
-        // outer envelope here because `UIHostingController` on iOS 17+
-        // mis-handles `withAnimation` on height-affecting state
-        // (forum 776712).
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25),
-                   value: isCollapsed)
-        // Lower bound only — collapsed mode pins to 58pt; standard mode
-        // matches the UIKit host height pin (310pt expanded, 58pt
-        // collapsed — see `JotKeyboardViewController.expandedHeight` /
-        // `collapsedHeight`) so SwiftUI and UIKit agree on the envelope.
-        // The UIKit `heightConstraint` pins the host view regardless,
-        // but SwiftUI's intrinsic-size machinery would otherwise emit
-        // "Unable to simultaneously satisfy constraints" console spam.
-        .frame(minHeight: isCollapsed ? CollapsedBarView.height : 310)
+        // CRITICAL INVARIANT: this MUST equal
+        // `JotKeyboardViewController.expandedHeight`. The keyboard's height is
+        // pinned by a 999-priority `heightAnchor` constraint on `self.view`, but
+        // the `UIHostingController` is edge-pinned to `self.view`, so this hosted
+        // SwiftUI content's intrinsic height propagates UP and — when it exceeds
+        // the 999 pin — can override it: the host then lays out a taller input
+        // view and the bottom controls fall below the visible keyboard envelope
+        // (the "I see the strip but the buttons are clipped / untappable" bug,
+        // which was minHeight 310 vs a 204 pin). Keeping the two equal removes
+        // the disagreement entirely. Derived from content, not guessed:
+        //   top 8 + RecentsStrip 129 + spacing 6 + controls ~49 + bottom 4
+        //   ≈ 196pt idle; recording is shorter (StreamingStrip 124 ⇒ ~191).
+        //   Both fit a 200pt envelope; the Spacer absorbs the few-pt slack.
+        .frame(minHeight: 200)
     }
 
-    /// Standard-mode body — extracted so the top-level `body` can
-    /// branch cleanly between collapsed and standard surfaces.
+    /// Standard-mode body. Collapsed/minimized mode was removed in the WS-D
+    /// restructure — the keyboard is a single fixed-height surface now.
     private var standardModeBody: some View {
         GeometryReader { proxy in
             let metrics = KeyboardMetrics(availableWidth: proxy.size.width)
@@ -209,16 +184,36 @@ struct KeyboardView: View {
                 // (~4.5pt) to a flat 4pt for the same reason. Going to 0
                 // was rejected — keys need breathing room.
                 VStack(spacing: 6) {
-                    topStrip
-                    actionAndMicRow
-                    if !recordingState.isRecording {
-                        punctuationRow(metrics: metrics)
+                    // Actions panel REPLACES the recents strip while open — it
+                    // lives in the top region as a sibling of the controls row,
+                    // so it can never overlay/hide the dictate/controls row the
+                    // way the old floating popover did (user fix). The "…" button
+                    // toggles it; a row tap runs its action and dismisses.
+                    if showActionsPopover {
+                        actionsPanel(metrics: metrics)
+                    } else {
+                        topStrip(metrics: metrics)
                     }
-                    bottomRow(metrics: metrics)
+                    // iOS won't let a custom keyboard shrink below its minimum
+                    // height, and the system globe/mic row sits below this view.
+                    // A short one-row layout therefore leaves the keyboard taller
+                    // than its content — so PIN the controls to the bottom (the
+                    // natural thumb position, just above the system row) with the
+                    // strip filling the top. The unavoidable extra height becomes
+                    // breathing room between them, not a dead gap under floating
+                    // controls. Controls + adaptive Enter still share ONE row.
+                    Spacer(minLength: 0)
+                    controlAndEnterRow(metrics: metrics)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.horizontal, metrics.sideInset)
-                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // WS-D: native ~0.4cm side margins so the surface doesn't span
+                // full width. `metrics.sideInset` (3pt) is Apple's key-cap
+                // inset; we add the extra inset here on the whole cluster.
+                .padding(.horizontal, metrics.sideInset + Self.sideMargin)
+                // Extra top inset so the strip isn't clipped against the keyboard
+                // top edge / rounded corner.
+                .padding(.top, 8)
+                .padding(.bottom, 4)
                 // Transparent chrome lets the native keyboard backdrop render
                 // through in both idle and recording.
                 .background(chromeBackground)
@@ -228,54 +223,51 @@ struct KeyboardView: View {
                         .padding(.top, 4)
                 }
 
-                if showActionsPopover {
-                    // Full-frame tap catcher behind the popover. `highPriorityGesture`
-                    // beats the punctuation/space/return Buttons below so taps in
-                    // those areas dismiss the popover instead of silently typing.
-                    // `frame(maxWidth/maxHeight: .infinity)` is explicit because
-                    // `Color.clear` in a `ZStack(alignment: .bottomTrailing)` would
-                    // otherwise size to its content (zero) and only catch a sliver.
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(
-                            TapGesture().onEnded { showActionsPopover = false }
-                        )
-                        .accessibilityHidden(true)
-
-                    ActionsPopover(
-                        hasPasteboardContent: hasPasteboardContent,
-                        hasSelection: hasSelection,
-                        canUndo: canUndoLastInsertion,
-                        canRedo: canRedoInsertion,
-                        onPaste: onPaste,
-                        onCopy: onCopy,
-                        onUndo: onUndoLastInsertion,
-                        onRedo: onRedoInsertion,
-                        onJumpToStart: onJumpToStart,
-                        onJumpToEnd: onJumpToEnd,
-                        onDismiss: { showActionsPopover = false }
-                    )
-                    .padding(.trailing, 8)
-                    // Position above the bottom row (~bottomRow height +
-                    // action row height + spacing). 110pt clears the
-                    // bottom row + the actions trigger without overlapping.
-                    .padding(.bottom, 110)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .scale(scale: 0.95, anchor: .bottomTrailing)
-                                .combined(with: .opacity)
-                    )
-                    .zIndex(2)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.15),
                        value: showActionsPopover)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
                        value: recordingState.isRecording)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                       value: showWarmHoldNudge)
         }
+    }
+
+    /// WS-D — extra horizontal margin added on EACH side of the whole control
+    /// cluster (on top of Apple's 3pt key-cap inset) so the keyboard surface
+    /// doesn't span the full screen width. ~0.4cm ≈ 11pt at the standard
+    /// 72ppi → pt mapping. Tunable per the plan (pixel sizes are adjustable).
+    private static let sideMargin: CGFloat = 11
+
+    // MARK: - Actions panel
+
+    /// Actions menu shown in the TOP region (in place of the recents strip)
+    /// while "…" is active — a sibling of the controls row, never an overlay, so
+    /// it can't hide the dictate/controls row. Wrapped in a ScrollView so all
+    /// four rows stay reachable even though the 200pt keyboard's top region is
+    /// short; it never grows down into the controls row.
+    private func actionsPanel(metrics: KeyboardMetrics) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            ActionsPopover(
+                hasPasteboardContent: hasPasteboardContent,
+                hasSelection: hasSelection,
+                canUndo: canUndoLastInsertion,
+                canRedo: canRedoInsertion,
+                onPaste: onPaste,
+                onCopy: onCopy,
+                onUndo: onUndoLastInsertion,
+                onRedo: onRedoInsertion,
+                onJumpToStart: onJumpToStart,
+                onJumpToEnd: onJumpToEnd,
+                onDismiss: { showActionsPopover = false }
+            )
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .transition(
+            reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top))
+        )
     }
 
     // MARK: - Top strip (recents / streaming)
@@ -285,14 +277,49 @@ struct KeyboardView: View {
     /// envelope itself shrinks, but losing the strip would break the
     /// just-now feedback loop after auto-paste.
     @ViewBuilder
-    private var topStrip: some View {
+    private func topStrip(metrics: KeyboardMetrics) -> some View {
+        // WS-F: the warm-hold switching nudge takes over the strip area when
+        // the app flags it (it only fires post-stop, so the strip is showing
+        // recents — never the live stream — at that moment). One-shot, off the
+        // shared App-Group boolean.
+        if showWarmHoldNudge && !recordingState.isRecording {
+            WarmHoldNudgeStrip(
+                reduceMotion: reduceMotion,
+                onKeepMicReady: onWarmHoldNudgeKeepMicReady,
+                onDismiss: onWarmHoldNudgeDismiss,
+                feedback: feedback
+            )
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top))
+            )
+        } else {
+            topStripContent(metrics: metrics)
+        }
+    }
+
+    @ViewBuilder
+    private func topStripContent(metrics: KeyboardMetrics) -> some View {
         if recordingState.isRecording {
             StreamingStrip(
                 partialText: recordingState.streamingPartialText,
                 startedAt: recordingState.startedAt,
+                isPaused: recordingState.isPaused,
+                pausedElapsedSeconds: recordingState.pausedElapsedSeconds,
+                // WS-D: when controls + Enter share one row (large widths) the
+                // elapsed timer relocates from the Stop pill to the strip
+                // header so the pill can shrink. Below 428 the pill keeps the
+                // timer and the header omits it to avoid duplication.
+                showsHeaderTimer: metrics.isLargeWidth,
                 loadingLabel: recordingState.loadingVariantLabel.isEmpty
                     ? nil
-                    : "Loading \(recordingState.loadingVariantLabel)…"
+                    : "Loading \(recordingState.loadingVariantLabel)…",
+                // Short echo of the hero's "a sharper transcriber takes a second
+                // pass when you stop" promise, sized for the header. The status
+                // slot is a reusable container — future contexts (edit / feedback
+                // "won't be saved") can swap this copy.
+                statusLine: "We tidy this up when you stop"
             )
             .transition(
                 reduceMotion
@@ -369,46 +396,95 @@ struct KeyboardView: View {
 
     // MARK: - Action + mic row
 
-    /// Primary controls row — Minimize, Dictate (or red stop pill),
-    /// and Actions popover trigger.
+    /// Primary controls row (below-428 widths, or as the shared row's control
+    /// cluster on large widths via `controlAndEnterRow`).
     ///
-    /// Phase 2.5 added the leading `collapseToggle` so the user can
-    /// minimize the keyboard into the 58pt low-profile bar. The
-    /// chevron lives here (and not in the bottomRow) so the bottomRow
-    /// stays a pure alpha-key surface — globe + space + return — and
-    /// the chrome controls cluster together.
+    /// WS-D control set (§2.6 / §5.4):
+    ///   - Idle:       `[ Dictate pill ............. ] [ Actions ]`
+    ///   - Recording:  `[trash-Cancel] [Pause/Resume] [ Stop pill ......... ]`
+    ///     — Cancel is a trash-can on the LEFT for reach; Pause/Resume sits
+    ///       between it and the Stop pill. Once Stop is tapped
+    ///       (`isStopRequestPending`) the cluster collapses back to the idle
+    ///       Actions layout (Stop is the commit point — no Cancel/Pause after).
+    /// The minimize/expand chevron was removed (WS-D); there is no collapsed
+    /// surface to toggle into.
     private var actionAndMicRow: some View {
-        HStack(spacing: 10) {
-            collapseToggle
-            speakButton
-                .frame(maxWidth: .infinity)
-            // Cancel replaces Actions during active recording so the user
-            // has a single, predictable abort affordance from the keyboard.
-            // Once Stop is tapped (`isStopRequestPending == true`) Actions
-            // returns — Stop is the commit point, no cancel after that.
+        // Below-428: Enter lives on its own row below, so the header omits the
+        // timer and the Stop pill keeps it (`showsHeaderTimer: false`).
+        controlCluster(showsHeaderTimer: false)
+            // Bug 8 (2026-05-11): action row trimmed from 52 → 48pt — pairs
+            // with the dictate button's matching `minHeight: 48` change so
+            // the row fits the tighter ~310pt envelope without clipping.
+            .frame(minHeight: 48)
+    }
+
+    /// WS-D large-width (≥428) single row: the control cluster + the adaptive
+    /// Enter share one line (R8). The Enter takes a fixed trailing width; the
+    /// cluster flexes to fill the rest.
+    private func controlAndEnterRow(metrics: KeyboardMetrics) -> some View {
+        let showsHeaderTimer = metrics.isLargeWidth
+        let enterWidth = max(72, metrics.letterKeyWidth * 2.0)
+        return Group {
             if recordingState.isRecording && !isStopRequestPending {
-                cancelButton
+                // Recording: trash · pause · Stop (flex) · Enter.
+                HStack(spacing: metrics.keySpacing) {
+                    cancelButton
+                    pauseResumeButton
+                    speakButton(showsHeaderTimer: showsHeaderTimer)
+                        .frame(maxWidth: .infinity)
+                    enterKey(metrics: metrics, width: enterWidth)
+                }
             } else {
+                // Idle: Actions (…) on the LEFT, then Dictate (flex) · Enter ·
+                // backspace. "…" is leftmost (user request) so the big flexible
+                // Dictate pill is the easy central thumb target.
+                HStack(spacing: metrics.keySpacing) {
+                    actionsButton
+                    speakButton(showsHeaderTimer: showsHeaderTimer)
+                        .frame(maxWidth: .infinity)
+                    enterKey(metrics: metrics, width: enterWidth)
+                    backspaceKey(metrics: metrics)
+                }
+            }
+        }
+        .frame(minHeight: max(48, metrics.keyHeight))
+    }
+
+    /// The shared control cluster used by both the below-428 control row and
+    /// the large-width combined row. `showsHeaderTimer` mirrors the
+    /// StreamingStrip header's timer: when the header shows the elapsed clock
+    /// (large widths), the Stop pill drops its inline timer so exactly one
+    /// clock renders per width class.
+    @ViewBuilder
+    private func controlCluster(showsHeaderTimer: Bool) -> some View {
+        if recordingState.isRecording && !isStopRequestPending {
+            HStack(spacing: 10) {
+                cancelButton
+                pauseResumeButton
+                speakButton(showsHeaderTimer: showsHeaderTimer)
+                    .frame(maxWidth: .infinity)
+            }
+        } else {
+            HStack(spacing: 10) {
+                speakButton(showsHeaderTimer: showsHeaderTimer)
+                    .frame(maxWidth: .infinity)
                 actionsButton
             }
         }
-        // Bug 8 (2026-05-11): action row trimmed from 52 → 48pt — pairs
-        // with the dictate button's matching `minHeight: 48` change so
-        // the row fits the tighter ~310pt envelope without clipping.
-        .frame(minHeight: 48)
     }
 
-    /// Cancel button shown in place of Actions while a dictation is
-    /// actively recording. Treatment B per the UX plan: glass background
-    /// + red `xmark` icon. Dark-mode mitigations (bumped hairline + glass
-    /// fill opacity) ensure the button reads cleanly on dark chrome.
+    /// Cancel button shown at the LEFT of the control cluster while a
+    /// dictation is actively recording (WS-D / §2.6 — trash-can on the left
+    /// for reach). Glass background + red `trash` icon. Dark-mode mitigations
+    /// (bumped hairline + glass fill opacity) ensure the button reads cleanly
+    /// on dark chrome.
     private var cancelButton: some View {
         Button {
             feedback.systemClick()
             feedback.selectionTick()
             onCancelRecording()
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: "trash")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(Color.jotRecord)
                 .frame(width: 40, height: 40)
@@ -437,27 +513,46 @@ struct KeyboardView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    private var collapseToggle: some View {
+    /// WS-C / §10 — Pause / Resume control, shown between trash-Cancel and the
+    /// Stop pill while recording. Pause does NOT finalize: it posts
+    /// `pauseRequested`, the app gates the slice router (mic stays warm, no
+    /// capture) and publishes `.paused`, which flips this control to Resume.
+    /// Resume posts `resumeRequested` and capture re-arms against the same
+    /// slice so samples concatenate.
+    private var pauseResumeButton: some View {
         Button {
-            // [KB-COLLAPSE-DEBUG] Tap-moment marker for Symptom 2 (partial
-            // minimize — inner view collapses but outer envelope stays
-            // expanded). Pair with the toggleCollapsed entry log in
-            // JotKeyboardViewController to confirm the tap reached UIKit.
-            kbCollapseLog.log("[KB-COLLAPSE-DEBUG] tap MINIMIZE")
             feedback.systemClick()
             feedback.selectionTick()
-            onToggleCollapsed()
+            if recordingState.isPaused {
+                onResumeRecording()
+            } else {
+                onPauseRecording()
+            }
         } label: {
-            secondaryControlLabel(
-                title: "Minimize",
-                systemImage: "chevron.compact.down",
-                enabled: true,
-                lit: false
-            )
+            Image(systemName: recordingState.isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.jotKeyboardActionsInk)
+                .frame(width: 40, height: 40)
+                .background(.regularMaterial, in: Circle())
+                .overlay(
+                    Circle()
+                        .strokeBorder(
+                            Color(uiColor: UIColor { trait in
+                                trait.userInterfaceStyle == .dark
+                                    ? UIColor(white: 1.0, alpha: 0.14)
+                                    : UIColor(white: 0.0, alpha: 0.08)
+                            }),
+                            lineWidth: 0.5
+                        )
+                )
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Minimize keyboard")
-        .accessibilityHint("Minimizes the Jot keyboard to a compact bar")
+        .accessibilityLabel(recordingState.isPaused ? "Resume recording" : "Pause recording")
+        .accessibilityHint(recordingState.isPaused
+                           ? "Resumes capturing audio where it left off"
+                           : "Keeps the mic ready but stops capturing until you resume")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -495,7 +590,7 @@ struct KeyboardView: View {
     /// no-Full-Access branch was never *actually* disabled in code; it was
     /// only perceived as disabled. We are fixing the perception, not the
     /// gate logic.
-    private var speakButton: some View {
+    private func speakButton(showsHeaderTimer: Bool) -> some View {
         // No-FA branch is INERT (no Link, no Button) because nothing we
         // tried to launch from a custom keyboard extension actually opens
         // the containing app reliably on iOS 26 — `extensionContext.open`
@@ -511,9 +606,9 @@ struct KeyboardView: View {
                 Button {
                     feedback.longPressImpact()
                     onTapToSpeak()
-                } label: { speakLabel }
+                } label: { speakLabel(showsHeaderTimer: showsHeaderTimer) }
             } else {
-                speakLabel
+                speakLabel(showsHeaderTimer: showsHeaderTimer)
             }
         }
         .buttonStyle(.plain)
@@ -533,24 +628,54 @@ struct KeyboardView: View {
     }
 
     @ViewBuilder
-    private var speakLabel: some View {
+    private func speakLabel(showsHeaderTimer: Bool) -> some View {
             Group {
-                if hasFullAccess, recordingState.isRecording {
+                if hasFullAccess, recordingState.isPaused {
+                    // WS-C / §10 paused stop pill: same white stop square (Stop
+                    // still commits from paused), a FROZEN timer (the app pins
+                    // a frozen elapsed value at pause), and a static (non-
+                    // pulsing) hollow dot so the pill reads "paused, not
+                    // capturing" rather than live. The header on large widths
+                    // carries the "Paused" word; here the frozen clock + static
+                    // dot are the cue. When the header already shows the timer
+                    // (large widths, R8) the pill DROPS its frozen clock so the
+                    // time renders once.
+                    HStack(spacing: 10) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.white)
+                            .frame(width: 12, height: 12)
+                        if !showsHeaderTimer {
+                            Text(pausedElapsedText)
+                                .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        Circle()
+                            .strokeBorder(Color.white, lineWidth: 1.5)
+                            .frame(width: 6, height: 6)
+                    }
+                } else if hasFullAccess, recordingState.isRecording {
                     let startedAt = recordingState.startedAt ?? Date()
                     TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
                         // Spec stop pill: white stop square 12×12pt + timer
                         // + pulsing white dot. The square is a rounded
                         // rectangle (not `stop.fill`) so it matches the
                         // exact 3pt-radius square in the design reference.
+                        // When the StreamingStrip header shows the elapsed
+                        // clock (large widths, R8), the pill omits its inline
+                        // timer so exactly one clock renders.
                         HStack(spacing: 10) {
                             RoundedRectangle(cornerRadius: 3, style: .continuous)
                                 .fill(Color.white)
                                 .frame(width: 12, height: 12)
-                            Text(elapsedText(now: context.date))
-                                .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                                .monospacedDigit()
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
+                            if !showsHeaderTimer {
+                                Text(elapsedText(now: context.date))
+                                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                            }
                             PulsingDot(color: .white)
                         }
                     }
@@ -571,7 +696,7 @@ struct KeyboardView: View {
                         // Bug A fix: prior copy was "Unlock" — too cryptic.
                         // "Enable Full Access" tells the user exactly what
                         // tapping the pill is going to do.
-                        Text(hasFullAccess ? "Dictate" : "Enable Full Access")
+                        Text(hasFullAccess ? "Jot down" : "Enable Full Access")
                             .font(.system(size: 15, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
@@ -620,8 +745,11 @@ struct KeyboardView: View {
                 showActionsPopover = true
             }
         } label: {
+            // Icon-only "…" (empty title) — the ellipsis glyph alone reads as
+            // the overflow/Actions affordance; the accessibilityLabel below
+            // still announces "Actions".
             secondaryControlLabel(
-                title: "Actions",
+                title: "",
                 systemImage: "ellipsis",
                 enabled: true,
                 lit: showActionsPopover
@@ -681,64 +809,50 @@ struct KeyboardView: View {
 
     // MARK: - Key rows
 
-    private func punctuationRow(metrics: KeyboardMetrics) -> some View {
-        let keyWidth = max(
-            32,
-            (metrics.innerWidth - metrics.keySpacing * CGFloat(punctuationKeys.count - 1))
-                / CGFloat(punctuationKeys.count)
-        )
-
-        return HStack(spacing: metrics.keySpacing) {
-            ForEach(Array(punctuationKeys.enumerated()), id: \.offset) { _, key in
-                KeyboardKey(
-                    descriptor: key,
-                    width: keyWidth,
-                    height: metrics.keyHeight,
-                    cornerRadius: metrics.buttonCornerRadius,
-                    feedback: feedback,
-                    onTap: onKey,
-                    onPressChanged: onKeyPressChange
-                )
-            }
-        }
+    /// Below-428 separate Enter row (R8). The spacebar + punctuation/char-keys
+    /// + the minimize/expand chevron were all removed in WS-D — the keyboard
+    /// is recording-controls + Apple's system row only, with one adaptive
+    /// Enter. The Enter spans the full inner width on its own row so it stays
+    /// an easy target; Apple's globe / system row sits below in the iOS
+    /// keyboard chrome. The `needsInputModeSwitchKey` /
+    /// `onAdvanceToNextInputMode` props are retained on the view in case the
+    /// globe is ever re-added; they are currently unused by this row.
+    private func bottomRow(metrics: KeyboardMetrics) -> some View {
+        enterKey(metrics: metrics, width: nil)
+            .frame(height: metrics.keyHeight)
     }
 
-    private func bottomRow(metrics: KeyboardMetrics) -> some View {
-        // Bug 11 (2026-05-11): globe key removed. User confirmed they
-        // rely on the system globe (in iOS keyboard chrome below) to
-        // switch input modes; the duplicate inside our keyboard was
-        // wasted real-estate. HIG 4.4.1 deviation is documented in
-        // ux-overhaul-plan §4.1; risk accepted (also §14.2). The
-        // `needsInputModeSwitchKey` / `onAdvanceToNextInputMode` props
-        // are retained on the view in case we ever need to re-add the
-        // globe in a follow-up; they are currently unused by this row.
-        let returnWidth = max(78, metrics.letterKeyWidth * 2.2)
-
-        return HStack(spacing: metrics.keySpacing) {
-            keyButton(
-                metrics: metrics,
-                style: .primary,
-                accessibilityLabel: "space",
-                action: { onKey(.space) }
-            ) {
-                Text("space")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-
-            keyButton(
-                width: returnWidth,
-                metrics: metrics,
-                style: .returnAccent,
-                accessibilityLabel: returnTitle.lowercased(),
-                action: { onKey(.returnKey) }
-            ) {
-                Text(returnTitle)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.62)
-            }
+    /// The single adaptive Enter key. Shared by the below-428 `bottomRow`
+    /// (full inner width) and the large-width `controlAndEnterRow` (fixed
+    /// trailing width). `width == nil` → flex to fill.
+    private func enterKey(metrics: KeyboardMetrics, width: CGFloat?) -> some View {
+        keyButton(
+            width: width,
+            metrics: metrics,
+            style: .returnAccent,
+            accessibilityLabel: returnAccessibilityLabel,
+            action: { onKey(.returnKey) }
+        ) {
+            returnKeyLabel
         }
-        .frame(height: metrics.keyHeight)
+        .frame(maxWidth: width == nil ? .infinity : nil)
+    }
+
+    /// Backspace key (idle row, left of Actions). Single tap deletes one
+    /// character — the controller's `handleKeyTap(.backspace)` runs
+    /// `deleteBackward()`. (Press-and-hold repeat is already wired in the
+    /// controller via `onKeyPressChange`; this button fires one delete per tap.)
+    private func backspaceKey(metrics: KeyboardMetrics) -> some View {
+        keyButton(
+            width: max(46, metrics.letterKeyWidth),
+            metrics: metrics,
+            style: .action,
+            accessibilityLabel: "delete",
+            action: { onKey(.backspace) }
+        ) {
+            Image(systemName: "delete.left")
+                .font(.system(size: 18, weight: .medium))
+        }
     }
 
     // MARK: - Components
@@ -940,7 +1054,7 @@ struct KeyboardView: View {
 
     private var micAccessibilityLabel: String {
         guard hasFullAccess else { return "Enable Full Access" }
-        return recordingState.isRecording ? "Stop recording" : "Tap to dictate"
+        return recordingState.isRecording ? "Stop recording" : "Jot down"
     }
 
     private var micAccessibilityHint: String {
@@ -956,21 +1070,55 @@ struct KeyboardView: View {
         return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
-    private var returnTitle: String {
+    /// Frozen MM:SS shown on the Stop pill while paused (§10.4). Uses the
+    /// pause-time snapshot the app published (active-time total, pause gaps
+    /// excluded) rather than live wall-clock, so the clock holds still.
+    private var pausedElapsedText: String {
+        let total = max(0, Int((recordingState.pausedElapsedSeconds ?? 0).rounded(.down)))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    /// Adaptive Enter label (WS-D): Apple's return-arrow glyph for plain
+    /// fields, the magnifier glyph for search fields (design decision D3),
+    /// and a word for every other semantic case — mirroring the system
+    /// keyboard. `returnKeyType` is read from the host field's
+    /// `textDocumentProxy` and threaded in by the controller.
+    private enum ReturnLabel {
+        case glyph(String, a11y: String)
+        case word(String)
+    }
+
+    private var returnLabel: ReturnLabel {
         switch returnKeyType {
-        case .default:        return "Return"
-        case .go:             return "Go"
-        case .google:         return "Search"
-        case .join:           return "Join"
-        case .next:           return "Next"
-        case .route:          return "Route"
-        case .search:         return "Search"
-        case .send:           return "Send"
-        case .yahoo:          return "Search"
-        case .done:           return "Done"
-        case .emergencyCall:  return "Emergency"
-        case .continue:       return "Continue"
-        @unknown default:     return "Return"
+        case .default:                 return .glyph("arrow.turn.down.left", a11y: "return")
+        case .go:                      return .word("Go")
+        case .google, .search, .yahoo: return .glyph("magnifyingglass", a11y: "search")
+        case .join:                    return .word("Join")
+        case .next:                    return .word("Next")
+        case .route:                   return .word("Route")
+        case .send:                    return .word("Send")
+        case .done:                    return .word("Done")
+        case .emergencyCall:           return .word("Emergency")
+        case .continue:                return .word("Continue")
+        @unknown default:              return .glyph("arrow.turn.down.left", a11y: "return")
+        }
+    }
+
+    private var returnAccessibilityLabel: String {
+        switch returnLabel {
+        case .glyph(_, let a11y): return a11y
+        case .word(let text):     return text.lowercased()
+        }
+    }
+
+    @ViewBuilder private var returnKeyLabel: some View {
+        switch returnLabel {
+        case .glyph(let name, _):
+            Image(systemName: name)
+        case .word(let text):
+            Text(text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
         }
     }
 
