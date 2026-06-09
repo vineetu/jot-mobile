@@ -1048,25 +1048,58 @@ private struct LoadingPlaceholderText: View {
     let reduceMotion: Bool
 
     @State private var dim: Bool = false
+    @State private var startedAt: Date = Date()
+
+    /// How long THIS device's last comparable load took, used only to PACE the
+    /// bar — never to fake completion. There is no real progress signal from
+    /// CoreML; see `ModelLoadTimekeeper`.
+    private var estimate: Double {
+        ModelLoadTimekeeper.estimatedSeconds(variant: AppGroup.speechModelVariant)
+    }
+
+    /// Decelerating fill: `1 - e^(-t/τ)` with τ chosen so the bar reaches ~80%
+    /// at the estimated duration, then crawls. It asymptotes below 100%, so an
+    /// under-estimate (e.g. a cold ANE recompile) never completes early — the
+    /// real `.ready` transition removes this whole view, which IS completion.
+    private func fill(elapsed: Double) -> Double {
+        let tau = max(estimate, 0.5) / 1.6
+        let raw = 1.0 - exp(-elapsed / tau)
+        return min(raw, 0.94)
+    }
 
     var body: some View {
-        Text("Loading \(variantName)…")
-            .font(.system(size: 26, weight: .regular, design: .serif).italic())
-            .lineSpacing(8.3)
-            .tracking(-0.4)
-            .foregroundStyle(Color.jotPageInkSecondary)
-            .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
-                value: dim
-            )
-            .onAppear {
-                guard !reduceMotion else { return }
-                dim = true
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Loading \(variantName)…")
+                .font(.system(size: 26, weight: .regular, design: .serif).italic())
+                .lineSpacing(8.3)
+                .tracking(-0.4)
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
+                .animation(
+                    reduceMotion
+                        ? nil
+                        : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                    value: dim
+                )
+
+            TimelineView(.periodic(from: startedAt, by: 0.05)) { context in
+                let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+                let value = fill(elapsed: elapsed)
+                ProgressView(value: value)
+                    .progressViewStyle(.linear)
+                    .tint(Color.jotPageInkSecondary)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .animation(.easeOut(duration: 0.18), value: value)
+                    .accessibilityValue("\(Int(value * 100)) percent")
             }
-            .accessibilityLabel("Loading \(variantName)")
+        }
+        .onAppear {
+            startedAt = Date()
+            guard !reduceMotion else { return }
+            dim = true
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading \(variantName)")
     }
 }
 

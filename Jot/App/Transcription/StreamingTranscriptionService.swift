@@ -281,15 +281,22 @@ final class StreamingTranscriptionService {
             chunkSize: .ms320
         )
 
+        let loadVariant = AppGroup.speechModelVariant
+        let loadStart = Date()
         do {
             // Bundle weights are present (gated above); this is the
-            // ~200-500ms ANE load only — no download, no HF Hub touch.
+            // ~200-500ms warm ANE load — no download, no HF Hub touch. The
+            // FIRST load after install / cache eviction recompiles the graph
+            // for the ANE and can run tens of seconds; we time the window so
+            // `ModelLoadTimekeeper` can pace the hero's progress bar next time.
             try await manager.loadModels(from: modelDir)
         } catch {
             log.error("beginSession loadModels failed — \(error.localizedDescription, privacy: .public)")
             sessionLoadState = .idle
             return nil
         }
+        ModelLoadTimekeeper.record(variant: loadVariant,
+                                   seconds: Date().timeIntervalSince(loadStart))
 
         sessionLoadState = .ready
 

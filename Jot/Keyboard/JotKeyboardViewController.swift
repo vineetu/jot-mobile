@@ -91,6 +91,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `transcriptReady` observer here doesn't regress paste behaviour.
     private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
+    /// Set while a re-synced auto-paste insert is scheduled but not yet run
+    /// (the ~12ms run-loop hop between requesting the proxy re-sync and the
+    /// actual `insertText`). Guards against a second phase-change flush
+    /// stacking a duplicate insert for the same payload → would double-paste.
+    /// See `flushPendingAutoPasteIfPossible`.
+    private var isAutoPasteInsertInFlight = false
     private var streamingPartialObserver: CrossProcessNotification.Observer?
     private var streamingLoadingObserver: CrossProcessNotification.Observer?
     /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
@@ -1107,66 +1113,95 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
 
-            // Detect whether the insert LANDED by reading the proxy AFTER it —
-            // not before. The pre-insert read can't tell an empty-but-live
-            // field from a disconnected proxy: BOTH report
-            // `documentContextBeforeInput == nil` (an empty field has no text
-            // before the caret). After a REAL insert, the pre-caret context is
-            // non-nil (it now holds at least the text we just inserted); after
-            // a no-op into a disconnected proxy it stays nil.
+            // RE-SYNC THE HOST PROXY BEFORE INSERTING.
             //
-            // This fixes the build-105 EMPTY-FIELD double-paste: an empty field
-            // read nil before the insert, so the old "proxyHadContextBefore"
-            // check misread a SUCCESSFUL insert as "not landed", kept the
-            // payload, and a second flush (the `.publishing` post racing to run
-            // after the payload landed) re-inserted → duplicate. Only on empty
-            // fields, exactly as observed. A speculative insert is harmless when
-            // it no-ops (adds nothing); reading the AFTER state means we
-            // re-insert ONLY when the previous attempt genuinely added nothing.
-            let proxyHadContextBefore = (textDocumentProxy.documentContextBeforeInput != nil)
+            // The transcript arrives ~hundreds of ms after the user's Stop tap
+            // (record → transcribe → cross-process publish), not as part of a UI
+            // event. During that gap a custom / web-backed compose field (Slack,
+            // Claude) can re-mount its text view, leaving our `textDocumentProxy`
+            // pointed at a stale input connection: the pointer still looks valid
+            // and the caret still blinks, but a cold `insertText` silently
+            // no-ops. Native fields (Messages) keep the connection, which is why
+            // it pastes there but not in those apps.
+            //
+            // Issuing ANY `adjustTextPosition` forces the host to re-establish
+            // the input connection. iOS COALESCES that into the current UI cycle
+            // (see `moveUpStep` — same lesson), so a synchronous nudge-then-
+            // insert still hits the stale link. We must yield ONE run-loop tick
+            // between the re-sync request and the insert. Offset 0 keeps the
+            // caret exactly where the user left it.
+            //
+            // `isAutoPasteInsertInFlight` guards the ~12ms window so a second
+            // phase-change flush can't stack a duplicate insert → single paste,
+            // no retry band-aid.
+            guard !isAutoPasteInsertInFlight else { return }
+            isAutoPasteInsertInFlight = true
 
-            insertTrackedText(payload.text)
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: 0)
 
-            let proxyHasContextAfter = (textDocumentProxy.documentContextBeforeInput != nil)
-            let landed = proxyHadContextBefore || proxyHasContextAfter
+            let pendingSessionID = session.id
+            let pasteText = payload.text
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
+                guard let self else { return }
+                defer { self.isAutoPasteInsertInFlight = false }
 
-            guard landed else {
-                // Insert no-op'd into a disconnected proxy — keep the transcript
-                // pending (don't burn it) so the settled `.idle` flush lands it.
+                // The pending session may have been consumed/cleared by another
+                // path during the hop; re-validate before inserting.
+                guard let pending = self.readPendingPasteSession(),
+                      pending.id == pendingSessionID else { return }
+
+                // Detect whether the insert LANDED by reading the proxy AFTER it.
+                // After a REAL insert the pre-caret context is non-nil (it now
+                // holds at least the text we just inserted); after a no-op into a
+                // still-disconnected proxy it stays nil. (`proxyHadContextBefore`
+                // covers the empty-field case where the field legitimately had no
+                // text before the caret — see build-105 empty-field double-paste.)
+                let proxyHadContextBefore = (self.textDocumentProxy.documentContextBeforeInput != nil)
+                self.insertTrackedText(pasteText)
+                let proxyHasContextAfter = (self.textDocumentProxy.documentContextBeforeInput != nil)
+                let landed = proxyHadContextBefore || proxyHasContextAfter
+
+                guard landed else {
+                    // Still no-op'd even after the re-sync — keep the transcript
+                    // pending (don't burn it) so the settled `.idle` flush can
+                    // try once more. Single insert per flush = no double-paste.
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: .pasteSkipProxyDisconnected,
+                        message: "Insert no-op'd after re-sync — proxy not connected; kept pending",
+                        metadata: [
+                            "sessionID": pendingSessionID.uuidString,
+                            "chars": "\(pasteText.count)",
+                            "resynced": "true",
+                        ]
+                    )
+                    return
+                }
+
                 DiagnosticsLog.record(
                     source: "keyboard",
-                    category: .pasteSkipProxyDisconnected,
-                    message: "Insert no-op'd — proxy not connected; kept pending",
+                    category: .pasteSuccess,
+                    message: "Inserted transcript into host",
                     metadata: [
-                        "sessionID": session.id.uuidString,
-                        "chars": "\(payload.text.count)",
+                        "chars": "\(pasteText.count)",
+                        "sessionID": pendingSessionID.uuidString,
+                        "proxyHadContextBefore": "\(proxyHadContextBefore)",
+                        "proxyHasContextAfter": "\(proxyHasContextAfter)",
+                        "resynced": "true",
                     ]
                 )
-                return
+                // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
+                // the keyboard's own state at the moment of insertion so the
+                // RecentsStrip's top row can render in the green just-now
+                // style for ~5s. Reading AppGroup.lastDictation after this
+                // returns nil because markConsumed() (below) clears it.
+                self.stampJustNowMarker(text: pasteText)
+                ClipboardHandoff.markConsumed()
+                self.clearPendingPasteSession()
+                self.freshPreview = nil
+                self.hasPasteboardContent = UIPasteboard.general.hasStrings
+                self.renderRootView()
             }
-
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .pasteSuccess,
-                message: "Inserted transcript into host",
-                metadata: [
-                    "chars": "\(payload.text.count)",
-                    "sessionID": session.id.uuidString,
-                    "proxyHadContextBefore": "\(proxyHadContextBefore)",
-                    "proxyHasContextAfter": "\(proxyHasContextAfter)",
-                ]
-            )
-            // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
-            // the keyboard's own state at the moment of insertion so the
-            // RecentsStrip's top row can render in the green just-now
-            // style for ~5s. Reading AppGroup.lastDictation after this
-            // returns nil because markConsumed() (below) clears it.
-            stampJustNowMarker(text: payload.text)
-            ClipboardHandoff.markConsumed()
-            clearPendingPasteSession()
-            freshPreview = nil
-            hasPasteboardContent = UIPasteboard.general.hasStrings
-            renderRootView()
             return
         }
 
