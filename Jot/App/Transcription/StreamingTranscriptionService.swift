@@ -110,9 +110,22 @@ final class StreamingTranscriptionService {
     private(set) var sessionLoadState: SessionLoadState = .idle {
         didSet {
             guard oldValue != sessionLoadState else { return }
-            AppGroup.streamingLoadingVariantLabel = (sessionLoadState == .loading)
+            let loading = (sessionLoadState == .loading)
+            AppGroup.streamingLoadingVariantLabel = loading
                 ? SpeechModelVariant.current().displayName
                 : ""
+            // Hand the keyboard the start time + this device's calibrated
+            // estimate so it can pace the SAME "Loading…" bar the hero shows
+            // (it can't link ModelLoadTimekeeper). Written BEFORE the post so
+            // the values are present when the keyboard reacts.
+            if loading {
+                AppGroup.streamingLoadStartedAt = Date()
+                AppGroup.streamingLoadEstimateSeconds =
+                    ModelLoadTimekeeper.estimatedSeconds(variant: AppGroup.speechModelVariant)
+            } else {
+                AppGroup.streamingLoadStartedAt = nil
+                AppGroup.streamingLoadEstimateSeconds = 0
+            }
             CrossProcessNotification.post(name: CrossProcessNotification.streamingLoadingChanged)
         }
     }

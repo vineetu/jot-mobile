@@ -67,6 +67,16 @@ enum AppGroup {
         /// not link.
         static let streamingLoadingVariantLabel = "jot.streaming.loadingVariantLabel"
 
+        /// Wall-clock `Date` the current streaming ANE load began, and the
+        /// per-device estimated duration (seconds) the main app's
+        /// `ModelLoadTimekeeper` chose for it. Written together with
+        /// `streamingLoadingVariantLabel` at `sessionLoadState → .loading`
+        /// (cleared on `.ready`/`.idle`); read by the keyboard extension to
+        /// pace the SAME calibrated "Loading…" progress bar the hero shows,
+        /// without linking `ModelLoadTimekeeper`/`FluidAudio` (60 MB ceiling).
+        static let streamingLoadStartedAt = "jot.streaming.loadStartedAt"
+        static let streamingLoadEstimateSeconds = "jot.streaming.loadEstimateSeconds"
+
         /// Selected AI rewrite backend. String value matches an
         /// `LLMProvider` raw value. Currently the only valid value is
         /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values
@@ -334,6 +344,26 @@ enum AppGroup {
     static var streamingLoadingVariantLabel: String {
         get { defaults.string(forKey: Keys.streamingLoadingVariantLabel) ?? "" }
         set { defaults.set(newValue, forKey: Keys.streamingLoadingVariantLabel) }
+    }
+
+    /// Start time of the in-flight streaming ANE load (`nil` when not
+    /// loading). See `Keys.streamingLoadStartedAt`.
+    static var streamingLoadStartedAt: Date? {
+        get { defaults.object(forKey: Keys.streamingLoadStartedAt) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Keys.streamingLoadStartedAt)
+            } else {
+                defaults.removeObject(forKey: Keys.streamingLoadStartedAt)
+            }
+        }
+    }
+
+    /// Per-device estimated load duration (seconds) for pacing the keyboard's
+    /// "Loading…" bar; `0` when not loading. See `Keys.streamingLoadEstimateSeconds`.
+    static var streamingLoadEstimateSeconds: Double {
+        get { defaults.double(forKey: Keys.streamingLoadEstimateSeconds) }
+        set { defaults.set(newValue, forKey: Keys.streamingLoadEstimateSeconds) }
     }
 
     /// Returns `true` when the main Jot app is currently foreground —

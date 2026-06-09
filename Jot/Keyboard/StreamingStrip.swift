@@ -682,25 +682,65 @@ private struct KeyboardLoadingText: View {
     let reduceMotion: Bool
 
     @State private var dim: Bool = false
+    @State private var startedAt: Date = Date()
+
+    /// Pace value handed across by the main app (it owns `ModelLoadTimekeeper`);
+    /// falls back to a conservative default if the App-Group value is absent.
+    private var estimate: Double {
+        let e = AppGroup.streamingLoadEstimateSeconds
+        return e > 0 ? e : 8
+    }
+
+    /// Same decelerating, 2×-slowed asymptote as the hero's bar. Caps below
+    /// 100% so an under-estimate never completes early; the strip swaps to live
+    /// transcript (or "Listening…") the instant the model is ready.
+    private func fill(elapsed: Double) -> Double {
+        let tau = max(estimate, 0.5) / 0.8
+        return min(1.0 - exp(-elapsed / tau), 0.94)
+    }
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 13, weight: .regular))
-            .lineSpacing(13 * 0.55)
-            .foregroundStyle(Color.jotKeyboardStreamText)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
-                value: dim
-            )
-            .onAppear {
-                guard !reduceMotion else { return }
-                dim = true
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.system(size: 13, weight: .regular))
+                .lineSpacing(13 * 0.55)
+                .foregroundStyle(Color.jotKeyboardStreamText)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
+                .animation(
+                    reduceMotion
+                        ? nil
+                        : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                    value: dim
+                )
+
+            TimelineView(.periodic(from: startedAt, by: 0.05)) { context in
+                let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+                let value = fill(elapsed: elapsed)
+                ProgressView(value: value)
+                    .progressViewStyle(.linear)
+                    .tint(Color.jotKeyboardStreamText)
+                    .frame(maxWidth: 200, alignment: .leading)
+                    .animation(.easeOut(duration: 0.18), value: value)
             }
-            .accessibilityLabel(label)
+
+            // Reassurance: audio is captured into the streaming queue during the
+            // load and drained the instant the model is ready, so nothing said
+            // now is lost. Instructional, not a rhetorical nudge.
+            Text("Keep speaking — your words are saved and appear when loading finishes.")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.7))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            // Prefer the main app's real load-start (the load may have begun
+            // before this strip became visible); fall back to now.
+            startedAt = AppGroup.streamingLoadStartedAt ?? Date()
+            guard !reduceMotion else { return }
+            dim = true
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
     }
 }

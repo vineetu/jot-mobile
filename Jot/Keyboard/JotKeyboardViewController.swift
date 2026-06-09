@@ -1319,7 +1319,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             recordingState.updateLoadingVariantLabel("")
             return
         }
-        recordingState.updateLoadingVariantLabel(AppGroup.streamingLoadingVariantLabel)
+        let label = AppGroup.streamingLoadingVariantLabel
+        // Cold-load diagnostic: a cold keyboard dictation should log a
+        // non-empty label WHILE isRecording=true (so the strip is visible to
+        // render it). If label is empty during the load, the write/notify
+        // path is the gap; if isRecording is false, the strip gate is.
+        keyboardLog.info("streaming-loading mirror label=\(label.isEmpty ? "<empty>" : label, privacy: .public) isRecording=\(self.recordingState.isRecording, privacy: .public)")
+        recordingState.updateLoadingVariantLabel(label)
     }
 
     // MARK: - Warm-hold switching nudge (WS-F / §4 R10)

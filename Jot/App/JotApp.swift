@@ -903,29 +903,25 @@ struct JotApp: App {
             return
         }
 
-        guard transcriptionService.modelState == .ready else {
-            // Model not loaded yet. Defer to the modelState .onChange
-            // observer — it will call back here when ready.
-            //
-            // Defensive kick: explicitly call `warmUp()` here so the
-            // load is in flight from this moment, not whenever the
-            // scene `.task` block happens to run. Without this kick the
-            // `.task` warmUp + the `.onOpenURL` URL bounce can race,
-            // and on cold-launch via URL the defer below could sit
-            // forever if `.task` hasn't fired yet. `warmUp()` is
-            // idempotent (concurrent calls share one prepare Task per
-            // `TranscriptionService.warmUp` doc), so safe even if
-            // `.task` later calls it again.
-            // See features.md §14.1 and the hypothesis discussion in
-            // docs/plans/bug-cold-start-dictation-race.md.
+        // Capture-first cold start: if the model isn't loaded yet, kick the
+        // load but DO NOT wait — start the mic NOW so audio buffers through the
+        // (cold) load and nothing said is lost. The model loads in parallel and
+        // is awaited at stop time (`runInference` → `ensurePreparing().value`),
+        // so the transcript is complete even if the user stops mid-load.
+        // Publishing `.recording` immediately also lights up the keyboard's
+        // "Loading… keep speaking" strip. `warmUp()` is idempotent (shares one
+        // prepare Task), so kicking it here is safe even if the scene `.task`
+        // also calls it. (Previously this returned and deferred the start until
+        // modelState == .ready, leaving the mic OFF through a ~30s cold load and
+        // showing only "Getting ready…" — features.md §14.1 /
+        // docs/plans/bug-cold-start-dictation-race.md.)
+        if transcriptionService.modelState != .ready {
             transcriptionService.warmUp()
-            autoStartPendingModelReady = true
             logAutoStartGuard(
                 "model-ready",
-                action: "defer",
-                reason: "model not ready; queued pending dictate intent from \(reason); warmUp() kicked"
+                action: "continue",
+                reason: "model not ready; capture-first — mic starts now, load kicked in parallel, from \(reason)"
             )
-            return
         }
 
         autoStartPendingModelReady = false

@@ -1062,7 +1062,10 @@ private struct LoadingPlaceholderText: View {
     /// under-estimate (e.g. a cold ANE recompile) never completes early — the
     /// real `.ready` transition removes this whole view, which IS completion.
     private func fill(elapsed: Double) -> Double {
-        let tau = max(estimate, 0.5) / 1.6
+        // τ paces the fill. Divisor 0.8 (≈ half of the natural 1.6) deliberately
+        // SLOWS the bar ~2×: it reads as steady progress the user can follow
+        // while they keep speaking, rather than rushing to the cap and sitting.
+        let tau = max(estimate, 0.5) / 0.8
         let raw = 1.0 - exp(-elapsed / tau)
         return min(raw, 0.94)
     }
@@ -1092,6 +1095,16 @@ private struct LoadingPlaceholderText: View {
                     .animation(.easeOut(duration: 0.18), value: value)
                     .accessibilityValue("\(Int(value * 100)) percent")
             }
+
+            // Reassurance: audio is captured into the streaming queue during the
+            // load and drained the instant the model is ready, so nothing spoken
+            // now is lost. Instructional, not a rhetorical nudge.
+            Text("Keep speaking — your words are saved and appear the moment loading finishes.")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .opacity(0.85)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 300, alignment: .leading)
         }
         .onAppear {
             startedAt = Date()
