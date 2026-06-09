@@ -54,6 +54,12 @@ background capture started in `ContentView.updateDictateTapObserver`.
 
 This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug fixes with no product-behavior change, internal refactors with no user-visible effect, one-off questions, and trivial copy/typo edits.
 
+## Where the code lives: consult `ARCHITECTURE.md`
+
+`features.md` is the **WHAT** (user-facing behavior); [`ARCHITECTURE.md`](ARCHITECTURE.md) is the **WHERE** — a coarse, stable code map at subsystem granularity (where each subsystem lives, its entry-point symbols, the cross-process/boundary invariants code-reading won't reveal, and a Code-map table keyed back to `features.md §`). **Read it before grepping** to locate the code for a feature, and to reason about blast radius.
+
+**Pair the edits.** When a change alters behavior, update `features.md §` AND — *only if the change crosses a subsystem/boundary* (a new subsystem, a moved boundary, a changed cross-process contract, a new invariant) — the matching `ARCHITECTURE.md` row/note in the same change. Most edits won't touch `ARCHITECTURE.md`; it is intentionally coarse so it survives refactors. Treat a stale row (moved file, dead invariant) as broken. See its own "Keeping this current" section.
+
 ## Style rules when editing `features.md`
 
 - **User-facing only.** No file paths, Swift class/struct/func/var names, framework names (`NotificationCenter`, `UserDefaults`, `App Group`, SwiftUI primitives), or library names (`FluidAudio`, `MLXLLM`, `Phi-4`). Exception: user-visible model labels shown in Settings UI (e.g. "Parakeet 600M (more accurate)") are fine because the user sees them on screen.
