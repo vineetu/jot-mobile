@@ -80,6 +80,12 @@ enum DiagnosticsCategory: String, Codable {
     /// ceiling — i.e. the app was jetsammed mid-recording. The keyboard
     /// recovered itself out of the zombie "recording" UI back to idle.
     case appUnresponsiveRecovery
+    /// Vocabulary gate (v1a) decision trace: a rescore ran (proposal count),
+    /// and per-term APPLY/BLOCK with the confidence + margin it fired at.
+    /// Surfaced in the in-app card so a term that doesn't get corrected can be
+    /// attributed to "the spotter never found it" (no record) vs "the gate
+    /// blocked it" (BLOCK record + numbers to tune).
+    case vocabularyGate
 }
 
 struct DiagnosticsEntry: Codable, Identifiable, Equatable {

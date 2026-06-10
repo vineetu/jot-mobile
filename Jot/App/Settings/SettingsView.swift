@@ -683,6 +683,23 @@ struct SettingsView: View {
 
                     cardDivider
 
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "stethoscope",
+                            tint: JotDesign.JotSemanticIcon.version,
+                            shaded: JotDesign.JotSemanticIcon.versionShaded,
+                            title: "Diagnostics",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Diagnostics")
+                    .accessibilityHint("Recent events from the keyboard and main app; copy and send to support.")
+
+                    cardDivider
+
                     Button {
                         handleRerunSetupTap()
                     } label: {
