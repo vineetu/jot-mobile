@@ -147,6 +147,13 @@ targets:
       # word. See App/Vocabulary/{CommonWords,VocabularyGate}.swift.
       - path: Resources/common-words.txt
         buildPhase: resources
+      # Bundled product-help corpus (distilled from features.md, pre-embedded
+      # with EmbeddingGemma) powering Ask's "how do I use Jot" lane. Regenerate
+      # via scripts/make-help-corpus.sh when features.md changes;
+      # scripts/check-help-corpus-fresh.sh guards staleness at build time.
+      # See App/Ask/HelpCorpus.swift + docs/ask-product-help/design.md.
+      - path: Resources/help-corpus.json
+        buildPhase: resources
       # Fraunces editorial typeface (SIL OFL). Phase 1 of the UX overhaul
       # bundles the 72pt opsz-keyed statics; UIAppFonts in
       # Resources/Info.plist registers them at runtime.

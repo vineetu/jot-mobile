@@ -476,7 +476,7 @@ The vocabulary boost is powered by a small additional on-device model (~100 MB) 
 ## 9. Help & Onboarding Reference
 
 ### 9.1 Help Screen
-A structured, scannable help reference accessible from the home header or from [Settings → About](#6-5-about--support) — presented as a modal sheet from home or a navigation push from Settings. It opens on **"What Jot does"** ([§9.7](#9-7-what-jot-does)), a tap-to-expand showcase of Jot's main features, followed by a **How Jot works** row that pushes [§9.2](#9-2-how-jot-works), a collapsible **Troubleshooting** section ([§9.5](#9-5-collapsible-troubleshooting)), a **Privacy** row that pushes [§9.4](#9-4-privacy-explainer), and a **Send feedback** row ([§9.6](#9-6-feedback-contact)).
+A structured, scannable help reference accessible from the home header or from [Settings → About](#6-5-about--support) — presented as a modal sheet from home or a navigation push from Settings. It opens on **"What Jot does"** ([§9.7](#9-7-what-jot-does)), a tap-to-expand showcase of Jot's main features, followed by a **How Jot works** row that pushes [§9.2](#9-2-how-jot-works), a collapsible **Troubleshooting** section ([§9.5](#9-5-collapsible-troubleshooting)), a **Privacy** row that pushes [§9.4](#9-4-privacy-explainer), and a **Send feedback** row ([§9.6](#9-6-feedback-contact)). This screen is the browsable form of the same product knowledge that [Ask Jot answers conversationally](#14-7-how-to-answers-about-jot).
 
 ### 9.2 How Jot Works
 A dedicated page (pushed from the Help screen's "How Jot works" row) walks through the basic Jot workflow — install keyboard, tap Jot down, swipe back, stop from the keyboard — as four numbered steps beside an animated mini-phone scene reused from the [Setup Wizard](#4-setup-wizard) (W4). An honest footnote explains the app-switch: iOS doesn't let keyboards use the mic directly, so Jot hops to the foreground to capture; if that ever changes, the hop goes away. Honors Reduce Motion (the animation freezes on its final frame).
@@ -586,7 +586,7 @@ Settings surfaces the claim: "Your words stay on your iPhone. No accounts, no cl
 
 ## 14. Ask Jot
 
-**Beta.** Natural-language question-answering over the user's own transcript library. Where [Live Search](#1-3-live-search) finds a remembered phrase and [AI Rewrite](#7-ai-rewrite) reshapes a single note, Ask Jot answers a *question* by reading across many notes at once and writing back a grounded answer. Reached from the [home Ask entry point](#1-12-ask-jot-entry-point); presented as a full-height sheet titled "Ask Jot" with a BETA tag.
+**Beta.** Natural-language question-answering over the user's own transcript library — and over how Jot itself works ([§14.7](#14-7-how-to-answers-about-jot)). Where [Live Search](#1-3-live-search) finds a remembered phrase and [AI Rewrite](#7-ai-rewrite) reshapes a single note, Ask Jot answers a *question* by reading across many notes at once and writing back a grounded answer. Reached from the [home Ask entry point](#1-12-ask-jot-entry-point); presented as a full-height sheet titled "Ask Jot" with a BETA tag.
 
 ### 14.1 Natural-Language Q&A
 The user asks a plain-language question ("what did I decide about the launch date?", "summarise my notes from last week") and Ask Jot returns a written answer drawn from the user's own transcripts — not generic knowledge. The answer streams in as it's written; while it's preparing, a short status line cycles through "Searching your notes…", a model-loading note if the answer model is cold, then light "thinking" messages until the first words arrive. The field shows no canned example prompts — the user asks their own thing.
@@ -605,6 +605,9 @@ By default Ask answers with Apple Intelligence (no download required). The user 
 
 ### 14.6 Availability
 The [home Ask entry point](#1-12-ask-jot-entry-point) appears only when the device has a capable answer model available, so Ask is never surfaced in a non-working state. When no model is available, Ask explains what's needed rather than failing silently.
+
+### 14.7 How-To Answers About Jot
+Ask also answers questions about how to use Jot itself — "how do I pause a recording?", "does the keyboard have a normal layout?", "what is [Warm Hold](#13-2-warm-hold)?" — not only questions about the user's own notes ([§14.1](#14-1-natural-language-qa)). Ask decides automatically which kind of question was asked: a how-to question about the app is answered from Jot's built-in help, while a question about the user's own dictations is answered from their notes — the user never has to pick a mode. A help answer is plain, practical guidance with no [citation chips](#14-3-cited-answers) (there is no personal note to point at), and it carries a small "From Jot's Help" label so it is never mistaken for an answer drawn from the user's own notes. The help knowledge is built into the app and everything stays [on this iPhone](#13-1-fully-on-device-processing). For the browsable version of the same material, see the in-app [Help screen](#9-help--onboarding-reference).
 
 ---
 

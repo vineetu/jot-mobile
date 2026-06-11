@@ -392,6 +392,13 @@ struct AskView: View {
             // was removed at the user's request.
             AskQuestionHeader(question: controller.question)
 
+            // Auto-routed help answers carry a small provenance label so the user
+            // knows this came from Jot's help, not their own notes. Shown the whole
+            // time the help answer is on screen (streaming + done).
+            if controller.answerCorpus == .help {
+                helpProvenanceLabel
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     typesetAnswer
@@ -411,6 +418,22 @@ struct AskView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Small "From Jot's Help" provenance chip for auto-routed product-help
+    /// answers. Not a citation — just tells the user which source answered.
+    private var helpProvenanceLabel: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "book.closed.fill")
+                .font(.system(size: 11, weight: .semibold))
+            Text("From Jot's Help")
+                .font(.system(size: 12, weight: .semibold))
+                .tracking(0.2)
+        }
+        .foregroundStyle(Self.accentInk)
+        .padding(.horizontal, 22)
+        .padding(.top, 8)
+        .accessibilityLabel("Answered from Jot's help, not your notes.")
     }
 
     /// Flowing typeset answer — no card. Wraps text and inline citation chips,
@@ -509,6 +532,14 @@ struct AskView: View {
     }
 
     private var attributionLine: String {
+        // Product-help answers searched the bundled help corpus, not the user's
+        // notes — never claim "N notes searched" for them.
+        if controller.answerCorpus == .help {
+            if let model = controller.answerBackend?.displayName {
+                return "Answered from Jot's Help with \(model) · on-device"
+            }
+            return "Answered from Jot's Help · on-device"
+        }
         let n = controller.retrievedTranscripts.count
         let searched = "\(n) \(n == 1 ? "note" : "notes") searched · on-device"
         if let model = controller.answerBackend?.displayName {
