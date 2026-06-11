@@ -213,9 +213,40 @@ public actor VocabularyRescorerHolder {
             frameDuration: spotResult.frameDuration
         )
 
+        // Visible in Help → Diagnostics: did the spotter propose anything at
+        // all? (0 proposals ⇒ the CTC spotter never found the term — a recall
+        // issue upstream of the gate, not something the gate can fix.)
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .vocabularyGate,
+            message: "rescore ran",
+            metadata: [
+                "proposals": "\(output.replacements.count)",
+                "modified": "\(output.wasModified)",
+            ]
+        )
+
         if output.wasModified {
-            log.info("rescored \(output.replacements.count) replacement(s)")
-            return output.text
+            // v1a — the GATE: re-check every proposed replacement so a custom
+            // term can never silently overwrite a confident, correct word.
+            // v1b — pass the owner's confirmed-mapping snapshot so a verdict
+            // ("when I say Jamie I mean Jamy") overrides the guard for that pair.
+            // Snapshot fetched once here (off the gate's synchronous hot loop).
+            // (docs/plans/adaptive-vocabulary-correction.md §3.2 / §0i / §0j)
+            let overrides = await CorrectionStore.shared.snapshot()
+            let gated = VocabularyGate.apply(
+                originalTranscript: transcript,
+                output: output,
+                tokenTimings: tokenTimings,
+                overrides: overrides
+            )
+            log.info(
+                "rescored \(output.replacements.count) proposal(s) → applied \(gated.applied), blocked \(gated.blocked.count, privacy: .public)"
+            )
+            // v1b — stash the proposals so the pipeline can persist them against
+            // the transcript id once it's minted (CorrectionProvenance.commit).
+            await CorrectionProvenance.shared.record(gated.proposals)
+            return gated.text
         }
         return transcript
     }

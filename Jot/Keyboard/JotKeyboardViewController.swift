@@ -105,6 +105,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// notification; the keyboard re-reads + re-renders the nudge strip. The
     /// two nudge actions write back (`warmHoldEnabled` / `nudgeSuppressed`).
     private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
+    private var correctionAsksReadyObserver: CrossProcessNotification.Observer?
 
     /// Live foreground-handshake state. On a Dictate "start", the keyboard pings
     /// the app and waits `foregroundPongTimeout` for `appForegroundPong`: a pong
@@ -242,6 +243,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// writes the two terminal actions back.
     private var showWarmHoldNudge = false
 
+    /// Whether the post-paste correction quick-review strip should render. Set
+    /// by `maybeShowCorrectionNudge` after a successful auto-paste when the app
+    /// has published asks for the just-pasted session; cleared on finish/dismiss.
+    private var showCorrectionNudge = false
+
+    /// The asks published by the app for the just-pasted session (read from the
+    /// App-Group bridge). Non-nil whenever `showCorrectionNudge` is true.
+    private var correctionAsks: CorrectionBridge.Asks?
+
     // MARK: - Haptic + audio feedback
 
     /// Owns the long-lived `UISelectionFeedbackGenerator` and
@@ -278,6 +288,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
+        startObservingCorrectionAsks()
         startObservingForegroundPong()
     }
 
@@ -298,6 +309,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         startObservingStreamingPartial()
         startObservingStreamingLoading()
         startObservingWarmHoldNudge()
+        startObservingCorrectionAsks()
         startObservingForegroundPong()
         refreshWarmHoldNudgeFromProjection()
         refreshPipelinePhase()
@@ -326,6 +338,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         streamingPartialObserver = nil
         streamingLoadingObserver = nil
         warmHoldNudgeObserver = nil
+        correctionAsksReadyObserver = nil
         foregroundPongObserver = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
@@ -512,6 +525,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onResumeRecording: { [weak self] in self?.handleResumeRecording() },
             onWarmHoldNudgeKeepMicReady: { [weak self] in self?.handleWarmHoldNudgeAccept() },
             onWarmHoldNudgeDismiss: { [weak self] in self?.handleWarmHoldNudgeDismiss() },
+            showCorrectionNudge: showCorrectionNudge,
+            correctionAsks: correctionAsks,
+            onCorrectionVerdict: { [weak self] key, verdict in
+                guard let self, let a = self.correctionAsks else { return }
+                CorrectionBridge.enqueueVerdict(
+                    .init(transcriptID: a.transcriptID, recordKey: key, verdict: verdict)
+                )
+            },
+            onCorrectionFinished: { [weak self] in
+                guard let self else { return }
+                self.showCorrectionNudge = false
+                self.correctionAsks = nil
+                CorrectionBridge.clearAsks()
+                self.renderRootView()
+            },
             feedback: feedback
         )
     }
@@ -585,6 +613,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         showWarmHoldNudge = false
         CrossProcessNotification.post(name: CrossProcessNotification.warmHoldNudgeChanged)
         renderRootView()
+    }
+
+    /// After a successful auto-paste, surface the correction quick-review strip
+    /// IFF the app published asks for this exact session. Yields to the warm-hold
+    /// nudge if that's already showing (one strip overlay at a time). Read +
+    /// render only — verdicts/teaching happen via the bridge; this never edits
+    /// the host's already-pasted text (teach-only).
+    private func maybeShowCorrectionNudge(sessionID: UUID) {
+        guard !showWarmHoldNudge else {
+            DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
+                message: "nudge skipped (warm-hold showing)", metadata: ["session": sessionID.uuidString])
+            return
+        }
+        let a = CorrectionBridge.readAsks(sessionID: sessionID)
+        DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
+            message: "nudge check",
+            metadata: ["found": "\(a?.asks.count ?? 0)", "matchedSession": "\(a != nil)",
+                       "session": sessionID.uuidString])
+        if let a, !a.asks.isEmpty {
+            correctionAsks = a
+            showCorrectionNudge = true
+            renderRootView()
+        }
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -1201,6 +1252,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 self.freshPreview = nil
                 self.hasPasteboardContent = UIPasteboard.general.hasStrings
                 self.renderRootView()
+                // Post-paste correction quick-review: if the app published asks
+                // for this session, take over the strip slot to collect verdicts.
+                self.maybeShowCorrectionNudge(sessionID: pendingSessionID)
             }
             return
         }
@@ -1341,6 +1395,32 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             name: CrossProcessNotification.warmHoldNudgeChanged
         ) { [weak self] in
             self?.refreshWarmHoldNudgeFromProjection()
+        }
+    }
+
+    private func startObservingCorrectionAsks() {
+        guard correctionAsksReadyObserver == nil else { return }
+        correctionAsksReadyObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.correctionAsksReady
+        ) { [weak self] in
+            self?.showCorrectionNudgeFromReady()
+        }
+    }
+
+    /// The app just published asks for the dictation we handled — read the latest
+    /// and show the nudge. This is the RELIABLE trigger (reading at paste time
+    /// races the publish, which happens after the ledger append). Yields to an
+    /// already-showing correction nudge or the warm-hold nudge; the topStrip
+    /// branch additionally hides it while recording.
+    private func showCorrectionNudgeFromReady() {
+        guard !showCorrectionNudge, !showWarmHoldNudge else { return }
+        let a = CorrectionBridge.readLatestAsks()
+        DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
+            message: "asks-ready", metadata: ["found": "\(a?.asks.count ?? 0)"])
+        if let a, !a.asks.isEmpty {
+            correctionAsks = a
+            showCorrectionNudge = true
+            renderRootView()
         }
     }
 

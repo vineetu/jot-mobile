@@ -107,21 +107,6 @@ final class StreamingPartial {
         // Force-publish on `isFinal` so the keyboard's volatile→primary
         // visual handoff isn't dropped by the throttle.
         Self.publishProjection(joined, force: isFinal)
-        // Diagnostic visibility into whether the streaming engine is
-        // actually emitting partials during recording. The Help →
-        // Diagnostics card surfaces these entries so a user reporting
-        // "no live preview text" can confirm at a glance whether the
-        // FluidAudio manager fired any partials at all.
-        DiagnosticsLog.record(
-            source: "main-app",
-            category: .streamingPartialReceived,
-            message: "streaming partial received",
-            metadata: [
-                "length": "\(text.count)",
-                "isFinal": "\(isFinal)",
-                "variant": "\(SpeechModelVariant.current().rawValue)",
-            ]
-        )
     }
 
     /// Clears the session token without touching displayed text. Called BEFORE

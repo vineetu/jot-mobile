@@ -93,6 +93,17 @@ struct TranscriptDetailView: View {
     @State private var isEditing = false
     @State private var editorText: String = ""
     @State private var editTargetTab: DetailTab = .original
+
+    /// Shared correction-review state (marks + accordion + bubble). Owned HERE,
+    /// above the `transcriptScrollContent` `.id(selectedTab)` boundary, so it
+    /// survives tab switches (plan §v2-F). Created in `.onAppear`.
+    @State private var correctionModel: CorrectionReviewModel?
+    /// The tap bubble anchored at a marked word (window-coord rect).
+    @State private var correctionBubble: CorrectionBubbleAnchor?
+    /// True while the bubble is dwelling on its resolved consequence line (1.3s).
+    /// Keeps the verdict's text-edit from auto-dismissing the bubble early so the
+    /// owner sees the consequence (handoff §word-bubble).
+    @State private var correctionBubbleResolving = false
     @State private var editError: String?
     // Plain @State (not @FocusState) so it can drive `InlineEditTextView`'s
     // first-responder via a Binding. The custom UITextView editor renders text
@@ -218,6 +229,17 @@ struct TranscriptDetailView: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .overlay { correctionBubbleOverlay }
+        .onChange(of: transcript.text) {
+            // Body text changed (a verdict edit, or a manual Edit-mode save) →
+            // re-resolve marks/offsets and drop the now-detached bubble. `.task`
+            // keys on transcript.id, which doesn't fire on a same-id mutation.
+            // EXCEPTION: while the bubble is dwelling on its resolved line after a
+            // pick that edited the text, keep it up — it dismisses itself on its
+            // own 1.3s timer (handoff §word-bubble).
+            if !correctionBubbleResolving { correctionBubble = nil }
+            Task { await correctionModel?.reload() }
+        }
         // Re-apply AFTER the chrome-hiding modifiers above — iOS disables
         // the interactive pop gesture when the back button is hidden, and
         // a root-level NavigationStack modifier can be undone by that
@@ -338,6 +360,11 @@ struct TranscriptDetailView: View {
             // run one. Falls back to Original when no rewrite is saved.
             if hasRewrite {
                 selectedTab = .rewrite
+            }
+            if correctionModel == nil {
+                let m = CorrectionReviewModel(transcript: transcript, modelContext: modelContext)
+                correctionModel = m
+                Task { await m.reload() }
             }
         }
         .onDisappear {
@@ -514,7 +541,8 @@ struct TranscriptDetailView: View {
                         // filler sweep baked in by the dictation pipeline, so
                         // just render `transcript.text` directly.
                         transcriptScrollContent(
-                            text: transcript.text
+                            text: transcript.text,
+                            showReview: true
                         )
                     case .rewrite:
                         // Display priority: user's edit > model's rewrite.
@@ -585,20 +613,129 @@ struct TranscriptDetailView: View {
     /// (fills the viewport between the tab pill and ActionBar); the ScrollView
     /// inside lets long transcripts scroll without growing the card.
     @ViewBuilder
-    private func transcriptScrollContent(text: String) -> some View {
+    private func transcriptScrollContent(text: String, showReview: Bool = false) -> some View {
         ScrollView {
-            Text(text)
-                .font(.system(size: 17, weight: .regular, design: .default))
-                .tracking(-0.1)
-                .lineSpacing(4)
-                .foregroundStyle(Color.jotPageInk)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
+            VStack(spacing: 0) {
+                if showReview, let model = correctionModel {
+                    // Original tab: render the body so gated words can be marked
+                    // + tapped (read-only, still selectable). Tapping a mark opens
+                    // the review bubble anchored at the word.
+                    MarkedTranscriptText(
+                        text: transcript.text,
+                        marks: model.marks(),
+                        flash: model.flash,
+                        onTapMark: { key, rect in
+                            if let r = model.record(forKey: key) {
+                                correctionBubble = CorrectionBubbleAnchor(record: r, rect: rect)
+                            }
+                        })
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+
+                    CorrectionReviewSection(model: model)
+                        .padding(.bottom, 12)
+                } else {
+                    Text(text)
+                        .font(.system(size: 17, weight: .regular, design: .default))
+                        .tracking(-0.1)
+                        .lineSpacing(4)
+                        .foregroundStyle(Color.jotPageInk)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                }
+            }
+        }
+        // The correction bubble is anchored at the word's tap-time rect, so any
+        // scroll detaches it from the word. Drop it the instant the content
+        // offset moves. `onScrollGeometryChange` (iOS 18+) fires on every
+        // offset change, including a small finger drag — unlike
+        // `onScrollPhaseChange`, which only fires on phase transitions.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y
+        } action: { _, _ in
+            if correctionBubble != nil { correctionBubble = nil }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(selectedTab)
+    }
+
+    // MARK: - Correction tap bubble
+
+    struct CorrectionBubbleAnchor {
+        let record: CorrectionProvenance.Record
+        let rect: CGRect   // word frame in window coordinates
+    }
+
+    @ViewBuilder
+    private var correctionBubbleOverlay: some View {
+        if let b = correctionBubble {
+            GeometryReader { geo in
+                // The word rect is in WINDOW coordinates; map it into this
+                // overlay's local space by subtracting the overlay's own global
+                // origin (don't assume window == local — that put the bubble a
+                // safe-area-inset too low).
+                let origin = geo.frame(in: .global).origin
+                let local = b.rect.offsetBy(dx: -origin.x, dy: -origin.y)
+                // Tap-catcher: tap anywhere outside the bubble to dismiss.
+                // Stop short of the bottom ActionBar zone (~110pt incl. the
+                // home-indicator safe area this overlay ignores) so it doesn't
+                // eat the first tap on the action bar / back chevron — those
+                // controls dismiss the bubble themselves on the next tap.
+                Color.black.opacity(0.0001)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(0, geo.size.height - 110))
+                    .contentShape(Rectangle())
+                    .onTapGesture { correctionBubble = nil }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                let leftX = bubbleX(local, in: geo.size.width)
+                let above = bubbleFlipsAbove(local, in: geo.size.height)
+                CorrectionBubble(
+                    record: b.record,
+                    // Arrow points at the word's center, relative to the bubble's
+                    // left edge.
+                    arrowX: local.midX - leftX,
+                    above: above,
+                    onPick: { choice in
+                        correctionBubbleResolving = true
+                        if let model = correctionModel {
+                            Task { await model.pick(b.record, choice: choice) }
+                        }
+                    },
+                    onResolvedDismiss: {
+                        correctionBubbleResolving = false
+                        correctionBubble = nil
+                    })
+                    .offset(x: leftX, y: bubbleY(local, in: geo.size.height))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .ignoresSafeArea()
+            // Handoff: translateY rise over 0.28s, NO opacity fade. A move
+            // transition gives the rise, animated by the 0.28s signature ease
+            // driven off the bubble's presence.
+            .transition(.move(edge: .top))
+            .animation(.timingCurve(0.45, 0.02, 0.2, 1, duration: 0.28), value: correctionBubble != nil)
+        }
+    }
+
+    /// Whether the bubble flips ABOVE the word (mirrors `bubbleY`'s flip test).
+    private func bubbleFlipsAbove(_ rect: CGRect, in height: CGFloat) -> Bool {
+        let estBubbleH: CGFloat = 120
+        return !(rect.maxY + 8 + estBubbleH < height)
+    }
+
+    /// Bubble left edge — centered under the word, clamped on-screen (272 wide).
+    private func bubbleX(_ rect: CGRect, in width: CGFloat) -> CGFloat {
+        let bubbleW: CGFloat = 272
+        return min(max(rect.midX - bubbleW / 2, 12), max(12, width - bubbleW - 12))
+    }
+    /// Bubble top — below the word, flipped above when near the bottom.
+    private func bubbleY(_ rect: CGRect, in height: CGFloat) -> CGFloat {
+        let estBubbleH: CGFloat = 120
+        if rect.maxY + 8 + estBubbleH < height { return rect.maxY + 8 }
+        return max(12, rect.minY - 8 - estBubbleH)
     }
 
     private var attributionLine: some View {

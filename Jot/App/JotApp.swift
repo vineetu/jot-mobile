@@ -195,6 +195,21 @@ struct JotApp: App {
         // purges. Detached + best-effort, does not block launch.
         TranscriptionService.sweepOrphanedPurgingDirs()
 
+        // Vocabulary boosting: prepare the rescorer at LAUNCH if the user has it
+        // enabled. It was previously prepared ONLY while the Vocabulary Settings
+        // screen was open — so a cold keyboard-bounced process (which never opens
+        // Settings) left `VocabularyRescorerHolder` un-prepared, `rescore()` hit
+        // its `guard let spotter…` and returned nil, and EVERY vocab correction
+        // silently no-op'd. Best-effort + detached; the rescore path falls back to
+        // the raw transcript if this hasn't finished yet.
+        Task { @MainActor in
+            guard VocabularyStore.shared.isEnabled,
+                CtcModelCache.shared.isCached,
+                let vocabURL = VocabularyStore.shared.fileURL
+            else { return }
+            try? await VocabularyRescorerHolder.shared.prepare(vocabularyFileURL: vocabURL)
+        }
+
         // Per-launch defensive: exclude FluidAudio's downloaded speech-model
         // weights from iCloud Device Backup. The weights live at
         // `Library/Application Support/FluidAudio/Models/` (NOT in Caches/
@@ -491,6 +506,11 @@ struct JotApp: App {
                     if newPhase == .active {
                         handleSceneActive()
                         startForegroundHeartbeat()
+                        // Apply any correction verdicts the owner gave in the
+                        // keyboard quick-review while Jot was backgrounded.
+                        Task { @MainActor in
+                            await CorrectionInbox.drain(modelContext: ModelContext(JotModelContainer.shared))
+                        }
                     } else if newPhase == .background {
                         // Tear down ONLY on a true background. `.inactive` is
                         // transient — a custom keyboard taking focus, a banner,

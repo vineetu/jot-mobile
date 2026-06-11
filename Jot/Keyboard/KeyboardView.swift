@@ -132,6 +132,24 @@ struct KeyboardView: View {
     /// no confirm: permanent suppression.
     let onWarmHoldNudgeDismiss: () -> Void
 
+    /// Correction quick-review — when true, the keyboard renders the post-paste
+    /// correction-review strip over the strip area (higher priority than the
+    /// warm-hold nudge). The app publishes the asks keyed by sessionID; the
+    /// keyboard reads them after a successful paste and shows this surface.
+    let showCorrectionNudge: Bool
+
+    /// The asks to adjudicate (already validated to match the just-pasted
+    /// session). Non-nil whenever `showCorrectionNudge` is true.
+    let correctionAsks: CorrectionBridge.Asks?
+
+    /// (recordKey, verdict) — the owner picked a word; the controller enqueues
+    /// a verdict event back to the app. verdict is "term" | "original".
+    let onCorrectionVerdict: (String, String) -> Void
+
+    /// The review flow finished (or was dismissed) — drop the strip slot back
+    /// to recents and clear the published asks.
+    let onCorrectionFinished: () -> Void
+
     let feedback: KeyboardFeedback
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -282,7 +300,21 @@ struct KeyboardView: View {
         // the app flags it (it only fires post-stop, so the strip is showing
         // recents — never the live stream — at that moment). One-shot, off the
         // shared App-Group boolean.
-        if showWarmHoldNudge && !recordingState.isRecording {
+        if showCorrectionNudge, !recordingState.isRecording, let asks = correctionAsks {
+            CorrectionReviewStrip(
+                asks: asks.asks,
+                totalUnresolved: asks.totalUnresolved,
+                reduceMotion: reduceMotion,
+                feedback: feedback,
+                onVerdict: onCorrectionVerdict,
+                onFinished: onCorrectionFinished
+            )
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top))
+            )
+        } else if showWarmHoldNudge && !recordingState.isRecording {
             WarmHoldNudgeStrip(
                 reduceMotion: reduceMotion,
                 onKeepMicReady: onWarmHoldNudgeKeepMicReady,

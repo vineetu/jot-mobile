@@ -422,6 +422,15 @@ enum DictationPipeline {
                         cleaned: cleanedText,
                         duration: duration
                     )
+                    // v1b — persist the gate's proposals against the now-saved
+                    // transcript id so the pane can show them for review.
+                    await CorrectionProvenance.shared.commit(transcriptID: transcriptID)
+                    // Phase 2 — publish the ≤3 highest-value asks to the App Group
+                    // so the keyboard can show its post-dictation quick-review.
+                    await CorrectionAsksPublisher.publish(
+                        transcriptID: transcriptID,
+                        sessionID: resolvedSessionID,
+                        publishedText: publishedText)
                 } catch {
                     logger.error(
                         "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"

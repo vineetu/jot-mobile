@@ -588,6 +588,24 @@ final class TranscriptionService {
             // if FluidAudio ever returns nil here the rescore is
             // skipped. Mirrors `jot/Sources/Transcription/Transcriber.swift:117`.
             var transcriptText = result.text
+            // v1b — start every dictation with an empty correction-provenance
+            // slot so a stale `pending` (from a no-proposal dictation, or from a
+            // non-saving caller like Ask/watch/file-import) can never be committed
+            // under this transcript's id.
+            await CorrectionProvenance.shared.clearPending()
+            // Diagnostic: does the batch+rescore path even run for THIS dictation,
+            // and are its preconditions met? If this record never appears for a
+            // keyboard/live dictation, that path uses streaming output (no vocab).
+            DiagnosticsLog.record(
+                source: "main-app",
+                category: .vocabularyGate,
+                message: "batch transcribe finished",
+                metadata: [
+                    "enabled": "\(VocabularyStore.shared.isEnabled)",
+                    "hasTimings": "\(result.tokenTimings != nil)",
+                    "chars": "\(result.text.count)",
+                ]
+            )
             if VocabularyStore.shared.isEnabled, let timings = result.tokenTimings {
                 do {
                     if let rescored = try await VocabularyRescorerHolder.shared.rescore(

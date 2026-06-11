@@ -113,6 +113,15 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.warm-hold-nudge-changed"
     )
 
+    /// Posted by the app AFTER it writes the keyboard correction "asks" to the
+    /// App Group (which happens a beat after the clipboard publish + paste). The
+    /// keyboard shows its quick-review nudge on THIS signal, not at paste time —
+    /// otherwise it reads the asks before they exist (the asks are published after
+    /// the SwiftData ledger append). See `CorrectionAsksPublisher`.
+    static let correctionAsksReady = Name(
+        rawValue: "com.vineetu.jot.mobile.correction-asks-ready"
+    )
+
     /// Live foreground handshake ("ping/pong") that decides whether a keyboard
     /// Dictate tap records INLINE (Jot is the foreground host) or cold-starts via
     /// the URL bounce (Jot is backgrounded / another app is foreground).
