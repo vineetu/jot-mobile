@@ -423,7 +423,9 @@ enum DictationPipeline {
                         duration: duration
                     )
                     // v1b — persist the gate's proposals against the now-saved
-                    // transcript id so the pane can show them for review.
+                    // transcript id so the pane can show them for review (the
+                    // anchor baseline — the gate-output text — was captured at
+                    // record() time inside the rescore).
                     await CorrectionProvenance.shared.commit(transcriptID: transcriptID)
                     // Phase 2 — publish the ≤3 highest-value asks to the App Group
                     // so the keyboard can show its post-dictation quick-review.

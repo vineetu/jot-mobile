@@ -59,7 +59,7 @@ The sole off-device transmission is the **user-initiated feedback POST** (plus a
 - Foreground heartbeat ticks faster (1s) than `AppGroup.isJotAppForeground()`'s 2.5s window, with one synchronous write at start so the first keyboard read isn't stale.
 - Save/no-save is decided at the STOP site: `stopAndPublish` gates on `applicationState == .active` SPECIFICALLY (not `!= .background`).
 - `PipelinePhaseProjection` is the SINGLE cross-process source of truth for recording state; `JotApp.init` must reset it (and clear `warmHoldExpiresAt`) on launch.
-- Ask is the SOLE remaining user of `InlineDictationSession`/`ownsActiveRecording`; every other start path must defensively clear `ownsActiveRecording=false` before `start()`.
+- `ownsActiveRecording` is the generic "an in-app surface OWNS this recording" signal (stop-routing bails, warm-hold-nudge ring skips, return pill suppressed, interruption-publish gated). TWO sanctioned claimants: Ask's `InlineDictationSession` and the rewrite picker's voice-prompt capture (`RewritePickerSheet.VoicePromptCapture`). Every NON-owning start path must defensively clear `ownsActiveRecording=false` before `start()`; a claimant must clear it on every terminal.
 - `onOpenURL` branches on `url.host`: rewrite/history/transcript are handled-and-returned WITHOUT auto-start; only the dictate/plain fall-through calls `triggerAutoStart`.
 - Hero presents from exactly 3 triggers (FAB, cold `jot://dictate`, return pill); nothing adopts `isRecording`. In-Jot `keyboardDictateTapped` starts a background capture and presents NO hero.
 - Use `.modelContainer(JotModelContainer.shared)` — NOT `.modelContainer(for:)` (headless intents write without a scene).
@@ -78,7 +78,8 @@ The sole off-device transmission is the **user-initiated feedback POST** (plus a
 - Hero presentation is **source-based** (FAB / cold `jot://dictate` / return pill); the "adopt-unless-vetoed" model was deleted.
 - `ModelLoadTimekeeper`'s bar is NOT a byte percentage — it's paced against this device's prior measured load duration and eases-then-waits past the estimate.
 - Warm-hold publishes via AppGroup (`warmHoldExpiresAt` + ~1s `warmHoldHeartbeat`); a stale heartbeat reads as expired; publication defers until `markPipelineFinished` if a pipeline is in flight.
-- `InlineDictationSession` is the ONLY sanctioned inline path and is now Ask-exclusive.
+- `InlineDictationSession` (the TYPE) remains Ask-exclusive. The rewrite voice prompt deliberately does NOT use it — `VoicePromptCapture` (in `App/Rewrite/RewritePickerSheet.swift`) replicates its four lifecycle invariants against the raw `RecordingService`/`TranscriptionService` primitives and claims `ownsActiveRecording` the same way.
+- Interruption-publish contract: an audio-session interruption (call/Siri/route change) publishes the captured audio through the normal pipeline ONLY for un-owned captures (real dictations should still deliver); when `ownsActiveRecording` is true the publish is skipped — the owning surface (Ask, voice prompt) handles its own failure UX, and an interrupted inline capture must never save a transcript or touch the clipboard.
 **Blast radius.** Upstream callers: ContentView (in-Jot tap), JotApp (warm-resume + auto-start), RecordingHeroView (FAB), DictateIntent, SetupWizardView (W5), Ask. Downstream: feeds `StreamingBufferQueue → StreamingTranscriptionService` (live) and `TranscriptionService`/`DictationPipeline` (final); publishes phase via `RecordingPipelineDispatch`/`PipelinePhaseProjection` + `pipelinePhaseChanged`. The `PipelinePhase` enum lives in `Shared/`, not here.
 
 ### Transcription & ASR models

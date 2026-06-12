@@ -1010,7 +1010,7 @@ struct ContentView: View {
     /// Then open the donations page in Safari and hide the card.
     private func handleDonationCardOpen() {
         DictationStats.donationCardState = .donated
-        if let url = URL(string: "https://jot.ideaflow.page/donations") {
+        if let url = URL(string: "https://jot-transcribe.com/donations/") {
             UIApplication.shared.open(url)
         }
         withAnimation(.easeInOut(duration: 0.3)) {

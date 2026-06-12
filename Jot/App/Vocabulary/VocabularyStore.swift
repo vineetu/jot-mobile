@@ -118,6 +118,63 @@ final class VocabularyStore {
         return new
     }
 
+    /// Add `text` as a term (dedup, case-insensitive), optionally attaching the
+    /// mis-transcription it was `heardAs` as a "sounds like" alias — the alias
+    /// feeds the rescorer's string matching directly, so the same mis-hear gets
+    /// caught acoustically next time. If the term already exists, only the alias
+    /// is merged in. Returns the CANONICAL stored term text (post file-format
+    /// sanitizing — callers recording learning mappings must key on this, not on
+    /// what was typed), or nil when nothing valid was stored. Drives the
+    /// transcript pane's selection-menu "Add to Vocabulary" (the mobile
+    /// Vocabulary UI has no aliases field — currently the only alias writer).
+    @discardableResult
+    func addTerm(_ text: String, heardAs: String? = nil) -> String? {
+        // The plain-text simple format has structural characters — ":" splits
+        // term from aliases, "," splits aliases, leading "#" comments the line
+        // out. A typed term carrying them would corrupt the file on the next
+        // parse (silently mutating or DELETING entries), so they're stripped
+        // here at the single write choke point.
+        let trimmed = Self.fileSafe(text, isAlias: false)
+        guard !trimmed.isEmpty else { return nil }
+        let alias: String? = heardAs.map { Self.fileSafe($0, isAlias: true) }
+
+        var changed = false
+        if let idx = terms.firstIndex(where: {
+            !$0.isBlank && $0.text.compare(trimmed, options: .caseInsensitive) == .orderedSame
+        }) {
+            if let alias, !alias.isEmpty,
+               alias.compare(trimmed, options: .caseInsensitive) != .orderedSame,
+               !terms[idx].aliases.contains(where: { $0.compare(alias, options: .caseInsensitive) == .orderedSame }) {
+                terms[idx].aliases.append(alias)
+                changed = true
+            }
+        } else {
+            let aliases: [String] = {
+                guard let alias, !alias.isEmpty,
+                      alias.compare(trimmed, options: .caseInsensitive) != .orderedSame else { return [] }
+                return [alias]
+            }()
+            terms.append(VocabTerm(text: trimmed, aliases: aliases))
+            changed = true
+        }
+        if changed { save() }
+        return trimmed
+    }
+
+    /// Strip the simple format's structural characters from a term/alias value:
+    /// ":" always (term/alias delimiter), "," for aliases (alias separator),
+    /// leading "#" (comment marker), then collapse whitespace. NOTE: the
+    /// Settings rows' free-text editing (`update(id:text:)`) predates this and
+    /// is NOT yet routed through here — tracked with the vocabulary-section
+    /// overhaul (plan §12).
+    private static func fileSafe(_ s: String, isAlias: Bool) -> String {
+        var out = s.replacingOccurrences(of: ":", with: " ")
+        if isAlias { out = out.replacingOccurrences(of: ",", with: " ") }
+        out = out.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        while out.hasPrefix("#") { out.removeFirst() }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
     func delete(id: VocabTerm.ID) {
         terms.removeAll { $0.id == id }
         save()

@@ -11,13 +11,16 @@ import os.log
 /// no brake — it fires even on a 0.998-confidence correct word (the shipped
 /// over-correction bug: adding "Jamy" turned every "name" into "Jamy"). This
 /// gate adds the brake:
-///   1. **Common-word guard** — never overwrite an everyday word (frequency set)
-///      unless the override is earned.
+///   1. **Plausibility** — the heard word must be an acoustic cousin of the
+///      term/alias (edit-distance bound). Kills "Vikram"→"Sriram"-class garbage.
 ///   2. **Confidence ceiling** — never auto-correct a word the TDT transcriber
 ///      was very sure about (the 0.998 protector).
-///   3. **Earned override** — a shaky word, or a term that wins by a large
+///   3. **Common-word guard** — never overwrite an everyday word (frequency set)
+///      unless the override is earned.
+///   4. **Earned override** — a shaky word, or a term that wins by a large
 ///      margin, may still be corrected.
-/// Multi-word phrase *terms* ("Claude Code") are precise and self-gating → allowed.
+/// Multi-word phrase *terms* ("Claude Code") are precise and self-gating → allowed
+/// (but only after plausibility).
 ///
 /// Per-occurrence: TDT gives a separate confidence for each word occurrence
 /// (no FluidAudio fork needed). See docs/plans/adaptive-vocabulary-correction.md
@@ -58,9 +61,10 @@ enum VocabularyGate {
         // (pre-rescore) transcript. Immutable provenance → safe as a verdict key.
         let originalStart: Int
         let originalLength: Int
-        // Render/edit HINT: char span in the PUBLISHED text. Re-validated at
-        // render (substring must equal the displayed word); proximity-anchored
-        // if the user has edited the transcript since.
+        // Char span in the GATE-OUTPUT text. Becomes the provenance record's
+        // LIVE anchor — kept valid across every later text change by
+        // CorrectionProvenance's reconcile; resolution is strict (exact offset
+        // or fail-safe), never proximity-guessed.
         let publishedStart: Int
         let publishedLength: Int
     }
@@ -85,7 +89,8 @@ enum VocabularyGate {
         originalTranscript: String,
         output: VocabularyRescorer.RescoreOutput,
         tokenTimings: [TokenTiming],
-        overrides: [CorrectionStore.OverrideEntry] = []
+        overrides: [CorrectionStore.OverrideEntry] = [],
+        termAliases: [String: [String]] = [:]
     ) -> Result {
         guard output.wasModified, !output.replacements.isEmpty else {
             return Result(text: output.text, applied: 0, blocked: [], proposals: [])
@@ -118,7 +123,9 @@ enum VocabularyGate {
                 continue
             }
             occurrence[key] = n + 1
-            let d = decide(r, wordConfidence: wordConfidence, overrides: overrides)
+            let d = decide(
+                r, wordConfidence: wordConfidence, overrides: overrides,
+                aliases: termAliases[(r.replacementWord ?? "").lowercased()] ?? [])
             log.info(
                 "gate \(r.originalWord, privacy: .public)→\(r.replacementWord ?? "—", privacy: .public): conf=\(d.confidence, format: .fixed(precision: 3)) margin=\(d.margin, format: .fixed(precision: 2)) \(d.label, privacy: .public)"
             )
@@ -190,7 +197,8 @@ enum VocabularyGate {
     private static func decide(
         _ r: VocabularyRescorer.RescoringResult,
         wordConfidence: [String: Float],
-        overrides: [CorrectionStore.OverrideEntry]
+        overrides: [CorrectionStore.OverrideEntry],
+        aliases: [String]
     ) -> (pass: Bool, confidence: Float, margin: Float, label: String, unsure: Bool) {
         let margin = (r.replacementScore ?? r.originalScore) - r.originalScore
         let base = normalize(r.originalWord)
@@ -229,24 +237,88 @@ enum VocabularyGate {
             }
         }
 
-        // (1) A multi-word vocabulary TERM is precise and self-gating.
+        // (1) PLAUSIBILITY — the heard word must be an acoustically plausible
+        //     cousin of the term (or of ANY of its aliases — an alias is the user
+        //     TELLING us the pair is plausible). The CTC matcher fuzzy-matches
+        //     with a low similarity floor and concatenates neighbouring words, so
+        //     it can propose "Vikram"→"Sriram" or "Ramanathan"→"Ramaa" — half the
+        //     letters different. No acoustic margin makes those right. Spaces are
+        //     ignored in the measure so a merged ASR word ("ramanathan") scores
+        //     fairly against a multi-word term ("Ramaa Nathan"). Sits after (0)
+        //     so an owner-confirmed mapping (net ≥ 1) is never second-guessed,
+        //     and BEFORE the multi-word fast-path so it closes that bypass too.
+        //     A block here still emits a reviewable "kept" record — confirming
+        //     it in review teaches the exception (net ≥ 1 → step 0 override).
+        if !plausible(original: base, term: term, aliases: aliases) {
+            return (false, confidence, margin, "BLOCK", unsure)
+        }
+
+        // (2) A multi-word vocabulary TERM is precise and self-gating.
         if term.contains(" ") {
             return (true, confidence, margin, "APPLY", unsure)
         }
-        // (2) Never overwrite a very confident word unless the term wins big.
+        // (3) Never overwrite a very confident word unless the term wins big.
         if confidence >= confidenceCeiling && margin <= earnedMargin {
             return (false, confidence, margin, "BLOCK", unsure)
         }
-        // (3) Everyday word → NEVER silently rewrite (plan §v2-B). A common word
+        // (4) Everyday word → NEVER silently rewrite (plan §v2-B). A common word
         //     is always proposed-and-asked per occurrence; the only paths that
         //     auto-apply are the rare/OOV override (step 0) and multi-word terms
-        //     (step 1), both above. This is the headline "every name becomes Jamy"
+        //     (step 2), both above. This is the headline "every name becomes Jamy"
         //     protection — a common original is surfaced for review, never swapped.
         if isCommon {
             return (false, confidence, margin, "BLOCK", unsure)
         }
-        // (4) OOV-ish word (a likely name/jargon mis-hear) → allow.
+        // (5) OOV-ish word (a likely name/jargon mis-hear) → allow.
         return (true, confidence, margin, "APPLY", unsure)
+    }
+
+    // MARK: - Plausibility (guard 1)
+
+    /// Max normalized edit distance (Levenshtein over letter-skeletons, divided
+    /// by the longer skeleton) for the heard word to count as an acoustic cousin
+    /// of the term. Measured on real pairs: shriram→sriram 0.14, cloud→claude
+    /// 0.33, jamie→jamy 0.40 (all pass); vikram→sriram 0.50, ramanathan→ramaa
+    /// 0.50, name→jamy 0.50 (all block).
+    static let plausibilityCeiling: Double = 0.45
+
+    private static func plausible(original: String, term: String, aliases: [String]) -> Bool {
+        let heard = skeleton(original)
+        guard !heard.isEmpty else { return true }
+        for candidate in [term] + aliases {
+            let c = skeleton(candidate)
+            guard !c.isEmpty else { continue }
+            let ratio = Double(levenshtein(heard, c)) / Double(max(heard.count, c.count))
+            if ratio <= plausibilityCeiling { return true }
+        }
+        return false
+    }
+
+    /// Lowercased alphanumerics only — spaces and punctuation dropped so a
+    /// merged ASR word ("ramanathan") measures fairly against a multi-word
+    /// term ("Ramaa Nathan" → "ramaanathan").
+    private static func skeleton(_ s: String) -> [Character] {
+        s.lowercased().unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(Character.init)
+    }
+
+    /// Plain two-row Levenshtein. Inputs are short (words/short phrases), so
+    /// O(a·b) is trivially cheap even on the transcription hot path.
+    private static func levenshtein(_ a: [Character], _ b: [Character]) -> Int {
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var prev = Array(0...b.count)
+        var cur = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            cur[0] = i
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                cur[j] = Swift.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            swap(&prev, &cur)
+        }
+        return prev[b.count]
     }
 
     // MARK: - Helpers

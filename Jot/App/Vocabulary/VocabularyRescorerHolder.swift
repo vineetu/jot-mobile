@@ -146,7 +146,7 @@ public actor VocabularyRescorerHolder {
             return CustomVocabularyTerm(
                 text: term.text,
                 weight: term.weight,
-                aliases: term.aliases,
+                aliases: Self.enrichedAliases(text: term.text, aliases: term.aliases),
                 tokenIds: nil,
                 ctcTokenIds: ids
             )
@@ -181,6 +181,26 @@ public actor VocabularyRescorerHolder {
         self.vocabulary = vocab
         self.rescorer = rescorer
         log.info("vocabulary loaded: \(vocab.terms.count) term(s) active")
+    }
+
+    /// **Merged-word fix.** ASR can collapse a spoken multi-word term into ONE
+    /// word ("Ramaa Nathan" heard as "Ramanathan"). FluidAudio's matcher only
+    /// compares multi-word term forms against multi-word ASR spans, so without
+    /// help the term never even competes for the merged word — and a shorter
+    /// term ("Ramaa") wins it by default. Feeding the space-stripped form as an
+    /// extra alias gives the matcher a single-word form ("RamaaNathan" →
+    /// normalized "ramaanathan") that scores ~0.9 against any merged rendering.
+    /// Injected at FEED time only — the user's vocabulary.txt is never rewritten.
+    static func enrichedAliases(text: String, aliases: [String]?) -> [String]? {
+        let words = text.split(separator: " ")
+        guard words.count > 1 else { return aliases }
+        let merged = words.joined()
+        var out = aliases ?? []
+        let mergedLower = merged.lowercased()
+        if !out.contains(where: { $0.lowercased() == mergedLower }) {
+            out.append(merged)
+        }
+        return out.isEmpty ? nil : out
     }
 
     /// Run the rescorer over a TDT-produced transcript. Returns the
@@ -234,18 +254,34 @@ public actor VocabularyRescorerHolder {
             // Snapshot fetched once here (off the gate's synchronous hot loop).
             // (docs/plans/adaptive-vocabulary-correction.md §3.2 / §0i / §0j)
             let overrides = await CorrectionStore.shared.snapshot()
+            // Alias map for the gate's plausibility guard — a user alias
+            // ("Vinny" for "Vineet") is the user vouching that the pair is
+            // acoustically plausible, so the guard must measure against it.
+            // Built from the ENRICHED terms, so the auto merged-form alias of
+            // multi-word terms is included.
+            var termAliases: [String: [String]] = [:]
+            for t in vocabulary.terms {
+                if let a = t.aliases, !a.isEmpty {
+                    termAliases[t.text.lowercased(), default: []] += a
+                }
+            }
             let gated = VocabularyGate.apply(
                 originalTranscript: transcript,
                 output: output,
                 tokenTimings: tokenTimings,
-                overrides: overrides
+                overrides: overrides,
+                termAliases: termAliases
             )
             log.info(
                 "rescored \(output.replacements.count) proposal(s) → applied \(gated.applied), blocked \(gated.blocked.count, privacy: .public)"
             )
             // v1b — stash the proposals so the pipeline can persist them against
             // the transcript id once it's minted (CorrectionProvenance.commit).
-            await CorrectionProvenance.shared.record(gated.proposals)
+            // gated.text rides along as the anchor baseline: it's the ONLY text
+            // the proposals' publishedStart offsets are valid for — downstream
+            // transforms (segmenter/filler/number/cleanup) shift the text, and
+            // the provenance reconcile absorbs that drift by diffing from here.
+            await CorrectionProvenance.shared.record(gated.proposals, gatedText: gated.text)
             return gated.text
         }
         return transcript

@@ -28,6 +28,10 @@ struct MarkedTranscriptText: UIViewRepresentable {
     var flash: Flash?
     /// (record key, word rect in WINDOW coordinates) — for anchoring the bubble.
     var onTapMark: (String, CGRect) -> Void
+    /// Selection-menu "Add to Vocabulary": called with the sanitized selected
+    /// text and its NSRange in `text` (for the confirmation flash). nil hides
+    /// the menu item entirely.
+    var onAddToVocabulary: ((String, NSRange) -> Void)?
 
     struct Flash: Equatable {
         let range: NSRange
@@ -49,6 +53,8 @@ struct MarkedTranscriptText: UIViewRepresentable {
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.cancelsTouchesInView = false
         tv.addGestureRecognizer(tap)
+        // Delegate solely for the selection edit menu ("Add to Vocabulary").
+        tv.delegate = context.coordinator
         context.coordinator.textView = tv
         return tv
     }
@@ -118,7 +124,7 @@ struct MarkedTranscriptText: UIViewRepresentable {
 
     // MARK: - Coordinator (taps)
 
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkedTranscriptText
         weak var textView: UITextView?
         /// Last flash token we animated, so a re-render with the same token
@@ -168,6 +174,69 @@ struct MarkedTranscriptText: UIViewRepresentable {
                 }
                 CATransaction.commit()
             }
+        }
+
+        // MARK: Selection edit menu — "Add to Vocabulary"
+
+        /// Appends "Add to Vocabulary" to the system selection menu (Copy /
+        /// Look Up / Translate) when the selection trims to a plausible term
+        /// and isn't one already. The SELECTION and the RANGE handed to the
+        /// callback are the SAME trimmed span — the confirm step compares
+        /// substring(range) == selected before replacing, so handing it the
+        /// sanitized string with the raw range would make the text fix
+        /// silently no-op on any selection with edge punctuation (review R3
+        /// finding 1).
+        func textView(
+            _ textView: UITextView,
+            editMenuForTextIn range: NSRange,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            guard let onAdd = parent.onAddToVocabulary,
+                  let (selected, trimmedRange) = Self.trimmedSelection(
+                      in: textView.text as NSString, range: range),
+                  Self.isPlausibleTerm(selected),
+                  !VocabularyStore.shared.terms.contains(where: {
+                      !$0.isBlank && $0.text.compare(selected, options: .caseInsensitive) == .orderedSame
+                  })
+            else { return UIMenu(children: suggestedActions) }
+            let add = UIAction(
+                title: "Add to Vocabulary",
+                image: UIImage(systemName: "text.badge.plus")
+            ) { _ in
+                onAdd(selected, trimmedRange)
+            }
+            return UIMenu(children: suggestedActions + [add])
+        }
+
+        /// The selection with edge whitespace + punctuation trimmed, as the
+        /// EXACT (substring, range) pair — both sides of the later
+        /// "is the text still what was selected" check come from here.
+        static func trimmedSelection(in ns: NSString, range: NSRange) -> (String, NSRange)? {
+            guard range.location >= 0, range.length > 0,
+                  range.location + range.length <= ns.length else { return nil }
+            let edge = CharacterSet.whitespacesAndNewlines
+                .union(CharacterSet(charactersIn: ".,;:!?\"'()[]{}\u{2019}\u{201C}\u{201D}\u{2026}"))
+            var start = range.location
+            var end = range.location + range.length
+            while start < end, let s = Unicode.Scalar(ns.character(at: start)), edge.contains(s) {
+                start += 1
+            }
+            while end > start, let s = Unicode.Scalar(ns.character(at: end - 1)), edge.contains(s) {
+                end -= 1
+            }
+            guard end > start else { return nil }
+            let trimmed = NSRange(location: start, length: end - start)
+            return (ns.substring(with: trimmed), trimmed)
+        }
+
+        /// A short word-run someone would plausibly teach as a term: 1–4
+        /// words, ≤60 chars, contains letters, no newline (a sentence or a
+        /// paragraph is not a term) — false hides the menu item.
+        static func isPlausibleTerm(_ s: String) -> Bool {
+            guard !s.contains("\n"), s.count <= 60,
+                  s.rangeOfCharacter(from: .letters) != nil else { return false }
+            let words = s.split(whereSeparator: { $0.isWhitespace })
+            return !words.isEmpty && words.count <= 4
         }
 
         @objc func handleTap(_ g: UITapGestureRecognizer) {
