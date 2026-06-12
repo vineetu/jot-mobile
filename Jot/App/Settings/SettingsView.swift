@@ -761,7 +761,7 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    Link(destination: URL(string: "https://jot.ideaflow.page/privacy")!) {
+                    Link(destination: URL(string: "https://jot-transcribe.com/privacy")!) {
                         settingsIconRow(
                             systemImage: "hand.raised",
                             tint: JotDesign.JotSemanticIcon.privacyPolicy,

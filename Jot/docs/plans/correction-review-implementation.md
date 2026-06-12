@@ -349,3 +349,154 @@ context (keyboard). NO coral. Verify each against `JotDesign.swift` before use.
   unchanged".
 - Marks rendering approach (§4) — defaulting to whichever prototypes cleaner.
 - Whether the summary row shows when ALL resolved (handoff: yes, "All reviewed") — keeping.
+
+## §11 — 2026-06-12: anchor system rework + gate plausibility + merged-word alias
+
+Owner-reported bugs: (a) verdict edits "firing on wrong word" after hand-edits; (b)
+"Vikram Sriram" → "Sriram Shriram" (bogus cross-word replacement; right one blocked);
+(c) "Ramaa Nathan" (multi-word term) heard as merged "Ramanathan" → replaced by the
+SHORTER term "Ramaa" because FluidAudio only tries multi-word forms against multi-word
+ASR spans (the right term never competed).
+
+Three changes (all compiled, adversarially reviewed ×2 — initial review found 1 CRITICAL
++ 1 MAJOR, both fixed and re-verified):
+
+1. **Live anchors + reconcile (fixes a — root cause was DEEPER than hand-edits).**
+   `Record.publishedStart` is now a LIVE anchor. The payload stores `anchoredText` (the
+   text anchors are valid for — seeded with the GATE-OUTPUT text captured at
+   `record(_:gatedText:)`; critically NOT the saved text: the post-gate transform chain
+   (segmenter/filler/number/AI-cleanup) shifts offsets, so anchors were stale FROM BIRTH
+   and the old nearest-match fallback was routinely resolving — sometimes onto the wrong
+   occurrence. That fallback is DELETED; resolution is strict-only everywhere (exact
+   offset or fail safe). `reconciledPayload(transcriptID:currentText:)` maps anchors
+   between texts with an EXACT multi-region diff (`CollectionDifference` patch-offset
+   mapping in `mapOffsets`) — state-based (fingerprint), so any edit is absorbed exactly
+   once no matter which surface made it. Self (verdict) edits don't trust the diff at
+   all: a replacement sharing a suffix with the replaced word ("nathan"→"Ramanathan")
+   makes any diff ambiguous, so `editText` reports its exact span via `noteSelfEdit`
+   (race-tolerant against the onChange reconcile). `CorrectionAsksPublisher` reads
+   reconciled-to-publishedText so keyboard snippets slice the right offsets.
+
+2. **Gate plausibility guard (fixes b-class).** New guard (1) in `decide()` after the
+   learned-override early-out, BEFORE multi-word self-gating (closing that bypass): the
+   heard word's letter-skeleton (lowercased alphanumerics, spaces dropped) must be within
+   0.45 normalized Levenshtein of the term or ANY of its aliases (aliases plumbed from
+   the holder via `termAliases`). shriram→sriram 0.14 / cloud→claude 0.33 / jamie→jamy
+   0.40 pass; vikram→sriram 0.50 / ramanathan→ramaa 0.50 / name→jamy 0.50 block. A block
+   still emits a reviewable "kept" row; confirming it teaches the net≥1 override which
+   bypasses the guard (so je→Jamy-style learned pairs survive).
+
+3. **Merged-word auto-alias (fixes c).** `VocabularyRescorerHolder.enrichedAliases`
+   appends each multi-word term's space-stripped form as an alias at FEED time only
+   (user's vocabulary.txt untouched). "RamaaNathan" → normalized "ramaanathan" matches
+   any merged ASR rendering at ~0.9 similarity and outranks "Ramaa"'s 0.50 at equal span
+   length. Layer-1 user workaround (works today): add the merged form as a "sounds like"
+   alias in Settings → Vocabulary.
+
+Accepted risks (reviewed, deliberate): user listing BOTH "Ramaa Nathan" and "Ramaanathan"
+as separate terms → merged-alias collision; digit-form terms ("iPhone 17 Pro" heard
+"seventeen") in the 0.45–0.5 band blocked until confirmed once; multi-disjoint hand-edit
+in one Save → anchors between regions fail safe (mark dropped, verdict still learns).
+
+Open (not yet verified): why "Vikram"→"Sriram" fired at all (similarity ≈0.50 is below
+the matcher's 0.52 floor by our reading) — owner to pull Diagnostics → VOCAB for that
+session; the plausibility guard blocks the class regardless.
+
+### §11 addendum (same day)
+- Re-review verified all three fixes (mapOffsets executed empirically against adversarial
+  cases — all passed) and found ONE new MINOR: the asks publisher persisting
+  anchoredText=publishedText routed the durable anchor chain through the AI-cleaned text,
+  stranding records whose words cleanup rewrote away. Fixed: publisher now uses
+  `mappedPayload(into:)` — an EPHEMERAL mapping for snippet slicing; the durable chain
+  stays gate-output → transcript.text. Debug + Release compile clean.
+- NEW FEATURE (owner request, same batch): **selection-menu "Add to Vocabulary"** in the
+  transcript pane. `MarkedTranscriptText.Coordinator` is now the UITextView delegate and
+  appends an "Add to Vocabulary" action to the system selection menu
+  (`textView(_:editMenuForTextIn:suggestedActions:)`), shown only when the selection
+  sanitizes to a plausible term (≤4 words, ≤60 chars, has letters; edge punctuation
+  trimmed) and isn't already a term. Tap → `VocabularyStore.addTerm` (dedup,
+  case-insensitive) → success haptic + the same blue flash a verdict edit gets
+  (`CorrectionReviewModel.flashSpan`). Original tab only (the Rewrite tab's SwiftUI Text
+  has no custom menu — fine: vocabulary is about the spoken original). features.md §8
+  entry owed at feature-complete per owner's docs rule. NOTE found during this work:
+  features.md §8.4 says the mobile Vocabulary UI has NO aliases field — the file format +
+  rescorer support aliases but users can't enter them on mobile; the auto merged-form
+  alias (§11.3) is currently the only alias producer. The parked hand-edit→vocab design
+  (Cases A/B/C: silent correction-learning on edit-matches-term, "Add X?" chip for
+  name-like OOV edits, silence otherwise) remains parked — this selection menu is the
+  explicit-action complement, not a replacement.
+
+## §12 — PARKED: Vocabulary-section overhaul (owner deferred 2026-06-12)
+
+One future work package, owner-confirmed scope-later. Pieces:
+1. **Correct-and-add from selection** (owner-described, understood + confirmed): select a
+   WRONG word in the transcript (one the correction system has no term for → no underline)
+   → action opens the selected text EDITABLE (likely collapse with today's "Add to
+   Vocabulary" into one prefilled-sheet flow) → on confirm: fix that text, add the
+   corrected form as a term, and LEARN the heard→meant pairing (CorrectionStore mapping
+   and/or term alias — also fills the no-aliases-field-on-mobile gap, features.md §8.4).
+   Open sub-decisions: one menu action vs two; fix selected occurrence only vs all in
+   transcript.
+2. **Vocabulary ledger UI** — "what Jot's learned" (mappings + AUTOMATIC/learning/stopped)
+   under each term in Settings → Vocabulary; data already in CorrectionStore.
+3. **Hand-edit → vocab Cases A/B/C** (earlier brainstorm): silent learning when an edit
+   matches a term; "Add X?" chip for name-like OOV edits; silence otherwise.
+4. Aliases surfacing on mobile (no UI today; only the auto merged-form alias exists).
+
+Until then the shipped 118 behavior stands: selection-menu add of the (correct) selected
+text only.
+
+### §12 correction (owner clarified same day): item 1 is NOT parked — BUILT
+Owner: "the vocabulary SECTION we will talk about later. Right now I want to add a word."
+The selection→prompt flow shipped as the v2 of the selection-menu add (not yet deployed):
+select ANY 1–4 word run / acronym in the transcript body (no underline needed — this is
+exactly for words the gate has no term for) → "Add to Vocabulary" → ALERT with the
+selection prefilled: "Heard “X”. Type the word Jot should write — or Add as-is." On Add:
+(1) the selected span is replaced with the typed word (defensive range+substring check;
+other records' anchors shift via the reconcile diff like any hand-edit; blue flash);
+(2) COMMON-WORD FILTER: if every word of the typed replacement is a common word → no
+vocab entry (that's the "what is this?" test — ordinary rewording isn't vocabulary);
+(3) otherwise `VocabularyStore.addTerm(replacement, heardAs: selection)` — term added
+(dedup; merging into an existing term just adds the alias), the mis-heard form attached
+as a "sounds like" alias (feeds the rescorer matcher — the ONLY user path that writes an
+alias on mobile), and `CorrectionStore.adjust(+1)` teaches the mapping so the gate's
+net≥1 override can auto-apply next dictation. Items 2–4 of §12 (ledger UI, hand-edit
+chips, alias UI) remain the deferred overhaul.
+
+INCIDENT note 2026-06-12: repo-root files (Vendor/ 710 files, README, build.sh, dev.sh,
+marketing/, prototypes/, EXPERIMENTS.md) were found deleted from the working tree
+(NOT by the agent); Vendor/ is the load-bearing local MLX package → restored via
+`git restore Vendor` only; the other 36 deletions left untouched pending owner intent.
+
+## §13 — 2026-06-12 (same day, build 119): R3 fixes + Voice Prompt rewrite option
+
+**R3 adversarial review of the "what should this say?" prompt flow** found 4 MAJORs, all
+fixed: (1) sanitized-candidate-vs-raw-range mismatch made the text fix silently no-op on
+any selection with edge punctuation → menu now passes the SAME trimmed (substring, range)
+pair (`trimmedSelection`); (2)+(3) typed terms/aliases carrying ":" "," or leading "#"
+corrupted the vocab simple format → sanitized at the `addTerm` choke point (`fileSafe`);
+addTerm now returns the CANONICAL stored term and the CorrectionStore mapping is keyed on
+it; (4) haptic restructured (fires on fix OR learn). NOTE: Settings rows' free-text term
+editing still bypasses fileSafe — tracked with the §12 overhaul.
+
+**Voice Prompt (owner request, scoped→built→reviewed→fixed same day):** 2nd row in the
+Articulate picker — "Voice prompt / Say what to change." Tap → recording starts
+immediately (`RECORDING START FROM: RewritePickerSheet (voice prompt)`), pulsing dot +
+live partial + Stop/X; Stop → transcribe → dictation wrapped in a bundled-style system
+prompt → existing `startRewrite` via an ephemeral never-persisted SavedPrompt; empty →
+"Didn't catch that — try again." Implementation: `VoicePromptCapture` replicates
+InlineDictationSession's 4 lifecycle invariants against raw RecordingService/
+TranscriptionService (the TYPE stays Ask-exclusive). Adversarial review (FIX-FIRST):
+(a) capture must CLAIM `ownsActiveRecording` — without it a keyboard mic-tap from another
+app saved+pasted the spoken instruction, retries polluted the warm-hold nudge ring, and
+the return pill could flash; the flag is the GENERIC in-app ownership signal (ARCHITECTURE
+:62 rewritten — two sanctioned claimants); (b) interruption-publish (call/Siri mid-capture
+→ saved transcript + clipboard) now GATED on the ownership flag in `internalStop`
+(snapshot-then-guard) — intentionally also closes the identical pre-existing Ask hole;
+unowned dictations keep delivery byte-for-byte. Polish: StreamingPartial.reset() on
+terminals, interactiveDismissDisabled while transcribing, features.md §7.13 + backlinks.
+
+**On-device verify list for 119:** voice prompt happy path; interrupted capture (incoming
+call mid-Listening) must end "Didn't catch that" with NO new transcript in Recents; vocab
+add with trailing-punctuation selection now actually fixes the text; term with ":" stored
+sanitized.

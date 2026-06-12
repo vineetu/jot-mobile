@@ -1880,6 +1880,11 @@ final class RecordingService {
         let snapshotSessionID = currentSessionID
         let snapshotStartedAt = currentRecordingStartedAt ?? Date()
         let snapshotCapture = endActiveSlice()
+        // Ownership snapshot for the dispatch-phase guard below. Taken
+        // synchronously here (with the other snapshots) so the owning
+        // surface's own async teardown — which clears the flag — can't race
+        // the fire-and-forget dispatch Task into reading a stale `false`.
+        let snapshotOwned = ownsActiveRecording
 
         // Interruption-while-paused routes here (§10.7): finalize whatever was
         // accumulated rather than silently staying paused through a call that
@@ -1961,6 +1966,30 @@ final class RecordingService {
         // bounded wait (up to 250ms catastrophic-only backstop) doesn't block
         // the MainActor. The dispatch helper then hops back to MainActor for
         // controller / pipeline calls.
+        // OWNED (in-app inline) captures — Ask's question mic and the rewrite
+        // picker's voice prompt — must NEVER route through the interruption
+        // publish: `completeEndOfRecording(transient: false)` would SAVE the
+        // utterance as a Transcript and overwrite the clipboard, but an owned
+        // capture is a query/instruction whose normal stop path never saves,
+        // never publishes, never pastes. Drop the audio instead (adversarial
+        // review finding 2 — this also closes the identical pre-existing hole
+        // for an interrupted Ask question). Bookkeeping stays consistent
+        // without the dispatch helper: the terminal `.failed("interruption")`
+        // was already published above (keyboard CTA + terminal log handled),
+        // and the helper's only other work is the pipeline-in-flight latch it
+        // takes and releases around its own run — never entered, nothing to
+        // release. Ownership itself is cleared by the owning surface's
+        // terminal (its next `stop()` throws `.notRunning` → its own error
+        // UX, e.g. the picker's "Didn't catch that — try again."), with
+        // `markPipelineFinished()` as the standing backstop.
+        //
+        // UNOWNED captures (FAB / Action Button / keyboard dictations) keep
+        // the publish-after-interruption behavior exactly — a real dictation
+        // interrupted by a call should still deliver.
+        if snapshotOwned {
+            log.notice("Internal stop (\(reason, privacy: .public)) — owned in-app capture; dropping partial publish (no save, no clipboard)")
+            return
+        }
         guard let snapshotCapture else {
             log.info("Internal stop (\(reason, privacy: .public)) — no capture to drain; skipping dispatch")
             return

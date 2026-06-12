@@ -324,7 +324,7 @@ struct CorrectionReviewStrip: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(Color.jotKeyboardAccentDeep)
-            Text("Done — Jot’s learning your voice.")
+            Text("All reviewed.")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.jotKeyboardActionsInk)
                 .multilineTextAlignment(.center)
@@ -358,20 +358,22 @@ struct CorrectionReviewStrip: View {
         }
     }
 
-    /// Resolved consequence copy (non-learning branches), mirroring the app's
-    /// `CorrectionCopy.resolvedParts` — kept here because `CorrectionCopy` lives
-    /// in the App target and can't link into the keyboard. Graduation/n>1
-    /// branches are deferred (per-occurrence + no graduation copy in this build).
+    /// Resolved consequence copy — VERBATIM the app's terse `CorrectionCopy.resolvedParts`
+    /// (duplicated because `CorrectionCopy` lives in the App target and can't link
+    /// into the keyboard; keep the two in lockstep — see
+    /// docs/plans/correction-review-surface-parity.md). One deliberate word swap:
+    /// the pane says "applied here." because it edits the text on the spot; the
+    /// keyboard's edit lands in Jot later, so "here" is dropped.
     private static func resolvedParts(_ ask: CorrectionBridge.Ask, verdict: String) -> (strong: String, rest: String) {
         let applied = (ask.outcome == "applied")
         if verdict == "term" {
             return applied
-                ? (ask.term, " confirmed — Jot keeps fixing this.")
-                : (ask.term, " — updated here, and Jot\u{2019}s learning it.")
+                ? (ask.term, " confirmed.")
+                : (ask.term, " applied.")
         }
         return applied
-            ? (ask.original, " restored — Jot will leave it alone.")
-            : (ask.original, " kept — Jot will stop asking.")
+            ? (ask.original, " restored.")
+            : (ask.original, " kept.")
     }
 
     // MARK: - Chrome

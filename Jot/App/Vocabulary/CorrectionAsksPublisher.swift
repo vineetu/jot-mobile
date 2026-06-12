@@ -12,7 +12,15 @@ enum CorrectionAsksPublisher {
     static let contextWindow = 24
 
     static func publish(transcriptID: UUID, sessionID: UUID, publishedText: String) async {
-        let payload = await CorrectionProvenance.shared.payload(transcriptID: transcriptID)
+        // MAPPED read (ephemeral): record anchors are gate-output offsets, but
+        // the context snippets below slice `publishedText`, which post-gate
+        // transforms (segmenter/filler/number/cleanup) may have shifted — map
+        // every anchor into publishedText exactly. Deliberately NOT the
+        // persisting `reconciledPayload`: publishedText can be the AI-cleaned
+        // text, and persisting that hop would strand anchors whose words the
+        // cleanup rewrote away (the saved transcript still has them).
+        let payload = await CorrectionProvenance.shared.mappedPayload(
+            transcriptID: transcriptID, into: publishedText)
         let unresolved = payload.records.filter { payload.verdicts[$0.key] == nil }
         guard !unresolved.isEmpty else {
             CorrectionBridge.clearAsks()

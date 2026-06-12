@@ -104,6 +104,19 @@ struct TranscriptDetailView: View {
     /// Keeps the verdict's text-edit from auto-dismissing the bubble early so the
     /// owner sees the consequence (handoff §word-bubble).
     @State private var correctionBubbleResolving = false
+
+    /// Selection-menu "Add to Vocabulary": the selected (possibly MIS-transcribed)
+    /// text + its range, pending the "what should this say?" prompt. The prompt's
+    /// field is prefilled with the selection — confirm-as-is adds a correct word;
+    /// typing the real form fixes the text AND teaches Jot the heard→meant pair.
+    @State private var vocabAddSelection: VocabAddSelection?
+    @State private var vocabAddText: String = ""
+
+    struct VocabAddSelection: Identifiable {
+        let id = UUID()
+        let selected: String
+        let range: NSRange
+    }
     @State private var editError: String?
     // Plain @State (not @FocusState) so it can drive `InlineEditTextView`'s
     // first-responder via a Binding. The custom UITextView editor renders text
@@ -327,6 +340,9 @@ struct TranscriptDetailView: View {
                 prompts: savedPrompts,
                 onPick: { prompt in
                     startRewrite(with: prompt)
+                },
+                onVoicePrompt: { instruction in
+                    startVoiceRewrite(instruction: instruction)
                 },
                 onNewPrompt: {
                     showNewPromptHint = true
@@ -609,6 +625,79 @@ struct TranscriptDetailView: View {
     }
 
     /// Scrollable body text styled to match Recents row typography (system
+    /// Confirm the selection-menu "Add to Vocabulary" prompt. Always applies the
+    /// text fix (replace the selected span with what the owner typed); adds a
+    /// vocabulary term ONLY when the typed word isn't just common words — that
+    /// check is how Jot tells "this is a name/term/acronym worth learning" from
+    /// ordinary rewording. For a real correction (typed ≠ selected) the heard
+    /// form is also attached as a "sounds like" alias AND taught to the
+    /// correction store (net +1), so the next dictation can fix it by itself.
+    private func confirmVocabAdd() {
+        guard let sel = vocabAddSelection else { return }
+        vocabAddSelection = nil
+        let replacement = vocabAddText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !replacement.isEmpty else { return }
+
+        // 1. Fix the text in place (selected occurrence only). Defensive: the
+        //    range must still hold the exact selection (the alert is modal, but
+        //    a keyboard-verdict drain could have shifted the text underneath).
+        //    Anchors of OTHER correction records shift via the model's
+        //    reconcile-on-change diff, like any hand-edit.
+        let ns = transcript.text as NSString
+        let rangeStillValid = sel.range.location + sel.range.length <= ns.length
+            && ns.substring(with: sel.range) == sel.selected
+        var didFix = false
+        if replacement != sel.selected, rangeStillValid {
+            transcript.text = ns.replacingCharacters(in: sel.range, with: replacement)
+            do {
+                try modelContext.save()
+                TranscriptHistoryMirror.refresh(from: modelContext)
+                CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                correctionModel?.flashSpan(
+                    NSRange(location: sel.range.location, length: (replacement as NSString).length))
+                didFix = true
+            } catch {
+                modelContext.rollback()
+                return
+            }
+        } else if rangeStillValid {
+            correctionModel?.flashSpan(sel.range)
+        }
+
+        // 2. Vocabulary-worthy? Skip the vocab entry when EVERY word of the
+        //    replacement is a common word — Jot already knows those; nothing to
+        //    learn (owner-specified filter: this is the "what is this?" test).
+        //    The text fix above still applied either way.
+        let replacementWords = replacement.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let vocabWorthy = replacementWords.contains {
+            !CommonWords.isCommon($0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:\"'()")))
+        }
+
+        // 3. Add the term (dedup), attaching the mis-heard form as an alias on a
+        //    real correction; teach the mapping so the gate can auto-apply next
+        //    time. The learning is keyed on the CANONICAL stored term (addTerm
+        //    sanitizes file-format characters) so the gate's override lookup —
+        //    which compares against the term as the rescorer proposes it —
+        //    actually matches.
+        var didLearn = false
+        if vocabWorthy {
+            let corrected = replacement.compare(sel.selected, options: .caseInsensitive) != .orderedSame
+            if let storedTerm = VocabularyStore.shared.addTerm(
+                replacement, heardAs: corrected ? sel.selected : nil) {
+                didLearn = true
+                if corrected {
+                    let heard = sel.selected
+                    Task {
+                        await CorrectionStore.shared.adjust(originalWord: heard, term: storedTerm, by: 1)
+                    }
+                }
+            }
+        }
+        if didFix || didLearn {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+
     /// sans-serif) but at a larger reading size. The card itself is fixed-height
     /// (fills the viewport between the tab pill and ActionBar); the ScrollView
     /// inside lets long transcripts scroll without growing the card.
@@ -628,6 +717,15 @@ struct TranscriptDetailView: View {
                             if let r = model.record(forKey: key) {
                                 correctionBubble = CorrectionBubbleAnchor(record: r, rect: rect)
                             }
+                        },
+                        onAddToVocabulary: { word, range in
+                            // Open the "what should this say?" prompt. The
+                            // selection may be a MIS-transcription Jot has no
+                            // term for (so no underline) — the prompt lets the
+                            // owner type the real word; confirm-as-is covers
+                            // the already-correct case.
+                            vocabAddText = word
+                            vocabAddSelection = VocabAddSelection(selected: word, range: range)
                         })
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 18)
@@ -635,6 +733,21 @@ struct TranscriptDetailView: View {
 
                     CorrectionReviewSection(model: model)
                         .padding(.bottom, 12)
+                        .alert(
+                            "Add to Vocabulary",
+                            isPresented: Binding(
+                                get: { vocabAddSelection != nil },
+                                set: { if !$0 { vocabAddSelection = nil } }
+                            )
+                        ) {
+                            TextField("Word", text: $vocabAddText)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Button("Add") { confirmVocabAdd() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Heard \u{201C}\(vocabAddSelection?.selected ?? "")\u{201D}. Type the word Jot should write — or Add as-is.")
+                        }
                 } else {
                     Text(text)
                         .font(.system(size: 17, weight: .regular, design: .default))
@@ -1567,6 +1680,34 @@ struct TranscriptDetailView: View {
             }
         }
         activeRewriteTask = task
+    }
+
+    /// Voice-prompt rewrite (picker row 2). Wraps the user's spoken
+    /// instruction in a system prompt phrased like the bundled defaults
+    /// (`SavedPrompt.defaultArticulate` et al. — imperative, with the
+    /// "do not invent" guardrail and the "Return only the rewrite."
+    /// output-format boilerplate) and runs the EXISTING rewrite path via an
+    /// ephemeral `SavedPrompt`. Nothing is persisted to `SavedPromptStore`;
+    /// `startRewrite(with:)` only reads `systemPrompt` (+ `id` for logging).
+    private func startVoiceRewrite(instruction: String) {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let systemPrompt =
+            "Rewrite this dictation following the speaker's spoken instruction. " +
+            "Instruction: \"\(trimmed)\". " +
+            "Apply the instruction faithfully. " +
+            "Do not invent new ideas or details beyond what the instruction asks for. " +
+            "Fix obvious dictation errors. " +
+            "Return only the rewrite."
+        let voicePrompt = SavedPrompt(
+            id: UUID(),
+            name: "Voice prompt",
+            systemPrompt: systemPrompt,
+            createdAt: Date(),
+            sortOrder: .max
+        )
+        detailLog.info("Voice-prompt rewrite — instructionChars=\(trimmed.count)")
+        startRewrite(with: voicePrompt)
     }
 
     private func autoFireKeyboardRewrite(intent: KeyboardRewriteRouter.KeyboardRewriteTarget) {
