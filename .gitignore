@@ -51,3 +51,6 @@ prototypes/style-adapter/
 
 # Design handoff references (HTML/JSX prototypes, not app source)
 Jot/design_handoff_setup_wizard/
+# Exception: Jot/Shared/DerivedData is SOURCE (ChunkStore.swift), not Xcode build output.
+# The bare DerivedData/ rule above would swallow it (broke fresh clones/worktrees).
+!Jot/Shared/DerivedData/

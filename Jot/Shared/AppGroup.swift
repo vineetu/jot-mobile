@@ -145,6 +145,10 @@ enum AppGroup {
         /// fall back to the bundled TDT-CTC 110M (no in-place
         /// rewrite — see the `speechModelVariant` accessor below).
         static let speechModelVariant = "jot.speech.modelVariant"
+        /// Live-preview source flag (batch-only-streaming A/B): "eou" | "batch".
+        static let previewSource = "jot.preview.source"
+        /// "Live text while dictating" tri-state: "auto" | "on" | "off".
+        static let liveTextSetting = "jot.preview.liveText"
 
         /// Wall-clock `Date` of the most recent main-app foreground
         /// heartbeat. Written by `JotApp` every ~1s while
@@ -334,6 +338,43 @@ enum AppGroup {
             }
         }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
+    }
+
+    /// Live-preview source for the recording strip/hero
+    /// (`docs/plans/batch-only-streaming.md`). Build-flag for the
+    /// batch-only-streaming A/B:
+    /// - `"eou"` (default) — today's EOU 120M streaming engine.
+    /// - `"batch"` — `PreviewScheduler` re-transcribing with the batch model.
+    /// Resolved at every recording start; never mid-session. Unknown values
+    /// fall back to `"eou"` so a malformed write can't break the preview.
+    static var previewSource: String {
+        get {
+            let stored = defaults.string(forKey: Keys.previewSource)
+            switch stored {
+            case "eou", "batch": return stored!
+            default: return "eou"
+            }
+        }
+        set { defaults.set(newValue, forKey: Keys.previewSource) }
+    }
+
+    /// "Live text while dictating" tri-state (`"auto"` / `"on"` / `"off"`).
+    /// `auto` resolves through `DeviceCapability.liveTextDefault` so a
+    /// future capability-table revision reaches auto users while an
+    /// explicit user choice is never clobbered (review #2 F8). Read at
+    /// recording start; `off` means the preview consumer is never started
+    /// and the slice queue is closed immediately (zero inference during
+    /// dictation capture). Ask captures are exempt (their live text is the
+    /// input mechanism).
+    static var liveTextSetting: String {
+        get {
+            let stored = defaults.string(forKey: Keys.liveTextSetting)
+            switch stored {
+            case "auto", "on", "off": return stored!
+            default: return "auto"
+            }
+        }
+        set { defaults.set(newValue, forKey: Keys.liveTextSetting) }
     }
 
     /// See `Keys.streamingLoadingVariantLabel` for semantics. Written

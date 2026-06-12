@@ -657,6 +657,58 @@ final class TranscriptionService {
         }
     }
 
+    // MARK: - Preview inference (batch-only streaming, Phase 0)
+
+    /// Lean inference path for the live-preview re-transcribe loop
+    /// (`docs/plans/batch-only-streaming.md`). Deliberately NOT
+    /// `transcribe(samples:)`:
+    ///
+    /// - **No `isTranscribing` gate.** Preview ticks coalesce in
+    ///   `PreviewScheduler` (latest-wins) and must never make the saving
+    ///   stop-pass throw `.busy`. Serialization happens naturally on the
+    ///   `AsrManager` actor's mailbox — a stop-pass queues behind at most
+    ///   one in-flight tick.
+    /// - **No side effects.** Skips `CorrectionProvenance.clearPending()`
+    ///   and `DiagnosticsLog` — those belong to the saving stop-pass only.
+    /// - **NO vocabulary rescore** (adversarial review #2 F2):
+    ///   `VocabularyRescorerHolder.rescore` is a second CoreML inference
+    ///   (CTC spotter over the window's audio) and records correction
+    ///   provenance *internally* — running it per tick doubles inference
+    ///   cost and corrupts adaptive-vocab state. Consequence: vocab terms
+    ///   may visibly correct when the stop-pass result lands. Accepted.
+    /// - **Never loads or downloads.** Rides a manager the normal warm-up
+    ///   already produced; returns `nil` when not ready.
+    /// - **Returns `nil` instead of throwing** — a failed or too-short
+    ///   (<1 s) tick is silently dropped by the scheduler.
+    func previewTranscribe(samples: [Float]) async -> String? {
+        if let standIn {
+            // Simulator: exercise the preview pipeline with the stand-in
+            // text so the scheduler/UI flow is testable without a model.
+            return try? await standIn.transcribe(samples: samples)
+        }
+        guard let manager, modelState == .ready else { return nil }
+        guard Double(samples.count) >= Self.sampleRate else { return nil }
+        do {
+            var decoderState = TdtDecoderState.make(
+                decoderLayers: Self.selectedVersion.decoderLayers
+            )
+            let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            var text = result.text
+            // Text-only quality pipeline (cheap): paragraphs need token
+            // timings; filler + number passes are regex/lookup. Vocab is
+            // intentionally absent — see doc comment.
+            if let timings = result.tokenTimings {
+                text = ParagraphSegmenter.segment(rescoredText: text, tokenTimings: timings)
+            }
+            text = FillerWordCleaner.clean(text)
+            text = NumberNormalizer.normalize(text)
+            return text
+        } catch {
+            log.debug("preview transcribe failed — \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     // MARK: - Model lifecycle (best-practices §3.2, §3.3, §3.7)
 
     private func ensurePreparing() -> Task<Void, Error> {

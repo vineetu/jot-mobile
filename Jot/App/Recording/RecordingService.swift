@@ -175,6 +175,15 @@ final class RecordingService {
     private var streamingQueue: StreamingBufferQueue?
     private var streamingDrainTask: Task<Void, Never>?
 
+    // Batch-only-streaming preview (docs/plans/batch-only-streaming.md).
+    // Selected per-recording by `AppGroup.previewSource == "batch"`; consumes
+    // the SAME `streamingQueue` the EOU engine would (tap untouched). When
+    // `AppGroup.liveTextSetting` resolves OFF, neither consumer starts and
+    // the queue is closed immediately (pushes drop; zero inference during
+    // dictation capture).
+    private var previewScheduler: PreviewScheduler?
+    private var previewDrainTask: Task<Void, Never>?
+
     // MARK: - Pause / Resume (UX-overhaul round 2 §10)
     //
     // Pause keeps the engine + tap running and gates the slice router
@@ -338,6 +347,36 @@ final class RecordingService {
             log.notice("kickOffStreamingSession skipped — queue not pre-allocated")
             return
         }
+        // "Live text while dictating" OFF: start neither consumer and close
+        // the queue so tap pushes drop (StreamingBufferQueue.push guards on
+        // `ended`). Zero inference during capture; the batch stop-pass is
+        // unaffected. (docs/plans/batch-only-streaming.md — streaming-off
+        // is the safe baseline / degrade target.)
+        // TODO(batch-streaming F4): thread capture *purpose* here so Ask
+        // sessions bypass the off-switch (Ask's live text is its input
+        // mechanism) and get a faster tick cadence (~2 s). Until the wall
+        // phase, only ≥6 GB devices run with live text on, so Ask is
+        // unaffected in practice.
+        guard DeviceCapability.liveTextEnabled else {
+            queue.endOfStream()
+            log.notice("Live-text preview disabled — queue closed, no preview consumer")
+            return
+        }
+        // Build-flag A/B: batch-model preview scheduler vs EOU engine.
+        if AppGroup.previewSource == "batch" {
+            let sessionID = presenter.beginSession()
+            let scheduler = PreviewScheduler(
+                queue: queue,
+                presenter: presenter,
+                sessionID: sessionID
+            )
+            self.previewScheduler = scheduler
+            self.previewDrainTask = Task.detached(priority: .userInitiated) {
+                await scheduler.drain()
+            }
+            log.info("Batch preview session kicked off (previewSource=batch)")
+            return
+        }
         guard let engine = await StreamingTranscriptionService.shared.beginSession(
             presenter: presenter,
             queue: queue
@@ -387,6 +426,25 @@ final class RecordingService {
         // where `streamingEngine == nil` but `streamingQueue != nil` —
         // tap closures may have pushed samples that nothing consumes).
         streamingQueue?.endOfStream()
+
+        // Batch-preview teardown mirrors the EOU ordering: drain returns on
+        // end-of-stream → clear the session token → promote the assembled
+        // preview via `applyFinalSnapshot` (bypasses the cleared-token guard
+        // by design) → the stop-pass batch result replaces it.
+        if let scheduler = previewScheduler {
+            await previewDrainTask?.value
+            previewDrainTask = nil
+            if let presenter = streamingPresenter {
+                presenter.clearSession()
+                let assembled = await scheduler.assembledText()
+                if !assembled.isEmpty {
+                    presenter.applyFinalSnapshot(assembled)
+                }
+            }
+            self.previewScheduler = nil
+            self.streamingQueue = nil
+            return
+        }
 
         if let engine = streamingEngine {
             await streamingDrainTask?.value

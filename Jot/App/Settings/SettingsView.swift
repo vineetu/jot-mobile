@@ -25,6 +25,14 @@ struct SettingsView: View {
     /// Mirror of `AppGroup.warmHoldEnabled` for the Privacy kill-switch.
     @State private var warmHoldEnabled: Bool = AppGroup.warmHoldEnabled
 
+    /// Resolved "Live text while dictating" state (tri-state under the
+    /// hood — see `liveTextToggleRow`). A user touch writes explicit
+    /// on/off; `auto` only persists until first touch.
+    @State private var liveTextOn: Bool = DeviceCapability.liveTextEnabled
+
+    /// Debug-only preview backend flag mirror (`AppGroup.previewSource`).
+    @State private var previewSourceFlag: String = AppGroup.previewSource
+
     /// Ask-mode backend toggle. OFF = Apple Intelligence (built-in, no download);
     /// ON = on-board Qwen (better answers, needs the model downloaded).
     @State private var askUseQwen: Bool = (AppGroup.askBackend == "qwen")
@@ -56,6 +64,8 @@ struct SettingsView: View {
                 speechModelVariant = AppGroup.speechModelVariant
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
+                liveTextOn = DeviceCapability.liveTextEnabled
+                previewSourceFlag = AppGroup.previewSource
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -72,6 +82,14 @@ struct SettingsView: View {
             }
             .onChange(of: warmHoldDurationSeconds) { _, newValue in
                 AppGroup.warmHoldDurationSeconds = newValue
+            }
+            .onChange(of: liveTextOn) { _, newValue in
+                // First touch graduates "auto" to an explicit choice —
+                // never clobbered by future capability-default changes.
+                AppGroup.liveTextSetting = newValue ? "on" : "off"
+            }
+            .onChange(of: previewSourceFlag) { _, newValue in
+                AppGroup.previewSource = newValue
             }
         }
         // Soften every card's drop shadow throughout Settings by 50% (light mode
@@ -315,10 +333,85 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Variant, currently \(variantShortName)")
                     .accessibilityHint("Opens variant picker")
+
+                    cardDivider
+
+                    liveTextToggleRow
+
+                    #if DEBUG
+                    cardDivider
+                    previewSourceDebugRow
+                    #endif
                 }
             }
         }
     }
+
+    /// "Live text while dictating" — the streaming on/off axis
+    /// (docs/plans/batch-only-streaming.md). Tri-state under the hood
+    /// (`AppGroup.liveTextSetting`: auto/on/off — auto follows
+    /// `DeviceCapability`); the switch shows the RESOLVED state and a touch
+    /// writes an explicit on/off. Takes effect on the next dictation start.
+    private var liveTextToggleRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Live text while dictating")
+                    .font(JotType.rowTitle)
+                    .foregroundStyle(Color.jotPageInk)
+                    .tracking(-0.2)
+
+                Text("Show words as you speak. Turning off saves battery — your transcript is unaffected.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $liveTextOn)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Live text while dictating")
+                .accessibilityHint("Turning off saves battery. Your saved transcript is unaffected.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    #if DEBUG
+    /// Debug-only A/B switch for the preview backend
+    /// (docs/plans/batch-only-streaming.md Phase 5): EOU 120M engine vs
+    /// batch-model PreviewScheduler. Debug builds only — release users
+    /// always get the default until the flag flips for good.
+    private var previewSourceDebugRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Preview engine (debug)")
+                    .font(JotType.rowTitle)
+                    .foregroundStyle(Color.jotPageInk)
+                    .tracking(-0.2)
+
+                Text("eou = streaming model · batch = re-transcribe loop")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Picker("", selection: $previewSourceFlag) {
+                Text("EOU").tag("eou")
+                Text("Batch").tag("batch")
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 140)
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+    #endif
 
     private var speechModelDisplayName: String {
         switch speechModelVariant {
