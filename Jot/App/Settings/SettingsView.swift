@@ -334,11 +334,14 @@ struct SettingsView: View {
                     .accessibilityLabel("Variant, currently \(variantShortName)")
                     .accessibilityHint("Opens variant picker")
 
-                    cardDivider
-
-                    liveTextToggleRow
-
+                    // TODO(batch-streaming F6): surface liveTextToggleRow in
+                    // release once the off-path UI exists (keyboard
+                    // "Listening… 0:12" strip state + hero final-only
+                    // reveal). Until then the off-switch would leave those
+                    // surfaces blank — DEBUG-only alongside the A/B picker.
                     #if DEBUG
+                    cardDivider
+                    liveTextToggleRow
                     cardDivider
                     previewSourceDebugRow
                     #endif

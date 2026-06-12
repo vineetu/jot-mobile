@@ -88,11 +88,23 @@ actor PreviewScheduler {
 
     private var silenceRun = 0
     private var pauseFiredThisRun = false
-    private var speechSinceCommit = false
+    /// Absolute sample index of the most recent above-threshold chunk.
+    /// "Has speech arrived in the current window" = `lastSpeechTotal >
+    /// windowStartTotal` — an index comparison rather than a boolean so
+    /// speech that lands DURING a tick (belonging to the next window)
+    /// isn't wiped by the commit (review minor #1).
+    private var lastSpeechTotal = -1
     private var lastTickTotal = 0
 
     private var inFlight = false
     private var pendingTrigger: Trigger?
+    /// Set when the recording stopped (end-of-stream). Gates trigger
+    /// scheduling and the deferred reschedule so no zombie inference can
+    /// start after stop (review M1).
+    private var stopped = false
+    /// In-flight tick task — awaited by `quiesce()` so teardown reads
+    /// `assembledText()` only after the last tick has committed.
+    private var tickTask: Task<Void, Never>?
 
     private let log = Logger(
         subsystem: "com.vineetu.jot.mobile.Jot",
@@ -117,9 +129,20 @@ actor PreviewScheduler {
             case .samples(let chunk):
                 ingest(chunk)
             case .endOfStream:
+                stopped = true
                 return
             }
         }
+    }
+
+    /// Quiesce after drain returns: blocks until the in-flight tick (if
+    /// any) finishes, with rescheduling disabled via `stopped`. Teardown
+    /// MUST call this before `assembledText()` — otherwise actor
+    /// reentrancy lets the read run before the last tick commits its
+    /// window's text, silently dropping words across a pause (review M1).
+    func quiesce() async {
+        stopped = true
+        await tickTask?.value
     }
 
     /// Committed prefix + last volatile tail — what the stop path promotes
@@ -148,16 +171,22 @@ actor PreviewScheduler {
         } else {
             silenceRun = 0
             pauseFiredThisRun = false
-            speechSinceCommit = true
+            lastSpeechTotal = totalSamples
         }
 
+        guard !stopped else { return }
         let windowLen = totalSamples - windowStartTotal
+        let speechInWindow = lastSpeechTotal > windowStartTotal
 
         // Trigger priority: pause > cap > timer. One pause fire per
-        // silence run (flag resets when speech resumes).
+        // silence run (flag resets when speech resumes). EVERY trigger is
+        // gated on speech-in-window: a pure-silence window must never run
+        // inference (review B2 — without this, a >15 s silent stretch hits
+        // the cap on every chunk and burns back-to-back full-window batch
+        // passes for as long as the user stays quiet).
+        guard speechInWindow else { return }
         if silenceRun >= Self.pauseSilenceSamples,
            !pauseFiredThisRun,
-           speechSinceCommit,
            windowLen >= Self.minWindowSamples {
             pauseFiredThisRun = true
             schedule(.commit)
@@ -173,6 +202,7 @@ actor PreviewScheduler {
     /// trigger arriving mid-tick is remembered (commit outranks volatile)
     /// and fired once the current tick returns.
     private func schedule(_ trigger: Trigger) {
+        guard !stopped else { return }
         lastTickTotal = totalSamples
         if inFlight {
             if case .commit = trigger { pendingTrigger = .commit }
@@ -182,13 +212,15 @@ actor PreviewScheduler {
         inFlight = true
         let windowStart = windowStartTotal
         let windowEnd = totalSamples
-        Task { await self.runTick(trigger, windowStart: windowStart, windowEnd: windowEnd) }
+        tickTask = Task { await self.runTick(trigger, windowStart: windowStart, windowEnd: windowEnd) }
     }
 
     private func runTick(_ trigger: Trigger, windowStart: Int, windowEnd: Int) async {
         defer {
             inFlight = false
-            if let next = pendingTrigger {
+            // No reschedule after stop (review M1 — a pending trigger must
+            // not start a zombie inference while the saving stop-pass runs).
+            if !stopped, let next = pendingTrigger {
                 pendingTrigger = nil
                 schedule(next)
             }
@@ -197,26 +229,45 @@ actor PreviewScheduler {
         // Snapshot the window out of the ring (indices are absolute).
         let lo = max(windowStart - ringStartTotal, 0)
         let hi = min(windowEnd - ringStartTotal, ring.count)
-        guard hi > lo else { return }
+        guard hi > lo else {
+            // Degenerate window (fully trimmed); advance on commit so the
+            // cap can't re-fire on the same dead range.
+            if case .commit = trigger { windowStartTotal = max(windowStartTotal, windowEnd) }
+            return
+        }
+        if windowStart - ringStartTotal < 0 {
+            // Window head fell off the trailing ring (a >5 s tick let the
+            // window outgrow the margin). Preview-only loss; log it.
+            log.notice("preview window head trimmed — windowStart=\(windowStart) ringStart=\(self.ringStartTotal)")
+        }
         let window = Array(ring[lo..<hi])
 
         // MainActor hop for the lean inference path; heavy work runs on the
         // FluidAudio actor, MainActor only orchestrates.
         let text = await TranscriptionService.shared.previewTranscribe(samples: window)
-        guard let text, !text.isEmpty else { return }
 
         switch trigger {
         case .commit:
-            committedText = Self.join(committedText, text)
+            // ALWAYS advance the window on a commit — even when the text
+            // came back empty/nil (silence, model not ready). Without this
+            // a 15 s window that transcribes to nothing keeps satisfying
+            // the cap trigger forever = back-to-back full-window inference
+            // on silence (review B2). Committing "nothing" loses nothing:
+            // the saved transcript is the full-file stop-pass.
+            windowStartTotal = max(windowStartTotal, windowEnd)
+            if let text, !text.isEmpty {
+                committedText = Self.join(committedText, text)
+            }
             volatileTail = ""
-            windowStartTotal = windowEnd
-            speechSinceCommit = false
         case .volatileRefresh:
+            guard let text, !text.isEmpty else { return }
             volatileTail = text
         }
 
-        let assembled = Self.join(committedText, volatileTail.isEmpty && trigger == .commit ? "" : volatileTail)
-        let display = trigger == .commit ? committedText : assembled
+        let display = trigger == .commit
+            ? committedText
+            : Self.join(committedText, volatileTail)
+        guard !display.isEmpty else { return }
         let presenter = self.presenter
         let sessionID = self.sessionID
         await MainActor.run {

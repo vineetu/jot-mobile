@@ -340,6 +340,10 @@ final class RecordingService {
     /// pre-allocated queue.
     private func kickOffStreamingSession() async {
         guard let presenter = streamingPresenter else {
+            // Close the queue so tap pushes drop instead of accumulating
+            // unconsumed samples for the whole recording (~3.8 MB/min) —
+            // pre-existing leak surfaced by review minor #4.
+            streamingQueue?.endOfStream()
             log.notice("kickOffStreamingSession skipped — no streaming presenter (headless caller)")
             return
         }
@@ -352,18 +356,20 @@ final class RecordingService {
         // `ended`). Zero inference during capture; the batch stop-pass is
         // unaffected. (docs/plans/batch-only-streaming.md — streaming-off
         // is the safe baseline / degrade target.)
+        // Build-flag A/B: batch-model preview scheduler vs EOU engine.
+        // The live-text off-switch is scoped INSIDE the batch branch for
+        // now (review M2): the EOU default path must stay byte-identical
+        // to today on every device until the "Listening… 0:12" strip state
+        // + hero final-only reveal exist (plan F6 — the off-path UI).
         // TODO(batch-streaming F4): thread capture *purpose* here so Ask
         // sessions bypass the off-switch (Ask's live text is its input
-        // mechanism) and get a faster tick cadence (~2 s). Until the wall
-        // phase, only ≥6 GB devices run with live text on, so Ask is
-        // unaffected in practice.
-        guard DeviceCapability.liveTextEnabled else {
-            queue.endOfStream()
-            log.notice("Live-text preview disabled — queue closed, no preview consumer")
-            return
-        }
-        // Build-flag A/B: batch-model preview scheduler vs EOU engine.
+        // mechanism) and get a faster tick cadence (~2 s).
         if AppGroup.previewSource == "batch" {
+            guard DeviceCapability.liveTextEnabled else {
+                queue.endOfStream()
+                log.notice("Live-text preview disabled — queue closed, no preview consumer")
+                return
+            }
             let sessionID = presenter.beginSession()
             let scheduler = PreviewScheduler(
                 queue: queue,
@@ -434,6 +440,13 @@ final class RecordingService {
         if let scheduler = previewScheduler {
             await previewDrainTask?.value
             previewDrainTask = nil
+            // Quiesce BEFORE reading assembledText: an in-flight tick
+            // survives drain's return (it runs as its own task); without
+            // this fence the snapshot races the tick's commit and can drop
+            // the last window's words across a pause (review M1). Also
+            // disables rescheduling so no zombie inference starts while
+            // the saving stop-pass runs.
+            await scheduler.quiesce()
             if let presenter = streamingPresenter {
                 presenter.clearSession()
                 let assembled = await scheduler.assembledText()
