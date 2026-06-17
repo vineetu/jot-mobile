@@ -276,14 +276,6 @@ struct DiagnosticsView: View {
         case .classifyMemoryWarning: return ("CLASSIFY/MEM", Color.jotWarning)
         case .appUnresponsiveRecovery: return ("RECOVER", Color.jotWarning)
         case .vocabularyGate: return ("VOCAB", Color.jotAccent)
-        case .streamRevealInit: return ("REVEAL/INIT", Color.jotAccent)
-        case .streamRevealSync: return ("REVEAL/SYNC", Color.jotAccent)
-        case .streamRevealAdvance: return ("REVEAL/ADV", Color.jotAccent)
-        case .streamRenderSafetyNet: return ("RENDER/SAFETY", Color.jotWarning)
-        case .streamRenderEmptyLayout: return ("RENDER/EMPTY", Color.jotWarning)
-        case .streamViewLifecycle: return ("VIEW/LIFE", Color.jotAccent)
-        case .streamRenderDraw: return ("RENDER/DRAW", Color.jotAccent)
-        case .keyboardControllerLifecycle: return ("KBD/CTRL", Color.jotAccent)
         }
     }
 

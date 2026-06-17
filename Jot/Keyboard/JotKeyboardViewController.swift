@@ -69,22 +69,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// the one shared projection.
     private var recordingState: KeyboardRecordingState { hub.recordingState }
 
-    // DIAGNOSTIC (blank live-preview pane): a short id per controller instance so
-    // ghost controllers (iOS keeping a stale `JotKeyboardViewController` alive
-    // across an app-switch while a fresh one mounts) become visible — if two
-    // KBD/CTRL ids log lifecycle during one dictation, the visible keyboard view
-    // may belong to a different controller than the one receiving projections.
-    nonisolated(unsafe) private static var controllerCounter = 0
-    private let controllerID: Int = {
-        JotKeyboardViewController.controllerCounter += 1
-        return JotKeyboardViewController.controllerCounter
-    }()
-    // DIAGNOSTIC: the per-controller "handling partial" probe moved with the
-    // streaming feed into `KeyboardStreamingHub` (now a single process-lifetime
-    // consumer, so a per-controller id is no longer meaningful). The
-    // controller-lifecycle KBD/CTRL diagnostics (viewDidLoad/viewWillAppear/
-    // deinit, keyed by `controllerID`) stay here.
-
     /// `@Observable` bag of every *value* input `KeyboardView` takes. The root
     /// host is built ONCE (`makeRootHostView()`); every UI value update now
     /// mutates this object via `syncKeyboardInputs()` instead of reassigning a
@@ -350,12 +334,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     deinit {
-        DiagnosticsLog.record(
-            source: "keyboard",
-            category: .keyboardControllerLifecycle,
-            message: "controller deinit",
-            metadata: ["controllerID": String(controllerID)]
-        )
         // HYGIENE: stop any controller-scoped resources that could outlive a
         // ghost. UIKit deallocates view controllers on the main thread, so
         // `assumeIsolated` is valid here; the Darwin observer tokens auto-remove
@@ -369,12 +347,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        DiagnosticsLog.record(
-            source: "keyboard",
-            category: .keyboardControllerLifecycle,
-            message: "controller viewDidLoad",
-            metadata: ["controllerID": String(controllerID)]
-        )
         // Jot mic CTA is its own affordance; we do not provide a system dictation key.
         hasDictationKey = false
         // Push current Full Access into the process-lifetime hub before its
@@ -1732,12 +1704,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         //   - no payload at all (publish hasn't landed yet, or never will)
         //   - payload exists but sessionID doesn't match (cross-session race)
         if payload == nil {
-            // DIAGNOSTIC NOISE SILENCED (2026-06-16): this branch fires on every
-            // flush poll while a recording is in flight (publish hasn't landed
-            // yet) — it floods the 100-entry ring buffer and evicts the
-            // high-signal stream-render records we're hunting the blank-pane bug
-            // with. Re-enable the `.pasteSkipNoPayload` record here if the
-            // keyboard-stop-no-paste regression needs tracing again.
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .pasteSkipNoPayload,
+                message: "Flush ran with no fresh transcript",
+                metadata: ["pendingSessionID": session.id.uuidString]
+            )
         } else if let payload {
             DiagnosticsLog.record(
                 source: "keyboard",

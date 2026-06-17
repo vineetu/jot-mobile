@@ -238,13 +238,6 @@ final class KeyboardStreamingHub {
 
     private var didStartObserving = false
 
-    /// DIAGNOSTIC (blank live-preview pane): log only the FIRST non-empty partial
-    /// the hub handles, so the on-device trace shows the single process-lifetime
-    /// consumer receiving projections (vs the pre-fix per-controller probe that
-    /// revealed ghost controllers double-consuming). Kept until the fix is
-    /// verified on-device, then removed with the rest of the streaming probes.
-    private var didLogPartialHandling = false
-
     private init() {
         startObserving()
     }
@@ -331,15 +324,6 @@ final class KeyboardStreamingHub {
             return
         }
         let text = AppGroup.defaults.string(forKey: AppGroup.Keys.streamingPartialText) ?? ""
-        if !didLogPartialHandling, !text.isEmpty {
-            didLogPartialHandling = true
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .keyboardControllerLifecycle,
-                message: "hub handling partial",
-                metadata: ["len": String(text.count)]
-            )
-        }
         recordingState.updateStreamingPartial(text)
     }
 

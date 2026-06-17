@@ -270,10 +270,17 @@ actor PreviewScheduler {
         // growing tickGap with speechInWindow=false is the silent-box signature.
         if totalSamples - lastDiagTotal >= 5 * Self.sampleRate {
             lastDiagTotal = totalSamples
-            // DIAGNOSTIC NOISE SILENCED (2026-06-16): the 5s gating snapshot is
-            // [main-app] noise that competes with the stream-render records we're
-            // using to chase the keyboard blank-pane bug. Re-enable if the
-            // silent-box (ticks-stop-firing) signature needs tracing again.
+            DiagnosticsLog.record(
+                source: "main-app", category: .streamingPartialReceived,
+                message: "preview gate",
+                metadata: [
+                    "sid": String(self.sessionID.uuidString.prefix(8)),
+                    "speechInWindow": "\(speechInWindow)",
+                    "inFlight": "\(inFlight)",
+                    "windowSec": "\(windowLen / Self.sampleRate)s",
+                    "tickGapSec": "\((totalSamples - lastTickTotal) / Self.sampleRate)s",
+                ]
+            )
         }
 
         // Structural duty-cycle bound: no two ticks closer than 2 s,
@@ -364,10 +371,16 @@ actor PreviewScheduler {
         // MainActor hop for the lean inference path; heavy work runs on the
         // FluidAudio actor, MainActor only orchestrates.
         let text = await TranscriptionService.shared.previewTranscribe(samples: window)
-        // DIAGNOSTIC NOISE SILENCED (2026-06-16): per-tick [main-app] record —
-        // the downstream "preview PUBLISH" log already marks every partial that
-        // reaches the projection, which is the event we correlate keyboard
-        // renders against. Re-enable for preview-pipeline (tick cadence) tracing.
+        DiagnosticsLog.record(
+            source: "main-app", category: .streamingPartialReceived,
+            message: "preview tick",
+            metadata: [
+                "sid": String(self.sessionID.uuidString.prefix(8)),
+                "trigger": "\(trigger)",
+                "chars": "\(text?.count ?? 0)",
+                "windowSec": "\((windowEnd - windowStart) / Self.sampleRate)s",
+            ]
+        )
 
         switch trigger {
         case .commit:
