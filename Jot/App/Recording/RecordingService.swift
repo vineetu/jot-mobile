@@ -157,32 +157,25 @@ final class RecordingService {
     private var priorMode: AVAudioSession.Mode?
     private var priorOptions: AVAudioSession.CategoryOptions?
 
-    // MARK: - Streaming preview (dual-model-streaming)
+    // MARK: - Streaming preview (batch pseudo-streaming)
     //
-    // Per-recording streaming engine + queue + drain task for the live
-    // partial-transcript preview (FluidAudio `StreamingEouAsrManager`).
-    // Allocated in `start()` via `kickOffStreamingSession()`; torn down
-    // in `stop()`/`internalStop()`/`forceStop()` via
-    // `tearDownStreamingSession()`.
-    //
-    // Cleanup-on-every-stop is binding policy: `endSession(engine:)`
-    // calls `engine.cleanup()` which fully releases the FluidAudio
-    // CoreML weights. Next `start()` re-instantiates a fresh manager
-    // via `StreamingTranscriptionService.beginSession`.
-    //
-    // Mirrors prototype `DualRecorder.swift:43-69`.
-    private var streamingEngine: StreamingTranscriptionEngine?
+    // Per-recording sample queue feeding the live partial-transcript preview.
+    // Allocated in `start()`; the tap closure pushes audio into it and the
+    // `PreviewScheduler` drains it. Torn down in
+    // `stop()`/`internalStop()`/`forceStop()` via `tearDownStreamingSession()`.
     private var streamingQueue: StreamingBufferQueue?
-    private var streamingDrainTask: Task<Void, Never>?
 
     // Batch-only-streaming preview (docs/plans/batch-only-streaming.md).
-    // Selected per-recording by `AppGroup.previewSource == "batch"`; consumes
-    // the SAME `streamingQueue` the EOU engine would (tap untouched). When
-    // `AppGroup.liveTextSetting` resolves OFF, neither consumer starts and
+    // Consumes the `streamingQueue` the tap pushes into. When
+    // `AppGroup.liveTextSetting` resolves OFF, the scheduler doesn't start and
     // the queue is closed immediately (pushes drop; zero inference during
     // dictation capture).
     private var previewScheduler: PreviewScheduler?
     private var previewDrainTask: Task<Void, Never>?
+    /// Polls the batch model's `modelState` while a batch streaming session is
+    /// active so the keyboard's "Loading …" affordance can be cleared the
+    /// moment the model is ready. See `beginBatchLoadLabelMirror()`.
+    private var batchLoadLabelTask: Task<Void, Never>?
 
     // MARK: - Pause / Resume (UX-overhaul round 2 §10)
     //
@@ -329,11 +322,10 @@ final class RecordingService {
     // recording. Mirrors prototype `DualRecorder.swift:151-167` (kickoff)
     // and `:271-291` (teardown).
 
-    /// Asks `StreamingTranscriptionService` to vend a fresh engine wrapping
-    /// the caller-supplied queue, registers the engine, spawns the drain
-    /// task. Best-effort — returns silently if the model isn't on disk, the
-    /// caller has no presenter (headless paths), or the load fails. The
-    /// recorder's batch path is unaffected.
+    /// Spins up the batch `PreviewScheduler` draining the caller-supplied
+    /// queue, registers it, and spawns the drain task. Best-effort — returns
+    /// silently if the caller has no presenter (headless paths) or live-text
+    /// is disabled. The recorder's stop-pass batch path is unaffected.
     ///
     /// Caller MUST allocate `streamingQueue` BEFORE `installTap` so the
     /// tap closure has a queue to push into; this method consumes that
@@ -356,53 +348,112 @@ final class RecordingService {
         // `ended`). Zero inference during capture; the batch stop-pass is
         // unaffected. (docs/plans/batch-only-streaming.md — streaming-off
         // is the safe baseline / degrade target.)
-        // Build-flag A/B: batch-model preview scheduler vs EOU engine.
-        // The live-text off-switch is scoped INSIDE the batch branch for
-        // now (review M2): the EOU default path must stay byte-identical
-        // to today on every device until the "Listening… 0:12" strip state
-        // + hero final-only reveal exist (plan F6 — the off-path UI).
-        // TODO(batch-streaming F4): thread capture *purpose* here so Ask
-        // sessions bypass the off-switch (Ask's live text is its input
-        // mechanism) and get a faster tick cadence (~2 s).
-        if AppGroup.previewSource == "batch" {
-            guard DeviceCapability.liveTextEnabled else {
-                queue.endOfStream()
-                log.notice("Live-text preview disabled — queue closed, no preview consumer")
-                return
-            }
-            let sessionID = presenter.beginSession()
-            let scheduler = PreviewScheduler(
-                queue: queue,
-                presenter: presenter,
-                sessionID: sessionID
-            )
-            self.previewScheduler = scheduler
-            self.previewDrainTask = Task.detached(priority: .userInitiated) {
-                await scheduler.drain()
-            }
-            log.info("Batch preview session kicked off (previewSource=batch)")
+        //
+        // Owned-input-capture EXEMPTION (plan F4): Ask + the voice-prompt
+        // rewrite use the live preview AS their input mechanism — Ask's
+        // question box reads `streamingText` and its auto-send latch needs a
+        // non-empty question, so an off-switch / sub-6GB device would leave
+        // those surfaces dead (empty box, no auto-send). Those callers claim
+        // `ownsActiveRecording` BEFORE `start()` (InlineDictationSession,
+        // RewritePickerSheet), so the flag is a reliable purpose signal here:
+        // they always get the scheduler regardless of the toggle / gate.
+        guard DeviceCapability.liveTextEnabled || ownsActiveRecording else {
+            queue.endOfStream()
+            log.notice("Live-text preview disabled — queue closed, no preview consumer")
             return
         }
-        guard let engine = await StreamingTranscriptionService.shared.beginSession(
+        let sessionID = presenter.beginSession()
+        let scheduler = PreviewScheduler(
+            queue: queue,
             presenter: presenter,
-            queue: queue
-        ) else {
-            log.notice("kickOffStreamingSession skipped — service returned nil (model not ready)")
+            sessionID: sessionID
+        )
+        self.previewScheduler = scheduler
+        self.previewDrainTask = Task.detached(priority: .userInitiated) {
+            await scheduler.drain()
+        }
+        // Make sure the (possibly cold/evicted) batch model is loading, and
+        // surface that to the keyboard's "Loading …" affordance — otherwise
+        // a cold 600M load shows an empty "Listening…" on the strip with no
+        // progress (the live preview can't produce text until the model is
+        // ready). `warmUp()` is idempotent; the hero reads modelState
+        // directly so it needs no mirror.
+        TranscriptionService.shared.warmUp()
+        beginBatchLoadLabelMirror()
+        // [PREVIEW-DIAG] In-app log — correlate the session token + model
+        // state with the scheduler's drain/tick + StreamingPartial's
+        // PUBLISH/DROP entries (sid match proves the token lines up across a
+        // stretch of dictations). Remove once diagnosed.
+        DiagnosticsLog.record(
+            source: "main-app", category: .streamingPartialReceived,
+            message: "preview session start",
+            metadata: [
+                "sid": String(sessionID.uuidString.prefix(8)),
+                "modelState": String(describing: TranscriptionService.shared.modelState),
+                "liveText": "\(DeviceCapability.liveTextEnabled)",
+            ]
+        )
+    }
+
+    // MARK: - Batch model-load affordance for the keyboard
+
+    /// Mirror the BATCH model's load state to the App Group so the keyboard
+    /// strip can show the same "Loading [model]…" bar the hero shows.
+    ///
+    /// The hero observes `TranscriptionService.modelState` directly (same
+    /// process); the keyboard extension can't — it only sees App Group keys.
+    /// The EOU `StreamingTranscriptionService` already mirrors these keys from
+    /// its `sessionLoadState`; the batch path did NOT, so a cold 600M load
+    /// (which can run well past the first 15 s) left the keyboard showing a
+    /// misleading empty "Listening…" with no text. This writes the SAME three
+    /// keys + posts the SAME Darwin notification the EOU path uses, so the
+    /// keyboard's existing loading observer renders identically. (We are
+    /// 600M-only, so this cold window is always the slow one — the affordance
+    /// matters on every cold/evicted load.)
+    private func setBatchKeyboardLoadingLabel(_ loading: Bool) {
+        AppGroup.streamingLoadingVariantLabel = loading
+            ? ColdStartCopy.beginningLine()
+            : ""
+        if loading {
+            AppGroup.streamingLoadStartedAt = Date()
+            AppGroup.streamingLoadEstimateSeconds =
+                ModelLoadTimekeeper.estimatedSeconds(variant: AppGroup.speechModelVariant)
+        } else {
+            AppGroup.streamingLoadStartedAt = nil
+            AppGroup.streamingLoadEstimateSeconds = 0
+        }
+        CrossProcessNotification.post(name: CrossProcessNotification.streamingLoadingChanged)
+    }
+
+    /// Called when a batch streaming session starts: if the model isn't ready,
+    /// show the keyboard loading label and poll until it is (then clear it).
+    /// The keyboard's own render gate already supersedes the label the instant
+    /// the first preview text arrives, so this is belt-and-suspenders for the
+    /// model-ready-but-user-silent window.
+    private func beginBatchLoadLabelMirror() {
+        batchLoadLabelTask?.cancel()
+        batchLoadLabelTask = nil
+        guard TranscriptionService.shared.modelState != .ready else {
+            setBatchKeyboardLoadingLabel(false)
             return
         }
-        self.streamingEngine = engine
-        // Drain task captures `engine` (a local actor reference) by value;
-        // it deliberately does NOT capture `self`. RecordingService's
-        // lifetime is process-scoped (singleton), and the engine actor's
-        // lifetime is owned by the service via `streamingEngine` field —
-        // `tearDownStreamingSession()` clears the field AFTER awaiting the
-        // drain task, so the actor stays alive until drain returns. No
-        // retain cycle, no premature deallocation.
-        let capturedEngine = engine
-        self.streamingDrainTask = Task.detached(priority: .userInitiated) {
-            await capturedEngine.drain()
+        setBatchKeyboardLoadingLabel(true)
+        batchLoadLabelTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if TranscriptionService.shared.modelState == .ready { break }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard !Task.isCancelled else { return }
+            self?.setBatchKeyboardLoadingLabel(false)
         }
-        log.info("Streaming session kicked off")
+    }
+
+    /// Tears down the keyboard loading mirror (session ended). Clears the label
+    /// synchronously so a later WARM session never inherits a stale "Loading".
+    private func endBatchLoadLabelMirror() {
+        batchLoadLabelTask?.cancel()
+        batchLoadLabelTask = nil
+        setBatchKeyboardLoadingLabel(false)
     }
 
     /// Tears down the streaming session per the prototype's stop ordering
@@ -433,11 +484,12 @@ final class RecordingService {
         // tap closures may have pushed samples that nothing consumes).
         streamingQueue?.endOfStream()
 
-        // Batch-preview teardown mirrors the EOU ordering: drain returns on
-        // end-of-stream → clear the session token → promote the assembled
-        // preview via `applyFinalSnapshot` (bypasses the cleared-token guard
-        // by design) → the stop-pass batch result replaces it.
+        // Batch-preview teardown: drain returns on end-of-stream → clear the
+        // session token → promote the assembled preview via `applyFinalSnapshot`
+        // (bypasses the cleared-token guard by design) → the stop-pass batch
+        // result replaces it.
         if let scheduler = previewScheduler {
+            endBatchLoadLabelMirror()
             await previewDrainTask?.value
             previewDrainTask = nil
             // Quiesce BEFORE reading assembledText: an in-flight tick
@@ -459,25 +511,7 @@ final class RecordingService {
             return
         }
 
-        if let engine = streamingEngine {
-            await streamingDrainTask?.value
-            streamingDrainTask = nil
-
-            if let presenter = streamingPresenter {
-                StreamingTranscriptionService.shared
-                    .clearSessionTokenBeforeFinish(presenter: presenter)
-            }
-
-            await engine.finish()
-            await StreamingTranscriptionService.shared.endSession(engine: engine)
-        } else {
-            // Kickoff never completed — drop the orphan drain task if any
-            // (defensive; shouldn't exist without an engine).
-            streamingDrainTask?.cancel()
-            streamingDrainTask = nil
-        }
-
-        self.streamingEngine = nil
+        // Kickoff never completed (no scheduler) — just release the queue.
         self.streamingQueue = nil
     }
 
@@ -1401,26 +1435,33 @@ final class RecordingService {
         // a follow-up `start()` that might mutate the streaming fields
         // while the dispatched teardown is mid-flight. `self` mutation has
         // already happened above; the Task is operating on its own snapshots.
-        let streamingEngineRef = self.streamingEngine
         let streamingQueueRef = self.streamingQueue
-        let streamingDrainTaskRef = self.streamingDrainTask
         let streamingPresenterRef = self.streamingPresenter
-        self.streamingEngine = nil
+        let previewSchedulerRef = self.previewScheduler
+        let previewDrainTaskRef = self.previewDrainTask
         self.streamingQueue = nil
-        self.streamingDrainTask = nil
-        if streamingEngineRef != nil || streamingQueueRef != nil {
-            Task.detached { [streamingEngineRef, streamingQueueRef, streamingDrainTaskRef, streamingPresenterRef] in
+        self.previewScheduler = nil
+        self.previewDrainTask = nil
+        // Terminal path — clear the keyboard "Loading …" affordance synchronously
+        // so a force-stop / interruption during a cold load doesn't leave a
+        // stale loading label for the next (possibly warm) session.
+        endBatchLoadLabelMirror()
+        if streamingQueueRef != nil || previewSchedulerRef != nil {
+            Task.detached { [streamingQueueRef, streamingPresenterRef, previewSchedulerRef, previewDrainTaskRef] in
                 streamingQueueRef?.endOfStream()
-                if let engine = streamingEngineRef {
-                    await streamingDrainTaskRef?.value
-                    if let presenter = streamingPresenterRef {
-                        await StreamingTranscriptionService.shared
-                            .clearSessionTokenBeforeFinish(presenter: presenter)
-                    }
-                    await engine.finish()
-                    await StreamingTranscriptionService.shared.endSession(engine: engine)
-                } else {
-                    streamingDrainTaskRef?.cancel()
+                if let scheduler = previewSchedulerRef {
+                    // Batch-preview teardown — DISCARD path (no
+                    // applyFinalSnapshot): EOS the queue (above) → await the
+                    // drain task → `quiesce()` so no in-flight tick publishes a
+                    // stale volatile preview AFTER the terminal `.failed` write
+                    // → clear the presenter's session token. Mirrors
+                    // `tearDownStreamingSession`'s batch branch minus the final
+                    // snapshot. Without this, force-stop (scene-disconnect /
+                    // hard interruption) leaked the scheduler + presenter ring
+                    // and let a zombie tick re-flip the volatile preview.
+                    await previewDrainTaskRef?.value
+                    await scheduler.quiesce()
+                    await MainActor.run { streamingPresenterRef?.clearSession() }
                 }
             }
         }
@@ -1981,26 +2022,30 @@ final class RecordingService {
         // abruptly on interruption;
         // batch path is unaffected (the dispatch phase below still runs
         // through `RecordingPipelineDispatch`).
-        let streamingEngineRef = self.streamingEngine
         let streamingQueueRef = self.streamingQueue
-        let streamingDrainTaskRef = self.streamingDrainTask
         let streamingPresenterRef = self.streamingPresenter
-        self.streamingEngine = nil
+        let previewSchedulerRef = self.previewScheduler
+        let previewDrainTaskRef = self.previewDrainTask
         self.streamingQueue = nil
-        self.streamingDrainTask = nil
-        if streamingEngineRef != nil || streamingQueueRef != nil {
-            Task.detached { [streamingEngineRef, streamingQueueRef, streamingDrainTaskRef, streamingPresenterRef] in
+        self.previewScheduler = nil
+        self.previewDrainTask = nil
+        // Terminal path — clear the keyboard "Loading …" affordance synchronously
+        // so a force-stop / interruption during a cold load doesn't leave a
+        // stale loading label for the next (possibly warm) session.
+        endBatchLoadLabelMirror()
+        if streamingQueueRef != nil || previewSchedulerRef != nil {
+            Task.detached { [streamingQueueRef, streamingPresenterRef, previewSchedulerRef, previewDrainTaskRef] in
                 streamingQueueRef?.endOfStream()
-                if let engine = streamingEngineRef {
-                    await streamingDrainTaskRef?.value
-                    if let presenter = streamingPresenterRef {
-                        await StreamingTranscriptionService.shared
-                            .clearSessionTokenBeforeFinish(presenter: presenter)
-                    }
-                    await engine.finish()
-                    await StreamingTranscriptionService.shared.endSession(engine: engine)
-                } else {
-                    streamingDrainTaskRef?.cancel()
+                if let scheduler = previewSchedulerRef {
+                    // Batch-preview teardown — DISCARD path (no
+                    // applyFinalSnapshot): EOS → await drain → `quiesce()` so no
+                    // in-flight tick re-publishes a stale volatile preview after
+                    // the terminal `.failed` → clear the presenter token. Same
+                    // shape as `forceStop`'s block; the dispatch phase below
+                    // still finalizes the captured audio via the batch stop-pass.
+                    await previewDrainTaskRef?.value
+                    await scheduler.quiesce()
+                    await MainActor.run { streamingPresenterRef?.clearSession() }
                 }
             }
         }

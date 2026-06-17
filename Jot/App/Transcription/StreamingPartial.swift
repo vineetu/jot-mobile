@@ -3,14 +3,14 @@ import FluidAudio
 import Foundation
 import os.log
 
-/// Live partial-transcript presenter for the dual-model streaming preview
-/// (FluidAudio `StreamingEouAsrManager` Parakeet EOU 120M @ 320ms).
+/// Live partial-transcript presenter for the batch pseudo-streaming preview.
 ///
 /// Bound by `ContentView` to render volatile-then-final dictation text per
 /// Apple's HIG (`.secondary` while volatile, `.primary` once batch overrides).
 /// The presenter is the UI half of the streaming pipeline; the inference
-/// half lives off MainActor in `StreamingTranscriptionEngine` (this file)
-/// and the audio-thread fan-out lives in `RecordingService.installTap`.
+/// half lives off MainActor in `PreviewScheduler` (sibling file) which drains
+/// the audio-thread-fed `StreamingBufferQueue` and re-transcribes on the batch
+/// model. The audio-thread fan-out lives in `RecordingService.installTap`.
 ///
 /// ## Why a separate session token from `RecordingService.currentSessionID`
 ///
@@ -95,7 +95,18 @@ final class StreamingPartial {
     /// slot.
     func update(text: String, isFinal: Bool, sessionID: UUID) {
         guard currentSessionID == sessionID else {
-            log.debug("Dropping partial from stale session \(sessionID, privacy: .public)")
+            // [PREVIEW-DIAG] In-app log so we can see whether preview ticks are
+            // SILENTLY DROPPED on a session-token mismatch — prime suspect for
+            // "streams then stops" on a warm model. Remove once diagnosed.
+            DiagnosticsLog.record(
+                source: "main-app", category: .streamingPartialReceived,
+                message: "preview DROP stale token",
+                metadata: [
+                    "incoming": String(sessionID.uuidString.prefix(8)),
+                    "current": currentSessionID.map { String($0.uuidString.prefix(8)) } ?? "nil",
+                    "chars": "\(text.count)",
+                ]
+            )
             return
         }
         // Prepend any committed pause prefix (§10.5) so a resumed dictation
@@ -104,6 +115,17 @@ final class StreamingPartial {
         let joined = Self.join(prefix: resumePrefix, tail: text)
         streamingText = joined
         streamingIsVolatile = !isFinal
+        // [PREVIEW-DIAG] In-app log — confirms the partial reached the presenter
+        // and was published cross-process to the keyboard. Remove once diagnosed.
+        DiagnosticsLog.record(
+            source: "main-app", category: .streamingPartialReceived,
+            message: "preview PUBLISH",
+            metadata: [
+                "sid": String(sessionID.uuidString.prefix(8)),
+                "chars": "\(joined.count)",
+                "final": "\(isFinal)",
+            ]
+        )
         // Force-publish on `isFinal` so the keyboard's volatile→primary
         // visual handoff isn't dropped by the throttle.
         Self.publishProjection(joined, force: isFinal)
@@ -237,169 +259,6 @@ final class StreamingPartial {
             trimmed.removeFirst()
         }
         return trimmed
-    }
-}
-
-/// Off-MainActor consumer that owns the `StreamingEouAsrManager` reference.
-///
-/// One `StreamingTranscriptionEngine` exists per streaming session; the
-/// service-level `StreamingTranscriptionService` (sibling file) maintains
-/// the loaded model and hands off the manager into a fresh engine on each
-/// `RecordingService.start()`. The engine actor:
-///   1. Drains the audio-tap-fed `StreamingBufferQueue` in FIFO order.
-///   2. Wraps each `[Float]` chunk into an `AVAudioPCMBuffer` and calls
-///      `appendAudio` + `processBufferedAudio` on the FluidAudio actor.
-///   3. Routes partial-transcript callbacks to the MainActor `StreamingPartial`
-///      presenter, gated by the per-session token.
-///
-/// Critical: the audio-thread tap NEVER calls into this actor (Sendable
-/// `[Float]` payload moves through the queue, not through `await`). The
-/// drain task is `Task.detached(priority: .userInitiated)` — never `.high`,
-/// which would compete with the audio render thread.
-actor StreamingTranscriptionEngine {
-    /// The streaming manager backing this engine. Owned by this engine
-    /// for the lifetime of the session; released via `cleanup()` in
-    /// `StreamingTranscriptionService.endSession(engine:)` per the
-    /// cleanup-on-every-stop lifecycle policy.
-    let manager: any StreamingAsrManager
-    private let queue: StreamingBufferQueue
-    private let presenter: StreamingPartial
-    private let sessionID: UUID
-
-    /// Pre-built target format for buffer materialization. The manager
-    /// resamples internally if needed; we hand it 16kHz mono Float32 because
-    /// that's what the audio-thread CaptureContext converter already produced.
-    private static let targetFormat: AVAudioFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16_000,
-        channels: 1,
-        interleaved: false
-    )!
-
-    private let log = Logger(
-        subsystem: "com.vineetu.jot.mobile.Jot",
-        category: "streaming-engine"
-    )
-
-    init(
-        manager: any StreamingAsrManager,
-        queue: StreamingBufferQueue,
-        presenter: StreamingPartial,
-        sessionID: UUID
-    ) {
-        self.manager = manager
-        self.queue = queue
-        self.presenter = presenter
-        self.sessionID = sessionID
-    }
-
-    /// Installs the partial-transcript callback on the FluidAudio manager.
-    /// The callback hops to MainActor and routes through the presenter's
-    /// session-token-guarded `update(...)`. Captures `sessionID` by value so
-    /// late callbacks from a previous engine instance carry their own token
-    /// and fail the presenter's guard.
-    func installPartialCallback() async {
-        let presenter = self.presenter
-        let sessionID = self.sessionID
-        await manager.setPartialTranscriptCallback { partial in
-            Task { @MainActor in
-                presenter.update(text: partial, isFinal: false, sessionID: sessionID)
-            }
-        }
-    }
-
-    /// Drain loop. Returns when the queue signals end-of-stream. Single
-    /// invocation per engine instance — call sites use the prototype's
-    /// `Task.detached(priority: .userInitiated)` shape and `await` the
-    /// task's value as part of `stop()` cleanup.
-    ///
-    /// Errors from `appendAudio` / `processBufferedAudio` are swallowed
-    /// (logged at debug). The streaming preview is a UX nicety; failing it
-    /// must NOT interrupt the user's dictation flow per spec §3.6.
-    /// TODO(metric): emit `streaming.midSessionFailure` per spec §3.6 when
-    /// drain step throws — surface failure rate without bothering the user.
-    func drain() async {
-        while true {
-            switch await queue.popOrEndOfStream() {
-            case .samples(let pcm):
-                let buffer = Self.makeBuffer(from: pcm)
-                guard let buffer else { continue }
-                do {
-                    // Both calls cross the FluidAudio actor boundary; both
-                    // require `await`. `appendAudio` is `throws` (not
-                    // `async`) on the protocol, but the cross-actor hop is
-                    // itself the suspension point — Swift requires `await`
-                    // even though the function body is synchronous on the
-                    // remote actor.
-                    try await manager.appendAudio(buffer)
-                    try await manager.processBufferedAudio()
-                } catch {
-                    log.debug(
-                        "drain step error — \(error.localizedDescription, privacy: .public)"
-                    )
-                }
-            case .endOfStream:
-                return
-            }
-        }
-    }
-
-    /// Final flush after the drain task has returned. Promotes the
-    /// streaming preview to `.primary` styling for the brief pre-batch
-    /// tail by writing the finalized streaming text directly into the
-    /// presenter via `applyFinalSnapshot(_:)` — bypassing the session-
-    /// token guard, because the caller intentionally cleared the token via
-    /// `presenter.clearSession()` BEFORE calling this method.
-    ///
-    /// Discards no information: the batch path will overwrite the preview
-    /// when its result lands (spec §3.3), but the user gets the
-    /// volatile→solid transition in the streaming preview as native polish.
-    /// Per prototype `DualRecorder.swift:283-290`.
-    ///
-    /// Returns the finalized text emitted by `manager.finish()`, or `nil`
-    /// if the call threw.
-    @discardableResult
-    func finish() async -> String? {
-        do {
-            let final = try await manager.finish()
-            let presenter = self.presenter
-            await MainActor.run { presenter.applyFinalSnapshot(final) }
-            log.info("streaming finish — chars=\(final.count, privacy: .public)")
-            return final
-        } catch {
-            log.error(
-                "streaming finish failed — \(error.localizedDescription, privacy: .public)"
-            )
-            return nil
-        }
-    }
-
-    /// Full release of CoreML model references and per-session state per
-    /// `StreamingEouAsrManager.swift:428-440`. After this returns, the
-    /// manager cannot be used until `loadModels()` runs again. Called
-    /// from `StreamingTranscriptionService.endSession(engine:)` on
-    /// every recording stop per the cleanup-on-every-stop policy.
-    func cleanup() async {
-        await manager.cleanup()
-    }
-
-    /// Wraps the audio-thread-produced `[Float]` chunk into an
-    /// `AVAudioPCMBuffer` of the target 16kHz mono Float32 format. Allocates
-    /// fresh — runs OFF the audio thread (on the engine actor) so allocation
-    /// is fine. Returns `nil` if the format slot can't be obtained, which
-    /// should be vanishingly rare.
-    private static func makeBuffer(from samples: [Float]) -> AVAudioPCMBuffer? {
-        let frameCount = AVAudioFrameCount(samples.count)
-        guard frameCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCount)
-        else { return nil }
-        buffer.frameLength = frameCount
-        guard let channelData = buffer.floatChannelData else { return nil }
-        samples.withUnsafeBufferPointer { src in
-            guard let base = src.baseAddress else { return }
-            channelData[0].update(from: base, count: samples.count)
-        }
-        return buffer
     }
 }
 

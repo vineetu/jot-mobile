@@ -92,6 +92,17 @@ enum AppGroup {
         /// is governed by `warmHoldDurationSeconds`.
         static let warmHoldEnabled = "jot.warmHold.enabled"
         static let warmHoldDurationSeconds = "jot.warmHold.durationSeconds"
+
+        /// `true` only while the setup wizard's W5 ("Now try the keyboard")
+        /// step is on screen. Set by `SetupWizardView` on W5 entry and cleared
+        /// on leave / wizard dismiss. Read cross-process: it gates the
+        /// one-time "First-time setup" koan line (`ColdStartCopy.firstEverLine`)
+        /// to the wizard ONLY — the keyboard and the in-app hero must NEVER
+        /// show the koan, only the rotating lines. The keyboard reads it
+        /// indirectly (the app writes the resolved line into
+        /// `streamingLoadingVariantLabel`), but the flag itself lives here so
+        /// the gate is the single cross-process source of truth.
+        static let wizardActive = "jot.setupWizard.w5Active"
         static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
         static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
@@ -133,20 +144,13 @@ enum AppGroup {
         /// by the store, which seeds the bundled `SavedPrompt.allDefaults`.
         static let savedPrompts = "jot.ai.savedPrompts"
 
-        /// User-selected speech-model variant. Supported values:
-        /// - `"tdtCtc110m"` — Parakeet TDT-CTC 110M (bundled, default).
-        /// - `"parakeetV2"` — Parakeet 0.6B v2 (downloadable opt-in,
-        ///   ~440 MB). Shares the EOU 120M streaming graph with the
-        ///   bundled 110M variant.
-        ///
-        /// Read by `TranscriptionService` and `StreamingTranscriptionService`
-        /// at every session boundary to pick the right model. Unknown /
-        /// legacy values (including `"nemotron0_6b"` from prior builds)
-        /// fall back to the bundled TDT-CTC 110M (no in-place
-        /// rewrite — see the `speechModelVariant` accessor below).
+        /// Legacy persisted speech-model variant tag. Jot now ships a single
+        /// bundled model (Parakeet 0.6B v2, English), so this key is no longer
+        /// read for model selection — the `speechModelVariant` accessor below
+        /// resolves every value (legacy `"tdtCtc110m"` / `"parakeetV2"` /
+        /// `"nemotron0_6b"`, unset, or malformed) to the sole `"english"`
+        /// model. Kept only for backward-compatible reads/writes.
         static let speechModelVariant = "jot.speech.modelVariant"
-        /// Live-preview source flag (batch-only-streaming A/B): "eou" | "batch".
-        static let previewSource = "jot.preview.source"
         /// "Live text while dictating" tri-state: "auto" | "on" | "off".
         static let liveTextSetting = "jot.preview.liveText"
 
@@ -161,6 +165,19 @@ enum AppGroup {
         /// scheme. See
         /// `AppGroup.isJotAppForeground()` for the read helper.
         static let appForegroundHeartbeat = "jot.app.foreground.heartbeat"
+
+        /// Wall-clock `Date` of the most recent keyboard-active heartbeat.
+        /// Written by `JotKeyboardViewController` every ~1s while the Jot
+        /// keyboard is on screen (`viewWillAppear` → repeating Timer →
+        /// `viewWillDisappear` stop). The MIRROR of `appForegroundHeartbeat`
+        /// — that one is app→keyboard, this one is keyboard→app. Read by the
+        /// setup wizard W5 step (`TryKeyboardStep`) to detect "is the Jot
+        /// keyboard the frontmost keyboard" and dismiss the globe-switch cue.
+        /// See `AppGroup.isJotKeyboardActive()`. NOTE: iOS blocks App Group
+        /// writes when Full Access is off, so the heartbeat only flows once
+        /// Full Access is granted (W3 keyboard-install step) — acceptable,
+        /// W5 dictation already requires it.
+        static let keyboardActiveHeartbeat = "jot.keyboard.active.heartbeat"
 
         /// Which LLM answers Ask-mode questions. `"appleIntelligence"` (default —
         /// no download) or `"qwen"` (on-board, better answers, needs the 2.5 GB
@@ -202,6 +219,14 @@ enum AppGroup {
     static var warmHoldEnabled: Bool {
         get { defaults.bool(forKey: Keys.warmHoldEnabled) }
         set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
+    }
+
+    /// See `Keys.wizardActive`. `true` only while the wizard's W5 step is on
+    /// screen; gates the one-time "First-time setup" koan to the wizard so the
+    /// keyboard / hero never render it. Missing-key default `false`.
+    static var wizardActive: Bool {
+        get { defaults.bool(forKey: Keys.wizardActive) }
+        set { defaults.set(newValue, forKey: Keys.wizardActive) }
     }
 
     /// User-configurable warm-hold duration in seconds. Default `120` (2 minutes) when
@@ -255,6 +280,36 @@ enum AppGroup {
                 defaults.removeObject(forKey: Keys.warmHoldHeartbeat)
             }
         }
+    }
+
+    /// Wall-clock `Date` of the most recent keyboard-active heartbeat,
+    /// written by the keyboard extension every ~1s while it's on screen.
+    /// Mirror of `warmHoldHeartbeat`'s accessor shape. Read by W5 to gate
+    /// the globe-switch cue via `isJotKeyboardActive()`.
+    static var keyboardActiveHeartbeat: Date? {
+        get { defaults.object(forKey: Keys.keyboardActiveHeartbeat) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Keys.keyboardActiveHeartbeat)
+            } else {
+                defaults.removeObject(forKey: Keys.keyboardActiveHeartbeat)
+            }
+        }
+    }
+
+    /// Freshness window for `keyboardActiveHeartbeat`. The keyboard refreshes
+    /// every ~1s while presented, so a 3s window tolerates two missed ticks
+    /// (Timer skew, brief suspension) without falsely reporting the keyboard
+    /// active after it's been dismissed or swapped out.
+    static let keyboardActiveStaleThreshold: TimeInterval = 3.0
+
+    /// Returns `true` when the Jot keyboard is currently the frontmost
+    /// keyboard — inferred from the recency of `keyboardActiveHeartbeat`.
+    /// `false` when no heartbeat exists (keyboard never presented, or Full
+    /// Access off so the write no-ops) or the last one is stale.
+    static func isJotKeyboardActive(now: Date = Date()) -> Bool {
+        guard let last = keyboardActiveHeartbeat else { return false }
+        return now.timeIntervalSince(last) < keyboardActiveStaleThreshold
     }
 
     /// Ring buffer of recent clean-stop `(startedAt, stoppedAt, sessionID)`
@@ -329,33 +384,13 @@ enum AppGroup {
     /// the bundled variant.
     static var speechModelVariant: String {
         get {
-            let stored = defaults.string(forKey: Keys.speechModelVariant)
-            switch stored {
-            case "tdtCtc110m", "parakeetV2":
-                return stored!
-            default:
-                return "tdtCtc110m"
-            }
+            // Jot ships a single bundled speech model. Every persisted tag —
+            // legacy (`"tdtCtc110m"`, `"parakeetV2"`, `"nemotron0_6b"`),
+            // unset, or malformed — resolves to the sole `"english"` model so
+            // a stale write can never brick transcription.
+            "english"
         }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
-    }
-
-    /// Live-preview source for the recording strip/hero
-    /// (`docs/plans/batch-only-streaming.md`). Build-flag for the
-    /// batch-only-streaming A/B:
-    /// - `"eou"` (default) — today's EOU 120M streaming engine.
-    /// - `"batch"` — `PreviewScheduler` re-transcribing with the batch model.
-    /// Resolved at every recording start; never mid-session. Unknown values
-    /// fall back to `"eou"` so a malformed write can't break the preview.
-    static var previewSource: String {
-        get {
-            let stored = defaults.string(forKey: Keys.previewSource)
-            switch stored {
-            case "eou", "batch": return stored!
-            default: return "eou"
-            }
-        }
-        set { defaults.set(newValue, forKey: Keys.previewSource) }
     }
 
     /// "Live text while dictating" tri-state (`"auto"` / `"on"` / `"off"`).

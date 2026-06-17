@@ -686,6 +686,81 @@ Measure on a real iPhone (oldest supported), 110M:
 - Phase 5 is the real work — on-device measurement is load-bearing for the go/no-go.
 - Phase 6 is irreversible; only after a shipped build has defaulted to `batch`.
 
+## KNOWN REGRESSION — model-loading indicator gone in batch mode (BACKLOG, build 122)
+
+**Status: backlog, must fix before Phase 6 / EOU deletion.** Owner-reported on
+build 122.
+
+**Symptom:** During the slow first model-load after an app update (the >1 min
+cold ANE compile — see `model-load-caching.md`), neither the hero nor the keyboard
+strip shows the "Loading [model]…" progress affordance any more. The surface sits
+on a dead "Listening…" for the whole load; recording is live but no text and no
+loading signal.
+
+**Root cause (verified in code):** the loading affordance is driven entirely by the
+EOU path. The hero gates on `streamingService.sessionLoadState == .loading`
+(`RecordingHeroView.swift:503`); the keyboard strip paces its bar off the
+`streamingLoadStartedAt` / `streamingLoadEstimateSeconds` App Group keys — both set
+ONLY by `StreamingTranscriptionService.beginSession` (`:114-127`). In batch mode
+`kickOffStreamingSession` branches to `PreviewScheduler` BEFORE
+`StreamingTranscriptionService.beginSession` runs, so `sessionLoadState` stays
+`.idle` and the keys stay nil → `isLoadingModel` is always false. Meanwhile
+`previewTranscribe` returns nil until `TranscriptionService.modelState == .ready`,
+so nothing shows during the load.
+
+**Owner spec for the fix (deliberately simpler than the old calibrated bar):**
+- Drop `ModelLoadTimekeeper`'s per-device calibration — it was the old bug: it paced
+  off measured load time, but warm loads are ~instant, so after an update it raced
+  the bar to ~100% then stalled for the real cold minute.
+- Replace with a FLAT pace: show a moving indicator for a fixed window, **45 s
+  default**, that keeps advancing (eases toward but never claims 100%).
+- The moment real transcript text appears (model ready → first preview/words),
+  **hand off straight to the text** — don't wait out the 45 s.
+
+**Fix shape (M):** drive the loading affordance off the BATCH model state in batch
+mode — `TranscriptionService.modelState` (`.notLoaded`/`.loading` → show; `.ready`
+→ hand off). Publish the same two App Group keys from `TranscriptionService`'s load
+path (start = load begins, clear = `.ready`) so the keyboard strip lights up too,
+with a fixed 45 s estimate instead of `ModelLoadTimekeeper.estimatedSeconds`. Both
+surfaces, plus the timekeeper simplification. Interacts with `model-load-caching.md`
+(if the compiled model is cached across updates the slow load shrinks, but the
+indicator is still needed as the honest fallback).
+
+## Phase-5 findings — build 121 on-device + SchedulerSim (2026-06-13)
+
+**Owner repro (build 121, on-device):** slow counting with pauses → words dropped
+from the live preview ("silence → word → silence doesn't show up"). Saved note
+nearly complete (the full stop-pass is unaffected) — the loss is in the preview.
+
+**SchedulerSim** (`/tmp/jot-vadbatch`, NeMo-style simulated streaming: replay
+through the EXACT scheduler logic in 0.1 s chunks, word-level S/D/I alignment vs
+full-pass + known truth; corpus = say(1) slow-counting w/ gaps + quiet variants +
+isolated-words + real 52 s control + silence-spliced real):
+
+| Variant | counting DEL (the bug) | real DEL | verdict |
+|---|---|---|---|
+| current (121) | 3/40 | 3 | bug reproduced ("six","eight","one" dropped) |
+| v1: trim window to speech−0.5 s | **14/40** | — | REJECTED — Parakeet decodes sub-2 s clips terribly; trimming starves context |
+| v2: retry-not-discard + 2 s spacing + gate 0.005 | **0/40** | 5 | **WINNER** |
+| v2 minus zero-pad | 0/40 | 5 | padding does nothing — dropped from fix |
+| v2 with gate back at 0.008 | 0/40 | **13** | gate matters: a quiet phrase never registers → never ticked |
+
+**Root cause (two-part):** (1) the B2 "advance window on empty result" discarded
+isolated quiet words whose silence-heavy window decoded to nothing; (2) RMS gate
+0.008 mis-tagged soft speech as silence so it never ticked. **Fix (in
+`PreviewScheduler`, build 122):** never advance past speech on an empty commit —
+retry with MORE audio (the next utterance joining rescues the decode); runaway
+bounded structurally by a **2 s global min tick spacing** (+ give-up valve: 3
+empties at cap length → skip); gate **0.005**. Lesson: the model wants more
+context, not less — and offline simulated-streaming caught v1 as a regression
+before it shipped.
+
+**UX affordance (same build):** `TranscribingText` — stepping serif ellipsis
+concatenated into the transcript text run (wraps with the line, lands where the
+next word will appear; ~1.8 s cycle; Reduce-Motion static fallback; hidden while
+paused) on hero + keyboard strip, replacing the keyboard's misplaced blinking
+caret.
+
 ## Adversarial review + random-sample test (2026-06-12)
 
 Independent skeptical review of this plan, plus a 20-random-recording empirical test

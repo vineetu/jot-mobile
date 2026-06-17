@@ -24,9 +24,6 @@ enum CorrectionAsksPublisher {
         let unresolved = payload.records.filter { payload.verdicts[$0.key] == nil }
         guard !unresolved.isEmpty else {
             CorrectionBridge.clearAsks()
-            DiagnosticsLog.record(
-                source: "main-app", category: .vocabularyGate, message: "keyboard asks: none",
-                metadata: ["records": "\(payload.records.count)"])
             return
         }
 
@@ -61,9 +58,6 @@ enum CorrectionAsksPublisher {
         }
         guard !asks.isEmpty else {
             CorrectionBridge.clearAsks()
-            DiagnosticsLog.record(
-                source: "main-app", category: .vocabularyGate, message: "keyboard asks: none worth showing",
-                metadata: ["unresolved": "\(unresolved.count)"])
             return
         }
         CorrectionBridge.publishAsks(

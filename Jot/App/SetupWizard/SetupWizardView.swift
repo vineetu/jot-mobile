@@ -44,7 +44,6 @@ struct SetupWizardView: View {
     let onComplete: () -> Void
 
     @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(RecordingService.self) private var recordingService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -131,6 +130,22 @@ struct SetupWizardView: View {
             }
         }
         .onAppear {
+            // Pre-warm the speech model the moment the wizard opens. The
+            // launch-time warm in `JotApp` is gated on
+            // `SetupCompletion.isCompleted`, which is FALSE throughout the
+            // wizard — so without this the model would still be cold when the
+            // user reaches W5 and taps Jot-down. Warming here means the model
+            // is usually ready (or nearly so) by W5, so the one-time
+            // "First-time setup" pane is short or skipped.
+            //
+            // SAME unified `warmIfNeeded()` the app-launch + scene triggers use
+            // — no wizard-specific gate logic. This call site is KEPT (not folded
+            // away) on purpose: SwiftUI `.task`/`onAppear` in `JotApp` do NOT
+            // re-fire on a warm-process wizard RE-RUN from Settings, so this is
+            // the only trigger that covers re-entering setup after the model was
+            // evicted. Idempotent — coalesces with any launch/scene warm.
+            transcriptionService.warmIfNeeded()
+
             // Install the keyboard-dictate-tapped observer on first
             // wizard appearance. The keyboard posts this Darwin
             // notification ONLY when the host app is Jot (heartbeat
@@ -155,6 +170,11 @@ struct SetupWizardView: View {
             // would also keep a stale Darwin registration alive for
             // the rest of the app's lifetime.
             dictateTapObserver = nil
+            // Belt-and-braces: never leave the wizard-active koan gate set if
+            // the wizard tears down from a non-W5 step (W5's own `.onDisappear`
+            // clears it on a normal forward/back transition; this covers an
+            // abrupt dismissal). See `AppGroup.wizardActive`.
+            AppGroup.wizardActive = false
         }
     }
 
@@ -225,13 +245,34 @@ struct SetupWizardView: View {
     /// Marks the setup wizard complete and dismisses. The "X" close
     /// button and the W7 "Start jotting." button share this exit path.
     private func closeAndComplete() {
-        // Wizard contract: any recording the wizard started (W5
-        // keyboard handoff) dies with the wizard. After this dismissal
-        // the user lands on the home view clean — no listening
-        // indicator, no zombie hero.
-        if recordingService.isRecording || recordingService.isPipelineInFlight {
-            wizardLog.notice("Wizard dismissing while recording in flight — force-stopping (wizard contract)")
-            recordingService.forceStop()
+        // Clear the koan gate unconditionally — the wizard is leaving, so the
+        // one-time "First-time setup" line must never persist into the
+        // keyboard / hero. (W5's own teardown also clears it; this covers
+        // a close from any step.)
+        AppGroup.wizardActive = false
+
+        // Wizard contract: any recording the wizard started (W5 keyboard
+        // handoff) is released before the wizard dismisses, so the user lands
+        // on the home view clean — no listening indicator, no zombie hero.
+        //
+        // GENTLE release: leaving at the end is a legitimate stop, but per the
+        // project rule we never `forceStop()`/`discard()` the mic — we use the
+        // gentle `cancel()`, which discards the in-progress (Jot-internal,
+        // never-saved) W5 audio AND honours Warm Hold. The dismissal proceeds
+        // synchronously; the mic releases on the next MainActor turn.
+        if recordingService.isRecording {
+            wizardLog.notice("Wizard dismissing while recording — gently cancelling (wizard contract, honours warm-hold)")
+            let service = recordingService
+            Task { @MainActor in
+                await service.cancel()
+            }
+        }
+        // Stop already tapped but the W5 transcription pipeline is still running:
+        // `cancel()` no-ops (no active capture slice to discard), so clear the
+        // pipeline state decisively — without this the in-flight flag / missing
+        // `.idle` would ride onto the home view until the pipeline self-finishes.
+        // Restores the pre-gentle-stop contract for the pipeline-only path.
+        if recordingService.isPipelineInFlight {
             recordingService.markPipelineFinished()
             recordingService.publishPipelinePhase(.idle)
         }
@@ -260,6 +301,5 @@ private enum SetupStep: Hashable {
 #Preview {
     SetupWizardView {}
         .environment(TranscriptionService())
-        .environment(StreamingTranscriptionService())
         .environment(RecordingService.shared)
 }

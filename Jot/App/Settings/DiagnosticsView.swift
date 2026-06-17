@@ -264,6 +264,10 @@ struct DiagnosticsView: View {
         case .pasteSkipNoFullAccess: return ("SKIP/FA", Color.jotAccent)
         case .pasteSkipEmptyText: return ("SKIP/EMPTY", Color.jotAccent)
         case .pasteSkipProxyDisconnected: return ("SKIP/PROXY", Color.jotAccent)
+        case .pasteVerifyDeferred: return ("VERIFY", Color.jotAccent)
+        case .pasteReconnectPoll: return ("POLL", Color.jotAccent)
+        case .pasteLandedViaTextDidChange: return ("PASTE/TDC", Color.jotSuccess)
+        case .pasteRevertedAfterLanding: return ("REVERTED", Color.jotWarning)
         case .pasteSkipOther: return ("SKIP/?", Color.jotAccent)
         case .streamingPartialReceived: return ("STREAM", Color.jotAccent)
         case .memoryWarning: return ("MEMORY", Color.jotWarning)
@@ -272,6 +276,14 @@ struct DiagnosticsView: View {
         case .classifyMemoryWarning: return ("CLASSIFY/MEM", Color.jotWarning)
         case .appUnresponsiveRecovery: return ("RECOVER", Color.jotWarning)
         case .vocabularyGate: return ("VOCAB", Color.jotAccent)
+        case .streamRevealInit: return ("REVEAL/INIT", Color.jotAccent)
+        case .streamRevealSync: return ("REVEAL/SYNC", Color.jotAccent)
+        case .streamRevealAdvance: return ("REVEAL/ADV", Color.jotAccent)
+        case .streamRenderSafetyNet: return ("RENDER/SAFETY", Color.jotWarning)
+        case .streamRenderEmptyLayout: return ("RENDER/EMPTY", Color.jotWarning)
+        case .streamViewLifecycle: return ("VIEW/LIFE", Color.jotAccent)
+        case .streamRenderDraw: return ("RENDER/DRAW", Color.jotAccent)
+        case .keyboardControllerLifecycle: return ("KBD/CTRL", Color.jotAccent)
         }
     }
 

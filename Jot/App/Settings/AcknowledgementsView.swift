@@ -66,14 +66,6 @@ struct AcknowledgementsView: View {
             GlassCard(tier: .regular, padding: 8) {
                 VStack(spacing: 0) {
                     AcknowledgementRow(
-                        title: "Parakeet 110M",
-                        author: "NVIDIA",
-                        license: "CC-BY 4.0",
-                        version: nil,
-                        url: "https://huggingface.co/FluidInference/parakeet-tdt-ctc-110m-coreml",
-                        showDivider: true
-                    )
-                    AcknowledgementRow(
                         title: "Parakeet 600M",
                         author: "NVIDIA",
                         license: "CC-BY 4.0",
@@ -82,11 +74,11 @@ struct AcknowledgementsView: View {
                         showDivider: true
                     )
                     AcknowledgementRow(
-                        title: "Parakeet EOU 120M",
-                        author: "NVIDIA / FluidInference",
-                        license: "NVIDIA Open Model License",
+                        title: "Parakeet CTC 110M",
+                        author: "NVIDIA",
+                        license: "CC-BY 4.0",
                         version: nil,
-                        url: "https://huggingface.co/FluidInference/parakeet-realtime-eou-120m-coreml",
+                        url: "https://huggingface.co/FluidInference/parakeet-ctc-110m-coreml",
                         showDivider: true
                     )
                     AcknowledgementRow(

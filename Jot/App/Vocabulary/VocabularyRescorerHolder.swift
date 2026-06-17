@@ -51,6 +51,16 @@ public actor VocabularyRescorerHolder {
     /// `self.vocabulary` with stale data.
     private var generation: UInt64 = 0
 
+    /// Monotonic token for `prepare(...)` supersession, separate from
+    /// `generation` (which arbitrates `rebuildVocabulary`). Bumped on every
+    /// `prepare` entry AND on every `unload`. A suspended prepare re-checks
+    /// this after each `await`; if a later prepare or an `unload` bumped it,
+    /// the suspended prepare aborts without stamping stale/half-built state.
+    /// Kept distinct from `generation` so `rebuildVocabulary`'s own
+    /// generation bump (called at the tail of `prepare`) doesn't falsely
+    /// look like a supersession of the prepare.
+    private var prepareGeneration: UInt64 = 0
+
     public init(cache: CtcModelCache = .shared) {
         self.cache = cache
     }
@@ -69,6 +79,15 @@ public actor VocabularyRescorerHolder {
 
     /// Drop every FluidAudio handle. Subsequent `rescore(...)` calls
     /// become no-ops until `prepare(...)` is called again.
+    ///
+    /// Bumping `prepareGeneration` here is load-bearing for the toggle
+    /// race: any `prepare(...)` currently suspended at a model/tokenizer
+    /// `await` captured an OLDER `prepareGeneration`, so when it resumes it
+    /// sees `ownPrepare != prepareGeneration` and aborts WITHOUT stamping
+    /// its half-built handles back over this unload. That is what stops a
+    /// fast vocab off→on→off toggle from leaving a wedged, half-loaded
+    /// rescorer. (`generation` is bumped too, which makes any in-flight
+    /// `rebuildVocabulary` discard its result for the same reason.)
     public func unload() {
         models = nil
         spotter = nil
@@ -76,6 +95,8 @@ public actor VocabularyRescorerHolder {
         vocabulary = nil
         tokenizer = nil
         generation &+= 1
+        prepareGeneration &+= 1
+        isPreparing = false
         log.info("vocabulary rescorer unloaded")
     }
 
@@ -84,18 +105,38 @@ public actor VocabularyRescorerHolder {
     /// already loaded, this path only re-tokenizes the term list via
     /// `rebuildVocabulary(from:)`.
     public func prepare(vocabularyFileURL: URL) async throws {
-        guard !isPreparing else {
-            // A second concurrent prepare() just waits for the first to
-            // finish; we don't queue both.
-            return
-        }
+        // Toggle-race safety. Each prepare captures its own generation at
+        // entry. `unload()` (vocab toggled OFF) and `rebuildVocabulary`
+        // (vocab list saved) both bump `generation`. After every `await`
+        // resume point below we re-check `ownGeneration == generation`; if
+        // an `unload()` interleaved while we were suspended on a model /
+        // tokenizer load, we abort WITHOUT stamping our half-built handles
+        // over the unload. This is what prevents a fast off→on→off toggle
+        // from leaving the rescorer wedged in a half-loaded state.
+        //
+        // We deliberately do NOT early-return on `isPreparing` anymore: the
+        // old `guard !isPreparing { return }` let a later prepare exit
+        // immediately while an earlier one got superseded — leaving NO
+        // rescorer. `CtcModelCache.ensureLoaded()` already coalesces the
+        // actual model load, so a redundant concurrent prepare is cheap and
+        // the generation check arbitrates who wins.
+        prepareGeneration &+= 1
+        let ownPrepare = prepareGeneration
         isPreparing = true
-        defer { isPreparing = false }
+        defer {
+            // Only clear the in-flight flag if we are still the latest
+            // prepare — a newer prepare/unload owns the flag otherwise.
+            if ownPrepare == prepareGeneration { isPreparing = false }
+        }
 
         if models == nil {
             log.info("loading CTC 110M bundle (downloading if needed)")
             do {
                 let loaded = try await cache.ensureLoaded()
+                guard ownPrepare == prepareGeneration else {
+                    log.info("prepare \(ownPrepare) superseded during bundle load; aborting")
+                    return
+                }
                 models = loaded
                 spotter = CtcKeywordSpotter(models: loaded)
             } catch {
@@ -110,13 +151,25 @@ public actor VocabularyRescorerHolder {
 
         if tokenizer == nil {
             do {
-                tokenizer = try await CtcTokenizer.load(from: cache.directory)
+                let loadedTokenizer = try await CtcTokenizer.load(from: cache.directory)
+                guard ownPrepare == prepareGeneration else {
+                    log.info("prepare \(ownPrepare) superseded during tokenizer load; aborting")
+                    return
+                }
+                tokenizer = loadedTokenizer
             } catch {
                 log.error("CTC tokenizer load failed: \(error.localizedDescription, privacy: .public)")
                 throw error
             }
         }
 
+        // Final supersession check before the (cheap) rescorer build. If an
+        // unload landed while we loaded models/tokenizer, bail now rather
+        // than rebuild on top of a stale unload.
+        guard ownPrepare == prepareGeneration else {
+            log.info("prepare \(ownPrepare) superseded before rebuild; aborting")
+            return
+        }
         try await rebuildVocabulary(from: vocabularyFileURL)
     }
 
@@ -210,21 +263,78 @@ public actor VocabularyRescorerHolder {
     /// Caller MUST treat `nil` and any thrown error the same: fall back
     /// to the raw TDT transcript. This function is a best-effort boost,
     /// never a correctness gate.
+    ///
+    /// This is a thin convenience wrapper over the split `spot(...)` +
+    /// `merge(...)` pair below — it runs the expensive CTC pass and the
+    /// cheap merge back-to-back (the original serial order). Callers that
+    /// want to overlap the CTC pass with the TDT transcribe should call
+    /// `spot(...)` concurrently with the transcribe and then `merge(...)`
+    /// once both finish (see `TranscriptionService.runInference`). The
+    /// output is byte-identical regardless of which path is taken.
     public func rescore(
         transcript: String,
         tokenTimings: [TokenTiming],
         audioSamples: [Float]
     ) async throws -> String? {
-        guard let spotter, let vocabulary, let rescorer else {
+        let spotResult = try await spot(audioSamples: audioSamples)
+        return await merge(
+            transcript: transcript,
+            tokenTimings: tokenTimings,
+            spotResult: spotResult
+        )
+    }
+
+    /// The EXPENSIVE half of the rescore: the CTC keyword-spot pass
+    /// (MelSpectrogram + AudioEncoder CoreML inference over the full
+    /// audio buffer). Depends ONLY on the audio + the loaded vocabulary —
+    /// NOT on the TDT transcript or its `tokenTimings` — so it is safe to
+    /// dispatch concurrently with the TDT transcribe and join afterwards.
+    ///
+    /// Returns `nil` when the rescorer isn't ready (master toggle off,
+    /// vocab empty, models not downloaded), exactly matching the old
+    /// `rescore(...)` early-return contract. A `nil` here means "no
+    /// rescore" — the caller's `merge(...)` will then return the raw
+    /// transcript unchanged.
+    ///
+    /// The returned `SpotKeywordsResult` is `Sendable` (CTC log-probs +
+    /// frame duration + detections), so it crosses the actor / task
+    /// boundary back to the caller with no shared mutable state.
+    public func spot(audioSamples: [Float]) async throws -> CtcKeywordSpotter.SpotKeywordsResult? {
+        guard let spotter, let vocabulary, rescorer != nil else {
             return nil
         }
         guard !vocabulary.terms.isEmpty else { return nil }
 
-        let spotResult = try await spotter.spotKeywordsWithLogProbs(
+        return try await spotter.spotKeywordsWithLogProbs(
             audioSamples: audioSamples,
             customVocabulary: vocabulary,
             minScore: nil
         )
+    }
+
+    /// The CHEAP half of the rescore: merge the CTC spot result into the
+    /// TDT transcript using the TDT `tokenTimings`, then run the same
+    /// `VocabularyGate` + `CorrectionProvenance` bookkeeping the monolithic
+    /// `rescore(...)` did. Pure CPU (~14–20 ms) apart from the awaited
+    /// `CorrectionStore`/`CorrectionProvenance` actor hops, which are
+    /// unchanged from before.
+    ///
+    /// `spotResult == nil` (rescorer not ready) → returns `nil`, i.e. the
+    /// caller keeps the raw TDT transcript — byte-identical to the old
+    /// "not ready" early return.
+    public func merge(
+        transcript: String,
+        tokenTimings: [TokenTiming],
+        spotResult: CtcKeywordSpotter.SpotKeywordsResult?
+    ) async -> String? {
+        // Re-fetch the live handles. The split lets `spot(...)` run while
+        // TDT decodes; by the time we merge, `vocabulary`/`rescorer` are
+        // the same handles the spot used (a vocab rebuild between spot and
+        // merge is the identical race the monolithic version already had,
+        // and the generation guard in `rebuildVocabulary` covers it).
+        guard let spotResult, let vocabulary, let rescorer else {
+            return nil
+        }
 
         let output = rescorer.ctcTokenRescore(
             transcript: transcript,
@@ -233,18 +343,21 @@ public actor VocabularyRescorerHolder {
             frameDuration: spotResult.frameDuration
         )
 
-        // Visible in Help → Diagnostics: did the spotter propose anything at
-        // all? (0 proposals ⇒ the CTC spotter never found the term — a recall
-        // issue upstream of the gate, not something the gate can fix.)
-        DiagnosticsLog.record(
-            source: "main-app",
-            category: .vocabularyGate,
-            message: "rescore ran",
-            metadata: [
-                "proposals": "\(output.replacements.count)",
-                "modified": "\(output.wasModified)",
-            ]
-        )
+        // Visible in Help → Diagnostics ONLY when the spotter actually proposed
+        // something — the per-session `proposals=0` case was pure noise (drops
+        // the dominant per-dictation clutter). The APPLY/BLOCK/OVERRIDE decision
+        // logs still record each real proposal.
+        if !output.replacements.isEmpty {
+            DiagnosticsLog.record(
+                source: "main-app",
+                category: .vocabularyGate,
+                message: "rescore ran",
+                metadata: [
+                    "proposals": "\(output.replacements.count)",
+                    "modified": "\(output.wasModified)",
+                ]
+            )
+        }
 
         if output.wasModified {
             // v1a — the GATE: re-check every proposed replacement so a custom

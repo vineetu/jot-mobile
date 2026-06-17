@@ -20,7 +20,6 @@ struct JotApp: App {
     private let foregroundPingObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
-    @State private var streamingService: StreamingTranscriptionService
     @State private var streamingPartial: StreamingPartial
     @State private var cleanupService: CleanupService
     @State private var setupRerunTrigger: SettingsRerunTrigger
@@ -167,11 +166,6 @@ struct JotApp: App {
         // in either caller amortizes the Parakeet cold load across both.
         // See `TranscriptionService.shared` doc for rationale.
         let transcription = TranscriptionService.shared
-        // Singleton owner of the FluidAudio EOU streaming model used to
-        // drive the live partial-transcript preview. Cleanup-on-every-stop
-        // policy: no manager retained between sessions; warmUp ensures
-        // weights are on disk only. See `StreamingTranscriptionService` doc.
-        let streamingService = StreamingTranscriptionService.shared
         // Live preview presenter, observed by ContentView. Single instance
         // for the app lifetime — RecordingService.setStreamingPresenter
         // (called below) holds a strong ref and depends on this living for
@@ -187,7 +181,6 @@ struct JotApp: App {
         let rerunTrigger = SettingsRerunTrigger.shared
         _recordingService = State(initialValue: recording)
         _transcriptionService = State(initialValue: transcription)
-        _streamingService = State(initialValue: streamingService)
         _streamingPartial = State(initialValue: streamingPartial)
         _cleanupService = State(initialValue: cleanup)
         _setupRerunTrigger = State(initialValue: rerunTrigger)
@@ -307,16 +300,11 @@ struct JotApp: App {
         // Failure is internally handled by `warmUp()` (flips
         // `modelState = .failed`); the task body cannot throw.
         let warmTranscription = transcription
-        let warmStreaming = streamingService
-        if TranscriptionService.modelsExistOnDiskForSelectedVariant() {
-            Task(priority: .userInitiated) { @MainActor in
-                warmTranscription.warmUp()
-            }
-        }
-        if StreamingTranscriptionService.modelsExistOnDisk() {
-            Task(priority: .userInitiated) { @MainActor in
-                warmStreaming.warmUp()
-            }
+        Task(priority: .userInitiated) { @MainActor in
+            // Unified warm path: `warmIfNeeded()` owns the on-disk gate
+            // (preserves 4.2.3(ii)) + the cold-state check, so the same predicate
+            // drives launch, scene-activation, and the wizard.
+            warmTranscription.warmIfNeeded()
         }
 
         // Pre-warm the MiniLM embedding model so the first dictation
@@ -360,7 +348,6 @@ struct JotApp: App {
             )
                 .environment(recordingService)
                 .environment(transcriptionService)
-                .environment(streamingService)
                 .environment(streamingPartial)
                 .environment(cleanupService)
                 .environment(keyboardRewriteRouter)
@@ -370,7 +357,6 @@ struct JotApp: App {
                         showSetupWizard = false
                     }
                     .environment(transcriptionService)
-                    .environment(streamingService)
                     // Phase 6: W5 (keyboard dictation test) wires through the
                     // production `RecordingService.shared` so the user
                     // exercises the same recording path they'll use after
@@ -578,20 +564,12 @@ struct JotApp: App {
                     // gates eager warm-up so an un-downloaded opt-in
                     // doesn't trigger a silent first-launch download
                     // (Guideline 4.2.3(ii)).
-                    let modelsOnDisk = TranscriptionService.modelsExistOnDiskForSelectedVariant()
-                    if SetupCompletion.isCompleted && modelsOnDisk {
-                        transcriptionService.warmUp()
-                    }
-                    // Streaming EOU weights are bundled too — the
-                    // `modelsExistOnDisk` check resolves against the
-                    // bundle URL and is constant-true on healthy
-                    // installs. `warmUp()` here flips `modelState` to
-                    // `.ready` without an ANE load per the service's
-                    // cleanup-on-every-stop lifecycle.
-                    if SetupCompletion.isCompleted
-                        && StreamingTranscriptionService.modelsExistOnDisk() {
-                        streamingService.warmUp()
-                    }
+                    // Unified warm path: gate on models-on-disk (preserves
+                    // 4.2.3(ii)), NOT setup-completion — so the SAME predicate
+                    // warms app-open AND the wizard. `warmIfNeeded()` is the one
+                    // place that gate lives. (`init()` also warms on cold launch;
+                    // this is the scene-attach trigger. Idempotent.)
+                    transcriptionService.warmIfNeeded()
                     TranscriptHistoryMirror.refresh(
                         from: ModelContext(JotModelContainer.shared)
                     )

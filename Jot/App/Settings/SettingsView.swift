@@ -4,7 +4,6 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(RecordingService.self) private var recordingService
 
     /// Called from `handleRerunSetupTap` BEFORE this sheet dismisses so the
@@ -14,10 +13,6 @@ struct SettingsView: View {
     /// animation length with `DispatchQueue.main.async` is the dual-modal
     /// crash path we're avoiding.
     var onRerunRequested: (() -> Void)? = nil
-
-    /// Mirror of `AppGroup.speechModelVariant` — read on appear so the
-    /// SPEECH MODEL card footer reflects the active variant's on-disk size.
-    @State private var speechModelVariant: String = AppGroup.speechModelVariant
 
     /// Mirror of `AppGroup.warmHoldDurationSeconds` for the Privacy picker.
     @State private var warmHoldDurationSeconds: TimeInterval = AppGroup.warmHoldDurationSeconds
@@ -29,9 +24,6 @@ struct SettingsView: View {
     /// hood — see `liveTextToggleRow`). A user touch writes explicit
     /// on/off; `auto` only persists until first touch.
     @State private var liveTextOn: Bool = DeviceCapability.liveTextEnabled
-
-    /// Debug-only preview backend flag mirror (`AppGroup.previewSource`).
-    @State private var previewSourceFlag: String = AppGroup.previewSource
 
     /// Ask-mode backend toggle. OFF = Apple Intelligence (built-in, no download);
     /// ON = on-board Qwen (better answers, needs the model downloaded).
@@ -61,11 +53,9 @@ struct SettingsView: View {
             }
             .navigationBarHidden(true)
             .onAppear {
-                speechModelVariant = AppGroup.speechModelVariant
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
                 liveTextOn = DeviceCapability.liveTextEnabled
-                previewSourceFlag = AppGroup.previewSource
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -87,9 +77,6 @@ struct SettingsView: View {
                 // First touch graduates "auto" to an explicit choice —
                 // never clobbered by future capability-default changes.
                 AppGroup.liveTextSetting = newValue ? "on" : "off"
-            }
-            .onChange(of: previewSourceFlag) { _, newValue in
-                AppGroup.previewSource = newValue
             }
         }
         // Soften every card's drop shadow throughout Settings by 50% (light mode
@@ -306,45 +293,29 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    NavigationLink {
-                        SpeechModelVariantPicker()
-                            .environment(transcriptionService)
-                            .environment(streamingService)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text("Variant")
-                                .font(JotType.rowTitle)
-                                .tracking(-0.2)
-                                .foregroundStyle(Color.jotPageInk)
+                    // Single bundled model — English only. Static row (no
+                    // picker): there is one language today, so this surfaces it
+                    // without an interactive chevron.
+                    HStack(spacing: 10) {
+                        Text("Language")
+                            .font(JotType.rowTitle)
+                            .tracking(-0.2)
+                            .foregroundStyle(Color.jotPageInk)
 
-                            Spacer()
+                        Spacer()
 
-                            Text(variantShortName)
-                                .font(.system(size: 13.5))
-                                .foregroundStyle(Color.jotPageInkSecondary)
-
-                            RowChevron()
-                        }
-                        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-                        .padding(.vertical, 13)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        .contentShape(Rectangle())
+                        Text("English")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Color.jotPageInkSecondary)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Variant, currently \(variantShortName)")
-                    .accessibilityHint("Opens variant picker")
+                    .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+                    .padding(.vertical, 13)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Language, English")
 
-                    // TODO(batch-streaming F6): surface liveTextToggleRow in
-                    // release once the off-path UI exists (keyboard
-                    // "Listening… 0:12" strip state + hero final-only
-                    // reveal). Until then the off-switch would leave those
-                    // surfaces blank — DEBUG-only alongside the A/B picker.
-                    #if DEBUG
                     cardDivider
                     liveTextToggleRow
-                    cardDivider
-                    previewSourceDebugRow
-                    #endif
                 }
             }
         }
@@ -383,75 +354,35 @@ struct SettingsView: View {
         .contentShape(Rectangle())
     }
 
-    #if DEBUG
-    /// Debug-only A/B switch for the preview backend
-    /// (docs/plans/batch-only-streaming.md Phase 5): EOU 120M engine vs
-    /// batch-model PreviewScheduler. Debug builds only — release users
-    /// always get the default until the flag flips for good.
-    private var previewSourceDebugRow: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Preview engine (debug)")
-                    .font(JotType.rowTitle)
-                    .foregroundStyle(Color.jotPageInk)
-                    .tracking(-0.2)
-
-                Text("eou = streaming model · batch = re-transcribe loop")
-                    .font(JotType.rowSub)
-                    .foregroundStyle(Color.jotPageInkSecondary)
-            }
-
-            Spacer(minLength: 12)
-
-            Picker("", selection: $previewSourceFlag) {
-                Text("EOU").tag("eou")
-                Text("Batch").tag("batch")
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 140)
-        }
-        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-    }
-    #endif
-
+    /// Capable devices show the bundled 600M; sub-6GB devices fall back to the
+    /// smaller English model fetched on demand. Choice is automatic (device
+    /// RAM), never a user picker.
     private var speechModelDisplayName: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Parakeet 600M"
-        default:             return "Parakeet 110M"
-        }
-    }
-
-    private var variantShortName: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Parakeet 600M"
-        default:             return "Parakeet 110M"
-        }
+        DeviceCapability.is600MCapable ? "Parakeet 600M" : "Parakeet 110M"
     }
 
     private var speechModelLocationCopy: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "On your iPhone · about 440 MB"
-        default:             return "On your iPhone · about 330 MB"
+        if DeviceCapability.is600MCapable {
+            return "On your iPhone · about 440 MB"
         }
+        // Sub-6GB device: the 110M is fetched on first dictation. Reflect
+        // whether it's already on disk so the copy isn't misleading pre-fetch.
+        return speechModelInstalled
+            ? "On your iPhone · about 220 MB"
+            : "Downloads on first use · about 220 MB"
     }
 
     private var speechModelFooter: String {
         "Runs entirely on this iPhone. Audio never leaves the device."
     }
 
-    /// "Installed" gate for the SPEECH MODEL display. Three-way AND across
-    /// the batch TDT, the streaming EOU, and the CTC aux. For the default
-    /// (bundled) TDT-CTC 110M variant all three are always present in the
-    /// IPA; for the 0.6B v2 opt-in variant the batch TDT lives in
-    /// Application Support and may still need a Settings download tap.
-    /// Gating on bare `modelState == .ready` is wrong here — that flag is
-    /// the "warmed into ANE for recording" signal, not the "is the model
-    /// installed" signal.
+    /// "Installed" gate for the SPEECH MODEL display. AND across the bundled
+    /// speech model and the CTC aux (vocabulary). Both ship in the IPA, so on
+    /// a healthy install this is always true. Gating on bare
+    /// `modelState == .ready` is wrong here — that flag is the "warmed into
+    /// ANE for recording" signal, not the "is the model installed" signal.
     private var speechModelInstalled: Bool {
         TranscriptionService.modelsExistOnDiskForSelectedVariant()
-            && StreamingTranscriptionService.modelsExistOnDisk()
             && CtcModelCache.shared.isCached
     }
 
@@ -980,198 +911,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Speech model variant picker (pushed from the SPEECH MODEL chevron)
-
-/// Detail screen that owns variant selection + the re-download confirmation.
-/// Previously these controls lived inline inside `SettingsView`'s `Form`; the
-/// editorial reflow moves them behind the SPEECH MODEL card's "Variant"
-/// chevron row so the main settings page stays single-glance.
-struct SpeechModelVariantPicker: View {
-    @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
-
-    @State private var speechModelVariant: String = AppGroup.speechModelVariant
-    @State private var showRedownloadConfirmation = false
-
-    var body: some View {
-        Form {
-            Section {
-                Picker(selection: $speechModelVariant) {
-                    Text("Parakeet 110M (lighter, faster)")
-                        .tag("tdtCtc110m")
-                    Text("Parakeet 600M (more accurate)")
-                        .tag("parakeetV2")
-                } label: {
-                    Label("Variant", systemImage: "waveform.badge.magnifyingglass")
-                }
-                .pickerStyle(.inline)
-                .onChange(of: speechModelVariant) { _, newValue in
-                    AppGroup.speechModelVariant = newValue
-                    transcriptionService.handleVariantChange()
-                    // The streaming service also needs to re-evaluate
-                    // disk presence for the new variant; without this
-                    // call the Status pill would lag one navigation
-                    // cycle behind reality after flipping variants.
-                    streamingService.handleVariantChange()
-                }
-            } header: {
-                Text("Variant")
-            } footer: {
-                Text(sizeFooter)
-            }
-
-            Section {
-                LabeledContent("Status") {
-                    HStack(spacing: 8) {
-                        Image(systemName: modelStatusSymbol)
-                            .foregroundStyle(modelStatusColor)
-                        Text(modelStatusText)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Hide the download / re-download CTA for the bundled 110M
-                // variant — its weights live in the read-only IPA bundle, so
-                // both "Download all models" (nothing to fetch) and
-                // "Re-download all models" (purgeAndReload short-circuits for
-                // the bundled case) are dead-end taps. The opt-in 600M v2
-                // download keeps the CTA: its Application Support cache is
-                // writable + re-downloadable.
-                if speechModelVariant != "tdtCtc110m" {
-                    Button {
-                        handleModelAction()
-                    } label: {
-                        Label(modelActionTitle, systemImage: "arrow.down.circle")
-                    }
-                    .disabled(modelActionDisabled)
-                }
-            } header: {
-                Text("Model")
-            }
-        }
-        .navigationTitle("Variant")
-        .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            "Re-download?",
-            isPresented: $showRedownloadConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Re-download", role: .destructive) {
-                Task {
-                    await transcriptionService.purgeAndReload()
-                    streamingService.warmUp()
-                    _ = try? await CtcModelCache.shared.ensureLoaded()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-    }
-
-    // The state-driven copy below mirrors the original `SettingsView` —
-    // identical logic, identical wording. The reflow only moves these
-    // affordances into a sub-screen; behavior is preserved exactly.
-
-    /// Same 3-way AND gate as `SettingsView.speechModelInstalled`. Used to
-    /// decide "is the model installed" independent of whether Parakeet has
-    /// been warmed into ANE this session. Without this gate the picker
-    /// would say "Not downloaded" + offer "Download all models" when the
-    /// bundles are clearly on disk (and dictation is working).
-    private var speechModelInstalled: Bool {
-        TranscriptionService.modelsExistOnDiskForSelectedVariant()
-            && StreamingTranscriptionService.modelsExistOnDisk()
-            && CtcModelCache.shared.isCached
-    }
-
-    private func handleModelAction() {
-        // Gate the re-download confirmation on the on-disk probe, not on
-        // `modelState == .ready` — otherwise an un-warmed but installed
-        // model would route through the cold-download path and re-fetch
-        // bundles already on disk.
-        if speechModelInstalled {
-            showRedownloadConfirmation = true
-        } else {
-            transcriptionService.warmUp()
-            streamingService.warmUp()
-            Task.detached {
-                _ = try? await CtcModelCache.shared.ensureLoaded()
-            }
-        }
-    }
-
-    private var displayedModelState: TranscriptionService.ModelState {
-        transcriptionService.modelState
-    }
-
-    private var modelStatusText: String {
-        // Live-progress states still win — show the actual download/load
-        // percent rather than a stale "Ready" pill from a previous session.
-        switch displayedModelState {
-        case .downloading(let fraction):
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .loading:
-            return "Loading"
-        case .failed(let reason) where !speechModelInstalled:
-            return reason
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? "Ready" : "Not downloaded"
-        }
-    }
-
-    private var modelStatusSymbol: String {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return "arrow.down.circle.fill"
-        case .failed where !speechModelInstalled:
-            return "exclamationmark.triangle.fill"
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? "checkmark.circle.fill" : "circle"
-        }
-    }
-
-    private var modelStatusColor: Color {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return .accentColor
-        case .failed where !speechModelInstalled:
-            return .orange
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? .green : .secondary
-        }
-    }
-
-    private var modelActionTitle: String {
-        switch displayedModelState {
-        case .downloading:
-            return "Downloading"
-        case .loading:
-            return "Loading"
-        case .failed where !speechModelInstalled:
-            return "Retry download"
-        case .ready, .notLoaded, .failed:
-            // On-disk → re-download CTA; otherwise cold-download CTA.
-            // Decouples the action label from the ANE-warmed flag so an
-            // un-warmed but installed model still surfaces "Re-download"
-            // instead of misleading the user into another full fetch.
-            return speechModelInstalled ? "Re-download" : "Download"
-        }
-    }
-
-    private var modelActionDisabled: Bool {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return true
-        case .notLoaded, .failed, .ready:
-            return false
-        }
-    }
-
-    private var sizeFooter: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Runs entirely on this iPhone. About 440 MB on disk."
-        default:             return "Runs entirely on this iPhone. About 330 MB on disk."
-        }
-    }
-}
 
 #Preview {
     SettingsView()
