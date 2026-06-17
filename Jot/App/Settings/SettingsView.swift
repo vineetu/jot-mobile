@@ -3,7 +3,6 @@ import SwiftUI
 /// v0.9 Settings main, matched to the design handoff's `SettingsScreen`.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(TranscriptionService.self) private var transcriptionService
     @Environment(RecordingService.self) private var recordingService
 
     /// Called from `handleRerunSetupTap` BEFORE this sheet dismisses so the
@@ -25,9 +24,10 @@ struct SettingsView: View {
     /// on/off; `auto` only persists until first touch.
     @State private var liveTextOn: Bool = DeviceCapability.liveTextEnabled
 
-    /// Ask-mode backend toggle. OFF = Apple Intelligence (built-in, no download);
-    /// ON = on-board Qwen (better answers, needs the model downloaded).
-    @State private var askUseQwen: Bool = (AppGroup.askBackend == "qwen")
+    /// Dictation language. English is the only option today; the selector is a
+    /// native iOS pull-down menu (Apple pattern) so adding languages later is a
+    /// drop-in. Local state — there's nothing to persist while it's English-only.
+    @State private var dictationLanguage: String = "en"
 
 
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
@@ -149,7 +149,7 @@ struct SettingsView: View {
     }
 
     private var heroTitle: some View {
-        Text("Settings.")
+        Text("Settings")
             .font(JotType.displaySerif(44))
             .tracking(-1.6)
             .foregroundStyle(Color.jotPageInk)
@@ -187,12 +187,15 @@ struct SettingsView: View {
             .padding(.bottom, 8)
     }
 
+    @ViewBuilder
     private func sectionCaption(_ caption: String) -> some View {
-        Text(caption)
-            .font(JotType.rowSub)
-            .foregroundStyle(Color.jotPageInkCaption)
-            .padding(.horizontal, 22)
-            .padding(.top, 8)
+        if !caption.isEmpty {
+            Text(caption)
+                .font(JotType.rowSub)
+                .foregroundStyle(Color.jotPageInkCaption)
+                .padding(.horizontal, 22)
+                .padding(.top, 8)
+        }
     }
 
     private var cardDivider: some View {
@@ -263,62 +266,67 @@ struct SettingsView: View {
     // MARK: - SPEECH MODEL
 
     private var speechModelSection: some View {
-        settingsSection(label: "SPEECH MODEL", caption: speechModelFooter) {
+        // Renamed SPEECH MODEL → DICTATION: we no longer surface a model name to
+        // the user (single bundled model, chosen automatically by device), so the
+        // card is now just the dictation Language + the live-text toggle. The
+        // model name / size / READY pill and the "runs on device" footer were
+        // removed — they weren't information the user comes here to act on.
+        settingsSection(label: "DICTATION", caption: "") {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 14) {
-                        IconTile(
-                            systemImage: "waveform",
-                            tint: JotDesign.JotSemanticIcon.speechModel,
-                            shaded: JotDesign.JotSemanticIcon.speechModelShaded
-                        )
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(speechModelDisplayName)
-                                .font(JotType.rowTitle)
-                                .tracking(-0.2)
-                                .foregroundStyle(Color.jotPageInk)
-
-                            Text(speechModelLocationCopy)
-                                .font(JotType.rowSub)
-                                .foregroundStyle(Color.jotPageInkSecondary)
-                        }
-
-                        Spacer(minLength: 12)
-                        speechModelStatusPill
-                    }
-                    .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-                    .padding(.vertical, 13)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-
-                    cardDivider
-
-                    // Single bundled model — English only. Static row (no
-                    // picker): there is one language today, so this surfaces it
-                    // without an interactive chevron.
-                    HStack(spacing: 10) {
-                        Text("Language")
-                            .font(JotType.rowTitle)
-                            .tracking(-0.2)
-                            .foregroundStyle(Color.jotPageInk)
-
-                        Spacer()
-
-                        Text("English")
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(Color.jotPageInkSecondary)
-                    }
-                    .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-                    .padding(.vertical, 13)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Language, English")
-
+                    languageRow
                     cardDivider
                     liveTextToggleRow
                 }
             }
         }
+    }
+
+    /// Dictation language as a native iOS pull-down menu (the Apple selector
+    /// pattern: current value + up/down chevron, tap → checked menu). English is
+    /// the only option today; the `Picker` makes adding languages a drop-in and
+    /// the affordance reads as a real selector without crowding the row.
+    private var languageRow: some View {
+        HStack(spacing: 14) {
+            IconTile(
+                systemImage: "waveform",
+                tint: JotDesign.JotSemanticIcon.speechModel,
+                shaded: JotDesign.JotSemanticIcon.speechModelShaded
+            )
+
+            Text("Language")
+                .font(JotType.rowTitle)
+                .tracking(-0.2)
+                .foregroundStyle(Color.jotPageInk)
+
+            Spacer(minLength: 12)
+
+            Menu {
+                Picker("Language", selection: $dictationLanguage) {
+                    Text("English").tag("en")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("English")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+            // Let the Menu keep its own button/pop-up-menu trait — do NOT wrap
+            // the row in `.accessibilityElement(.combine)`, which would flatten
+            // the Menu into a static element and strip the "tap to choose"
+            // affordance. The leading text + this label cover the read-out.
+            .accessibilityLabel("Language")
+            .accessibilityValue("English")
+            .accessibilityHint("Choose the dictation language")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 
     /// "Live text while dictating" — the streaming on/off axis
@@ -352,73 +360,6 @@ struct SettingsView: View {
         .padding(.vertical, 13)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
-    }
-
-    /// Capable devices show the bundled 600M; sub-6GB devices fall back to the
-    /// smaller English model fetched on demand. Choice is automatic (device
-    /// RAM), never a user picker.
-    private var speechModelDisplayName: String {
-        DeviceCapability.is600MCapable ? "Parakeet 600M" : "Parakeet 110M"
-    }
-
-    private var speechModelLocationCopy: String {
-        if DeviceCapability.is600MCapable {
-            return "On your iPhone · about 440 MB"
-        }
-        // Sub-6GB device: the 110M is fetched on first dictation. Reflect
-        // whether it's already on disk so the copy isn't misleading pre-fetch.
-        return speechModelInstalled
-            ? "On your iPhone · about 220 MB"
-            : "Downloads on first use · about 220 MB"
-    }
-
-    private var speechModelFooter: String {
-        "Runs entirely on this iPhone. Audio never leaves the device."
-    }
-
-    /// "Installed" gate for the SPEECH MODEL display. AND across the bundled
-    /// speech model and the CTC aux (vocabulary). Both ship in the IPA, so on
-    /// a healthy install this is always true. Gating on bare
-    /// `modelState == .ready` is wrong here — that flag is the "warmed into
-    /// ANE for recording" signal, not the "is the model installed" signal.
-    private var speechModelInstalled: Bool {
-        TranscriptionService.modelsExistOnDiskForSelectedVariant()
-            && CtcModelCache.shared.isCached
-    }
-
-    private var displayedModelState: TranscriptionService.ModelState {
-        transcriptionService.modelState
-    }
-
-    @ViewBuilder
-    private var speechModelStatusPill: some View {
-        // In-progress states win over the on-disk probe: if a download or
-        // load is happening right now, surface the live progress chrome.
-        switch displayedModelState {
-        case .downloading(let fraction):
-            StatusPillV09(label: "\(Int((fraction * 100).rounded()))%", tint: .info)
-        case .loading:
-            StatusPillV09(label: "Loading", tint: .info)
-        case .failed where !speechModelInstalled:
-            // Surface failures when the bundles aren't on disk — the user
-            // is missing files AND we couldn't load. The label below
-            // distinguishes the "files present but load failed" case from
-            // this one.
-            StatusPillV09(label: "Error", tint: .warning)
-        case .failed:
-            // Files present on disk but the load still failed — usually
-            // means the bundle is corrupted (truncated weights, mismatched
-            // mlmodelc, etc). Don't show "Ready" here; that misleads the
-            // user into thinking dictation will work when every tap will
-            // throw "Load failed: ..." at the moment of use.
-            StatusPillV09(label: "Load failed", tint: .warning)
-        case .ready, .notLoaded:
-            if speechModelInstalled {
-                StatusPillV09(label: "Ready", tint: .ready)
-            } else {
-                StatusPillV09(label: "Not downloaded", tint: .warning)
-            }
-        }
     }
 
     // MARK: - VOCABULARY
@@ -478,46 +419,7 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Rewrite and prompts, \(aiSubline)")
                 .accessibilityHint("Opens AI Rewrite settings")
-
-                askBackendRow
             }
-        }
-    }
-
-    /// Ask backend toggle: OFF = Apple Intelligence (built-in, instant, no
-    /// download); ON = on-board Qwen (better answers, needs the model).
-    private var askBackendRow: some View {
-        LiquidGlassCard(paddingH: 0, paddingV: 0) {
-            HStack(alignment: .top, spacing: 14) {
-                IconTile(
-                    systemImage: "sparkles",
-                    tint: JotDesign.JotSemanticIcon.ai,
-                    shaded: JotDesign.JotSemanticIcon.aiShaded
-                )
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Use on-board Qwen for Ask")
-                        .font(JotType.rowTitle)
-                        .tracking(-0.2)
-                        .foregroundStyle(Color.jotPageInk)
-                    Text(askUseQwen
-                         ? "Ask uses the on-board Qwen model — better answers, runs fully on-device (needs the model downloaded)."
-                         : "Ask uses Apple Intelligence — built-in and instant, no download. Turn on for higher-quality answers from on-board Qwen.")
-                        .font(JotType.rowSub)
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                        .lineSpacing(2)
-                }
-                Spacer(minLength: 12)
-                Toggle("", isOn: $askUseQwen)
-                    .labelsHidden()
-                    .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
-                    .accessibilityLabel("Use on-board Qwen for Ask")
-            }
-            .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-            .padding(.vertical, 13)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        }
-        .onChange(of: askUseQwen) { _, newValue in
-            AppGroup.askBackend = newValue ? "qwen" : "appleIntelligence"
         }
     }
 
@@ -676,22 +578,11 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    NavigationLink {
-                        EmbeddingsPanelView()
-                    } label: {
-                        settingsIconRow(
-                            systemImage: "sparkles",
-                            tint: Color.jotBlueTop,
-                            shaded: Color.jotBlueBottom.opacity(0.15),
-                            title: "Indexing",
-                            trailing: { RowChevron() }
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Indexing")
-                    .accessibilityHint("Manage on-device indexing of your dictations.")
-
-                    cardDivider
+                    // HIDDEN 2026-06-17 per owner — the "Indexing" row (opens
+                    // `EmbeddingsPanelView`) is no longer surfaced in Settings.
+                    // The screen + the on-device indexing feature are unchanged;
+                    // only this entry point is hidden. Restore the NavigationLink
+                    // to bring it back.
 
                     NavigationLink {
                         DiagnosticsWatchView()
@@ -707,23 +598,6 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Apple Watch sync status")
                     .accessibilityHint("Shows watch connection status and Reset sync button.")
-
-                    cardDivider
-
-                    NavigationLink {
-                        DiagnosticsView()
-                    } label: {
-                        settingsIconRow(
-                            systemImage: "stethoscope",
-                            tint: JotDesign.JotSemanticIcon.version,
-                            shaded: JotDesign.JotSemanticIcon.versionShaded,
-                            title: "Diagnostics",
-                            trailing: { RowChevron() }
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Diagnostics")
-                    .accessibilityHint("Recent events from the keyboard and main app; copy and send to support.")
 
                     cardDivider
 
@@ -801,26 +675,11 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    // Backup transparency row. Static copy; we can't detect
-                    // whether the user has iCloud Backup actually enabled
-                    // from inside the app (no public API), so we use neutral
-                    // "if-enabled" phrasing rather than a misleading ✓.
-                    // Data path: SwiftData store + saved prompts + vocab
-                    // live in the App Group container, which iOS Device
-                    // Backup includes. Audio is never stored. The AI
-                    // Rewrite model (~2.5 GB) lives under Library/Caches/
-                    // which iOS unconditionally excludes from backup —
-                    // it re-downloads on first use after restore.
-                    settingsIconRow(
-                        systemImage: "icloud",
-                        tint: JotDesign.JotSemanticIcon.backup,
-                        shaded: JotDesign.JotSemanticIcon.backupShaded,
-                        title: "Backed up with iCloud",
-                        subline: "When iCloud Backup is enabled in iOS Settings",
-                        trailing: { EmptyView() }
-                    )
-
-                    cardDivider
+                    // HIDDEN 2026-06-17 per owner — the "Backed up with iCloud"
+                    // transparency row is no longer surfaced in Settings. Backup
+                    // behavior is unchanged (the App Group store still rides iOS
+                    // Device Backup); restore the `settingsIconRow` here to bring
+                    // the row back.
 
                     NavigationLink {
                         AcknowledgementsView()
@@ -834,6 +693,25 @@ struct SettingsView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    cardDivider
+
+                    // MOVED to the bottom 2026-06-17 per owner (was mid-list,
+                    // between Apple Watch and Re-run setup).
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "stethoscope",
+                            tint: JotDesign.JotSemanticIcon.version,
+                            shaded: JotDesign.JotSemanticIcon.versionShaded,
+                            title: "Diagnostics",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Diagnostics")
+                    .accessibilityHint("Recent events from the keyboard and main app; copy and send to support.")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

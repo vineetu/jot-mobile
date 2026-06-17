@@ -350,9 +350,14 @@ enum AppGroup {
         set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
     }
 
-    /// Ask-mode answer backend: `"appleIntelligence"` (default) or `"qwen"`.
+    /// Ask-mode answer backend. The user-facing "Use on-board Qwen for Ask"
+    /// toggle was removed (2026-06-16) — Ask now ALWAYS uses Apple Intelligence.
+    /// The getter returns `"appleIntelligence"` UNCONDITIONALLY so a device that
+    /// had previously persisted `"qwen"` isn't stranded on the on-board model
+    /// with no UI left to turn it off. Setter retained (nothing writes it now);
+    /// restore the stored read if the toggle is ever reintroduced.
     static var askBackend: String {
-        get { defaults.string(forKey: Keys.askBackend) ?? "appleIntelligence" }
+        get { "appleIntelligence" }
         set { defaults.set(newValue, forKey: Keys.askBackend) }
     }
 

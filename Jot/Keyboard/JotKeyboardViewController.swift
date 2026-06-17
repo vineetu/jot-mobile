@@ -50,7 +50,24 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     // MARK: - Hosted SwiftUI tree
 
     private var hostingController: UIHostingController<KeyboardRootHostView>?
-    private let recordingState = KeyboardRecordingState()
+
+    /// The process-lifetime streaming/recording feed + projection hub. The
+    /// cross-process feed and the projected state it produces (recording phase,
+    /// streaming partial, loading label, warm-hold nudge, history, correction
+    /// asks) used to live on THIS controller, bound to the per-view-controller
+    /// lifecycle. iOS keeps ghost controllers alive and doesn't reliably call
+    /// `viewWillDisappear` (the only teardown point), so a ghost kept feeding the
+    /// stream into its own off-screen `recordingState` → the visible pane went
+    /// blank. The state now lives in ONE process-lifetime `@Observable` hub that
+    /// every controller (visible or ghost) observes, so the blank is structurally
+    /// impossible. The controller still owns ALL paste / proxy / per-presentation
+    /// machinery (see `KeyboardStreamingHub` for the seam).
+    private var hub: KeyboardStreamingHub { KeyboardStreamingHub.shared }
+
+    /// Pass-through to the hub's single `KeyboardRecordingState` so the existing
+    /// `recordingState.X` call sites in this controller and the SwiftUI host read
+    /// the one shared projection.
+    private var recordingState: KeyboardRecordingState { hub.recordingState }
 
     // DIAGNOSTIC (blank live-preview pane): a short id per controller instance so
     // ghost controllers (iOS keeping a stale `JotKeyboardViewController` alive
@@ -62,10 +79,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         JotKeyboardViewController.controllerCounter += 1
         return JotKeyboardViewController.controllerCounter
     }()
-    /// DIAGNOSTIC: log only the FIRST non-empty partial this controller handles,
-    /// so we see WHICH controller id(s) are actually receiving projections (one
-    /// record per controller, not per publish). Two ids here = ghost receiving.
-    private var didLogPartialHandling = false
+    // DIAGNOSTIC: the per-controller "handling partial" probe moved with the
+    // streaming feed into `KeyboardStreamingHub` (now a single process-lifetime
+    // consumer, so a per-controller id is no longer meaningful). The
+    // controller-lifecycle KBD/CTRL diagnostics (viewDidLoad/viewWillAppear/
+    // deinit, keyed by `controllerID`) stay here.
 
     /// `@Observable` bag of every *value* input `KeyboardView` takes. The root
     /// host is built ONCE (`makeRootHostView()`); every UI value update now
@@ -112,8 +130,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// stale recents. The pipeline-phase observer covers the auto-paste
     /// flush + status banner path independently, so dropping the old
     /// `transcriptReady` observer here doesn't regress paste behaviour.
-    private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
+    /// Thin controller-scoped observer of `pipelinePhaseChanged`. The hub owns
+    /// the phase STATE half (`recordingState.applyPipelineProjection` +
+    /// zombie-freeze suppression); THIS observer runs only the controller-scoped
+    /// proxy side-effects (auto-paste flush, watchdog arm/cancel, clear
+    /// `stopRequestPosted`). Splitting by concern keeps the verified paste path
+    /// byte-for-byte unchanged (plan §"phase split" option 2).
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
+    /// Thin controller-scoped observer of `historyMirrorUpdated` for the
+    /// per-presentation STATUS BANNER refresh only. The hub owns the history
+    /// reload (its `historyMirrorUpdated` feed mutates `hub.historyEntries` and
+    /// fires the `onShouldRender` hook so the active controller re-renders the
+    /// RecentsStrip — the strip reads a plain snapshot of `historyEntries` via
+    /// `KeyboardViewInputs`, NOT a live `@Observable`); the status banner is
+    /// controller-scoped (`AppGroup.lastDictationStatusMessage`) so it stays here.
+    private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     /// Set while a re-synced auto-paste insert is scheduled but not yet run
     /// (the ~12ms run-loop hop between requesting the proxy re-sync and the
     /// actual `insertText`). Guards against a second phase-change flush
@@ -139,15 +170,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// never both (would double-consume / double-mark). Reset when a new
     /// in-flight window opens.
     private var inFlightPasteResolved = false
-    private var streamingPartialObserver: CrossProcessNotification.Observer?
-    private var streamingLoadingObserver: CrossProcessNotification.Observer?
-    /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
-    /// The keyboard process can't run the streak math, so the app writes the
-    /// `AppGroup.warmHoldNudgeShouldShow` boolean projection and posts this
-    /// notification; the keyboard re-reads + re-renders the nudge strip. The
-    /// two nudge actions write back (`warmHoldEnabled` / `nudgeSuppressed`).
-    private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
-    private var correctionAsksReadyObserver: CrossProcessNotification.Observer?
+    // streaming-partial, streaming-loading, warm-hold-nudge, history-mirror, and
+    // correction-asks feed subscriptions moved to `KeyboardStreamingHub` (one
+    // process-lifetime subscription set, observed by all controllers).
 
     /// Live foreground-handshake state. On a Dictate "start", the keyboard pings
     /// the app and waits `foregroundPongTimeout` for `appForegroundPong`: a pong
@@ -194,12 +219,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // After a dead-app recovery, the shared `PipelinePhaseProjection` is still
     // frozen at `.recording` (the jetsammed writer never wrote a terminal phase,
-    // and the 30s stale synth hasn't fired). Tombstone that exact session +
-    // frozen timestamp so a keyboard dismiss/re-present inside that window does
-    // NOT resurrect the zombie recording UI when `refreshPipelinePhase` re-reads
-    // the projection. Cleared the moment the projection advances or a new
-    // session appears (a live writer is back).
-    private var recoveredZombieFreeze: (sessionID: UUID, frozenAt: Date)?
+    // and the 30s stale synth hasn't fired). The recovered-zombie tombstone
+    // gates the phase STATE projection — now owned by `KeyboardStreamingHub`
+    // (`hub.recoveredZombieFreeze`), so a re-read can't resurrect the zombie
+    // recording UI. Set in `recoverFromUnresponsiveApp`.
 
     /// Bound on cold-launch / URL-delivery latency. iOS delivers a URL to a
     /// foreground-target target in O(seconds), not O(minutes), so 15s is a
@@ -242,11 +265,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var renderedKeyboardAppearance: UIKeyboardAppearance?
     private var magicFollowUpExpiresAt: Date?
 
-    /// Snapshot of recent transcripts loaded from the App Group mirror.
-    /// Captured on appearance and whenever the user opens history — the
-    /// mirror is cheap to read, but we still avoid re-reading on every
-    /// keystroke.
-    private var historyEntries: [TranscriptHistoryMirror.Entry] = []
+    /// Snapshot of recent transcripts loaded from the App Group mirror. Now
+    /// owned by `KeyboardStreamingHub` (mirrored on `historyMirrorUpdated` once
+    /// per process); read through here so existing call sites are unchanged.
+    private var historyEntries: [TranscriptHistoryMirror.Entry] { hub.historyEntries }
 
     /// Transient banner string read off `AppGroup.lastDictationStatusMessage`.
     /// `nil` when no banner is pending. The keyboard view runs a 2.5s `task`
@@ -279,20 +301,19 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var stopRequestPosted = false
 
     /// Whether the warm-hold switching nudge should render on the strip
-    /// (UX-overhaul round 2 §4 / WS-F). Mirrors `AppGroup.warmHoldNudgeShouldShow`,
-    /// refreshed on appearance and on each `warmHoldNudgeChanged` post. The app
-    /// owns the streak math; the keyboard just renders off this boolean and
-    /// writes the two terminal actions back.
-    private var showWarmHoldNudge = false
+    /// (UX-overhaul round 2 §4 / WS-F). Owned by `KeyboardStreamingHub`
+    /// (mirrored on `warmHoldNudgeChanged`); read through here. The two terminal
+    /// actions write the App-Group flags back and clear via `hub.clearWarmHoldNudge`.
+    private var showWarmHoldNudge: Bool { hub.showWarmHoldNudge }
 
-    /// Whether the post-paste correction quick-review strip should render. Set
-    /// by `maybeShowCorrectionNudge` after a successful auto-paste when the app
-    /// has published asks for the just-pasted session; cleared on finish/dismiss.
-    private var showCorrectionNudge = false
+    /// Whether the post-paste correction quick-review strip should render. Owned
+    /// by `KeyboardStreamingHub` — set by `hub.maybeShowCorrectionNudge` (paste-
+    /// time) or the `correctionAsksReady` feed; cleared on finish/dismiss.
+    private var showCorrectionNudge: Bool { hub.showCorrectionNudge }
 
-    /// The asks published by the app for the just-pasted session (read from the
-    /// App-Group bridge). Non-nil whenever `showCorrectionNudge` is true.
-    private var correctionAsks: CorrectionBridge.Asks?
+    /// The asks published by the app for the just-pasted session. Owned by
+    /// `KeyboardStreamingHub`; non-nil whenever `showCorrectionNudge` is true.
+    private var correctionAsks: CorrectionBridge.Asks? { hub.correctionAsks }
 
     // MARK: - Haptic + audio feedback
 
@@ -335,6 +356,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             message: "controller deinit",
             metadata: ["controllerID": String(controllerID)]
         )
+        // HYGIENE: stop any controller-scoped resources that could outlive a
+        // ghost. UIKit deallocates view controllers on the main thread, so
+        // `assumeIsolated` is valid here; the Darwin observer tokens auto-remove
+        // via ARC as they release, and the deadline Tasks capture `[weak self]`,
+        // but the repeating heartbeat / backspace `Timer`s would otherwise keep
+        // ticking into a `[weak self]` no-op until invalidated. Tear them down.
+        MainActor.assumeIsolated {
+            tearDownControllerScopedResources()
+        }
     }
 
     override func viewDidLoad() {
@@ -347,14 +377,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         )
         // Jot mic CTA is its own affordance; we do not provide a system dictation key.
         hasDictationKey = false
+        // Push current Full Access into the process-lifetime hub before its
+        // first feed read, then ensure its subscriptions are live (first `shared`
+        // access lazily subscribes; idempotent thereafter).
+        hub.setHasFullAccess(hasFullAccess)
+        _ = hub
         installKeyboardView()
         installHeightConstraint()
-        startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
-        startObservingStreamingPartial()
-        startObservingStreamingLoading()
-        startObservingWarmHoldNudge()
-        startObservingCorrectionAsks()
+        startObservingHistoryMirrorUpdated()
         startObservingForegroundPong()
     }
 
@@ -375,17 +406,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // blocks AppGroup writes when FA is off, so a mirror can only
         // ever go true → it can't reliably report "FA was turned off".
         // The main app stays honest by not claiming to know FA state.
-        startObservingHistoryMirrorUpdated()
+        // Push current Full Access into the hub (it gates all App-Group reads),
+        // then have this freshly-presented controller paint current projected
+        // state immediately. The hub's feed subscriptions are process-lifetime
+        // (subscribed once on first `shared` access) — nothing to re-subscribe.
+        hub.setHasFullAccess(hasFullAccess)
+        // Install the hub→controller render-notify hook so the SNAPSHOT-backed
+        // surfaces (warm-hold nudge, correction nudge + asks, RecentsStrip
+        // history) — which the hub mutates but only refresh when we call
+        // `renderRootView()` — re-render live on their feeds. Last-appeared
+        // (visible) controller wins; we do NOT clear it on teardown (the closure
+        // is `[weak self]`, so a dealloc'd controller's hook safely no-ops, and
+        // clearing it would risk nil'ing a newer controller's hook). The
+        // streaming pane is NOT driven by this hook — it reads `recordingState`
+        // live via `@Observable`.
+        hub.onShouldRender = { [weak self] in self?.renderRootView() }
+        hub.refreshNow()
         startObservingPipelinePhase()
-        startObservingStreamingPartial()
-        startObservingStreamingLoading()
-        startObservingWarmHoldNudge()
-        startObservingCorrectionAsks()
+        startObservingHistoryMirrorUpdated()
         startObservingForegroundPong()
-        refreshWarmHoldNudgeFromProjection()
-        refreshPipelinePhase()
-        refreshStreamingPartialFromProjection()
-        refreshStreamingLoadingFromProjection()
+        // Controller-scoped proxy side-effects for the current phase (auto-paste
+        // flush / watchdog / stopRequestPosted). The hub already applied the
+        // phase STATE in `refreshNow()` above.
+        refreshPipelinePhaseSideEffects()
         refreshSelectionState()
         // refreshPipelinePhase() already calls flushPendingAutoPasteIfPossible
         // at the bottom; calling it explicitly here is redundant but harmless
@@ -397,28 +440,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // does not strand pending.
         rearmLaunchDeadlineIfPending()
         refreshPasteState()
-        refreshHistory()
+        // History is refreshed via `hub.refreshNow()` above (the hub owns the
+        // `historyMirrorUpdated` feed + the `historyEntries` projection).
         refreshStatusBanner()
         renderRootView()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        historyMirrorUpdatedObserver = nil
-        pipelinePhaseObserver = nil
-        streamingPartialObserver = nil
-        streamingLoadingObserver = nil
-        warmHoldNudgeObserver = nil
-        correctionAsksReadyObserver = nil
-        foregroundPongObserver = nil
-        pipelineStaleDeadlineTask?.cancel()
-        pipelineStaleDeadlineTask = nil
-        pendingLaunchDeadlineTask?.cancel()
-        pendingLaunchDeadlineTask = nil
-        deadAppWatchdogTask?.cancel()
-        deadAppWatchdogTask = nil
-        cancelBackspaceRepeat()
-        stopKeyboardActiveHeartbeat()
+        tearDownControllerScopedResources()
         // Close any open in-flight-paste window (cure §4-B) so a textDidChange in
         // a re-presented keyboard can't confirm a stale session, and mark it
         // resolved so an in-flight deferred verify that fires after teardown
@@ -448,6 +478,35 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         inFlightPasteResolved = true
         isAutoPasteInsertInFlight = false
         clearInFlightPasteWindow()
+    }
+
+    /// HYGIENE (ghost-controller fix): iOS does NOT reliably call
+    /// `viewWillDisappear` on an outgoing/leaked `UIInputViewController`, so a
+    /// ghost would keep its remaining controller-scoped observers/timers/tasks
+    /// burning cycles. Correctness no longer depends on this teardown (the live
+    /// feed + projection now live in the process-lifetime hub), but we still tear
+    /// these down here AND in `viewDidDisappear` / `deinit` so a ghost stops
+    /// spending work. Idempotent — safe to call from all three.
+    private func tearDownControllerScopedResources() {
+        pipelinePhaseObserver = nil
+        historyMirrorUpdatedObserver = nil
+        foregroundPongObserver = nil
+        pipelineStaleDeadlineTask?.cancel()
+        pipelineStaleDeadlineTask = nil
+        pendingLaunchDeadlineTask?.cancel()
+        pendingLaunchDeadlineTask = nil
+        deadAppWatchdogTask?.cancel()
+        deadAppWatchdogTask = nil
+        cancelBackspaceRepeat()
+        stopKeyboardActiveHeartbeat()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Defensive: if the OS skipped `viewWillAppear`/`viewWillDisappear`
+        // pairing (app-switch / memory pressure), make sure this controller's
+        // remaining observers/timers/tasks are torn down.
+        tearDownControllerScopedResources()
     }
 
     override func textDidChange(_ textInput: (any UITextInput)?) {
@@ -628,10 +687,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             },
             onCorrectionFinished: { [weak self] in
                 guard let self else { return }
-                self.showCorrectionNudge = false
-                self.correctionAsks = nil
+                // `clearCorrectionNudge()` fires the `onShouldRender` hook, which
+                // re-renders this controller — no separate `renderRootView()`.
+                self.hub.clearCorrectionNudge()
                 CorrectionBridge.clearAsks()
-                self.renderRootView()
             }
         )
     }
@@ -740,31 +799,23 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     /// Shared terminal for both nudge actions: clear the App-Group show flag,
-    /// drop the local render flag, post the cross-process change, and re-render.
+    /// drop the hub render flag, post the cross-process change, and re-render.
     private func resolveWarmHoldNudge() {
         AppGroup.warmHoldNudgeShouldShow = false
-        showWarmHoldNudge = false
+        // `hub.clearWarmHoldNudge()` fires the `onShouldRender` hook, which
+        // re-renders this controller — no separate `renderRootView()` needed.
+        hub.clearWarmHoldNudge()
         CrossProcessNotification.post(name: CrossProcessNotification.warmHoldNudgeChanged)
-        renderRootView()
     }
 
     /// After a successful auto-paste, surface the correction quick-review strip
-    /// IFF the app published asks for this exact session. Yields to the warm-hold
-    /// nudge if that's already showing (one strip overlay at a time). Read +
-    /// render only — verdicts/teaching happen via the bridge; this never edits
-    /// the host's already-pasted text (teach-only).
+    /// IFF the app published asks for this exact session. The nudge STATE is
+    /// owned by the hub (`hub.maybeShowCorrectionNudge`), which fires the
+    /// `onShouldRender` hook to re-render this controller. Read + render only —
+    /// verdicts/teaching happen via the bridge; this never edits the host's
+    /// already-pasted text (teach-only).
     private func maybeShowCorrectionNudge(sessionID: UUID) {
-        guard !showWarmHoldNudge else { return }
-        let a = CorrectionBridge.readAsks(sessionID: sessionID)
-        if let a, !a.asks.isEmpty {
-            // Log only when there's actually a nudge to show (the every-session
-            // found=0 line was pure clutter).
-            DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-                message: "nudge check", metadata: ["found": "\(a.asks.count)"])
-            correctionAsks = a
-            showCorrectionNudge = true
-            renderRootView()
-        }
+        hub.maybeShowCorrectionNudge(sessionID: sessionID)
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -1131,22 +1182,18 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             name: CrossProcessNotification.historyMirrorUpdated
         ) { [weak self] in
             guard let self else { return }
-            // Snapshot the surfaces that may shift as a result of the
-            // write, then refresh and re-render only on actual change.
-            // Banner state can move because timeout / error fallback
-            // paths write a new message immediately before the ledger
-            // append that triggered this notification.
+            // STATUS-BANNER half only (controller-scoped). The history reload +
+            // RecentsStrip re-render is owned by the hub: its `historyMirrorUpdated`
+            // feed mutates `hub.historyEntries` and fires the `onShouldRender`
+            // hook so the active controller re-renders (the strip reads a plain
+            // snapshot of `historyEntries` via `KeyboardViewInputs`, NOT a live
+            // `@Observable`). Banner state can shift on this signal because
+            // timeout / error fallback paths write a new message immediately
+            // before the ledger append that triggered it; refresh + re-render
+            // only on an actual banner change.
             let priorBanner = self.statusBanner
-            let priorHistory = self.historyEntries
             self.refreshStatusBanner()
-            // The mirror is the source of truth for the RecentsStrip
-            // rows. Without this reload, a new dictation only appears
-            // the next time the keyboard is re-presented — the just-now
-            // marker ages out after 5s and the strip then shows stale
-            // entries missing the latest transcript.
-            self.refreshHistory()
-            if priorBanner != self.statusBanner
-                || priorHistory != self.historyEntries {
+            if priorBanner != self.statusBanner {
                 self.renderRootView()
             }
         }
@@ -1752,153 +1799,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // task) will re-enter this function.
     }
 
-    // MARK: - Streaming partial mirror
-
-    private func startObservingStreamingPartial() {
-        guard streamingPartialObserver == nil else { return }
-        streamingPartialObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.streamingPartialChanged
-        ) { [weak self] in
-            self?.refreshStreamingPartialFromProjection()
-        }
-    }
-
-    private func refreshStreamingPartialFromProjection() {
-        guard hasFullAccess else {
-            recordingState.updateStreamingPartial("")
-            return
-        }
-        let text = AppGroup.defaults.string(forKey: AppGroup.Keys.streamingPartialText) ?? ""
-        // DIAGNOSTIC (blank live-preview pane): record which controller id first
-        // receives a non-empty partial. If two ids log here during one dictation,
-        // a ghost controller is also consuming projections — and the VISIBLE
-        // keyboard view may belong to a different controller than this one.
-        if !didLogPartialHandling, !text.isEmpty {
-            didLogPartialHandling = true
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .keyboardControllerLifecycle,
-                message: "controller handling partial",
-                metadata: ["controllerID": String(controllerID), "len": String(text.count)]
-            )
-        }
-        // `recordingState` is `@Observable` and the streaming pane reads it
-        // directly, so this mutation drives the preview incrementally — no
-        // root reassignment needed (the build-139 `renderRootView()` + probe
-        // were the source of the stale-frame thrash and are gone).
-        recordingState.updateStreamingPartial(text)
-    }
-
-    /// Clear the live-transcript projection (local + App Group) the instant a
-    /// NEW dictation is initiated. The previous session can leave its final
-    /// text in the projection — the keyboard-dictation path doesn't reliably
-    /// receive the main app's post-batch `reset()` — and because that stale
-    /// text is non-empty, the streaming strip renders it verbatim (skipping the
-    /// "Loading…/Listening…" placeholder) for the beat between the strip
-    /// reappearing and the new session's first partial. Clearing on start makes
-    /// the strip open clean every time.
-    private func clearStreamingPartialForNewSession() {
-        recordingState.updateStreamingPartial("")
-        if hasFullAccess {
-            AppGroup.defaults.set("", forKey: AppGroup.Keys.streamingPartialText)
-        }
-    }
-
-    // MARK: - Streaming load-state mirror
-
-    /// Mirrors `AppGroup.streamingLoadingVariantLabel` (written by the
-    /// main app's `StreamingTranscriptionService` while the streaming
-    /// graph is ANE-loading) into `recordingState.loadingVariantLabel`,
-    /// which the keyboard's streaming strip reads to render the
-    /// "Loading [variant]…" placeholder in place of the empty-state
-    /// "Listening…" copy.
-    private func startObservingStreamingLoading() {
-        guard streamingLoadingObserver == nil else { return }
-        streamingLoadingObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.streamingLoadingChanged
-        ) { [weak self] in
-            self?.refreshStreamingLoadingFromProjection()
-        }
-    }
-
-    private func refreshStreamingLoadingFromProjection() {
-        guard hasFullAccess else {
-            recordingState.updateLoadingVariantLabel("")
-            return
-        }
-        let label = AppGroup.streamingLoadingVariantLabel
-        // Cold-load diagnostic: a cold keyboard dictation should log a
-        // non-empty label WHILE isRecording=true (so the strip is visible to
-        // render it). If label is empty during the load, the write/notify
-        // path is the gap; if isRecording is false, the strip gate is.
-        keyboardLog.info("streaming-loading mirror label=\(label.isEmpty ? "<empty>" : label, privacy: .public) isRecording=\(self.recordingState.isRecording, privacy: .public)")
-        // `recordingState` is `@Observable` and the streaming strip reads it
-        // directly, so this mutation drives the loading placeholder
-        // incrementally — the build-139 `renderRootView()` twin (which caused
-        // the stale-frame thrash) is gone.
-        recordingState.updateLoadingVariantLabel(label)
-    }
-
-    // MARK: - Warm-hold switching nudge (WS-F / §4 R10)
-
-    /// Observes `warmHoldNudgeChanged`, posted by the main app whenever the
-    /// record-and-bounce streak math flips the `warmHoldNudgeShouldShow`
-    /// projection. The keyboard can't run the streak math (no SwiftData, no
-    /// engine), so it renders purely off the boolean and writes the two
-    /// terminal actions back.
-    private func startObservingWarmHoldNudge() {
-        guard warmHoldNudgeObserver == nil else { return }
-        warmHoldNudgeObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.warmHoldNudgeChanged
-        ) { [weak self] in
-            self?.refreshWarmHoldNudgeFromProjection()
-        }
-    }
-
-    private func startObservingCorrectionAsks() {
-        guard correctionAsksReadyObserver == nil else { return }
-        correctionAsksReadyObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.correctionAsksReady
-        ) { [weak self] in
-            self?.showCorrectionNudgeFromReady()
-        }
-    }
-
-    /// The app just published asks for the dictation we handled — read the latest
-    /// and show the nudge. This is the RELIABLE trigger (reading at paste time
-    /// races the publish, which happens after the ledger append). Yields to an
-    /// already-showing correction nudge or the warm-hold nudge; the topStrip
-    /// branch additionally hides it while recording.
-    private func showCorrectionNudgeFromReady() {
-        guard !showCorrectionNudge, !showWarmHoldNudge else { return }
-        let a = CorrectionBridge.readLatestAsks()
-        if let a, !a.asks.isEmpty {
-            DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-                message: "asks-ready", metadata: ["found": "\(a.asks.count)"])
-            correctionAsks = a
-            showCorrectionNudge = true
-            renderRootView()
-        }
-    }
-
-    /// Reads the App-Group boolean projection and re-renders only on change.
-    /// Gated on Full Access — without it App-Group reads are sandboxed and
-    /// return stale/false values, so the nudge simply never shows (the app
-    /// owns the source of truth and can't reach an FA-off keyboard anyway).
-    private func refreshWarmHoldNudgeFromProjection() {
-        // Mirror the app's predicate (`shouldShow && !suppressed`,
-        // ContentView.refreshWarmHoldNudge) so the two renderers can't diverge:
-        // today the app never sets `shouldShow` while suppressed (detection
-        // guards on it), but checking `suppressed` here too is a cheap defense
-        // against a future path that sets `shouldShow` without re-checking, or a
-        // stale `shouldShow=true` blob surviving alongside `suppressed=true`.
-        let shouldShow = hasFullAccess
-            && AppGroup.warmHoldNudgeShouldShow
-            && !AppGroup.warmHoldNudgeSuppressed
-        guard shouldShow != showWarmHoldNudge else { return }
-        showWarmHoldNudge = shouldShow
-        renderRootView()
-    }
+    // Streaming-partial, streaming-loading, warm-hold-nudge, and correction-asks
+    // feed subscriptions + their projected state moved to `KeyboardStreamingHub`
+    // (process-lifetime, observed by every controller). The controller-scoped
+    // nudge ACTIONS (accept/dismiss/finish, paste-time correction trigger) still
+    // live on the controller and now mutate hub state via `hub.*` mutators.
 
     // MARK: - Pipeline phase observer (v7 auto-paste design)
 
@@ -1907,35 +1812,41 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         pipelinePhaseObserver = CrossProcessNotification.addObserver(
             name: CrossProcessNotification.pipelinePhaseChanged
         ) { [weak self] in
-            self?.refreshPipelinePhase()
+            self?.refreshPipelinePhaseSideEffects()
         }
     }
 
-    /// Single source of truth for pipeline phase reads. Reads the projection,
-    /// applies it to the keyboard's `KeyboardRecordingState`, arms or cancels
-    /// the stale-deadline task, cancels the launch deadline if proof of life,
-    /// clears `stopRequestPosted` if projection moved off `.recording`, and
-    /// runs the flush. Per design §4.6 + §4.6.G.
-    private func refreshPipelinePhase() {
+    /// Controller-scoped HALF of the old `refreshPipelinePhase` (plan §"phase
+    /// split", option 2). The hub independently owns the phase STATE
+    /// (`KeyboardStreamingHub.refreshPipelinePhaseState` → `recordingState`
+    /// apply + zombie-freeze suppression) via its OWN `pipelinePhaseChanged`
+    /// observer. THIS method runs ONLY the proxy / per-presentation side-effects:
+    /// arm/cancel the stale-deadline task, cancel the launch deadline on proof of
+    /// life, clear `stopRequestPosted`, and run the auto-paste flush.
+    ///
+    /// These side-effects read the pipeline projection / `ClipboardHandoff`
+    /// DIRECTLY — they do NOT read `recordingState` — so they are independent of
+    /// the hub's state-apply and there is no cross-observer ordering dependency.
+    /// The paste path is byte-for-byte unchanged from the pre-hub
+    /// `refreshPipelinePhase`. The recovered-zombie tombstone now lives on the
+    /// hub (`hub.recoveredZombieFreeze`); we read it here (without mutating it —
+    /// the hub owns its clearing) to apply the SAME suppression to the
+    /// projection these side-effects act on, preserving prior behavior.
+    private func refreshPipelinePhaseSideEffects() {
         guard hasFullAccess else { return }
         var projection = PipelinePhaseProjection.read()
-        // Suppress a recovered dead-app zombie. After `recoverFromUnresponsiveApp`
-        // the shared projection can still read `.recording`/`.paused` (the dead
-        // writer never went terminal). If this is that same frozen session, treat
-        // it as idle so a re-present can't resurrect it. Once the projection
-        // advances past the frozen timestamp or a new session appears, the writer
-        // is alive again — drop the tombstone and resume normal handling.
-        if let freeze = recoveredZombieFreeze {
+        // Mirror the hub's zombie suppression for the side-effect projection so a
+        // recovered dead-app session can't re-arm the stale deadline or block a
+        // launch-deadline cancel. Read-only here — the hub clears the tombstone
+        // when the writer advances.
+        if let freeze = hub.recoveredZombieFreeze {
             if let p = projection,
                p.sessionID == freeze.sessionID,
                p.lastUpdatedAt <= freeze.frozenAt,
                p.phase == .recording || p.phase == .paused {
                 projection = nil
-            } else {
-                recoveredZombieFreeze = nil
             }
         }
-        recordingState.applyPipelineProjection(projection)
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
         // Clearing `stopRequestPosted` flips the speak button's `.disabled`
@@ -1979,8 +1890,18 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             } catch {
                 return
             }
-            self?.refreshPipelinePhase()
+            self?.refreshPipelinePhaseStateAndSideEffects()
         }
+    }
+
+    /// Re-read the pipeline projection into BOTH the hub's phase STATE and the
+    /// controller's proxy side-effects, in the original order. Used by the
+    /// deadline/watchdog Tasks (which are self-driven re-reads, not Darwin
+    /// posts, so neither observer fires for them). Equivalent to the pre-hub
+    /// `refreshPipelinePhase()`.
+    private func refreshPipelinePhaseStateAndSideEffects() {
+        hub.refreshPipelinePhaseState()
+        refreshPipelinePhaseSideEffects()
     }
 
     /// Arm the dead-app watchdog after a recording-control tap. Snapshots the
@@ -2037,11 +1958,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         if let frozen = PipelinePhaseProjection.read(),
            frozen.phase == .recording || frozen.phase == .paused,
            let frozenSession = frozen.sessionID {
-            recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
+            hub.recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
         }
         stopRequestPosted = false
         recordingState.applyPipelineProjection(nil)
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         recordingState.updateLoadingVariantLabel("")
         clearPendingPasteSession()
         pipelineStaleDeadlineTask?.cancel()
@@ -2074,17 +1995,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     // MARK: - History
-
-    /// Reloads the App Group mirror. Called on appearance and when the user
-    /// opens the history overlay — the extra read when opening catches new
-    /// dictations recorded while the keyboard is still presented.
-    private func refreshHistory() {
-        guard hasFullAccess else {
-            historyEntries = []
-            return
-        }
-        historyEntries = TranscriptHistoryMirror.load()
-    }
+    //
+    // History reload moved to `KeyboardStreamingHub` (it owns the
+    // `historyMirrorUpdated` feed + the `historyEntries` projection). The
+    // controller reads `hub.historyEntries` (via its `historyEntries` computed
+    // pass-through) into `KeyboardViewInputs` in `syncKeyboardInputs()` — a plain
+    // SNAPSHOT, not a live `@Observable`. The hub fires its `onShouldRender` hook
+    // when `historyEntries` changes, which re-renders this controller so the
+    // RecentsStrip shows a just-dictated transcript without waiting for re-present.
 
     /// Phase 2: the legacy `HistoryOverlay` modal was replaced by the
     /// always-visible `RecentsStrip` at the top of the keyboard. Tapping a
@@ -2277,7 +2195,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// inserts the transcribed result into the focused field on stop. The wizard
     /// (W5) handles this tap with its own observer while it is presented.
     private func startInlineViaDarwin() {
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         CrossProcessNotification.post(name: CrossProcessNotification.keyboardDictateTapped)
         keyboardLog.info("ping/pong: pong received -> inline tap (host=Jot)")
     }
@@ -2286,7 +2204,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// hero's swipe-back coaching path). Stamps a pending-paste session so the
     /// app's `onOpenURL` can `adoptSession(_:)` before recording-start.
     private func startColdViaURLBounce() {
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         let session = beginPendingPasteSession()
         DiagnosticsLog.record(
             source: "keyboard",
@@ -2348,7 +2266,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // we warm-resume in the background (the no-foreground fast path). The
             // warm-hold keys are left intact so leaving the app still resumes warm.
             if !AppGroup.isJotAppForeground() {
-                clearStreamingPartialForNewSession()
+                hub.clearStreamingPartialForNewSession()
                 CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
                 keyboardLog.info("Posted warm-resume (Jot backgrounded); skipping URL bounce")
                 return
@@ -2451,7 +2369,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 } catch {
                     return
                 }
-                self?.refreshPipelinePhase()
+                self?.refreshPipelinePhaseStateAndSideEffects()
             }
         }
     }
@@ -2741,112 +2659,4 @@ private final class KeyboardUndoLedger {
         _ = contextBeforeInput  // intentionally unused
         return entry
     }
-}
-
-@MainActor
-@Observable
-final class KeyboardRecordingState {
-    private(set) var isRecording = false
-    private(set) var startedAt: Date?
-
-    /// Pipeline phase, written by `applyPipelineProjection`. Drives the
-    /// `KeyboardView.micCTA` four-state UI (idle / recording / in-flight /
-    /// failed) and the auto-paste lifecycle. Single source of truth for
-    /// "is the keyboard observing a recording right now?" — `isRecording`
-    /// is derived from `phase == .recording` via `applyPipelineProjection`.
-    private(set) var phase: PipelinePhaseProjection.Phase = .idle
-
-    /// True while the pipeline is mid-flight after recording stopped — i.e.
-    /// transcribing / processing / cleaning / rewriting / publishing. Drives
-    /// the mic CTA's `.disabled` state at the SwiftUI layer (per design
-    /// §4.6.D). v0.4 added `.rewriting` for the chained LLM rewrite branch.
-    /// `.paused` is NOT in-flight — it is a live-but-not-capturing sub-state
-    /// of recording (§10.2), so the mic CTA stays interactive (Stop) and the
-    /// Resume control is offered separately.
-    var isInflightPostRecording: Bool {
-        switch phase {
-        case .transcribing, .processing, .cleaning, .rewriting, .publishing:
-            return true
-        case .idle, .recording, .paused, .failed:
-            return false
-        }
-    }
-
-    /// True while the active dictation is paused (UX-overhaul round 2 §10).
-    /// Derived solely from `phase == .paused`. While paused, `isRecording`
-    /// stays `true` (we're still in a live session, just not capturing) so the
-    /// keyboard keeps rendering the recording chrome — only the Pause control
-    /// swaps to Resume and the elapsed clock freezes.
-    private(set) var isPaused = false
-
-    /// Frozen elapsed seconds captured at the moment the `.paused` projection
-    /// was published (§10.4). The app back-dates `recordingStartedAt` to the
-    /// pause-aware active-time anchor; we snapshot `lastUpdatedAt − anchor`
-    /// here so the keyboard's clock shows a STILL value rather than continuing
-    /// to tick against a fixed anchor + live `now`. Nil while not paused.
-    private(set) var pausedElapsedSeconds: TimeInterval?
-
-    /// Single canonical surface: writes `phase` and derives `isRecording` /
-    /// `startedAt` from the same projection. Pipeline phase is the only
-    /// cross-process recording-state input this view-model accepts.
-    func applyPipelineProjection(_ projection: PipelinePhaseProjection?) {
-        guard let projection else {
-            phase = .idle
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: false, startedAt: nil)
-            return
-        }
-        phase = projection.phase
-        switch projection.phase {
-        case .recording:
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: true, startedAt: projection.recordingStartedAt)
-        case .paused:
-            // Stay "recording" so the chrome persists; freeze the clock by
-            // snapshotting the active-time total at publish (§10.4).
-            isPaused = true
-            if let anchor = projection.recordingStartedAt {
-                pausedElapsedSeconds = max(0, projection.lastUpdatedAt.timeIntervalSince(anchor))
-            } else {
-                pausedElapsedSeconds = nil
-            }
-            update(isRecording: true, startedAt: projection.recordingStartedAt)
-        case .idle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: false, startedAt: nil)
-        }
-    }
-
-    func update(isRecording: Bool, startedAt: Date?) {
-        self.isRecording = isRecording
-        self.startedAt = isRecording ? startedAt : nil
-    }
-
-    /// Latest live partial-transcript text mirrored from the main app via the
-    /// App Group `streamingPartialText` projection. Drives the keyboard's
-    /// live caption strip while `isRecording == true`. Empty string while
-    /// idle or before the EOU model has emitted its first partial.
-    private(set) var streamingPartialText: String = ""
-
-    func updateStreamingPartial(_ text: String) {
-        streamingPartialText = text
-    }
-
-    /// Mirrors `AppGroup.streamingLoadingVariantLabel`. Non-empty
-    /// while the main app's `StreamingTranscriptionService` is
-    /// ANE-loading the streaming graph for the active recording —
-    /// e.g. "Parakeet 110M". Empty when no load is in flight. The
-    /// streaming strip swaps its empty-state "Listening…" placeholder
-    /// for a "Loading [label]…" pair (spinner + serif-italic label)
-    /// whenever this is non-empty. See
-    /// `JotKeyboardViewController.refreshStreamingLoadingFromProjection`.
-    private(set) var loadingVariantLabel: String = ""
-
-    func updateLoadingVariantLabel(_ label: String) {
-        loadingVariantLabel = label
-    }
-
 }

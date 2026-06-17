@@ -10,22 +10,17 @@ struct RecentsNavBar: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            HStack(spacing: 8) {
-                // Brand mark — the app/watch icon art clipped to a circle (the
-                // watch's circular masking), matching the icon on the Home
-                // Screen. Replaces the old `j.circle.fill` SF monogram.
-                Image("JotBrandTile")
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 20, height: 20)
-                    .clipShape(Circle())
-                    .accessibilityHidden(true)
-
-                Text("Jot")
-                    .font(.system(size: 15, weight: .semibold, design: .default))
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .tracking(-0.1)
-            }
+            // Brand mark — the app/watch icon art clipped to a circle, matching
+            // the Home Screen icon. The wordmark was dropped (the logo speaks
+            // for itself) and the circle sized to 36pt so it reads at the SAME
+            // diameter as the trailing Help/Settings glass buttons and sits in
+            // line with them (the HStack centers vertically).
+            Image("JotBrandTile")
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+                .accessibilityLabel("Jot")
 
             Spacer(minLength: 8)
 
@@ -74,9 +69,11 @@ struct RecentsNavBar: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.jotPageInk)
-                .frame(width: 32, height: 32)
+                // 36pt visible circle so Help, the gear, and the brand logo all
+                // read at the SAME diameter (gear is 36; logo is 36). Was 32.
+                .frame(width: 36, height: 36)
                 .background(.regularMaterial, in: Circle())
                 .overlay(
                     Circle()
