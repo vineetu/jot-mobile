@@ -51,3 +51,5 @@ prototypes/style-adapter/
 
 # Design handoff references (HTML/JSX prototypes, not app source)
 Jot/design_handoff_setup_wizard/
+scripts/bootstrap-testflight.local.sh
+.testflight.env
