@@ -22,8 +22,12 @@ import SwiftUI
 ///   the user scrolls up manually, auto-follow pauses and a "↓ live"
 ///   pill appears at the bottom-right. Tapping the pill re-enables
 ///   auto-follow + scrolls to bottom.
-/// - Blue caret (`#007AFF`, 2×14pt, 1s blink) at the trailing edge
-///   of the newest line.
+/// - Stepping ellipsis tail (`TranscribingText`) inline after the newest
+///   word — the batch preview delivers text in chunks, so the tail keeps
+///   signalling "still transcribing, text is catching up" between chunks.
+///   Hidden while paused. (Replaced the old blinking caret, which an
+///   HStack pinned to the block edge — not the last word — once lines
+///   wrapped.)
 ///
 /// Read-only consumer of `streamingPartialText` (App Group projection)
 /// and `recordingAmplitude` (also App Group, via `AmplitudeProjection`).
@@ -87,6 +91,7 @@ struct StreamingStrip: View {
             StreamingPane(
                 partialText: partialText,
                 loadingLabel: loadingLabel,
+                isPaused: isPaused,
                 paneHeight: Self.paneHeight,
                 reduceMotion: reduceMotion
             )
@@ -238,6 +243,9 @@ private struct StreamingPane: View {
     /// `partialText` is empty, the pane renders a spinner +
     /// label pair instead of the idle "Listening…" placeholder.
     let loadingLabel: String?
+    /// While paused the mic isn't capturing, so the trailing "still
+    /// transcribing" ellipsis is dropped — nothing should promise more text.
+    let isPaused: Bool
     let paneHeight: CGFloat
     let reduceMotion: Bool
 
@@ -252,6 +260,12 @@ private struct StreamingPane: View {
     /// bottom. Set by `onScrollGesture`, cleared when the user taps
     /// the "↓ live" pill or returns to the bottom on their own.
     @State private var userScrolledUp: Bool = false
+
+    /// Gates the cold-start line: `true` only once the in-flight model load has
+    /// run past `ColdStartCopy.revealThreshold`. A warm load clears
+    /// `loadingLabel` before this flips, so the line never flashes. Driven by
+    /// the `.task(id: loadingLabel)` below.
+    @State private var loadRevealed: Bool = false
 
     /// Stable anchor at the very bottom of the streaming text — used
     /// by `ScrollViewReader.scrollTo(.bottomAnchor, anchor: .bottom)`
@@ -270,41 +284,52 @@ private struct StreamingPane: View {
             ScrollViewReader { scrollProxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView(.vertical, showsIndicators: false) {
-                        // Inner content — single Text + caret. We measure
+                        // Inner content — a single text run. We measure
                         // its height via `.background(GeometryReader { ... })`
                         // so the custom scroll indicator can size itself.
                         VStack(alignment: .leading, spacing: 0) {
-                            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                if partialText.isEmpty, let loadingLabel {
-                                    // Cold-load placeholder. Earlier shape
-                                    // also had a tiny `controlSize(.mini)`
-                                    // `ProgressView` inline — pulled because
-                                    // an iOS-system dotted-circle at 13pt
-                                    // typography reads as a foreign UI
-                                    // primitive sat next to editorial text.
-                                    // The breathing animation on the text
-                                    // itself carries the "active" signal
-                                    // without the visual clash. Mirrors the
-                                    // hero's loadingPlaceholder for surface
-                                    // consistency.
+                            Group {
+                                if partialText.isEmpty, let loadingLabel, loadRevealed {
+                                    // Cold-start line — shown ONLY after a load
+                                    // passes `ColdStartCopy.revealThreshold` (the
+                                    // `.task` below gates `loadRevealed`). A warm
+                                    // load clears `loadingLabel` before then, so
+                                    // it never flashes. No bar/waveform — the
+                                    // strip header's pulsing dot is the only
+                                    // motion (the design rule).
                                     KeyboardLoadingText(label: loadingLabel,
                                                         reduceMotion: reduceMotion)
+                                } else if partialText.isEmpty {
+                                    // Either no load, or a load still under the
+                                    // reveal threshold: the same calm "Listening…"
+                                    // as any other wait — alive from second one,
+                                    // quiet (no waveform).
+                                    listeningPlaceholder
                                 } else {
                                     // WS-A / R15: live transcript renders in the
                                     // already-bundled Fraunces ITALIC (the
                                     // 9pt-opsz text cut, tuned for text size) —
                                     // italic exclusively signals "live", giving
                                     // hero parity. NOT synthetic system italic.
-                                    // "Listening…" placeholder stays a plain hint.
-                                    Text(partialText.isEmpty ? "Listening…" : partialText)
-                                        .font(partialText.isEmpty
-                                              ? .system(size: 13, weight: .regular)
-                                              : Font.custom(JotType.frauncesItalicText, size: 14))
-                                        .lineSpacing(14 * 0.55) // ~line-height 1.55
-                                        .foregroundStyle(Color.jotKeyboardStreamText)
-                                        .multilineTextAlignment(.leading)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    BlinkingCaret(reduceMotion: reduceMotion)
+                                    // `TranscribingText` appends the stepping
+                                    // ellipsis tail inline after the newest
+                                    // word — the batch preview lags the voice,
+                                    // and the tail keeps signalling "still
+                                    // transcribing" between chunks. The tail
+                                    // wears the accent blue: the keyboard's
+                                    // "live" chrome color (pulsing dot,
+                                    // waveform), hero parity in idiom.
+                                    TranscribingText(
+                                        text: partialText,
+                                        font: Font.custom(JotType.frauncesItalicText, size: 14),
+                                        textColor: Color.jotKeyboardStreamText,
+                                        dotColor: Color.jotKeyboardAccent,
+                                        isTranscribing: !isPaused,
+                                        reduceMotion: reduceMotion
+                                    )
+                                    .lineSpacing(14 * 0.55) // ~line-height 1.55
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -431,6 +456,38 @@ private struct StreamingPane: View {
         }
         .frame(height: paneHeight)
         .accessibilityLabel(captionAccessibilityLabel)
+        // Deferred reveal: when a load begins (`loadingLabel` non-nil), wait
+        // out the remainder of `ColdStartCopy.revealThreshold` from the load's
+        // real start, THEN reveal the line. A warm load clears `loadingLabel`
+        // first → the task is cancelled and the line never shows.
+        .task(id: loadingLabel) {
+            guard loadingLabel != nil else { loadRevealed = false; return }
+            let started = AppGroup.streamingLoadStartedAt ?? Date()
+            let remaining = ColdStartCopy.revealThreshold - Date().timeIntervalSince(started)
+            if remaining > 0 {
+                loadRevealed = false
+                try? await Task.sleep(for: .seconds(remaining))
+                if Task.isCancelled { return }
+            }
+            loadRevealed = true
+        }
+    }
+
+    /// The calm "Listening…" wait — the SAME stepping ellipsis as the
+    /// live-transcript tail, so the waiting state breathes identically to the
+    /// streaming text (alive from second one, quiet — no waveform). Shown both
+    /// when idle-recording and while a load is still under the reveal threshold.
+    private var listeningPlaceholder: some View {
+        SteppingEllipsis(
+            leading: "Listening",
+            font: .system(size: 13, weight: .regular),
+            textColor: Color.jotKeyboardStreamText,
+            dotColor: Color.jotKeyboardAccent,
+            reduceMotion: reduceMotion
+        )
+        .lineSpacing(13 * 0.55)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// VoiceOver: cap to the last ~200 chars so long dictations don't
@@ -567,28 +624,6 @@ private struct PulsingBlueDot: View {
     }
 }
 
-// MARK: - Blinking blue caret
-
-private struct BlinkingCaret: View {
-    let reduceMotion: Bool
-    @State private var visible = true
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 1, style: .continuous)
-            .fill(Color.jotKeyboardAccent)
-            .frame(width: 2, height: 14)
-            .opacity(reduceMotion ? 1.0 : (visible ? 1.0 : 0.2))
-            .onAppear {
-                guard !reduceMotion else { return }
-                visible.toggle()
-            }
-            .animation(
-                reduceMotion ? nil : .easeInOut(duration: 0.5).repeatForever(autoreverses: true),
-                value: visible
-            )
-    }
-}
-
 // MARK: - Animated waveform bars (header)
 
 /// Six vertical blue bars, varying heights 4-13pt, opacities 0.5-0.9.
@@ -672,75 +707,27 @@ struct AmplitudeMeter: View {
     }
 }
 
-/// "Loading [variant]…" placeholder for the keyboard's streaming pane.
-/// Same idea as the hero's `LoadingPlaceholderText`: a 1.5s opacity
-/// breathing on the text carries the "active work" signal, without
-/// inserting an iOS-system spinner that visually clashes with the
-/// 13pt streaming text. Reduce Motion skips the animation.
+/// Cold-start line for the keyboard's streaming pane — the single
+/// editorial line (`ColdStartCopy`) shown while the model is doing a
+/// genuinely slow load. NO progress bar, NO breathing: the strip header's
+/// pulsing blue dot is the only motion (the design's rule). Rendered in the
+/// same bundled Fraunces italic as the live transcript so it reads as Jot's
+/// editorial voice, not a system loading primitive. The deferred-reveal gate
+/// (this only appears once a load passes `ColdStartCopy.revealThreshold`)
+/// lives in `StreamingPane`, so a warm load never flashes it.
 private struct KeyboardLoadingText: View {
     let label: String
     let reduceMotion: Bool
 
-    @State private var dim: Bool = false
-    @State private var startedAt: Date = Date()
-
-    /// Pace value handed across by the main app (it owns `ModelLoadTimekeeper`);
-    /// falls back to a conservative default if the App-Group value is absent.
-    private var estimate: Double {
-        let e = AppGroup.streamingLoadEstimateSeconds
-        return e > 0 ? e : 8
-    }
-
-    /// Same decelerating, 2×-slowed asymptote as the hero's bar. Caps below
-    /// 100% so an under-estimate never completes early; the strip swaps to live
-    /// transcript (or "Listening…") the instant the model is ready.
-    private func fill(elapsed: Double) -> Double {
-        let tau = max(estimate, 0.5) / 0.8
-        return min(1.0 - exp(-elapsed / tau), 0.94)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.system(size: 13, weight: .regular))
-                .lineSpacing(13 * 0.55)
-                .foregroundStyle(Color.jotKeyboardStreamText)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
-                .animation(
-                    reduceMotion
-                        ? nil
-                        : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
-                    value: dim
-                )
-
-            TimelineView(.periodic(from: startedAt, by: 0.05)) { context in
-                let elapsed = max(0, context.date.timeIntervalSince(startedAt))
-                let value = fill(elapsed: elapsed)
-                ProgressView(value: value)
-                    .progressViewStyle(.linear)
-                    .tint(Color.jotKeyboardStreamText)
-                    .frame(maxWidth: 200, alignment: .leading)
-                    .animation(.easeOut(duration: 0.18), value: value)
-            }
-
-            // Reassurance: audio is captured into the streaming queue during the
-            // load and drained the instant the model is ready, so nothing said
-            // now is lost. Instructional, not a rhetorical nudge.
-            Text("Keep speaking — your words are saved and appear when loading finishes.")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.7))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .onAppear {
-            // Prefer the main app's real load-start (the load may have begun
-            // before this strip became visible); fall back to now.
-            startedAt = AppGroup.streamingLoadStartedAt ?? Date()
-            guard !reduceMotion else { return }
-            dim = true
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(label)
+        Text(label)
+            .font(Font.custom(JotType.frauncesItalicText, size: 14))
+            .lineSpacing(14 * 0.55)
+            .foregroundStyle(Color.jotKeyboardStreamText)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(label)
     }
 }

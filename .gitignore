@@ -41,7 +41,7 @@ build-logs/
 tmp/
 
 # On-device model weights (bundled out-of-band, not in git)
-Jot/Resources/Models/
+Jot/Resources/Models
 
 # Local safety-net stash from the Gemma-experimentation revert.
 .revert-stash/
@@ -53,3 +53,7 @@ prototypes/style-adapter/
 Jot/design_handoff_setup_wizard/
 scripts/bootstrap-testflight.local.sh
 .testflight.env
+
+# Exception: Jot/Shared/DerivedData is SOURCE (ChunkStore.swift), not Xcode build output.
+# The bare DerivedData/ rule above would swallow it (broke fresh clones/worktrees).
+!Jot/Shared/DerivedData/

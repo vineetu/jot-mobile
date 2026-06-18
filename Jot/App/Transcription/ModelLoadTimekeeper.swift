@@ -42,12 +42,22 @@ enum ModelLoadTimekeeper {
         let value: Double
         if !didLoadThisLaunch {
             // No cold sample yet → guess generously off the warm one (cold is
-            // typically several × warm), else a conservative default.
-            value = cold ?? warm.map { $0 * 6 } ?? 12
+            // typically several × warm), else a conservative default. The
+            // default is deliberately LARGE (46 s): a post-update cold load is
+            // an ANE respecialization that runs tens of seconds (often >45 s on
+            // the first launch after an update — see model-load-caching.md), so
+            // we pace SLOWLY rather than rush the bar to the cap and stall. The
+            // bar never completes on the estimate; the real `.ready` transition
+            // removes it, so an over-estimate just means a calmer crawl that
+            // hands off the instant the model is actually ready.
+            value = cold ?? warm.map { $0 * 6 } ?? 46
         } else {
             value = warm ?? cold ?? 3
         }
-        return min(max(value, 1.0), 40.0)
+        // Ceiling raised to 75 s so the 46 s cold default — and genuinely slow
+        // cold recompiles on older devices — aren't clamped down into a bar
+        // that rushes ahead of the real load.
+        return min(max(value, 1.0), 75.0)
     }
 
     /// Record a completed load's wall-clock duration. Routes to the cold or

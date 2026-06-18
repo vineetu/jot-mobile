@@ -109,7 +109,6 @@ struct RecordingHeroView: View {
     @Environment(RecordingService.self) private var recordingService
     @Environment(TranscriptionService.self) private var transcriptionService
     @Environment(StreamingPartial.self) private var streamingPartial
-    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -155,6 +154,11 @@ struct RecordingHeroView: View {
     /// fades the stream in (transparent → translucent). Once `true`, stays
     /// `true` for the rest of the session.
     @State private var streamRevealed: Bool = false
+    /// Gates the cold-start line in the streaming card: `true` only once a slow
+    /// model load has run past `ColdStartCopy.revealThreshold`. A warm load
+    /// finishes first → stays false → the line never flashes. Driven by the
+    /// `.task(id: isLoadingModel)` on `streamingCard`.
+    @State private var modelLoadRevealed: Bool = false
     /// True once the coaching-window beat has elapsed (cold-start path only).
     /// The stream reveal needs BOTH this AND a real partial token, so the pane
     /// is never empty (round-2 §2a review fix).
@@ -500,7 +504,13 @@ struct RecordingHeroView: View {
     @ViewBuilder
     private var streamingCard: some View {
         let text = streamingPartial.streamingText
-        let isLoadingModel = streamingService.sessionLoadState == .loading
+        // The batch `TranscriptionService` does the slow per-update ANE load
+        // that gates the "Loading …" bar. `modelState == .loading` is set ONLY
+        // while weights are actually loading and is skipped entirely when the
+        // manager is already warm (loadOrFail short-circuits), so the bar
+        // appears for a genuine cold/post-update load and not on a warm app
+        // open.
+        let isLoadingModel = transcriptionService.modelState == .loading
         VStack(alignment: .leading, spacing: 0) {
             // Pinned caption — shown ABOVE the live text on EVERY recording.
             // One hero panel: it does NOT matter whether dictation started from
@@ -514,19 +524,30 @@ struct RecordingHeroView: View {
 
             Group {
                 if text.isEmpty {
-                    if isLoadingModel {
+                    if isLoadingModel && modelLoadRevealed {
                         loadingPlaceholder
                     } else {
-                        Text("Listening…")
-                            .font(.system(size: 26, weight: .regular, design: .serif).italic())
-                            .lineSpacing(8.3)
-                            .tracking(-0.4)
-                            .foregroundStyle(Color.jotPageInkSecondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityHidden(true)
+                        // Same calm stepping ellipsis as the live-transcript
+                        // tail (`TranscribingText`/`SteppingEllipsis`) so the
+                        // waiting state feels alive from second one — quiet, not
+                        // a waveform. Matches the hero's 26pt serif-italic
+                        // secondary-ink typography; dots wear the same ink.
+                        SteppingEllipsis(
+                            leading: "Listening",
+                            font: .system(size: 26, weight: .regular, design: .serif).italic(),
+                            textColor: Color.jotPageInkSecondary,
+                            dotColor: Color.jotPageInkSecondary,
+                            reduceMotion: reduceMotion,
+                            tracking: -0.4
+                        )
+                        .lineSpacing(8.3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityHidden(true)
                     }
                 } else {
-                    StreamingDictationText(text: text)
+                    StreamingDictationText(text: text,
+                                           isTranscribing: !recordingService.isPaused,
+                                           reduceMotion: reduceMotion)
                 }
             }
             // Bottom-align so "Listening…" sits at the bottom — the same place the
@@ -554,12 +575,27 @@ struct RecordingHeroView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             text.isEmpty
-                ? (isLoadingModel
-                    ? "Recording in progress. Loading \(SpeechModelVariant.current().displayName)."
+                ? (isLoadingModel && modelLoadRevealed
+                    ? "Recording in progress. Getting the model ready."
                     : "Recording in progress. Listening.")
                 : "Recording in progress. \(text)"
         )
         .accessibilityFocused($recordingStatusFocused)
+        // Deferred reveal: when a slow model load is in flight, wait out the
+        // remainder of `ColdStartCopy.revealThreshold` from its real start, then
+        // reveal the cold-start line. A warm load flips `isLoadingModel` false
+        // first → the task restarts and the line never shows (no flash).
+        .task(id: isLoadingModel) {
+            guard isLoadingModel else { modelLoadRevealed = false; return }
+            let started = AppGroup.streamingLoadStartedAt ?? Date()
+            let remaining = ColdStartCopy.revealThreshold - Date().timeIntervalSince(started)
+            if remaining > 0 {
+                modelLoadRevealed = false
+                try? await Task.sleep(for: .seconds(remaining))
+                if Task.isCancelled { return }
+            }
+            modelLoadRevealed = true
+        }
     }
 
     /// "Loading [variant]…" placeholder rendered in the streaming card
@@ -574,7 +610,14 @@ struct RecordingHeroView: View {
     /// swap reads as a copy change rather than a layout shift.
     @ViewBuilder
     private var loadingPlaceholder: some View {
-        LoadingPlaceholderText(variantName: SpeechModelVariant.current().displayName,
+        LoadingPlaceholderText(line: AppGroup.streamingLoadingVariantLabel.isEmpty
+                                   // Defensive fallback only (the label is
+                                   // non-empty during a real load). Must NEVER
+                                   // be the wizard-only koan on this surface —
+                                   // use a rotating line so the hero can't leak
+                                   // it even in this dead branch.
+                                   ? ColdStartCopy.recurringLines[0]
+                                   : AppGroup.streamingLoadingVariantLabel,
                                reduceMotion: reduceMotion)
             .frame(maxWidth: .infinity, alignment: .leading)
             .transition(.opacity)
@@ -993,8 +1036,14 @@ struct RecordingHeroView: View {
 /// Live transcript view: a bottom-anchored, scrollable text block that FILLS the
 /// card. The newest text stays in view as it streams; the user can scroll up
 /// through the whole recording; the top edge fades as older lines scroll off.
+/// The batch preview loop delivers text in chunks, so the newest word can lag
+/// the voice by several seconds — `TranscribingText` appends the stepping
+/// ellipsis tail after the last word so the pane never reads as "done" between
+/// chunks. The tail drops while paused (`isTranscribing == false`).
 private struct StreamingDictationText: View {
     let text: String
+    let isTranscribing: Bool
+    let reduceMotion: Bool
     var body: some View {
         // FILL the card, and AUTO-FOLLOW: as new text streams in we scroll the
         // bottom sentinel back into view so the newest words stay pinned to the
@@ -1002,13 +1051,20 @@ private struct StreamingDictationText: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(text)
-                        .foregroundColor(Color.jotPageInk)
-                        .font(.system(size: 26, weight: .regular, design: .serif).italic())
-                        .tracking(-0.4)
+                    TranscribingText(
+                        text: text,
+                        font: .system(size: 26, weight: .regular, design: .serif).italic(),
+                        textColor: Color.jotPageInk,
+                        // The tail is chrome, not ink — secondary keeps it a
+                        // step quieter than the words (same tone the
+                        // "Listening…" placeholder uses).
+                        dotColor: Color.jotPageInkSecondary,
+                        isTranscribing: isTranscribing,
+                        reduceMotion: reduceMotion,
+                        tracking: -0.4
+                    )
                         .lineSpacing(8.3)
                         .multilineTextAlignment(.leading)
-                        .accessibilityLabel(text)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Color.clear
                         .frame(height: 1)
@@ -1035,84 +1091,27 @@ private struct StreamingDictationText: View {
     }
 }
 
-/// "Loading [variant]…" placeholder with a subtle 1.5s opacity breathing
-/// animation so the surface doesn't read as frozen during the in-session
-/// ANE load. Lifted out as a separate view because the breathing
-/// animation needs its own `@State` cycle that wouldn't survive being
-/// inlined inside the parent's `streamingTextArea` `@ViewBuilder`.
-///
-/// `reduceMotion = true` snaps the opacity to full and skips the
-/// animation entirely (still communicates "loading" via the text copy).
+/// Cold-start line placeholder — the single editorial line (`ColdStartCopy`)
+/// shown in the streaming card while the model is doing a genuinely slow load.
+/// NO progress bar, NO breathing (an earlier bar/breathing pair bobbed and read
+/// as a system primitive). Same 26pt serif-italic / `jotPageInkSecondary`
+/// typography as the "Listening…" placeholder, so the swap reads as a copy
+/// change, not a layout shift. The deferred-reveal gate (this only appears once
+/// a load passes `ColdStartCopy.revealThreshold`) lives in `streamingCard`.
 private struct LoadingPlaceholderText: View {
-    let variantName: String
+    let line: String
     let reduceMotion: Bool
 
-    @State private var dim: Bool = false
-    @State private var startedAt: Date = Date()
-
-    /// How long THIS device's last comparable load took, used only to PACE the
-    /// bar — never to fake completion. There is no real progress signal from
-    /// CoreML; see `ModelLoadTimekeeper`.
-    private var estimate: Double {
-        ModelLoadTimekeeper.estimatedSeconds(variant: AppGroup.speechModelVariant)
-    }
-
-    /// Decelerating fill: `1 - e^(-t/τ)` with τ chosen so the bar reaches ~80%
-    /// at the estimated duration, then crawls. It asymptotes below 100%, so an
-    /// under-estimate (e.g. a cold ANE recompile) never completes early — the
-    /// real `.ready` transition removes this whole view, which IS completion.
-    private func fill(elapsed: Double) -> Double {
-        // τ paces the fill. Divisor 0.8 (≈ half of the natural 1.6) deliberately
-        // SLOWS the bar ~2×: it reads as steady progress the user can follow
-        // while they keep speaking, rather than rushing to the cap and sitting.
-        let tau = max(estimate, 0.5) / 0.8
-        let raw = 1.0 - exp(-elapsed / tau)
-        return min(raw, 0.94)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Loading \(variantName)…")
-                .font(.system(size: 26, weight: .regular, design: .serif).italic())
-                .lineSpacing(8.3)
-                .tracking(-0.4)
-                .foregroundStyle(Color.jotPageInkSecondary)
-                .opacity(reduceMotion ? 1.0 : (dim ? 0.55 : 1.0))
-                .animation(
-                    reduceMotion
-                        ? nil
-                        : .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
-                    value: dim
-                )
-
-            TimelineView(.periodic(from: startedAt, by: 0.05)) { context in
-                let elapsed = max(0, context.date.timeIntervalSince(startedAt))
-                let value = fill(elapsed: elapsed)
-                ProgressView(value: value)
-                    .progressViewStyle(.linear)
-                    .tint(Color.jotPageInkSecondary)
-                    .frame(maxWidth: 240, alignment: .leading)
-                    .animation(.easeOut(duration: 0.18), value: value)
-                    .accessibilityValue("\(Int(value * 100)) percent")
-            }
-
-            // Reassurance: audio is captured into the streaming queue during the
-            // load and drained the instant the model is ready, so nothing spoken
-            // now is lost. Instructional, not a rhetorical nudge.
-            Text("Keep speaking — your words are saved and appear the moment loading finishes.")
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Color.jotPageInkSecondary)
-                .opacity(0.85)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 300, alignment: .leading)
-        }
-        .onAppear {
-            startedAt = Date()
-            guard !reduceMotion else { return }
-            dim = true
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading \(variantName)")
+        Text(line)
+            .font(.system(size: 26, weight: .regular, design: .serif).italic())
+            .lineSpacing(8.3)
+            .tracking(-0.4)
+            .foregroundStyle(Color.jotPageInkSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(line)
     }
 }
 

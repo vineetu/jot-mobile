@@ -129,6 +129,16 @@ enum FillerWordCleaner {
         //    so we never index into an empty result.
         result = recapitalizeSentences(result)
 
+        // 6. Append a single trailing space (non-empty only). Consecutive
+        //    dictations insert back-to-back at the cursor, so without a
+        //    separator the next recording butts straight onto the previous
+        //    sentence ("Sentence one.Sentence two."). One trailing space makes
+        //    it "Sentence one. Sentence two." An all-filler input stays "" (we
+        //    never emit a lone space). Owner-requested.
+        if !result.isEmpty {
+            result += " "
+        }
+
         return result
     }
 

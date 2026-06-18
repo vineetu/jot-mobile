@@ -3,8 +3,6 @@ import SwiftUI
 /// v0.9 Settings main, matched to the design handoff's `SettingsScreen`.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
     @Environment(RecordingService.self) private var recordingService
 
     /// Called from `handleRerunSetupTap` BEFORE this sheet dismisses so the
@@ -15,19 +13,21 @@ struct SettingsView: View {
     /// crash path we're avoiding.
     var onRerunRequested: (() -> Void)? = nil
 
-    /// Mirror of `AppGroup.speechModelVariant` — read on appear so the
-    /// SPEECH MODEL card footer reflects the active variant's on-disk size.
-    @State private var speechModelVariant: String = AppGroup.speechModelVariant
-
     /// Mirror of `AppGroup.warmHoldDurationSeconds` for the Privacy picker.
     @State private var warmHoldDurationSeconds: TimeInterval = AppGroup.warmHoldDurationSeconds
 
     /// Mirror of `AppGroup.warmHoldEnabled` for the Privacy kill-switch.
     @State private var warmHoldEnabled: Bool = AppGroup.warmHoldEnabled
 
-    /// Ask-mode backend toggle. OFF = Apple Intelligence (built-in, no download);
-    /// ON = on-board Qwen (better answers, needs the model downloaded).
-    @State private var askUseQwen: Bool = (AppGroup.askBackend == "qwen")
+    /// Resolved "Live text while dictating" state (tri-state under the
+    /// hood — see `liveTextToggleRow`). A user touch writes explicit
+    /// on/off; `auto` only persists until first touch.
+    @State private var liveTextOn: Bool = DeviceCapability.liveTextEnabled
+
+    /// Dictation language. English is the only option today; the selector is a
+    /// native iOS pull-down menu (Apple pattern) so adding languages later is a
+    /// drop-in. Local state — there's nothing to persist while it's English-only.
+    @State private var dictationLanguage: String = "en"
 
 
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
@@ -53,9 +53,9 @@ struct SettingsView: View {
             }
             .navigationBarHidden(true)
             .onAppear {
-                speechModelVariant = AppGroup.speechModelVariant
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
+                liveTextOn = DeviceCapability.liveTextEnabled
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -72,6 +72,11 @@ struct SettingsView: View {
             }
             .onChange(of: warmHoldDurationSeconds) { _, newValue in
                 AppGroup.warmHoldDurationSeconds = newValue
+            }
+            .onChange(of: liveTextOn) { _, newValue in
+                // First touch graduates "auto" to an explicit choice —
+                // never clobbered by future capability-default changes.
+                AppGroup.liveTextSetting = newValue ? "on" : "off"
             }
         }
         // Soften every card's drop shadow throughout Settings by 50% (light mode
@@ -144,7 +149,7 @@ struct SettingsView: View {
     }
 
     private var heroTitle: some View {
-        Text("Settings.")
+        Text("Settings")
             .font(JotType.displaySerif(44))
             .tracking(-1.6)
             .foregroundStyle(Color.jotPageInk)
@@ -182,12 +187,15 @@ struct SettingsView: View {
             .padding(.bottom, 8)
     }
 
+    @ViewBuilder
     private func sectionCaption(_ caption: String) -> some View {
-        Text(caption)
-            .font(JotType.rowSub)
-            .foregroundStyle(Color.jotPageInkCaption)
-            .padding(.horizontal, 22)
-            .padding(.top, 8)
+        if !caption.isEmpty {
+            Text(caption)
+                .font(JotType.rowSub)
+                .foregroundStyle(Color.jotPageInkCaption)
+                .padding(.horizontal, 22)
+                .padding(.top, 8)
+        }
     }
 
     private var cardDivider: some View {
@@ -258,140 +266,100 @@ struct SettingsView: View {
     // MARK: - SPEECH MODEL
 
     private var speechModelSection: some View {
-        settingsSection(label: "SPEECH MODEL", caption: speechModelFooter) {
+        // Renamed SPEECH MODEL → DICTATION: we no longer surface a model name to
+        // the user (single bundled model, chosen automatically by device), so the
+        // card is now just the dictation Language + the live-text toggle. The
+        // model name / size / READY pill and the "runs on device" footer were
+        // removed — they weren't information the user comes here to act on.
+        settingsSection(label: "DICTATION", caption: "") {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 14) {
-                        IconTile(
-                            systemImage: "waveform",
-                            tint: JotDesign.JotSemanticIcon.speechModel,
-                            shaded: JotDesign.JotSemanticIcon.speechModelShaded
-                        )
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(speechModelDisplayName)
-                                .font(JotType.rowTitle)
-                                .tracking(-0.2)
-                                .foregroundStyle(Color.jotPageInk)
-
-                            Text(speechModelLocationCopy)
-                                .font(JotType.rowSub)
-                                .foregroundStyle(Color.jotPageInkSecondary)
-                        }
-
-                        Spacer(minLength: 12)
-                        speechModelStatusPill
-                    }
-                    .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-                    .padding(.vertical, 13)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-
+                    languageRow
                     cardDivider
-
-                    NavigationLink {
-                        SpeechModelVariantPicker()
-                            .environment(transcriptionService)
-                            .environment(streamingService)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text("Variant")
-                                .font(JotType.rowTitle)
-                                .tracking(-0.2)
-                                .foregroundStyle(Color.jotPageInk)
-
-                            Spacer()
-
-                            Text(variantShortName)
-                                .font(.system(size: 13.5))
-                                .foregroundStyle(Color.jotPageInkSecondary)
-
-                            RowChevron()
-                        }
-                        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-                        .padding(.vertical, 13)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Variant, currently \(variantShortName)")
-                    .accessibilityHint("Opens variant picker")
+                    liveTextToggleRow
                 }
             }
         }
     }
 
-    private var speechModelDisplayName: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Parakeet 600M"
-        default:             return "Parakeet 110M"
-        }
-    }
+    /// Dictation language as a native iOS pull-down menu (the Apple selector
+    /// pattern: current value + up/down chevron, tap → checked menu). English is
+    /// the only option today; the `Picker` makes adding languages a drop-in and
+    /// the affordance reads as a real selector without crowding the row.
+    private var languageRow: some View {
+        HStack(spacing: 14) {
+            IconTile(
+                systemImage: "waveform",
+                tint: JotDesign.JotSemanticIcon.speechModel,
+                shaded: JotDesign.JotSemanticIcon.speechModelShaded
+            )
 
-    private var variantShortName: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Parakeet 600M"
-        default:             return "Parakeet 110M"
-        }
-    }
+            Text("Language")
+                .font(JotType.rowTitle)
+                .tracking(-0.2)
+                .foregroundStyle(Color.jotPageInk)
 
-    private var speechModelLocationCopy: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "On your iPhone · about 440 MB"
-        default:             return "On your iPhone · about 330 MB"
-        }
-    }
+            Spacer(minLength: 12)
 
-    private var speechModelFooter: String {
-        "Runs entirely on this iPhone. Audio never leaves the device."
-    }
-
-    /// "Installed" gate for the SPEECH MODEL display. Three-way AND across
-    /// the batch TDT, the streaming EOU, and the CTC aux. For the default
-    /// (bundled) TDT-CTC 110M variant all three are always present in the
-    /// IPA; for the 0.6B v2 opt-in variant the batch TDT lives in
-    /// Application Support and may still need a Settings download tap.
-    /// Gating on bare `modelState == .ready` is wrong here — that flag is
-    /// the "warmed into ANE for recording" signal, not the "is the model
-    /// installed" signal.
-    private var speechModelInstalled: Bool {
-        TranscriptionService.modelsExistOnDiskForSelectedVariant()
-            && StreamingTranscriptionService.modelsExistOnDisk()
-            && CtcModelCache.shared.isCached
-    }
-
-    private var displayedModelState: TranscriptionService.ModelState {
-        transcriptionService.modelState
-    }
-
-    @ViewBuilder
-    private var speechModelStatusPill: some View {
-        // In-progress states win over the on-disk probe: if a download or
-        // load is happening right now, surface the live progress chrome.
-        switch displayedModelState {
-        case .downloading(let fraction):
-            StatusPillV09(label: "\(Int((fraction * 100).rounded()))%", tint: .info)
-        case .loading:
-            StatusPillV09(label: "Loading", tint: .info)
-        case .failed where !speechModelInstalled:
-            // Surface failures when the bundles aren't on disk — the user
-            // is missing files AND we couldn't load. The label below
-            // distinguishes the "files present but load failed" case from
-            // this one.
-            StatusPillV09(label: "Error", tint: .warning)
-        case .failed:
-            // Files present on disk but the load still failed — usually
-            // means the bundle is corrupted (truncated weights, mismatched
-            // mlmodelc, etc). Don't show "Ready" here; that misleads the
-            // user into thinking dictation will work when every tap will
-            // throw "Load failed: ..." at the moment of use.
-            StatusPillV09(label: "Load failed", tint: .warning)
-        case .ready, .notLoaded:
-            if speechModelInstalled {
-                StatusPillV09(label: "Ready", tint: .ready)
-            } else {
-                StatusPillV09(label: "Not downloaded", tint: .warning)
+            Menu {
+                Picker("Language", selection: $dictationLanguage) {
+                    Text("English").tag("en")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("English")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.jotPageInkSecondary)
+                }
             }
+            .buttonStyle(.plain)
+            // Let the Menu keep its own button/pop-up-menu trait — do NOT wrap
+            // the row in `.accessibilityElement(.combine)`, which would flatten
+            // the Menu into a static element and strip the "tap to choose"
+            // affordance. The leading text + this label cover the read-out.
+            .accessibilityLabel("Language")
+            .accessibilityValue("English")
+            .accessibilityHint("Choose the dictation language")
         }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+
+    /// "Live text while dictating" — the streaming on/off axis
+    /// (docs/plans/batch-only-streaming.md). Tri-state under the hood
+    /// (`AppGroup.liveTextSetting`: auto/on/off — auto follows
+    /// `DeviceCapability`); the switch shows the RESOLVED state and a touch
+    /// writes an explicit on/off. Takes effect on the next dictation start.
+    private var liveTextToggleRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Live text while dictating")
+                    .font(JotType.rowTitle)
+                    .foregroundStyle(Color.jotPageInk)
+                    .tracking(-0.2)
+
+                Text("Show words as you speak. Turning off saves battery — your transcript is unaffected.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $liveTextOn)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Live text while dictating")
+                .accessibilityHint("Turning off saves battery. Your saved transcript is unaffected.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     // MARK: - VOCABULARY
@@ -451,46 +419,7 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Rewrite and prompts, \(aiSubline)")
                 .accessibilityHint("Opens AI Rewrite settings")
-
-                askBackendRow
             }
-        }
-    }
-
-    /// Ask backend toggle: OFF = Apple Intelligence (built-in, instant, no
-    /// download); ON = on-board Qwen (better answers, needs the model).
-    private var askBackendRow: some View {
-        LiquidGlassCard(paddingH: 0, paddingV: 0) {
-            HStack(alignment: .top, spacing: 14) {
-                IconTile(
-                    systemImage: "sparkles",
-                    tint: JotDesign.JotSemanticIcon.ai,
-                    shaded: JotDesign.JotSemanticIcon.aiShaded
-                )
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Use on-board Qwen for Ask")
-                        .font(JotType.rowTitle)
-                        .tracking(-0.2)
-                        .foregroundStyle(Color.jotPageInk)
-                    Text(askUseQwen
-                         ? "Ask uses the on-board Qwen model — better answers, runs fully on-device (needs the model downloaded)."
-                         : "Ask uses Apple Intelligence — built-in and instant, no download. Turn on for higher-quality answers from on-board Qwen.")
-                        .font(JotType.rowSub)
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                        .lineSpacing(2)
-                }
-                Spacer(minLength: 12)
-                Toggle("", isOn: $askUseQwen)
-                    .labelsHidden()
-                    .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
-                    .accessibilityLabel("Use on-board Qwen for Ask")
-            }
-            .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-            .padding(.vertical, 13)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        }
-        .onChange(of: askUseQwen) { _, newValue in
-            AppGroup.askBackend = newValue ? "qwen" : "appleIntelligence"
         }
     }
 
@@ -649,22 +578,11 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    NavigationLink {
-                        EmbeddingsPanelView()
-                    } label: {
-                        settingsIconRow(
-                            systemImage: "sparkles",
-                            tint: Color.jotBlueTop,
-                            shaded: Color.jotBlueBottom.opacity(0.15),
-                            title: "Indexing",
-                            trailing: { RowChevron() }
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Indexing")
-                    .accessibilityHint("Manage on-device indexing of your dictations.")
-
-                    cardDivider
+                    // HIDDEN 2026-06-17 per owner — the "Indexing" row (opens
+                    // `EmbeddingsPanelView`) is no longer surfaced in Settings.
+                    // The screen + the on-device indexing feature are unchanged;
+                    // only this entry point is hidden. Restore the NavigationLink
+                    // to bring it back.
 
                     NavigationLink {
                         DiagnosticsWatchView()
@@ -680,23 +598,6 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Apple Watch sync status")
                     .accessibilityHint("Shows watch connection status and Reset sync button.")
-
-                    cardDivider
-
-                    NavigationLink {
-                        DiagnosticsView()
-                    } label: {
-                        settingsIconRow(
-                            systemImage: "stethoscope",
-                            tint: JotDesign.JotSemanticIcon.version,
-                            shaded: JotDesign.JotSemanticIcon.versionShaded,
-                            title: "Diagnostics",
-                            trailing: { RowChevron() }
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Diagnostics")
-                    .accessibilityHint("Recent events from the keyboard and main app; copy and send to support.")
 
                     cardDivider
 
@@ -774,26 +675,11 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    // Backup transparency row. Static copy; we can't detect
-                    // whether the user has iCloud Backup actually enabled
-                    // from inside the app (no public API), so we use neutral
-                    // "if-enabled" phrasing rather than a misleading ✓.
-                    // Data path: SwiftData store + saved prompts + vocab
-                    // live in the App Group container, which iOS Device
-                    // Backup includes. Audio is never stored. The AI
-                    // Rewrite model (~2.5 GB) lives under Library/Caches/
-                    // which iOS unconditionally excludes from backup —
-                    // it re-downloads on first use after restore.
-                    settingsIconRow(
-                        systemImage: "icloud",
-                        tint: JotDesign.JotSemanticIcon.backup,
-                        shaded: JotDesign.JotSemanticIcon.backupShaded,
-                        title: "Backed up with iCloud",
-                        subline: "When iCloud Backup is enabled in iOS Settings",
-                        trailing: { EmptyView() }
-                    )
-
-                    cardDivider
+                    // HIDDEN 2026-06-17 per owner — the "Backed up with iCloud"
+                    // transparency row is no longer surfaced in Settings. Backup
+                    // behavior is unchanged (the App Group store still rides iOS
+                    // Device Backup); restore the `settingsIconRow` here to bring
+                    // the row back.
 
                     NavigationLink {
                         AcknowledgementsView()
@@ -807,6 +693,25 @@ struct SettingsView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    cardDivider
+
+                    // MOVED to the bottom 2026-06-17 per owner (was mid-list,
+                    // between Apple Watch and Re-run setup).
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "stethoscope",
+                            tint: JotDesign.JotSemanticIcon.version,
+                            shaded: JotDesign.JotSemanticIcon.versionShaded,
+                            title: "Diagnostics",
+                            trailing: { RowChevron() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Diagnostics")
+                    .accessibilityHint("Recent events from the keyboard and main app; copy and send to support.")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -884,198 +789,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Speech model variant picker (pushed from the SPEECH MODEL chevron)
-
-/// Detail screen that owns variant selection + the re-download confirmation.
-/// Previously these controls lived inline inside `SettingsView`'s `Form`; the
-/// editorial reflow moves them behind the SPEECH MODEL card's "Variant"
-/// chevron row so the main settings page stays single-glance.
-struct SpeechModelVariantPicker: View {
-    @Environment(TranscriptionService.self) private var transcriptionService
-    @Environment(StreamingTranscriptionService.self) private var streamingService
-
-    @State private var speechModelVariant: String = AppGroup.speechModelVariant
-    @State private var showRedownloadConfirmation = false
-
-    var body: some View {
-        Form {
-            Section {
-                Picker(selection: $speechModelVariant) {
-                    Text("Parakeet 110M (lighter, faster)")
-                        .tag("tdtCtc110m")
-                    Text("Parakeet 600M (more accurate)")
-                        .tag("parakeetV2")
-                } label: {
-                    Label("Variant", systemImage: "waveform.badge.magnifyingglass")
-                }
-                .pickerStyle(.inline)
-                .onChange(of: speechModelVariant) { _, newValue in
-                    AppGroup.speechModelVariant = newValue
-                    transcriptionService.handleVariantChange()
-                    // The streaming service also needs to re-evaluate
-                    // disk presence for the new variant; without this
-                    // call the Status pill would lag one navigation
-                    // cycle behind reality after flipping variants.
-                    streamingService.handleVariantChange()
-                }
-            } header: {
-                Text("Variant")
-            } footer: {
-                Text(sizeFooter)
-            }
-
-            Section {
-                LabeledContent("Status") {
-                    HStack(spacing: 8) {
-                        Image(systemName: modelStatusSymbol)
-                            .foregroundStyle(modelStatusColor)
-                        Text(modelStatusText)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Hide the download / re-download CTA for the bundled 110M
-                // variant — its weights live in the read-only IPA bundle, so
-                // both "Download all models" (nothing to fetch) and
-                // "Re-download all models" (purgeAndReload short-circuits for
-                // the bundled case) are dead-end taps. The opt-in 600M v2
-                // download keeps the CTA: its Application Support cache is
-                // writable + re-downloadable.
-                if speechModelVariant != "tdtCtc110m" {
-                    Button {
-                        handleModelAction()
-                    } label: {
-                        Label(modelActionTitle, systemImage: "arrow.down.circle")
-                    }
-                    .disabled(modelActionDisabled)
-                }
-            } header: {
-                Text("Model")
-            }
-        }
-        .navigationTitle("Variant")
-        .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            "Re-download?",
-            isPresented: $showRedownloadConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Re-download", role: .destructive) {
-                Task {
-                    await transcriptionService.purgeAndReload()
-                    streamingService.warmUp()
-                    _ = try? await CtcModelCache.shared.ensureLoaded()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-    }
-
-    // The state-driven copy below mirrors the original `SettingsView` —
-    // identical logic, identical wording. The reflow only moves these
-    // affordances into a sub-screen; behavior is preserved exactly.
-
-    /// Same 3-way AND gate as `SettingsView.speechModelInstalled`. Used to
-    /// decide "is the model installed" independent of whether Parakeet has
-    /// been warmed into ANE this session. Without this gate the picker
-    /// would say "Not downloaded" + offer "Download all models" when the
-    /// bundles are clearly on disk (and dictation is working).
-    private var speechModelInstalled: Bool {
-        TranscriptionService.modelsExistOnDiskForSelectedVariant()
-            && StreamingTranscriptionService.modelsExistOnDisk()
-            && CtcModelCache.shared.isCached
-    }
-
-    private func handleModelAction() {
-        // Gate the re-download confirmation on the on-disk probe, not on
-        // `modelState == .ready` — otherwise an un-warmed but installed
-        // model would route through the cold-download path and re-fetch
-        // bundles already on disk.
-        if speechModelInstalled {
-            showRedownloadConfirmation = true
-        } else {
-            transcriptionService.warmUp()
-            streamingService.warmUp()
-            Task.detached {
-                _ = try? await CtcModelCache.shared.ensureLoaded()
-            }
-        }
-    }
-
-    private var displayedModelState: TranscriptionService.ModelState {
-        transcriptionService.modelState
-    }
-
-    private var modelStatusText: String {
-        // Live-progress states still win — show the actual download/load
-        // percent rather than a stale "Ready" pill from a previous session.
-        switch displayedModelState {
-        case .downloading(let fraction):
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .loading:
-            return "Loading"
-        case .failed(let reason) where !speechModelInstalled:
-            return reason
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? "Ready" : "Not downloaded"
-        }
-    }
-
-    private var modelStatusSymbol: String {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return "arrow.down.circle.fill"
-        case .failed where !speechModelInstalled:
-            return "exclamationmark.triangle.fill"
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? "checkmark.circle.fill" : "circle"
-        }
-    }
-
-    private var modelStatusColor: Color {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return .accentColor
-        case .failed where !speechModelInstalled:
-            return .orange
-        case .ready, .notLoaded, .failed:
-            return speechModelInstalled ? .green : .secondary
-        }
-    }
-
-    private var modelActionTitle: String {
-        switch displayedModelState {
-        case .downloading:
-            return "Downloading"
-        case .loading:
-            return "Loading"
-        case .failed where !speechModelInstalled:
-            return "Retry download"
-        case .ready, .notLoaded, .failed:
-            // On-disk → re-download CTA; otherwise cold-download CTA.
-            // Decouples the action label from the ANE-warmed flag so an
-            // un-warmed but installed model still surfaces "Re-download"
-            // instead of misleading the user into another full fetch.
-            return speechModelInstalled ? "Re-download" : "Download"
-        }
-    }
-
-    private var modelActionDisabled: Bool {
-        switch displayedModelState {
-        case .downloading, .loading:
-            return true
-        case .notLoaded, .failed, .ready:
-            return false
-        }
-    }
-
-    private var sizeFooter: String {
-        switch speechModelVariant {
-        case "parakeetV2":   return "Runs entirely on this iPhone. About 440 MB on disk."
-        default:             return "Runs entirely on this iPhone. About 330 MB on disk."
-        }
-    }
-}
 
 #Preview {
     SettingsView()

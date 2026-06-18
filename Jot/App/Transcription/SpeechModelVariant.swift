@@ -1,47 +1,39 @@
 import Foundation
 
-/// Canonical enumeration of the user-selectable speech-model variants.
+/// Canonical enumeration of the speech-model "variant".
+///
+/// Jot now ships a **single bundled speech model** — Parakeet 0.6B v2,
+/// vendored inside the IPA at
+/// `Resources/Models/Parakeet/parakeet-tdt-0.6b-v2-coreml/`. There is no
+/// model selector and no opt-in download anymore. The enum survives as a
+/// thin "Language" concept (English-only today) so the resolver sites
+/// (`TranscriptionService`, the loading affordance) keep a single typed
+/// source of truth, and so future languages are a single-file change.
 ///
 /// The raw `String` value is the persisted tag in
-/// `AppGroup.speechModelVariant`. The tag set is intentionally narrow —
-/// `TranscriptionService` and `StreamingTranscriptionService` both branch
-/// on this enum at every session boundary to pick the right model.
-///
-/// **Why an enum + accessor instead of scattered string-switch sites:**
-/// the codebase had at least four near-identical `switch on String`
-/// blocks (Settings picker, two TranscriptionService resolvers, the
-/// disk-existence helpers). Each new variant multiplied the places
-/// where a typo could silently fall through to the default. Routing
-/// every resolver through this enum makes adding another variant a
-/// single-file change.
-///
-/// Unknown / legacy values (including `"nemotron0_6b"` from prior
-/// builds) resolve to `.tdtCtc110m` — the bundled default — so a
-/// malformed AppGroup write or a stale persisted tag from before the
-/// Nemotron rip can never brick transcription.
+/// `AppGroup.speechModelVariant`. Any legacy tag from prior builds
+/// (`"tdtCtc110m"`, `"parakeetV2"`, `"nemotron0_6b"`, unset, or anything
+/// malformed) resolves to the sole `.english` case via `current()` — a
+/// stale persisted tag can never brick transcription.
 enum SpeechModelVariant: String, CaseIterable, Sendable {
-    /// Parakeet TDT-CTC 110M — bundled inside the IPA, always available.
-    /// The default variant for new installs.
-    case tdtCtc110m = "tdtCtc110m"
+    /// The sole speech model: Parakeet 0.6B v2, English, bundled in the IPA.
+    case english = "english"
 
-    /// Parakeet 0.6B v2 — opt-in download (~440 MB on disk), more
-    /// accurate than the bundled 110M variant. Uses the split path:
-    /// TDT batch + EOU 120M streaming.
-    case parakeetV2 = "parakeetV2"
-
-    /// Resolve the variant tag stored in `AppGroup.speechModelVariant`,
-    /// falling back to the bundled default for any unknown value.
+    /// Resolve the variant tag stored in `AppGroup.speechModelVariant`.
+    /// There is only one model, so every value — legacy, unset, or
+    /// malformed — resolves to `.english`.
     static func current() -> SpeechModelVariant {
-        SpeechModelVariant(rawValue: AppGroup.speechModelVariant) ?? .tdtCtc110m
+        .english
     }
 
-    /// Compact user-facing label that matches the wording Settings
-    /// shows in the speech-model picker. Used by the recording hero's
-    /// "Loading [variant]…" overlay and the keyboard's loading strip.
+    /// User-facing name shown in the "Loading [name]…" affordance (the
+    /// recording hero's overlay and the keyboard's loading strip — its only
+    /// callers). Deliberately model-agnostic: we never surface model sizes or
+    /// codenames ("600M", "Parakeet") to the user, so this reads "the English
+    /// model". When other languages ship this becomes "the [Language] model".
     var displayName: String {
         switch self {
-        case .tdtCtc110m: return "Parakeet 110M"
-        case .parakeetV2: return "Parakeet 600M"
+        case .english: return "the English model"
         }
     }
 }

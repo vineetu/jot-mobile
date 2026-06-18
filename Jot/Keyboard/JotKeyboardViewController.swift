@@ -2,6 +2,7 @@ import AppIntents
 import SwiftUI
 import UIKit
 import OSLog
+import UniformTypeIdentifiers
 
 private let keyboardLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot.Keyboard", category: "keyboard")
 
@@ -48,8 +49,32 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // MARK: - Hosted SwiftUI tree
 
-    private var hostingController: UIHostingController<AnyView>?
-    private let recordingState = KeyboardRecordingState()
+    private var hostingController: UIHostingController<KeyboardRootHostView>?
+
+    /// The process-lifetime streaming/recording feed + projection hub. The
+    /// cross-process feed and the projected state it produces (recording phase,
+    /// streaming partial, loading label, warm-hold nudge, history, correction
+    /// asks) used to live on THIS controller, bound to the per-view-controller
+    /// lifecycle. iOS keeps ghost controllers alive and doesn't reliably call
+    /// `viewWillDisappear` (the only teardown point), so a ghost kept feeding the
+    /// stream into its own off-screen `recordingState` → the visible pane went
+    /// blank. The state now lives in ONE process-lifetime `@Observable` hub that
+    /// every controller (visible or ghost) observes, so the blank is structurally
+    /// impossible. The controller still owns ALL paste / proxy / per-presentation
+    /// machinery (see `KeyboardStreamingHub` for the seam).
+    private var hub: KeyboardStreamingHub { KeyboardStreamingHub.shared }
+
+    /// Pass-through to the hub's single `KeyboardRecordingState` so the existing
+    /// `recordingState.X` call sites in this controller and the SwiftUI host read
+    /// the one shared projection.
+    private var recordingState: KeyboardRecordingState { hub.recordingState }
+
+    /// `@Observable` bag of every *value* input `KeyboardView` takes. The root
+    /// host is built ONCE (`makeRootHostView()`); every UI value update now
+    /// mutates this object via `syncKeyboardInputs()` instead of reassigning a
+    /// type-erased root — letting SwiftUI's `@Observable` machinery recompose
+    /// only the affected subtree (fixes the streaming-preview stale-frame bug).
+    private let keyboardInputs = KeyboardViewInputs()
 
     // MARK: - Keyboard height
     //
@@ -89,23 +114,49 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// stale recents. The pipeline-phase observer covers the auto-paste
     /// flush + status banner path independently, so dropping the old
     /// `transcriptReady` observer here doesn't regress paste behaviour.
-    private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
+    /// Thin controller-scoped observer of `pipelinePhaseChanged`. The hub owns
+    /// the phase STATE half (`recordingState.applyPipelineProjection` +
+    /// zombie-freeze suppression); THIS observer runs only the controller-scoped
+    /// proxy side-effects (auto-paste flush, watchdog arm/cancel, clear
+    /// `stopRequestPosted`). Splitting by concern keeps the verified paste path
+    /// byte-for-byte unchanged (plan §"phase split" option 2).
     private var pipelinePhaseObserver: CrossProcessNotification.Observer?
+    /// Thin controller-scoped observer of `historyMirrorUpdated` for the
+    /// per-presentation STATUS BANNER refresh only. The hub owns the history
+    /// reload (its `historyMirrorUpdated` feed mutates `hub.historyEntries` and
+    /// fires the `onShouldRender` hook so the active controller re-renders the
+    /// RecentsStrip — the strip reads a plain snapshot of `historyEntries` via
+    /// `KeyboardViewInputs`, NOT a live `@Observable`); the status banner is
+    /// controller-scoped (`AppGroup.lastDictationStatusMessage`) so it stays here.
+    private var historyMirrorUpdatedObserver: CrossProcessNotification.Observer?
     /// Set while a re-synced auto-paste insert is scheduled but not yet run
     /// (the ~12ms run-loop hop between requesting the proxy re-sync and the
     /// actual `insertText`). Guards against a second phase-change flush
     /// stacking a duplicate insert for the same payload → would double-paste.
     /// See `flushPendingAutoPasteIfPossible`.
     private var isAutoPasteInsertInFlight = false
-    private var streamingPartialObserver: CrossProcessNotification.Observer?
-    private var streamingLoadingObserver: CrossProcessNotification.Observer?
-    /// Observer for `warmHoldNudgeChanged` (UX-overhaul round 2 §4 / R10b).
-    /// The keyboard process can't run the streak math, so the app writes the
-    /// `AppGroup.warmHoldNudgeShouldShow` boolean projection and posts this
-    /// notification; the keyboard re-reads + re-renders the nudge strip. The
-    /// two nudge actions write back (`warmHoldEnabled` / `nudgeSuppressed`).
-    private var warmHoldNudgeObserver: CrossProcessNotification.Observer?
-    private var correctionAsksReadyObserver: CrossProcessNotification.Observer?
+    /// In-flight-paste window state for the `textDidChange` landed-signal
+    /// (cure §4-B). Set AFTER the single `insertText` runs and the immediate
+    /// read-back said "landed"; cleared when the deferred verify resolves OR
+    /// when `textDidChange` short-circuits to success. While non-nil, a host
+    /// `textDidChange` that carries our inserted text is treated as an
+    /// authoritative "the host committed" confirmation — letting us classify
+    /// success without waiting the full deferred window. Gated tightly (session
+    /// id + inserted-text-present check) so a user's own typing or an unrelated
+    /// host change can't false-confirm. The closure runs the success-finalize
+    /// body shared with the deferred verify; calling it cancels the pending
+    /// deferred work via `inFlightPasteResolved`.
+    private var inFlightPasteSessionID: UUID?
+    private var inFlightPasteText: String?
+    private var inFlightPasteConfirm: (() -> Void)?
+    /// Guards the success/failure finalize so exactly ONE of {textDidChange
+    /// short-circuit, deferred settled-verify} runs the consume-payload body —
+    /// never both (would double-consume / double-mark). Reset when a new
+    /// in-flight window opens.
+    private var inFlightPasteResolved = false
+    // streaming-partial, streaming-loading, warm-hold-nudge, history-mirror, and
+    // correction-asks feed subscriptions moved to `KeyboardStreamingHub` (one
+    // process-lifetime subscription set, observed by all controllers).
 
     /// Live foreground-handshake state. On a Dictate "start", the keyboard pings
     /// the app and waits `foregroundPongTimeout` for `appForegroundPong`: a pong
@@ -152,12 +203,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     // After a dead-app recovery, the shared `PipelinePhaseProjection` is still
     // frozen at `.recording` (the jetsammed writer never wrote a terminal phase,
-    // and the 30s stale synth hasn't fired). Tombstone that exact session +
-    // frozen timestamp so a keyboard dismiss/re-present inside that window does
-    // NOT resurrect the zombie recording UI when `refreshPipelinePhase` re-reads
-    // the projection. Cleared the moment the projection advances or a new
-    // session appears (a live writer is back).
-    private var recoveredZombieFreeze: (sessionID: UUID, frozenAt: Date)?
+    // and the 30s stale synth hasn't fired). The recovered-zombie tombstone
+    // gates the phase STATE projection — now owned by `KeyboardStreamingHub`
+    // (`hub.recoveredZombieFreeze`), so a re-read can't resurrect the zombie
+    // recording UI. Set in `recoverFromUnresponsiveApp`.
 
     /// Bound on cold-launch / URL-delivery latency. iOS delivers a URL to a
     /// foreground-target target in O(seconds), not O(minutes), so 15s is a
@@ -200,11 +249,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var renderedKeyboardAppearance: UIKeyboardAppearance?
     private var magicFollowUpExpiresAt: Date?
 
-    /// Snapshot of recent transcripts loaded from the App Group mirror.
-    /// Captured on appearance and whenever the user opens history — the
-    /// mirror is cheap to read, but we still avoid re-reading on every
-    /// keystroke.
-    private var historyEntries: [TranscriptHistoryMirror.Entry] = []
+    /// Snapshot of recent transcripts loaded from the App Group mirror. Now
+    /// owned by `KeyboardStreamingHub` (mirrored on `historyMirrorUpdated` once
+    /// per process); read through here so existing call sites are unchanged.
+    private var historyEntries: [TranscriptHistoryMirror.Entry] { hub.historyEntries }
 
     /// Transient banner string read off `AppGroup.lastDictationStatusMessage`.
     /// `nil` when no banner is pending. The keyboard view runs a 2.5s `task`
@@ -237,20 +285,19 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private var stopRequestPosted = false
 
     /// Whether the warm-hold switching nudge should render on the strip
-    /// (UX-overhaul round 2 §4 / WS-F). Mirrors `AppGroup.warmHoldNudgeShouldShow`,
-    /// refreshed on appearance and on each `warmHoldNudgeChanged` post. The app
-    /// owns the streak math; the keyboard just renders off this boolean and
-    /// writes the two terminal actions back.
-    private var showWarmHoldNudge = false
+    /// (UX-overhaul round 2 §4 / WS-F). Owned by `KeyboardStreamingHub`
+    /// (mirrored on `warmHoldNudgeChanged`); read through here. The two terminal
+    /// actions write the App-Group flags back and clear via `hub.clearWarmHoldNudge`.
+    private var showWarmHoldNudge: Bool { hub.showWarmHoldNudge }
 
-    /// Whether the post-paste correction quick-review strip should render. Set
-    /// by `maybeShowCorrectionNudge` after a successful auto-paste when the app
-    /// has published asks for the just-pasted session; cleared on finish/dismiss.
-    private var showCorrectionNudge = false
+    /// Whether the post-paste correction quick-review strip should render. Owned
+    /// by `KeyboardStreamingHub` — set by `hub.maybeShowCorrectionNudge` (paste-
+    /// time) or the `correctionAsksReady` feed; cleared on finish/dismiss.
+    private var showCorrectionNudge: Bool { hub.showCorrectionNudge }
 
-    /// The asks published by the app for the just-pasted session (read from the
-    /// App-Group bridge). Non-nil whenever `showCorrectionNudge` is true.
-    private var correctionAsks: CorrectionBridge.Asks?
+    /// The asks published by the app for the just-pasted session. Owned by
+    /// `KeyboardStreamingHub`; non-nil whenever `showCorrectionNudge` is true.
+    private var correctionAsks: CorrectionBridge.Asks? { hub.correctionAsks }
 
     // MARK: - Haptic + audio feedback
 
@@ -269,6 +316,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// cancel when the finger lifts.
     private var backspaceRepeatTimer: Timer?
 
+    // MARK: - Keyboard-active heartbeat
+
+    /// Repeating ~1s Timer that writes `AppGroup.keyboardActiveHeartbeat`
+    /// while the keyboard is on screen, so the main app (setup wizard W5)
+    /// can tell the Jot keyboard is the frontmost keyboard and dismiss its
+    /// globe-switch cue. Mirror of the app→keyboard `appForegroundHeartbeat`.
+    /// Started in `viewWillAppear`, invalidated in `viewWillDisappear`.
+    private var keyboardActiveHeartbeatTimer: Timer?
+
     // MARK: - Lifecycle
 
     override func loadView() {
@@ -277,18 +333,31 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         self.view = inputView
     }
 
+    deinit {
+        // HYGIENE: stop any controller-scoped resources that could outlive a
+        // ghost. UIKit deallocates view controllers on the main thread, so
+        // `assumeIsolated` is valid here; the Darwin observer tokens auto-remove
+        // via ARC as they release, and the deadline Tasks capture `[weak self]`,
+        // but the repeating heartbeat / backspace `Timer`s would otherwise keep
+        // ticking into a `[weak self]` no-op until invalidated. Tear them down.
+        MainActor.assumeIsolated {
+            tearDownControllerScopedResources()
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Jot mic CTA is its own affordance; we do not provide a system dictation key.
         hasDictationKey = false
+        // Push current Full Access into the process-lifetime hub before its
+        // first feed read, then ensure its subscriptions are live (first `shared`
+        // access lazily subscribes; idempotent thereafter).
+        hub.setHasFullAccess(hasFullAccess)
+        _ = hub
         installKeyboardView()
         installHeightConstraint()
-        startObservingHistoryMirrorUpdated()
         startObservingPipelinePhase()
-        startObservingStreamingPartial()
-        startObservingStreamingLoading()
-        startObservingWarmHoldNudge()
-        startObservingCorrectionAsks()
+        startObservingHistoryMirrorUpdated()
         startObservingForegroundPong()
     }
 
@@ -300,21 +369,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // keypress feels as crisp as the hundredth (HIG → Playing Haptics).
         feedback.fullAccess = hasFullAccess
         feedback.prepare()
+        // Start signalling "Jot keyboard is frontmost" to the main app. The
+        // wizard W5 step reads this to dismiss its globe-switch cue. iOS
+        // blocks the AppGroup write when Full Access is off — the write
+        // simply no-ops then (no crash); W5 dictation already requires FA.
+        startKeyboardActiveHeartbeat()
         // Note: we DON'T mirror `hasFullAccess` to the App Group. iOS
         // blocks AppGroup writes when FA is off, so a mirror can only
         // ever go true → it can't reliably report "FA was turned off".
         // The main app stays honest by not claiming to know FA state.
-        startObservingHistoryMirrorUpdated()
+        // Push current Full Access into the hub (it gates all App-Group reads),
+        // then have this freshly-presented controller paint current projected
+        // state immediately. The hub's feed subscriptions are process-lifetime
+        // (subscribed once on first `shared` access) — nothing to re-subscribe.
+        hub.setHasFullAccess(hasFullAccess)
+        // Install the hub→controller render-notify hook so the SNAPSHOT-backed
+        // surfaces (warm-hold nudge, correction nudge + asks, RecentsStrip
+        // history) — which the hub mutates but only refresh when we call
+        // `renderRootView()` — re-render live on their feeds. Last-appeared
+        // (visible) controller wins; we do NOT clear it on teardown (the closure
+        // is `[weak self]`, so a dealloc'd controller's hook safely no-ops, and
+        // clearing it would risk nil'ing a newer controller's hook). The
+        // streaming pane is NOT driven by this hook — it reads `recordingState`
+        // live via `@Observable`.
+        hub.onShouldRender = { [weak self] in self?.renderRootView() }
+        hub.refreshNow()
         startObservingPipelinePhase()
-        startObservingStreamingPartial()
-        startObservingStreamingLoading()
-        startObservingWarmHoldNudge()
-        startObservingCorrectionAsks()
+        startObservingHistoryMirrorUpdated()
         startObservingForegroundPong()
-        refreshWarmHoldNudgeFromProjection()
-        refreshPipelinePhase()
-        refreshStreamingPartialFromProjection()
-        refreshStreamingLoadingFromProjection()
+        // Controller-scoped proxy side-effects for the current phase (auto-paste
+        // flush / watchdog / stopRequestPosted). The hub already applied the
+        // phase STATE in `refreshNow()` above.
+        refreshPipelinePhaseSideEffects()
         refreshSelectionState()
         // refreshPipelinePhase() already calls flushPendingAutoPasteIfPossible
         // at the bottom; calling it explicitly here is redundant but harmless
@@ -326,19 +412,56 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // does not strand pending.
         rearmLaunchDeadlineIfPending()
         refreshPasteState()
-        refreshHistory()
+        // History is refreshed via `hub.refreshNow()` above (the hub owns the
+        // `historyMirrorUpdated` feed + the `historyEntries` projection).
         refreshStatusBanner()
         renderRootView()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        historyMirrorUpdatedObserver = nil
+        tearDownControllerScopedResources()
+        // Close any open in-flight-paste window (cure §4-B) so a textDidChange in
+        // a re-presented keyboard can't confirm a stale session, and mark it
+        // resolved so an in-flight deferred verify that fires after teardown
+        // short-circuits without re-consuming. Release the in-flight guard too so
+        // a flush after re-appear isn't permanently blocked.
+        //
+        // CRITICAL (re-presentation double-paste, review): the in-flight window is
+        // only opened AFTER the immediate read-back said the insert LANDED — so if
+        // it's still open here (sessionID set, not resolved), the text is already
+        // in the host field but the deferred ~350ms verify hasn't consumed the
+        // payload yet. If we tear down without consuming, a re-presentation within
+        // the 30s freshness window would re-flush and insert a SECOND copy (the
+        // double-paste class that burned builds 103-106). So CONSUME the payload +
+        // clear pending here: assume-landed is the safe teardown stance (the
+        // transcript also stays on UIPasteboard from publish as the floor if it
+        // turns out it didn't truly land). Never re-offer this sessionID.
+        if inFlightPasteSessionID != nil, !inFlightPasteResolved {
+            ClipboardHandoff.markConsumed()
+            clearPendingPasteSession()
+            DiagnosticsLog.record(
+                source: "keyboard",
+                category: .pasteSuccess,
+                message: "Teardown during open paste window — consumed payload to prevent re-present double-paste",
+                metadata: ["sessionID": inFlightPasteSessionID?.uuidString ?? "nil"]
+            )
+        }
+        inFlightPasteResolved = true
+        isAutoPasteInsertInFlight = false
+        clearInFlightPasteWindow()
+    }
+
+    /// HYGIENE (ghost-controller fix): iOS does NOT reliably call
+    /// `viewWillDisappear` on an outgoing/leaked `UIInputViewController`, so a
+    /// ghost would keep its remaining controller-scoped observers/timers/tasks
+    /// burning cycles. Correctness no longer depends on this teardown (the live
+    /// feed + projection now live in the process-lifetime hub), but we still tear
+    /// these down here AND in `viewDidDisappear` / `deinit` so a ghost stops
+    /// spending work. Idempotent — safe to call from all three.
+    private func tearDownControllerScopedResources() {
         pipelinePhaseObserver = nil
-        streamingPartialObserver = nil
-        streamingLoadingObserver = nil
-        warmHoldNudgeObserver = nil
-        correctionAsksReadyObserver = nil
+        historyMirrorUpdatedObserver = nil
         foregroundPongObserver = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
@@ -347,10 +470,37 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         deadAppWatchdogTask?.cancel()
         deadAppWatchdogTask = nil
         cancelBackspaceRepeat()
+        stopKeyboardActiveHeartbeat()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Defensive: if the OS skipped `viewWillAppear`/`viewWillDisappear`
+        // pairing (app-switch / memory pressure), make sure this controller's
+        // remaining observers/timers/tasks are torn down.
+        tearDownControllerScopedResources()
     }
 
     override func textDidChange(_ textInput: (any UITextInput)?) {
         super.textDidChange(textInput)
+        // CURE §4-B — host textDidChange as an authoritative landed-signal.
+        // Under the iOS-17 out-of-process keyboard, `insertText` is fire-and-
+        // forget IPC and the proxy's `documentContext*` cache can grow WITHOUT
+        // the host committing (the false-success that shipped 4 wrong builds).
+        // `textDidChange`, when it fires, is the HOST pushing back that ITS
+        // document actually changed — a signal the proxy cache can't fake. If it
+        // fires inside our in-flight-paste window AND our inserted text is
+        // actually present in the proxy context now, treat it as definitive
+        // success and short-circuit the deferred ~350ms verify.
+        //
+        // Tightly gated so a user's own typing / an unrelated host change can't
+        // false-confirm: (a) a window must be open (`inFlightPasteConfirm` non-
+        // nil — only set AFTER our insert's immediate read said landed), and
+        // (b) the inserted text must be present in the host context right now.
+        // Its ABSENCE proves nothing (many hosts never fire it for proxy-
+        // originated inserts), so the deferred verify floor still runs when this
+        // doesn't fire — we never treat a missing callback as failure.
+        maybeConfirmPasteViaTextDidChange()
         // Keep selection and undo-menu enablement fresh without reading
         // UIPasteboard here, which would fire iOS's paste-privacy toast on
         // every keystroke. The pasteboard is only queried on appearance via
@@ -373,7 +523,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     // MARK: - Hosting
 
     private func installKeyboardView() {
-        let host = UIHostingController(rootView: makeRootView())
+        // Reflect current controller state into the `@Observable` inputs BEFORE
+        // the host is built once, so the first frame is correct.
+        syncKeyboardInputs()
+        let host = UIHostingController(rootView: makeRootHostView())
         host.view.translatesAutoresizingMaskIntoConstraints = false
         host.view.backgroundColor = .clear
 
@@ -391,8 +544,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         renderedKeyboardAppearance = textDocumentProxy.keyboardAppearance ?? .default
     }
 
+    /// Pushes the controller's current state into the `@Observable`
+    /// `keyboardInputs` bag. No longer reassigns a type-erased root — the host
+    /// (`KeyboardRootHostView`) is built once in `installKeyboardView()` and
+    /// recomposes off these observed values, which is what fixes the
+    /// streaming-preview stale-frame thrash. Name + all 37 call sites are kept
+    /// so callers don't need to change.
     private func renderRootView() {
-        hostingController?.rootView = makeRootView()
+        syncKeyboardInputs()
         renderedActionAvailability = currentActionAvailability
         // v2 retheme: snapshot the appearance so we can detect future
         // dynamic flips without re-rendering on every text-input poll.
@@ -461,48 +620,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         renderRootView()
     }
 
-    private func makeRootView() -> AnyView {
-        // Builds the hosted SwiftUI keyboard surface.
-        AnyView(makeKeyboardView())
-    }
-
-    private func makeKeyboardView() -> KeyboardView {
-        // Compose the popover's Copy enabled state once per render:
-        // Full Access is required for clipboard writes from a custom
-        // keyboard, AND there must be a non-empty selection in the host
-        // app's focused field. Read `textDocumentProxy.selectedText`
-        // directly here (rather than relying on `selectedTextSnapshot`,
-        // which fuses before/after context as a fallback) so the row's
-        // enabled state matches what `copyHostSelection()` will actually
-        // be able to read at tap time.
-        let hostHasSelection: Bool = {
-            guard let selected = textDocumentProxy.selectedText else { return false }
-            return !selected.isEmpty
-        }()
-        let popoverCopyEnabled = hasFullAccess && hostHasSelection
-
-        return KeyboardView(
-            hasFullAccess: hasFullAccess,
-            hasPasteboardContent: hasPasteboardContent,
+    /// Builds the build-once concrete root host. Value inputs come from the
+    /// `@Observable` `keyboardInputs` bag (kept fresh by `syncKeyboardInputs()`);
+    /// `recordingState`, `feedback`, and all action closures are passed straight
+    /// through. The closures are unchanged from the old `makeKeyboardView()`.
+    private func makeRootHostView() -> KeyboardRootHostView {
+        KeyboardRootHostView(
+            inputs: keyboardInputs,
             recordingState: recordingState,
-            needsInputModeSwitchKey: needsInputModeSwitchKey,
-            returnKeyType: textDocumentProxy.returnKeyType ?? .default,
-            historyEntries: historyEntries,
-            canUndoLastInsertion: canUndoLastInsertion,
-            canRedoInsertion: canRedoInsertion,
-            lastPastedText: lastPastedText,
-            lastPastedAt: lastPastedAt,
-            isStopRequestPending: stopRequestPosted,
-            statusBanner: statusBanner,
-            showWarmHoldNudge: showWarmHoldNudge,
-            // v2 retheme (2026-05-11): host's `keyboardAppearance` hint.
-            // Some hosts (dark Mail, dark Notes, Spotlight) force
-            // `.dark` even when the system itself is in light mode. We
-            // pass the proxy's signal through; `KeyboardView` resolves
-            // it against the SwiftUI `colorScheme` env and the dark
-            // path wins if either says dark.
-            keyboardAppearance: textDocumentProxy.keyboardAppearance ?? .default,
-            hasSelection: popoverCopyEnabled,
+            feedback: feedback,
             onCopy: { [weak self] in self?.handleCopyMenuSelection() },
             onPaste: { [weak self] in self?.handlePasteMenuSelection() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
@@ -525,8 +651,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onResumeRecording: { [weak self] in self?.handleResumeRecording() },
             onWarmHoldNudgeKeepMicReady: { [weak self] in self?.handleWarmHoldNudgeAccept() },
             onWarmHoldNudgeDismiss: { [weak self] in self?.handleWarmHoldNudgeDismiss() },
-            showCorrectionNudge: showCorrectionNudge,
-            correctionAsks: correctionAsks,
             onCorrectionVerdict: { [weak self] key, verdict in
                 guard let self, let a = self.correctionAsks else { return }
                 CorrectionBridge.enqueueVerdict(
@@ -535,13 +659,53 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             },
             onCorrectionFinished: { [weak self] in
                 guard let self else { return }
-                self.showCorrectionNudge = false
-                self.correctionAsks = nil
+                // `clearCorrectionNudge()` fires the `onShouldRender` hook, which
+                // re-renders this controller — no separate `renderRootView()`.
+                self.hub.clearCorrectionNudge()
                 CorrectionBridge.clearAsks()
-                self.renderRootView()
-            },
-            feedback: feedback
+            }
         )
+    }
+
+    /// Copies the controller's CURRENT state into the `@Observable`
+    /// `keyboardInputs` bag. This replaces the old per-render value-reads in
+    /// `makeKeyboardView()` — same computations, just written into the observed
+    /// object instead of into a freshly-built `KeyboardView`. Called by every
+    /// `renderRootView()` call site (37 of them) and once before first install.
+    private func syncKeyboardInputs() {
+        // Compose the popover's Copy enabled state:
+        // Full Access is required for clipboard writes from a custom
+        // keyboard, AND there must be a non-empty selection in the host
+        // app's focused field. Read `textDocumentProxy.selectedText`
+        // directly here (rather than relying on `selectedTextSnapshot`,
+        // which fuses before/after context as a fallback) so the row's
+        // enabled state matches what `copyHostSelection()` will actually
+        // be able to read at tap time.
+        let hostHasSelection: Bool = {
+            guard let selected = textDocumentProxy.selectedText else { return false }
+            return !selected.isEmpty
+        }()
+        keyboardInputs.hasFullAccess = hasFullAccess
+        keyboardInputs.hasPasteboardContent = hasPasteboardContent
+        keyboardInputs.needsInputModeSwitchKey = needsInputModeSwitchKey
+        keyboardInputs.returnKeyType = textDocumentProxy.returnKeyType ?? .default
+        keyboardInputs.historyEntries = historyEntries
+        keyboardInputs.canUndoLastInsertion = canUndoLastInsertion
+        keyboardInputs.canRedoInsertion = canRedoInsertion
+        keyboardInputs.lastPastedText = lastPastedText
+        keyboardInputs.lastPastedAt = lastPastedAt
+        keyboardInputs.isStopRequestPending = stopRequestPosted
+        keyboardInputs.statusBanner = statusBanner
+        keyboardInputs.showWarmHoldNudge = showWarmHoldNudge
+        // v2 retheme (2026-05-11): host's `keyboardAppearance` hint.
+        // Some hosts (dark Mail, dark Notes, Spotlight) force `.dark`
+        // even when the system itself is in light mode. We pass the
+        // proxy's signal through; `KeyboardView` resolves it against the
+        // SwiftUI `colorScheme` env and the dark path wins if either says dark.
+        keyboardInputs.keyboardAppearance = textDocumentProxy.keyboardAppearance ?? .default
+        keyboardInputs.hasSelection = hasFullAccess && hostHasSelection
+        keyboardInputs.showCorrectionNudge = showCorrectionNudge
+        keyboardInputs.correctionAsks = correctionAsks
     }
 
     /// Called when the Actions popover is about to open. Re-reads the
@@ -607,35 +771,23 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     /// Shared terminal for both nudge actions: clear the App-Group show flag,
-    /// drop the local render flag, post the cross-process change, and re-render.
+    /// drop the hub render flag, post the cross-process change, and re-render.
     private func resolveWarmHoldNudge() {
         AppGroup.warmHoldNudgeShouldShow = false
-        showWarmHoldNudge = false
+        // `hub.clearWarmHoldNudge()` fires the `onShouldRender` hook, which
+        // re-renders this controller — no separate `renderRootView()` needed.
+        hub.clearWarmHoldNudge()
         CrossProcessNotification.post(name: CrossProcessNotification.warmHoldNudgeChanged)
-        renderRootView()
     }
 
     /// After a successful auto-paste, surface the correction quick-review strip
-    /// IFF the app published asks for this exact session. Yields to the warm-hold
-    /// nudge if that's already showing (one strip overlay at a time). Read +
-    /// render only — verdicts/teaching happen via the bridge; this never edits
-    /// the host's already-pasted text (teach-only).
+    /// IFF the app published asks for this exact session. The nudge STATE is
+    /// owned by the hub (`hub.maybeShowCorrectionNudge`), which fires the
+    /// `onShouldRender` hook to re-render this controller. Read + render only —
+    /// verdicts/teaching happen via the bridge; this never edits the host's
+    /// already-pasted text (teach-only).
     private func maybeShowCorrectionNudge(sessionID: UUID) {
-        guard !showWarmHoldNudge else {
-            DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-                message: "nudge skipped (warm-hold showing)", metadata: ["session": sessionID.uuidString])
-            return
-        }
-        let a = CorrectionBridge.readAsks(sessionID: sessionID)
-        DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-            message: "nudge check",
-            metadata: ["found": "\(a?.asks.count ?? 0)", "matchedSession": "\(a != nil)",
-                       "session": sessionID.uuidString])
-        if let a, !a.asks.isEmpty {
-            correctionAsks = a
-            showCorrectionNudge = true
-            renderRootView()
-        }
+        hub.maybeShowCorrectionNudge(sessionID: sessionID)
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -677,6 +829,42 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // with the inserted text — Undo gate needs to re-check after
         // textDidChange).
         keyboardLog.info("undo-ledger record insertion chars=\(text.count, privacy: .public) depth=\(self.undoLedger.undoStackDepth, privacy: .public)")
+    }
+
+    /// Closes the in-flight-paste window used by the `textDidChange` landed-signal
+    /// (cure §4-B). Called when EITHER the textDidChange short-circuit OR the
+    /// deferred settled-verify resolves the paste, so a LATER host change (the
+    /// user's own typing, an unrelated re-render) can never re-trigger
+    /// `inFlightPasteConfirm`. Does NOT touch `inFlightPasteResolved` — that latch
+    /// is owned by the finalize bodies and reset only when a new window opens.
+    private func clearInFlightPasteWindow() {
+        inFlightPasteSessionID = nil
+        inFlightPasteText = nil
+        inFlightPasteConfirm = nil
+    }
+
+    /// Cure §4-B confirm path, called from `textDidChange`. Confirms the in-flight
+    /// paste as landed ONLY when a window is open AND the inserted text is present
+    /// in the host context right now. The presence check is what gates out a
+    /// user's own typing / an unrelated host re-render: those fire `textDidChange`
+    /// too, but won't make our exact inserted text appear at the caret. The
+    /// confirm closure finalizes success and closes the window (so a subsequent
+    /// `textDidChange` is a no-op). Absence is silent — the deferred verify floor
+    /// still classifies in that case.
+    private func maybeConfirmPasteViaTextDidChange() {
+        guard let confirm = inFlightPasteConfirm,
+              let pendingText = inFlightPasteText,
+              !inFlightPasteResolved else { return }
+
+        // Presence check against the live proxy context. iOS windows
+        // `documentContextBeforeInput` (~last 300–1024 chars), and the inserted
+        // suffix sits at the caret, so `hasSuffix` holds even in a long field.
+        // `contains` is a tolerant fallback for a host that appended a trailing
+        // space/newline after our text within the same change.
+        let ctx = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard ctx.hasSuffix(pendingText) || ctx.contains(pendingText) else { return }
+
+        confirm()
     }
 
     /// Records a just-paste event for the Phase 2 recents-strip just-now
@@ -966,22 +1154,18 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             name: CrossProcessNotification.historyMirrorUpdated
         ) { [weak self] in
             guard let self else { return }
-            // Snapshot the surfaces that may shift as a result of the
-            // write, then refresh and re-render only on actual change.
-            // Banner state can move because timeout / error fallback
-            // paths write a new message immediately before the ledger
-            // append that triggered this notification.
+            // STATUS-BANNER half only (controller-scoped). The history reload +
+            // RecentsStrip re-render is owned by the hub: its `historyMirrorUpdated`
+            // feed mutates `hub.historyEntries` and fires the `onShouldRender`
+            // hook so the active controller re-renders (the strip reads a plain
+            // snapshot of `historyEntries` via `KeyboardViewInputs`, NOT a live
+            // `@Observable`). Banner state can shift on this signal because
+            // timeout / error fallback paths write a new message immediately
+            // before the ledger append that triggered it; refresh + re-render
+            // only on an actual banner change.
             let priorBanner = self.statusBanner
-            let priorHistory = self.historyEntries
             self.refreshStatusBanner()
-            // The mirror is the source of truth for the RecentsStrip
-            // rows. Without this reload, a new dictation only appears
-            // the next time the keyboard is re-presented — the just-now
-            // marker ages out after 5s and the strip then shows stale
-            // entries missing the latest transcript.
-            self.refreshHistory()
-            if priorBanner != self.statusBanner
-                || priorHistory != self.historyEntries {
+            if priorBanner != self.statusBanner {
                 self.renderRootView()
             }
         }
@@ -1164,7 +1348,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
 
-            // RE-SYNC THE HOST PROXY BEFORE INSERTING.
+            // RE-SYNC THE HOST PROXY BEFORE INSERTING — bounded reconnect-poll.
             //
             // The transcript arrives ~hundreds of ms after the user's Stop tap
             // (record → transcribe → cross-process publish), not as part of a UI
@@ -1176,15 +1360,29 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // it pastes there but not in those apps.
             //
             // Issuing ANY `adjustTextPosition` forces the host to re-establish
-            // the input connection. iOS COALESCES that into the current UI cycle
-            // (see `moveUpStep` — same lesson), so a synchronous nudge-then-
-            // insert still hits the stale link. We must yield ONE run-loop tick
-            // between the re-sync request and the insert. Offset 0 keeps the
-            // caret exactly where the user left it.
+            // the input connection. iOS COALESCES that into the current UI cycle,
+            // so a synchronous nudge-then-insert still hits the stale link — we
+            // must yield AT LEAST one run-loop tick. The build-103→106 fix used a
+            // single fixed 12ms hop; the research (docs/plans/reliable-web-field-
+            // paste.md §1.3 / §4-A) shows a constant can't scale: a HEAVY
+            // re-mounted web field (Claude's 906-char draft) is still rehydrating
+            // its remote input session at +12ms, so the IPC drops while the proxy
+            // cache grows → silent false-success.
             //
-            // `isAutoPasteInsertInFlight` guards the ~12ms window so a second
-            // phase-change flush can't stack a duplicate insert → single paste,
-            // no retry band-aid.
+            // CURE: after `adjustTextPosition(0)`, POLL the proxy for a STABLE
+            // input session — read `documentContextBeforeInput` (+ `hasText`)
+            // every ~30ms up to a ~400ms ceiling, and only insert once we see
+            // TWO CONSECUTIVE EQUAL reads (the host finished rehydrating). A fast
+            // / native field is stable on poll #1 (no added latency, no
+            // regression); a heavy web field gets the time its session needs. The
+            // poll is bounded (hard iteration ceiling, async — never a busy-wait /
+            // main-thread block) and on ceiling we insert anyway (best effort,
+            // then the deferred verify + clipboard floor catch a miss).
+            //
+            // `isAutoPasteInsertInFlight` guards the ENTIRE poll + insert +
+            // deferred-verify window (set true here, reset only when the verify
+            // resolves) so a second phase-change flush can't stack a duplicate
+            // insert → single paste, no retry band-aid.
             guard !isAutoPasteInsertInFlight else { return }
             isAutoPasteInsertInFlight = true
 
@@ -1192,14 +1390,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
             let pendingSessionID = session.id
             let pasteText = payload.text
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
-                guard let self else { return }
-                defer { self.isAutoPasteInsertInFlight = false }
 
+            // Bounded reconnect-poll tunables.
+            let pollIntervalMs = 30
+            let pollCeilingMs = 400
+            let pollStartedAt = Date()
+
+            // The insert + verify body. Runs ONCE, after the poll settles (or hits
+            // the ceiling). `iterations`/`settleMs` are passed through for the
+            // POLL diagnostic. Factored into a local closure so the poll loop has a
+            // single exit point into the (unchanged) landed-detection logic below.
+            func performInsertAndVerify(iterations: Int, settleMs: Int) {
                 // The pending session may have been consumed/cleared by another
-                // path during the hop; re-validate before inserting.
+                // path during the poll; re-validate before inserting. Release the
+                // in-flight guard on this early exit (no insert ran, no deferred
+                // verify scheduled).
                 guard let pending = self.readPendingPasteSession(),
-                      pending.id == pendingSessionID else { return }
+                      pending.id == pendingSessionID else {
+                    self.isAutoPasteInsertInFlight = false
+                    return
+                }
+
+                DiagnosticsLog.record(
+                    source: "keyboard",
+                    category: .pasteReconnectPoll,
+                    message: "Reconnect-poll settled before insert",
+                    metadata: [
+                        "sessionID": pendingSessionID.uuidString,
+                        "iterations": "\(iterations)",
+                        "settleMs": "\(settleMs)",
+                        "hitCeiling": "\(settleMs >= pollCeilingMs)",
+                    ]
+                )
 
                 // Detect whether the insert LANDED by reading the proxy AFTER it.
                 // After a REAL insert the pre-caret context is non-nil (it now
@@ -1207,15 +1429,31 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 // still-disconnected proxy it stays nil. (`proxyHadContextBefore`
                 // covers the empty-field case where the field legitimately had no
                 // text before the caret — see build-105 empty-field double-paste.)
-                let proxyHadContextBefore = (self.textDocumentProxy.documentContextBeforeInput != nil)
+                let beforeCtx = self.textDocumentProxy.documentContextBeforeInput
                 self.insertTrackedText(pasteText)
-                let proxyHasContextAfter = (self.textDocumentProxy.documentContextBeforeInput != nil)
+                let afterCtx = self.textDocumentProxy.documentContextBeforeInput
+                let proxyHadContextBefore = (beforeCtx != nil)
+                let proxyHasContextAfter = (afterCtx != nil)
                 let landed = proxyHadContextBefore || proxyHasContextAfter
+
+                // [PASTE-DIAG] The REAL signal for custom/web fields (Claude
+                // Code): did the proxy's pre-caret buffer actually change? The
+                // `landed` nil-check can't tell a real insert from a no-op when
+                // there's stale context. `delta`>0 / `endsWith`=true → the resync
+                // reconnected and the text went in (an empty visible box is then
+                // a host-render limit); `delta`==0 → the insert no-op'd despite
+                // the resync (ours to fix). Lengths + a bool only — no content.
+                // Note: iOS windows `documentContextBeforeInput`, so `delta` can
+                // under-count a long paste; `endsWith` is the firmer signal.
+                let beforeLen = beforeCtx?.count ?? 0
+                let afterLen = afterCtx?.count ?? 0
+                let endsWithInserted = (afterCtx ?? "").hasSuffix(pasteText)
 
                 guard landed else {
                     // Still no-op'd even after the re-sync — keep the transcript
                     // pending (don't burn it) so the settled `.idle` flush can
                     // try once more. Single insert per flush = no double-paste.
+                    self.isAutoPasteInsertInFlight = false
                     DiagnosticsLog.record(
                         source: "keyboard",
                         category: .pasteSkipProxyDisconnected,
@@ -1223,38 +1461,240 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                         metadata: [
                             "sessionID": pendingSessionID.uuidString,
                             "chars": "\(pasteText.count)",
-                            "resynced": "true",
+                            "beforeLen": "\(beforeLen)",
+                            "afterLen": "\(afterLen)",
+                            "delta": "\(afterLen - beforeLen)",
+                            "endsWith": "\(endsWithInserted)",
                         ]
                     )
                     return
                 }
 
-                DiagnosticsLog.record(
-                    source: "keyboard",
-                    category: .pasteSuccess,
-                    message: "Inserted transcript into host",
-                    metadata: [
-                        "chars": "\(pasteText.count)",
-                        "sessionID": pendingSessionID.uuidString,
-                        "proxyHadContextBefore": "\(proxyHadContextBefore)",
-                        "proxyHasContextAfter": "\(proxyHasContextAfter)",
-                        "resynced": "true",
-                    ]
+                // The IMMEDIATE read-back says it landed — but on a web/custom
+                // field (Claude Code = WKWebView, Slack = React-Native) the proxy
+                // can update its OWN local pre-caret cache while the host's live
+                // document never commits the change (stale/detached connection) or
+                // re-renders it away. `delta`/`endsWith` are computed from that same
+                // possibly-stale cache and lie together — that is exactly why
+                // `pasteSuccess` shipped as a false positive four times.
+                //
+                // So DO NOT consume the payload or log `pasteSuccess` on the
+                // immediate read alone. Two corroborations narrow the window:
+                //   (B) the host's `textDidChange` input-delegate callback — when
+                //       it fires for our session with our text present, that is the
+                //       HOST talking back (the proxy cache can't fake it), so we
+                //       short-circuit straight to success (cure §4-B); and
+                //   (C) a deferred (~350ms) settled re-read as the FLOOR — gate
+                //       success on the inserted suffix still present AND `hasText`
+                //       (a separate UITextInput signal the local cache can't fake
+                //       on its own — Path D of bug-slack-silent-paste.md). This
+                //       runs when textDidChange never fires (many hosts skip it for
+                //       proxy-originated inserts — its absence proves nothing).
+                // Exactly ONE of {B, C} runs the finalize body — `inFlightPaste-
+                // Resolved` guards it so we never double-consume. The
+                // `isAutoPasteInsertInFlight` guard stays armed across the whole
+                // window so a second flush can't stack.
+                //
+                // Native fields (Messages/Notes = UITextView) commit synchronously
+                // into the same object the proxy reads, so the settled read still
+                // shows the suffix + hasText → classified success, no regression
+                // (incl. the >2000-char windowing case: the window always holds the
+                // freshly-inserted suffix regardless of how much precedes it).
+                let immediateAfterLen = afterLen
+
+                // Shared SUCCESS finalize. Runs from EITHER the textDidChange
+                // short-circuit (B) or the deferred settled-verify (C). Guarded by
+                // `inFlightPasteResolved` so only the first caller wins — the other
+                // becomes a no-op (no double-consume, no double just-now marker).
+                let finalizeSuccess: (_ viaTextDidChange: Bool, _ settledLen: Int) -> Void = { [weak self] viaTextDidChange, settledLen in
+                    guard let self else { return }
+                    guard !self.inFlightPasteResolved else { return }
+                    self.inFlightPasteResolved = true
+                    self.clearInFlightPasteWindow()
+                    self.isAutoPasteInsertInFlight = false
+
+                    // The pending session may have been consumed/cleared by another
+                    // path. If so the work is already done — don't re-consume.
+                    guard let pending = self.readPendingPasteSession(),
+                          pending.id == pendingSessionID else { return }
+
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: viaTextDidChange ? .pasteLandedViaTextDidChange : .pasteSuccess,
+                        message: viaTextDidChange
+                            ? "Host textDidChange confirmed insert landed (short-circuit)"
+                            : "Inserted transcript into host (settled-verified)",
+                        metadata: [
+                            "chars": "\(pasteText.count)",
+                            "sessionID": pendingSessionID.uuidString,
+                            "beforeLen": "\(beforeLen)",
+                            "afterLen": "\(afterLen)",
+                            "delta": "\(afterLen - beforeLen)",
+                            "endsWith": "\(endsWithInserted)",
+                            "settledLen": "\(settledLen)",
+                        ]
+                    )
+                    // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
+                    // the keyboard's own state at the moment of insertion so the
+                    // RecentsStrip's top row can render in the green just-now
+                    // style for ~5s. Reading AppGroup.lastDictation after this
+                    // returns nil because markConsumed() (below) clears it.
+                    self.stampJustNowMarker(text: pasteText)
+                    ClipboardHandoff.markConsumed()
+                    self.clearPendingPasteSession()
+                    self.freshPreview = nil
+                    self.hasPasteboardContent = UIPasteboard.general.hasStrings
+                    self.renderRootView()
+                    // Post-paste correction quick-review: if the app published asks
+                    // for this session, take over the strip slot to collect verdicts.
+                    self.maybeShowCorrectionNudge(sessionID: pendingSessionID)
+                }
+
+                // Open the in-flight-paste window for the textDidChange (B) path.
+                // The override checks `inFlightPasteSessionID`/`inFlightPasteText`
+                // and, when its host change carries our text, calls
+                // `inFlightPasteConfirm` → finalizeSuccess(viaTextDidChange: true).
+                self.inFlightPasteResolved = false
+                self.inFlightPasteSessionID = pendingSessionID
+                self.inFlightPasteText = pasteText
+                self.inFlightPasteConfirm = { [weak self] in
+                    // settledLen unknown on the textDidChange path; read it live
+                    // for the log only. `[weak self]` so the property storing this
+                    // closure on `self` isn't a retain cycle keeping the keyboard
+                    // alive (it's nil'd on resolve, but a torn-down keyboard before
+                    // resolve must still dealloc).
+                    guard let self else { return }
+                    let liveLen = self.textDocumentProxy.documentContextBeforeInput?.count ?? -1
+                    finalizeSuccess(true, liveLen)
+                }
+
+                // (C) Deferred settled-verify FLOOR. Always scheduled; if (B)
+                // already resolved, the `inFlightPasteResolved` guard inside
+                // finalize makes this a no-op (it only logs the VERIFY read).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    guard let self else { return }
+
+                    let settledCtx = self.textDocumentProxy.documentContextBeforeInput
+                    let settledLen = settledCtx?.count ?? -1
+                    let stillEndsWith = (settledCtx ?? "").hasSuffix(pasteText)
+                    let hasTextNow = self.textDocumentProxy.hasText
+                    // Survived = the text is still there. Strong signal: the
+                    // context still ends with what we inserted. Tolerant fallback:
+                    // the context did NOT SHRINK (settledLen >= the post-insert
+                    // length) — this absorbs a host autocorrect/keystroke that
+                    // mutates the inserted TAIL within the 350ms window (which
+                    // would break an exact `hasSuffix` and falsely flag a real
+                    // native paste as reverted). A genuine revert (web field drops
+                    // the insert) SHRINKS the context back toward the pre-insert
+                    // length, so it still classifies as not-survived.
+                    let survived = hasTextNow && (stillEndsWith || settledLen >= immediateAfterLen)
+
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: .pasteVerifyDeferred,
+                        message: "Deferred landed-verify read-back",
+                        metadata: [
+                            "sessionID": pendingSessionID.uuidString,
+                            "immediateLen": "\(immediateAfterLen)",
+                            "settledLen": "\(settledLen)",
+                            "stillEndsWith": "\(stillEndsWith)",
+                            "hasText": "\(hasTextNow)",
+                            "alreadyResolved": "\(self.inFlightPasteResolved)",
+                        ]
+                    )
+
+                    // (B) already classified this paste a success — nothing to do.
+                    guard !self.inFlightPasteResolved else { return }
+
+                    if survived {
+                        finalizeSuccess(false, settledLen)
+                        return
+                    }
+
+                    // FAILURE floor. Guard so a racing (B) doesn't also fire.
+                    guard !self.inFlightPasteResolved else { return }
+                    self.inFlightPasteResolved = true
+                    self.clearInFlightPasteWindow()
+                    self.isAutoPasteInsertInFlight = false
+
+                    // The pending session may have been consumed/cleared by another
+                    // path while we waited. If so, the work is already done — bail
+                    // without re-consuming or re-pasting.
+                    guard let pending = self.readPendingPasteSession(),
+                          pending.id == pendingSessionID else { return }
+
+                    // The immediate read lied: the host's live field did not
+                    // keep the text. CONSUME the payload + clear pending so NO
+                    // later flush (post-publish historyMirrorUpdated, a
+                    // keyboard re-presentation, the launch-deadline backstop)
+                    // can re-insert it — the 350ms in-flight guard only covers
+                    // this window, so keeping it pending would DOUBLE-PASTE on
+                    // a host that committed slower than 350ms (the exact
+                    // double-paste class that burned builds 103-106). Recovery
+                    // is the clipboard banner instead of an in-place retry:
+                    // the transcript is already on UIPasteboard.general from
+                    // publish (re-stamped with a 1-hour expiration), so the
+                    // user taps once to paste. Silent false-success → VISIBLE
+                    // one-tap recovery, with no double-paste risk.
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: .pasteRevertedAfterLanding,
+                        message: "Immediate read said landed but settled read disagrees; consumed + clipboard fallback (no retry, no double-paste)",
+                        metadata: [
+                            "sessionID": pendingSessionID.uuidString,
+                            "chars": "\(pasteText.count)",
+                            "settledLen": "\(settledLen)",
+                            "stillEndsWith": "\(stillEndsWith)",
+                            "hasText": "\(hasTextNow)",
+                        ]
+                    )
+                    ClipboardHandoff.markConsumed()
+                    self.clearPendingPasteSession()
+                    self.fallbackToClipboardWithBanner(text: pasteText)
+                }
+            }
+
+            // Kick off the bounded reconnect-poll. `pollForStableSession` recurses
+            // via `asyncAfter` (NOT a busy-wait): it captures the prior read, and
+            // after each ~30ms tick compares the fresh read to it. Two consecutive
+            // equal reads → STABLE → insert. Hitting the ceiling → insert anyway
+            // (best effort; the verify + clipboard floor catch a miss). `iteration`
+            // is 1-based for the first comparison.
+            func pollForStableSession(previous: String?, previousHasText: Bool, iteration: Int) {
+                // Re-validate the in-flight guard / pending session each tick so a
+                // teardown mid-poll releases cleanly.
+                guard self.isAutoPasteInsertInFlight else { return }
+                let elapsedMs = Int(Date().timeIntervalSince(pollStartedAt) * 1000)
+
+                let current = self.textDocumentProxy.documentContextBeforeInput
+                let currentHasText = self.textDocumentProxy.hasText
+
+                // STABLE when this read matches the previous one (both context and
+                // hasText unchanged). The FIRST comparison is the pre-poll read vs
+                // the read ~30ms later, so a native/fast host (whose context never
+                // keeps changing) is stable on poll #1 → minimal added latency, no
+                // regression. A heavy re-mounting web field whose context is still
+                // growing fails the equality and polls again until it settles.
+                let stable = (current == previous) && (currentHasText == previousHasText)
+
+                if stable || elapsedMs >= pollCeilingMs {
+                    performInsertAndVerify(iterations: iteration, settleMs: elapsedMs)
+                    return
+                }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(pollIntervalMs)) {
+                    pollForStableSession(previous: current, previousHasText: currentHasText, iteration: iteration + 1)
+                }
+            }
+            // First read is taken on the next tick (one run-loop hop after the
+            // `adjustTextPosition(0)` re-sync request, matching the original
+            // single-hop semantics), then compared against the tick after it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(pollIntervalMs)) {
+                pollForStableSession(
+                    previous: self.textDocumentProxy.documentContextBeforeInput,
+                    previousHasText: self.textDocumentProxy.hasText,
+                    iteration: 1
                 )
-                // Phase 2 just-now marker (plan §4.3 / §13 risk 7) — stamp
-                // the keyboard's own state at the moment of insertion so the
-                // RecentsStrip's top row can render in the green just-now
-                // style for ~5s. Reading AppGroup.lastDictation after this
-                // returns nil because markConsumed() (below) clears it.
-                self.stampJustNowMarker(text: pasteText)
-                ClipboardHandoff.markConsumed()
-                self.clearPendingPasteSession()
-                self.freshPreview = nil
-                self.hasPasteboardContent = UIPasteboard.general.hasStrings
-                self.renderRootView()
-                // Post-paste correction quick-review: if the app published asks
-                // for this session, take over the strip slot to collect verdicts.
-                self.maybeShowCorrectionNudge(sessionID: pendingSessionID)
             }
             return
         }
@@ -1280,6 +1720,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     "pendingSessionID": session.id.uuidString
                 ]
             )
+            // Option-4 stale-payload hygiene (plan §6 Option 4): a payload whose
+            // sessionID is neither the current pending nor a just-published blob
+            // (within a short grace) is a leftover from a prior session that
+            // `markConsumed()` never cleared (e.g. a paste we kept pending, or a
+            // session that never reached the keyboard). Left in place it makes
+            // EVERY future flush log a spurious `pasteSkipSessionMismatch` until
+            // the 30s freshness window expires. Clear it so future sessions start
+            // clean. Behavior-neutral: this payload already does not match our
+            // pending and is NOT being pasted here either way; the grace protects
+            // a payload that is racing in just ahead of its own pending write.
+            let staleGrace: TimeInterval = 2
+            if payload.sessionID != session.id,
+               Date().timeIntervalSince(payload.timestamp) >= staleGrace {
+                ClipboardHandoff.markConsumed()
+            }
         }
 
         // Sad path: no matching payload. Consult terminal state. The UUID
@@ -1316,132 +1771,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // task) will re-enter this function.
     }
 
-    // MARK: - Streaming partial mirror
-
-    private func startObservingStreamingPartial() {
-        guard streamingPartialObserver == nil else { return }
-        streamingPartialObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.streamingPartialChanged
-        ) { [weak self] in
-            self?.refreshStreamingPartialFromProjection()
-        }
-    }
-
-    private func refreshStreamingPartialFromProjection() {
-        guard hasFullAccess else {
-            recordingState.updateStreamingPartial("")
-            return
-        }
-        let text = AppGroup.defaults.string(forKey: AppGroup.Keys.streamingPartialText) ?? ""
-        recordingState.updateStreamingPartial(text)
-    }
-
-    /// Clear the live-transcript projection (local + App Group) the instant a
-    /// NEW dictation is initiated. The previous session can leave its final
-    /// text in the projection — the keyboard-dictation path doesn't reliably
-    /// receive the main app's post-batch `reset()` — and because that stale
-    /// text is non-empty, the streaming strip renders it verbatim (skipping the
-    /// "Loading…/Listening…" placeholder) for the beat between the strip
-    /// reappearing and the new session's first partial. Clearing on start makes
-    /// the strip open clean every time.
-    private func clearStreamingPartialForNewSession() {
-        recordingState.updateStreamingPartial("")
-        if hasFullAccess {
-            AppGroup.defaults.set("", forKey: AppGroup.Keys.streamingPartialText)
-        }
-    }
-
-    // MARK: - Streaming load-state mirror
-
-    /// Mirrors `AppGroup.streamingLoadingVariantLabel` (written by the
-    /// main app's `StreamingTranscriptionService` while the streaming
-    /// graph is ANE-loading) into `recordingState.loadingVariantLabel`,
-    /// which the keyboard's streaming strip reads to render the
-    /// "Loading [variant]…" placeholder in place of the empty-state
-    /// "Listening…" copy.
-    private func startObservingStreamingLoading() {
-        guard streamingLoadingObserver == nil else { return }
-        streamingLoadingObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.streamingLoadingChanged
-        ) { [weak self] in
-            self?.refreshStreamingLoadingFromProjection()
-        }
-    }
-
-    private func refreshStreamingLoadingFromProjection() {
-        guard hasFullAccess else {
-            recordingState.updateLoadingVariantLabel("")
-            return
-        }
-        let label = AppGroup.streamingLoadingVariantLabel
-        // Cold-load diagnostic: a cold keyboard dictation should log a
-        // non-empty label WHILE isRecording=true (so the strip is visible to
-        // render it). If label is empty during the load, the write/notify
-        // path is the gap; if isRecording is false, the strip gate is.
-        keyboardLog.info("streaming-loading mirror label=\(label.isEmpty ? "<empty>" : label, privacy: .public) isRecording=\(self.recordingState.isRecording, privacy: .public)")
-        recordingState.updateLoadingVariantLabel(label)
-    }
-
-    // MARK: - Warm-hold switching nudge (WS-F / §4 R10)
-
-    /// Observes `warmHoldNudgeChanged`, posted by the main app whenever the
-    /// record-and-bounce streak math flips the `warmHoldNudgeShouldShow`
-    /// projection. The keyboard can't run the streak math (no SwiftData, no
-    /// engine), so it renders purely off the boolean and writes the two
-    /// terminal actions back.
-    private func startObservingWarmHoldNudge() {
-        guard warmHoldNudgeObserver == nil else { return }
-        warmHoldNudgeObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.warmHoldNudgeChanged
-        ) { [weak self] in
-            self?.refreshWarmHoldNudgeFromProjection()
-        }
-    }
-
-    private func startObservingCorrectionAsks() {
-        guard correctionAsksReadyObserver == nil else { return }
-        correctionAsksReadyObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.correctionAsksReady
-        ) { [weak self] in
-            self?.showCorrectionNudgeFromReady()
-        }
-    }
-
-    /// The app just published asks for the dictation we handled — read the latest
-    /// and show the nudge. This is the RELIABLE trigger (reading at paste time
-    /// races the publish, which happens after the ledger append). Yields to an
-    /// already-showing correction nudge or the warm-hold nudge; the topStrip
-    /// branch additionally hides it while recording.
-    private func showCorrectionNudgeFromReady() {
-        guard !showCorrectionNudge, !showWarmHoldNudge else { return }
-        let a = CorrectionBridge.readLatestAsks()
-        DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-            message: "asks-ready", metadata: ["found": "\(a?.asks.count ?? 0)"])
-        if let a, !a.asks.isEmpty {
-            correctionAsks = a
-            showCorrectionNudge = true
-            renderRootView()
-        }
-    }
-
-    /// Reads the App-Group boolean projection and re-renders only on change.
-    /// Gated on Full Access — without it App-Group reads are sandboxed and
-    /// return stale/false values, so the nudge simply never shows (the app
-    /// owns the source of truth and can't reach an FA-off keyboard anyway).
-    private func refreshWarmHoldNudgeFromProjection() {
-        // Mirror the app's predicate (`shouldShow && !suppressed`,
-        // ContentView.refreshWarmHoldNudge) so the two renderers can't diverge:
-        // today the app never sets `shouldShow` while suppressed (detection
-        // guards on it), but checking `suppressed` here too is a cheap defense
-        // against a future path that sets `shouldShow` without re-checking, or a
-        // stale `shouldShow=true` blob surviving alongside `suppressed=true`.
-        let shouldShow = hasFullAccess
-            && AppGroup.warmHoldNudgeShouldShow
-            && !AppGroup.warmHoldNudgeSuppressed
-        guard shouldShow != showWarmHoldNudge else { return }
-        showWarmHoldNudge = shouldShow
-        renderRootView()
-    }
+    // Streaming-partial, streaming-loading, warm-hold-nudge, and correction-asks
+    // feed subscriptions + their projected state moved to `KeyboardStreamingHub`
+    // (process-lifetime, observed by every controller). The controller-scoped
+    // nudge ACTIONS (accept/dismiss/finish, paste-time correction trigger) still
+    // live on the controller and now mutate hub state via `hub.*` mutators.
 
     // MARK: - Pipeline phase observer (v7 auto-paste design)
 
@@ -1450,35 +1784,41 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         pipelinePhaseObserver = CrossProcessNotification.addObserver(
             name: CrossProcessNotification.pipelinePhaseChanged
         ) { [weak self] in
-            self?.refreshPipelinePhase()
+            self?.refreshPipelinePhaseSideEffects()
         }
     }
 
-    /// Single source of truth for pipeline phase reads. Reads the projection,
-    /// applies it to the keyboard's `KeyboardRecordingState`, arms or cancels
-    /// the stale-deadline task, cancels the launch deadline if proof of life,
-    /// clears `stopRequestPosted` if projection moved off `.recording`, and
-    /// runs the flush. Per design §4.6 + §4.6.G.
-    private func refreshPipelinePhase() {
+    /// Controller-scoped HALF of the old `refreshPipelinePhase` (plan §"phase
+    /// split", option 2). The hub independently owns the phase STATE
+    /// (`KeyboardStreamingHub.refreshPipelinePhaseState` → `recordingState`
+    /// apply + zombie-freeze suppression) via its OWN `pipelinePhaseChanged`
+    /// observer. THIS method runs ONLY the proxy / per-presentation side-effects:
+    /// arm/cancel the stale-deadline task, cancel the launch deadline on proof of
+    /// life, clear `stopRequestPosted`, and run the auto-paste flush.
+    ///
+    /// These side-effects read the pipeline projection / `ClipboardHandoff`
+    /// DIRECTLY — they do NOT read `recordingState` — so they are independent of
+    /// the hub's state-apply and there is no cross-observer ordering dependency.
+    /// The paste path is byte-for-byte unchanged from the pre-hub
+    /// `refreshPipelinePhase`. The recovered-zombie tombstone now lives on the
+    /// hub (`hub.recoveredZombieFreeze`); we read it here (without mutating it —
+    /// the hub owns its clearing) to apply the SAME suppression to the
+    /// projection these side-effects act on, preserving prior behavior.
+    private func refreshPipelinePhaseSideEffects() {
         guard hasFullAccess else { return }
         var projection = PipelinePhaseProjection.read()
-        // Suppress a recovered dead-app zombie. After `recoverFromUnresponsiveApp`
-        // the shared projection can still read `.recording`/`.paused` (the dead
-        // writer never went terminal). If this is that same frozen session, treat
-        // it as idle so a re-present can't resurrect it. Once the projection
-        // advances past the frozen timestamp or a new session appears, the writer
-        // is alive again — drop the tombstone and resume normal handling.
-        if let freeze = recoveredZombieFreeze {
+        // Mirror the hub's zombie suppression for the side-effect projection so a
+        // recovered dead-app session can't re-arm the stale deadline or block a
+        // launch-deadline cancel. Read-only here — the hub clears the tombstone
+        // when the writer advances.
+        if let freeze = hub.recoveredZombieFreeze {
             if let p = projection,
                p.sessionID == freeze.sessionID,
                p.lastUpdatedAt <= freeze.frozenAt,
                p.phase == .recording || p.phase == .paused {
                 projection = nil
-            } else {
-                recoveredZombieFreeze = nil
             }
         }
-        recordingState.applyPipelineProjection(projection)
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
         // Clearing `stopRequestPosted` flips the speak button's `.disabled`
@@ -1522,8 +1862,18 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             } catch {
                 return
             }
-            self?.refreshPipelinePhase()
+            self?.refreshPipelinePhaseStateAndSideEffects()
         }
+    }
+
+    /// Re-read the pipeline projection into BOTH the hub's phase STATE and the
+    /// controller's proxy side-effects, in the original order. Used by the
+    /// deadline/watchdog Tasks (which are self-driven re-reads, not Darwin
+    /// posts, so neither observer fires for them). Equivalent to the pre-hub
+    /// `refreshPipelinePhase()`.
+    private func refreshPipelinePhaseStateAndSideEffects() {
+        hub.refreshPipelinePhaseState()
+        refreshPipelinePhaseSideEffects()
     }
 
     /// Arm the dead-app watchdog after a recording-control tap. Snapshots the
@@ -1580,11 +1930,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         if let frozen = PipelinePhaseProjection.read(),
            frozen.phase == .recording || frozen.phase == .paused,
            let frozenSession = frozen.sessionID {
-            recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
+            hub.recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
         }
         stopRequestPosted = false
         recordingState.applyPipelineProjection(nil)
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         recordingState.updateLoadingVariantLabel("")
         clearPendingPasteSession()
         pipelineStaleDeadlineTask?.cancel()
@@ -1617,17 +1967,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     // MARK: - History
-
-    /// Reloads the App Group mirror. Called on appearance and when the user
-    /// opens the history overlay — the extra read when opening catches new
-    /// dictations recorded while the keyboard is still presented.
-    private func refreshHistory() {
-        guard hasFullAccess else {
-            historyEntries = []
-            return
-        }
-        historyEntries = TranscriptHistoryMirror.load()
-    }
+    //
+    // History reload moved to `KeyboardStreamingHub` (it owns the
+    // `historyMirrorUpdated` feed + the `historyEntries` projection). The
+    // controller reads `hub.historyEntries` (via its `historyEntries` computed
+    // pass-through) into `KeyboardViewInputs` in `syncKeyboardInputs()` — a plain
+    // SNAPSHOT, not a live `@Observable`. The hub fires its `onShouldRender` hook
+    // when `historyEntries` changes, which re-renders this controller so the
+    // RecentsStrip shows a just-dictated transcript without waiting for re-present.
 
     /// Phase 2: the legacy `HistoryOverlay` modal was replaced by the
     /// always-visible `RecentsStrip` at the top of the keyboard. Tapping a
@@ -1723,6 +2070,32 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         backspaceRepeatTimer = nil
     }
 
+    // MARK: - Keyboard-active heartbeat
+
+    /// Begin writing `AppGroup.keyboardActiveHeartbeat` immediately and then
+    /// every ~1s. The immediate write makes the cue dismiss as fast as
+    /// possible once the Jot keyboard rises; the repeating write keeps the
+    /// heartbeat fresh against the 3s stale window. A Timer + UserDefaults
+    /// write is trivially within the keyboard's ~60MB budget. Mirrors the
+    /// `backspaceRepeatTimer` Swift-6 main-actor escape-hatch style.
+    private func startKeyboardActiveHeartbeat() {
+        AppGroup.keyboardActiveHeartbeat = Date()
+        keyboardActiveHeartbeatTimer?.invalidate()
+        keyboardActiveHeartbeatTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0,
+            repeats: true
+        ) { _ in
+            MainActor.assumeIsolated {
+                AppGroup.keyboardActiveHeartbeat = Date()
+            }
+        }
+    }
+
+    private func stopKeyboardActiveHeartbeat() {
+        keyboardActiveHeartbeatTimer?.invalidate()
+        keyboardActiveHeartbeatTimer = nil
+    }
+
     // MARK: - Outbound
 
     /// Single launch destination — bring Jot to the foreground so the
@@ -1794,7 +2167,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// inserts the transcribed result into the focused field on stop. The wizard
     /// (W5) handles this tap with its own observer while it is presented.
     private func startInlineViaDarwin() {
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         CrossProcessNotification.post(name: CrossProcessNotification.keyboardDictateTapped)
         keyboardLog.info("ping/pong: pong received -> inline tap (host=Jot)")
     }
@@ -1803,7 +2176,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// hero's swipe-back coaching path). Stamps a pending-paste session so the
     /// app's `onOpenURL` can `adoptSession(_:)` before recording-start.
     private func startColdViaURLBounce() {
-        clearStreamingPartialForNewSession()
+        hub.clearStreamingPartialForNewSession()
         let session = beginPendingPasteSession()
         DiagnosticsLog.record(
             source: "keyboard",
@@ -1865,7 +2238,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             // we warm-resume in the background (the no-foreground fast path). The
             // warm-hold keys are left intact so leaving the app still resumes warm.
             if !AppGroup.isJotAppForeground() {
-                clearStreamingPartialForNewSession()
+                hub.clearStreamingPartialForNewSession()
                 CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
                 keyboardLog.info("Posted warm-resume (Jot backgrounded); skipping URL bounce")
                 return
@@ -1968,7 +2341,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 } catch {
                     return
                 }
-                self?.refreshPipelinePhase()
+                self?.refreshPipelinePhaseStateAndSideEffects()
             }
         }
     }
@@ -1997,6 +2370,27 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         AppGroup.lastDictationStatusMessage = message
         setStatusBanner(message)
         renderRootView()
+    }
+
+    /// Option-3 safety net (docs/plans/bug-keyboard-paste-fails-claude-code.md §6):
+    /// when the settled landed-verify reclassifies an insert as failed, convert the
+    /// silent false-success into a VISIBLE failure with a one-tap recovery. The
+    /// transcript is already on `UIPasteboard.general` (publish wrote it,
+    /// `ClipboardHandoff.swift:53`); re-stamp it with a 1-hour expiration so the
+    /// dictation isn't readable by other apps after the user has had a chance to
+    /// paste it (leak mitigation per bug-slack-silent-paste.md), then surface the
+    /// status banner. The caller CONSUMES the payload + clears the pending session
+    /// before calling this (NOT an in-place retry) — keeping it pending would
+    /// double-paste on a host that committed slower than the 350ms verify window
+    /// (the build-103..106 double-paste class). The clipboard banner IS the
+    /// recovery; in-place retry is the held Option 2, gated on the on-device probe.
+    private func fallbackToClipboardWithBanner(text: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.utf8PlainText.identifier: text]],
+            options: [.expirationDate: Date(timeIntervalSinceNow: 3600)]
+        )
+        self.hasPasteboardContent = UIPasteboard.general.hasStrings
+        surfaceDictationStatusBanner("Couldn't paste here — saved to clipboard, tap to paste")
     }
 
     /// Opens the keyboard's containing app via custom URL scheme.
@@ -2237,112 +2631,4 @@ private final class KeyboardUndoLedger {
         _ = contextBeforeInput  // intentionally unused
         return entry
     }
-}
-
-@MainActor
-@Observable
-final class KeyboardRecordingState {
-    private(set) var isRecording = false
-    private(set) var startedAt: Date?
-
-    /// Pipeline phase, written by `applyPipelineProjection`. Drives the
-    /// `KeyboardView.micCTA` four-state UI (idle / recording / in-flight /
-    /// failed) and the auto-paste lifecycle. Single source of truth for
-    /// "is the keyboard observing a recording right now?" — `isRecording`
-    /// is derived from `phase == .recording` via `applyPipelineProjection`.
-    private(set) var phase: PipelinePhaseProjection.Phase = .idle
-
-    /// True while the pipeline is mid-flight after recording stopped — i.e.
-    /// transcribing / processing / cleaning / rewriting / publishing. Drives
-    /// the mic CTA's `.disabled` state at the SwiftUI layer (per design
-    /// §4.6.D). v0.4 added `.rewriting` for the chained LLM rewrite branch.
-    /// `.paused` is NOT in-flight — it is a live-but-not-capturing sub-state
-    /// of recording (§10.2), so the mic CTA stays interactive (Stop) and the
-    /// Resume control is offered separately.
-    var isInflightPostRecording: Bool {
-        switch phase {
-        case .transcribing, .processing, .cleaning, .rewriting, .publishing:
-            return true
-        case .idle, .recording, .paused, .failed:
-            return false
-        }
-    }
-
-    /// True while the active dictation is paused (UX-overhaul round 2 §10).
-    /// Derived solely from `phase == .paused`. While paused, `isRecording`
-    /// stays `true` (we're still in a live session, just not capturing) so the
-    /// keyboard keeps rendering the recording chrome — only the Pause control
-    /// swaps to Resume and the elapsed clock freezes.
-    private(set) var isPaused = false
-
-    /// Frozen elapsed seconds captured at the moment the `.paused` projection
-    /// was published (§10.4). The app back-dates `recordingStartedAt` to the
-    /// pause-aware active-time anchor; we snapshot `lastUpdatedAt − anchor`
-    /// here so the keyboard's clock shows a STILL value rather than continuing
-    /// to tick against a fixed anchor + live `now`. Nil while not paused.
-    private(set) var pausedElapsedSeconds: TimeInterval?
-
-    /// Single canonical surface: writes `phase` and derives `isRecording` /
-    /// `startedAt` from the same projection. Pipeline phase is the only
-    /// cross-process recording-state input this view-model accepts.
-    func applyPipelineProjection(_ projection: PipelinePhaseProjection?) {
-        guard let projection else {
-            phase = .idle
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: false, startedAt: nil)
-            return
-        }
-        phase = projection.phase
-        switch projection.phase {
-        case .recording:
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: true, startedAt: projection.recordingStartedAt)
-        case .paused:
-            // Stay "recording" so the chrome persists; freeze the clock by
-            // snapshotting the active-time total at publish (§10.4).
-            isPaused = true
-            if let anchor = projection.recordingStartedAt {
-                pausedElapsedSeconds = max(0, projection.lastUpdatedAt.timeIntervalSince(anchor))
-            } else {
-                pausedElapsedSeconds = nil
-            }
-            update(isRecording: true, startedAt: projection.recordingStartedAt)
-        case .idle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
-            isPaused = false
-            pausedElapsedSeconds = nil
-            update(isRecording: false, startedAt: nil)
-        }
-    }
-
-    func update(isRecording: Bool, startedAt: Date?) {
-        self.isRecording = isRecording
-        self.startedAt = isRecording ? startedAt : nil
-    }
-
-    /// Latest live partial-transcript text mirrored from the main app via the
-    /// App Group `streamingPartialText` projection. Drives the keyboard's
-    /// live caption strip while `isRecording == true`. Empty string while
-    /// idle or before the EOU model has emitted its first partial.
-    private(set) var streamingPartialText: String = ""
-
-    func updateStreamingPartial(_ text: String) {
-        streamingPartialText = text
-    }
-
-    /// Mirrors `AppGroup.streamingLoadingVariantLabel`. Non-empty
-    /// while the main app's `StreamingTranscriptionService` is
-    /// ANE-loading the streaming graph for the active recording —
-    /// e.g. "Parakeet 110M". Empty when no load is in flight. The
-    /// streaming strip swaps its empty-state "Listening…" placeholder
-    /// for a "Loading [label]…" pair (spinner + serif-italic label)
-    /// whenever this is non-empty. See
-    /// `JotKeyboardViewController.refreshStreamingLoadingFromProjection`.
-    private(set) var loadingVariantLabel: String = ""
-
-    func updateLoadingVariantLabel(_ label: String) {
-        loadingVariantLabel = label
-    }
-
 }

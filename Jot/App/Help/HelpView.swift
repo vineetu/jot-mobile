@@ -265,7 +265,7 @@ struct HelpView: View {
                     questionRow(
                         .model,
                         question: "The speech model didn't download",
-                        answer: "The default speech model ships with the app — no download needed. The optional Parakeet 600M (~440 MB) and the AI rewriter (~\(JotDesign.activeRewriteModelSize)) need Wi-Fi; check your connection if any tap doesn't start.",
+                        answer: "On most iPhones the speech model ships with the app — no download needed. On older iPhones a smaller speech model downloads on first use, and the AI rewriter (~\(JotDesign.activeRewriteModelSize)) downloads too — both need Wi-Fi, so check your connection if a tap doesn't start.",
                         showDivider: true
                     )
                     questionRow(

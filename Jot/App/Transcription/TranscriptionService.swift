@@ -96,30 +96,41 @@ final class TranscriptionService {
     var speechModelIdentifier: String { Self.selectedRepo.rawValue }
 
     private let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
+
+    /// Hard upper bound on the concurrent CTC keyword-spot pass. If the
+    /// rescorer hangs / is mid-prepare / is wedged (e.g. from a fast vocab
+    /// off→on toggle race), the spot is abandoned past this and the plain
+    /// TDT transcript publishes. Generous: a long dictation legitimately
+    /// re-chunks at 15 s windows (measured CTC ≈ 5 s on a 5-min clip on
+    /// Mac ANE; on-device iPhone ANE is slower, so headroom is intentional).
+    nonisolated static let vocabSpotTimeoutSeconds: Double = 8.0
+    /// Hard upper bound on the cheap post-spot merge (~14–20 ms CPU plus a
+    /// couple of actor hops). Small; exists only so a wedged
+    /// CorrectionStore/Provenance actor can never block the publish.
+    nonisolated static let vocabMergeTimeoutSeconds: Double = 2.0
     private let signposter = OSSignposter(subsystem: "com.vineetu.jot.mobile.Jot", category: "transcription")
 
-    /// Resolves the user-selected speech-model variant from the App Group
-    /// `speechModelVariant` accessor. Read at every `ensurePreparing()`
-    /// boundary — flipping the variant in Settings only takes effect on
-    /// the next dictation start, never mid-session. Unknown / legacy
-    /// values (including stale `"nemotron0_6b"` tags from prior builds)
-    /// fall back to `.tdtCtc110m` (the bundled default) so a malformed
-    /// AppGroup write can't brick transcription.
+    /// The active dictation model — chosen by **device capability**, not by
+    /// the user (there is no model picker). Capable devices (≥6 GB-class RAM,
+    /// `DeviceCapability.is600MCapable`) run the bundled Parakeet 0.6B v2.
+    /// Sub-6GB devices (iPhone 11 / 12·13 non-Pro / SE) cannot hold the 600M's
+    /// ~2 GB resident footprint, so they fall back to the smaller Parakeet
+    /// TDT-CTC 110M — which is NOT bundled (keeps the IPA small) and is fetched
+    /// on first need via `AsrModels.download` into Application Support.
+    ///
+    /// NOTE: this is the *dictation* 110M (`parakeet-tdt-ctc-110m-coreml`,
+    /// fused preprocessor+encoder), entirely separate from the *vocabulary*
+    /// CTC subset (`parakeet-ctc-110m-coreml`) the rescorer uses — different
+    /// FluidAudio repo, different on-disk directory.
     private static var selectedVersion: AsrModelVersion {
-        switch SpeechModelVariant.current() {
-        case .tdtCtc110m: return .tdtCtc110m
-        case .parakeetV2: return .v2
-        }
+        DeviceCapability.is600MCapable ? .v2 : .tdtCtc110m
     }
 
     /// FluidAudio `Repo` paired with `selectedVersion`. Used for
     /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
-    /// the user-facing speech-model identifier in Settings.
+    /// the user-facing speech-model identifier.
     private static var selectedRepo: Repo {
-        switch SpeechModelVariant.current() {
-        case .tdtCtc110m: return .parakeetTdtCtc110m
-        case .parakeetV2: return .parakeetV2
-        }
+        DeviceCapability.is600MCapable ? .parakeetV2 : .parakeetTdtCtc110m
     }
 
     private let standIn: (any TranscriptionStandIn)?
@@ -207,6 +218,30 @@ final class TranscriptionService {
         _ = ensurePreparing()
     }
 
+    /// Single front door for "warm the model if it makes sense" — the ONE place
+    /// the pre-warm gate lives. Every trigger (app launch, scene activation, the
+    /// setup wizard) calls THIS instead of re-deriving its own gate, so there is
+    /// exactly one predicate to reason about. Warms only when BOTH hold:
+    ///
+    /// - the **selected variant's files are on disk** — preserves the
+    ///   no-silent-download-before-consent guarantee (Guideline 4.2.3(ii)): an
+    ///   un-downloaded opt-in variant returns `false` here, so warming never
+    ///   triggers a network fetch; the bundled default is always `true`.
+    /// - the model is **`.notLoaded` or `.failed`** (genuinely cold). We never
+    ///   re-kick `.downloading`/`.loading` (already in flight) or `.ready` (done).
+    ///
+    /// Idempotent regardless: `warmUp()` → `ensurePreparing()` coalesces
+    /// concurrent callers, so overlapping triggers (launch + wizard) are safe.
+    func warmIfNeeded() {
+        guard Self.modelsExistOnDiskForSelectedVariant() else { return }
+        switch modelState {
+        case .notLoaded, .failed:
+            warmUp()
+        case .downloading, .loading, .ready:
+            break
+        }
+    }
+
     /// Called when the user flips Settings → Speech model variant.
     ///
     /// Invalidates the currently-loaded manager so the next
@@ -251,49 +286,18 @@ final class TranscriptionService {
         // prepare task and re-prime `modelState` from the bundle's presence
         // (effectively a no-op refresh that surfaces a clear .failed state
         // if iOS app thinning unexpectedly stripped the resources).
-        // Mirror of StreamingTranscriptionService.purgeAndReload() guard.
-        if SpeechModelVariant.current() == .tdtCtc110m {
-            prepareTask?.cancel()
-            prepareTask = nil
-            prepareGeneration += 1
-            manager = nil
-
-            log.notice("purgeAndReload no-op — TDT-CTC 110M weights are bundled and read-only")
-            modelState = .notLoaded
-            warmUp()
-            return
-        }
-
-        // Reclaim any orphaned .purging-* dirs from prior crashed purges before
-        // we create another one.
-        Self.sweepOrphanedPurgingDirs()
-
+        // The single Parakeet 0.6B v2 model ships bundled inside the IPA —
+        // the bundle is read-only, so there's nothing on-disk to purge. We
+        // cancel any in-flight prepare and re-prime `modelState` from the
+        // bundle's presence (effectively a no-op refresh that surfaces a
+        // clear .failed state if iOS app thinning unexpectedly stripped the
+        // resources).
         prepareTask?.cancel()
         prepareTask = nil
         prepareGeneration += 1
         manager = nil
 
-        let modelDir = Self.modelDirectory()
-        let purgingDir = Self.purgingModelDirectory(for: modelDir)
-        do {
-            if FileManager.default.fileExists(atPath: modelDir.path) {
-                try FileManager.default.moveItem(at: modelDir, to: purgingDir)
-                log.notice(
-                    "Moved speech model cache aside for purge — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public)"
-                )
-                Self.deletePurgedModelDirectory(purgingDir)
-            } else {
-                log.info("Speech model cache already absent at \(modelDir.path, privacy: .public)")
-            }
-        } catch {
-            let summary = "Could not move model cache aside for purge: \(error.localizedDescription)"
-            modelState = .failed(summary)
-            log.error(
-                "Speech model purge failed — live=\(modelDir.path, privacy: .public) purging=\(purgingDir.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-            return
-        }
-
+        log.notice("purgeAndReload no-op — speech model weights are bundled and read-only")
         modelState = .notLoaded
         warmUp()
     }
@@ -514,33 +518,22 @@ final class TranscriptionService {
         // in simulator and the in-app record path already short-circuits
         // earlier — we only reach this branch on real-device transcribe.
         //
-        // Caveat — TDT-CTC 110M aux fetch: `AsrModels.load(.tdtCtc110m)`
-        // routes through `.parakeetCtc110m` on first load (FluidAudio
-        // AsrModels.swift:253). `DownloadUtils` then pulls that repo's
-        // required-set (MelSpectrogram + AudioEncoder, ~106 MB) IN
-        // ADDITION to the requested `CtcHead.mlmodelc`. The total CTC
-        // first-install download is therefore ~220 MB primary + ~106 MB
-        // aux = ~330 MB (matches the Settings footer copy). Both fetches
-        // happen on the same explicit Download tap that built up the
-        // primary repo, so the user is not surprised by a silent
-        // post-tap pull — the consent flow is intact. The unfortunate
-        // wrinkle is FluidAudio's "required-set" definition pulling
-        // files we don't need (only `CtcHead` is actually consumed),
-        // but disabling that requires forking FluidAudio.
-        if standIn == nil && !Self.modelsExistOnDiskForSelectedVariant() {
-            // Branch on the active variant: the bundled TDT-CTC 110M has no
-            // download path (weights ship in the IPA), so a "tap Download"
-            // CTA is impossible. The only recovery is a reinstall. The
-            // Parakeet 600M opt-in variant keeps the Settings → Download
-            // CTA (handled in the default branch).
-            let message: String
-            switch Self.selectedVersion {
-            case .tdtCtc110m:
-                message = "The bundled speech model couldn't be found. Reinstall Jot from the App Store."
-            default:
-                message = "The selected speech model isn't downloaded yet. Open Settings → Speech model and tap Download."
-            }
-            throw TranscriptionError.loadFailed(message)
+        // Capability-gated model presence:
+        // - Capable devices run the BUNDLED 600M — a missing model means iOS
+        //   app thinning stripped the IPA resources; the only recovery is a
+        //   reinstall, so throw rather than attempt a (nonexistent) download.
+        // - Sub-6GB devices run the 110M, which is download-on-first-need. A
+        //   missing model here is EXPECTED on the very first dictation: the
+        //   user invoking dictation is the consent trigger, so we fall through
+        //   to `ensurePreparing()` → `loadOrFail()`, whose download branch
+        //   fetches the weights and surfaces `.downloading` progress. We do
+        //   NOT throw on a capability-fallback device.
+        if standIn == nil
+            && DeviceCapability.is600MCapable
+            && !Self.modelsExistOnDiskForSelectedVariant() {
+            throw TranscriptionError.loadFailed(
+                "The bundled speech model couldn't be found. Reinstall Jot from the App Store."
+            )
         }
         let inferenceStartedAt = Date()
         let prepareStartedAt = Date()
@@ -570,6 +563,63 @@ final class TranscriptionService {
             var decoderState = TdtDecoderState.make(
                 decoderLayers: Self.selectedVersion.decoderLayers
             )
+
+            // ── Concurrency: overlap the expensive CTC keyword-spot pass
+            // with the TDT transcribe. The spot consumes ONLY the audio
+            // (not the TDT text/timings), so it can run on the separate
+            // `CtcKeywordSpotter` while TDT decodes on the `AsrManager`
+            // actor. Only the cheap merge (which needs the TDT timings)
+            // runs after both finish. Measured 15–23% off the
+            // rescore-inclusive post-stop wait (docs/plans/vocab-rescore-parallelization.md).
+            //
+            // Gating is byte-identical to the old serial path: the spot is
+            // only kicked off when vocab is enabled (otherwise the rescore
+            // would have been skipped entirely), and the merge still only
+            // runs when `tokenTimings` is present. When vocab is disabled
+            // the `async let` is never created → zero behavior change.
+            //
+            // The spot result is `Sendable` (CTC log-probs + frame
+            // duration); the two tasks touch disjoint models with no shared
+            // mutable state, so there is no data race under Swift 6 strict
+            // concurrency.
+            let vocabEnabledForThisRun = VocabularyStore.shared.isEnabled
+            // Snapshot the audio into a `let` so the concurrently-running
+            // spot task captures an immutable value (no aliasing with the
+            // TDT pass, which reads `samples` by value as well).
+            let audioForSpot = samples
+            // BOUNDED + NON-FATAL: the spot runs under a hard timeout. If the
+            // rescorer is unready, mid-prepare, errors, or hangs, `withTimeout`
+            // returns nil and we publish the plain TDT transcript — the spot can
+            // NEVER block the transcribe publish or the MainActor model pipeline.
+            // SCALE the timeout to the audio length: the CTC spot re-chunks at
+            // 15 s windows, so a long dictation legitimately takes longer than a
+            // short one. Floor `vocabSpotTimeoutSeconds` for short clips; ~1.5×
+            // the audio duration above that, so a LEGIT spot completes (vocab is
+            // not falsely dropped on a long recording) while still bounding a
+            // genuine hang. (The toggle-race that caused the wedge is fixed
+            // separately; this timeout is the belt-and-suspenders safety valve.)
+            let spotTimeoutSeconds = max(
+                Self.vocabSpotTimeoutSeconds,
+                Self.audioDurationSeconds(sampleCount: audioForSpot.count) * 1.5
+            )
+            async let spotResult: CtcKeywordSpotter.SpotKeywordsResult? = {
+                guard vocabEnabledForThisRun else { return nil }
+                let spot = await withTimeout(seconds: spotTimeoutSeconds) {
+                    try await VocabularyRescorerHolder.shared.spot(
+                        audioSamples: audioForSpot
+                    )
+                }
+                // `withTimeout` returns `T?` where T is itself `…Result?`, so
+                // a timeout (outer nil) and a not-ready spot (inner nil) both
+                // collapse to "no rescore" — exactly the old fall-back.
+                if spot == nil {
+                    self.log.error(
+                        "vocabulary spot skipped — not ready or timed out after \(spotTimeoutSeconds, privacy: .public)s; publishing raw transcript"
+                    )
+                }
+                return spot ?? nil
+            }()
+
             let result = try await manager.transcribe(samples, decoderState: &decoderState)
             let inferenceEndedAt = Date()
             let wallClockMS = Self.elapsedMilliseconds(from: inferenceStartedAt, to: inferenceEndedAt)
@@ -606,18 +656,37 @@ final class TranscriptionService {
                     "chars": "\(result.text.count)",
                 ]
             )
-            if VocabularyStore.shared.isEnabled, let timings = result.tokenTimings {
-                do {
-                    if let rescored = try await VocabularyRescorerHolder.shared.rescore(
-                        transcript: result.text,
+            // Join the concurrently-running CTC spot pass (kicked off
+            // before `manager.transcribe` above). Awaiting unconditionally
+            // here drains the structured task on every path; when vocab is
+            // disabled the task body returned `nil` immediately, so this is
+            // a no-op. The cheap merge (which needs the TDT `tokenTimings`)
+            // runs only when both vocab is enabled AND timings are present —
+            // byte-identical gating to the old serial `rescore` call.
+            let resolvedSpot = await spotResult
+            if VocabularyStore.shared.isEnabled,
+                let timings = result.tokenTimings,
+                resolvedSpot != nil {
+                // The merge is cheap CPU (~14–20 ms) plus a couple of actor
+                // hops, but it is still bounded + non-fatal: a hung
+                // CorrectionStore/Provenance actor or a wedged rescorer can
+                // never block the publish. On timeout/skip we keep the raw
+                // TDT text — byte-identical to the old "rescore returned nil"
+                // fall-back. (Skip entirely when the spot produced nothing.)
+                let textForMerge = result.text
+                let merged = await withTimeout(seconds: Self.vocabMergeTimeoutSeconds) {
+                    await VocabularyRescorerHolder.shared.merge(
+                        transcript: textForMerge,
                         tokenTimings: timings,
-                        audioSamples: samples
-                    ) {
-                        transcriptText = rescored
-                    }
-                } catch {
-                    log.error(
-                        "vocabulary rescore failed — falling back to raw: \(error.localizedDescription, privacy: .public)"
+                        spotResult: resolvedSpot
+                    )
+                }
+                // Outer nil = merge timed out; inner nil = rescorer not ready.
+                if let merged, let rescored = merged {
+                    transcriptText = rescored
+                } else if merged == nil {
+                    self.log.error(
+                        "vocabulary merge timed out after \(Self.vocabMergeTimeoutSeconds, privacy: .public)s; publishing raw transcript"
                     )
                 }
             }
@@ -654,6 +723,75 @@ final class TranscriptionService {
             )
             signposter.endInterval("transcribe-inference", inferenceInterval)
             throw TranscriptionError.inferenceFailed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Preview inference (batch-only streaming, Phase 0)
+
+    /// Lean inference path for the live-preview re-transcribe loop
+    /// (`docs/plans/batch-only-streaming.md`). Deliberately NOT
+    /// `transcribe(samples:)`:
+    ///
+    /// - **No `isTranscribing` gate.** Preview ticks coalesce in
+    ///   `PreviewScheduler` (latest-wins) and must never make the saving
+    ///   stop-pass throw `.busy`. Serialization happens naturally on the
+    ///   `AsrManager` actor's mailbox — a stop-pass queues behind at most
+    ///   one in-flight tick.
+    /// - **No side effects.** Skips `CorrectionProvenance.clearPending()`
+    ///   and `DiagnosticsLog` — those belong to the saving stop-pass only.
+    /// - **NO vocabulary rescore** (adversarial review #2 F2):
+    ///   `VocabularyRescorerHolder.rescore` is a second CoreML inference
+    ///   (CTC spotter over the window's audio) and records correction
+    ///   provenance *internally* — running it per tick doubles inference
+    ///   cost and corrupts adaptive-vocab state. Consequence: vocab terms
+    ///   may visibly correct when the stop-pass result lands. Accepted.
+    /// - **Never loads or downloads.** Rides a manager the normal warm-up
+    ///   already produced; returns `nil` when not ready.
+    /// - **Returns `nil` instead of throwing** — a failed or too-short
+    ///   (<1 s) tick is silently dropped by the scheduler.
+    /// Whether `previewTranscribe(...)` can presently produce text, i.e. the
+    /// model is loaded and ready (or the simulator stand-in is active).
+    ///
+    /// The `PreviewScheduler` reads this to implement **capture-first** across
+    /// a COLD model load: on the first dictation after an install/update the
+    /// 600M load can run 30-40s+, during which every `previewTranscribe` call
+    /// returns `nil`. The scheduler must NOT tick or advance its window while
+    /// not ready — otherwise the cap give-up valve discards the audio captured
+    /// during the load and the first cold session's preview never recovers
+    /// even after the model finishes (the warm 2nd session works because it
+    /// starts already-ready). With this flag the scheduler holds all captured
+    /// audio and, the instant the model is ready, drains it into the preview.
+    var isPreviewModelReady: Bool {
+        if standIn != nil { return true }
+        return manager != nil && modelState == .ready
+    }
+
+    func previewTranscribe(samples: [Float]) async -> String? {
+        if let standIn {
+            // Simulator: exercise the preview pipeline with the stand-in
+            // text so the scheduler/UI flow is testable without a model.
+            return try? await standIn.transcribe(samples: samples)
+        }
+        guard let manager, modelState == .ready else { return nil }
+        guard Double(samples.count) >= Self.sampleRate else { return nil }
+        do {
+            var decoderState = TdtDecoderState.make(
+                decoderLayers: Self.selectedVersion.decoderLayers
+            )
+            let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            var text = result.text
+            // Text-only quality pipeline (cheap): paragraphs need token
+            // timings; filler + number passes are regex/lookup. Vocab is
+            // intentionally absent — see doc comment.
+            if let timings = result.tokenTimings {
+                text = ParagraphSegmenter.segment(rescoredText: text, tokenTimings: timings)
+            }
+            text = FillerWordCleaner.clean(text)
+            text = NumberNormalizer.normalize(text)
+            return text
+        } catch {
+            log.debug("preview transcribe failed — \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
@@ -819,6 +957,19 @@ final class TranscriptionService {
             self.manager = manager
             modelState = .ready
             let loadEndedAt = Date()
+            // Calibrate the "Loading …" bar's pacing for this device + variant.
+            // First load of the process lifetime routes to the cold bucket
+            // (post-update ANE recompile), later loads to warm — so a warm
+            // process-restart paces against its real ~seconds duration rather
+            // than the generous cold default. (Mirrors the EOU path, which
+            // already records; the batch path previously did not.)
+            ModelLoadTimekeeper.record(
+                variant: AppGroup.speechModelVariant,
+                seconds: loadEndedAt.timeIntervalSince(loadStartedAt)
+            )
+            // The model has now loaded at least once on this install, so any
+            // FUTURE cold load uses the recurring (not first-ever) copy.
+            ColdStartCopy.markLoadedOnce()
             let loadElapsedMS = Self.elapsedMilliseconds(from: loadStartedAt, to: loadEndedAt)
             let prepareEndedAt = Date()
             let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
@@ -885,70 +1036,88 @@ final class TranscriptionService {
         }
     }
 
-    /// Resolve the per-variant model directory for FluidAudio's
+    /// Resolve the bundled model directory for FluidAudio's
     /// `AsrModels.load(from:)`.
     ///
-    /// For the **bundled** TDT-CTC 110M variant we point at the
-    /// `Resources/Models/Parakeet/parakeet-tdt-ctc-110m` folder reference
-    /// inside the app bundle. FluidAudio's loader expects the directory
-    /// whose parent contains the repo's `folderName` — our bundle layout
-    /// is `<Bundle>/Models/Parakeet/parakeet-tdt-ctc-110m/`, so the
-    /// parent `<Bundle>/Models/Parakeet/` also contains the sibling
-    /// `parakeet-ctc-110m-coreml/` directory the v2 CtcHead fallback
-    /// loads from. Result: no first-launch download for the default
-    /// dictation flow (App Review 4.2.3(ii)).
+    /// Resolve the model directory for FluidAudio's `AsrModels.load(from:)`,
+    /// branching on device capability:
     ///
-    /// For the opt-in **Parakeet 0.6B v2** variant the path falls back to
-    /// FluidAudio's default Application Support cache directory — that
-    /// variant remains a Settings-driven download per the locked spec.
-    /// Bundling v2 would add ~440 MB to the IPA for a power-user opt-in.
-    ///
-    /// If the bundle resource ever goes missing (defensive fallback for
-    /// debug builds or stripped IPAs), fall through to the Application
-    /// Support cache — that path can still surface a download CTA in
-    /// Settings.
+    /// - **Capable devices** (`DeviceCapability.is600MCapable`) run the
+    ///   bundled Parakeet 0.6B v2, vendored at
+    ///   `Resources/Models/Parakeet/parakeet-tdt-0.6b-v2-coreml/` inside the
+    ///   app bundle. First dictation is instant + offline, no download. If the
+    ///   bundle resource is ever stripped (debug builds / iOS app thinning) we
+    ///   fall through to the Application Support cache as a defensive guard.
+    /// - **Sub-6GB devices** run the smaller 110M, which is NOT bundled —
+    ///   `MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetTdtCtc110m)`
+    ///   points at FluidAudio's default Application Support cache, where
+    ///   `AsrModels.download` lands the weights on first need.
     private static func modelDirectory() -> URL {
-        // The bundled TDT-CTC 110M variant points at the IPA's
-        // read-only resource directory; the opt-in Parakeet 600M v2
-        // download lives in Application Support.
-        if SpeechModelVariant.current() == .tdtCtc110m,
-           let bundled = bundledTdtCtc110mDirectory() {
+        if DeviceCapability.is600MCapable, let bundled = bundled600mDirectory() {
             return bundled
         }
         return MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
     }
 
-    /// `<Bundle>/Models/Parakeet/parakeet-tdt-ctc-110m/` if present, else nil.
+    /// `<Bundle>/Models/Parakeet/parakeet-tdt-0.6b-v2/` if present, else nil.
     /// Resolved by composing `Bundle.main.bundleURL` directly against the
     /// `Models` folder reference declared in `project.yml`. We don't use
-    /// `Bundle.main.url(forResource:withExtension:subdirectory:)` because
-    /// that API doesn't reliably surface subpaths inside a folder
-    /// reference — `.mlmodelc` directories live under
-    /// `parakeet-tdt-ctc-110m`, but `parakeet-tdt-ctc-110m` itself is
-    /// just a regular directory (not a typed resource), and the
-    /// extension-resolution machinery doesn't always index intermediate
+    /// `Bundle.main.url(forResource:withExtension:subdirectory:)` because that
+    /// API doesn't reliably surface subpaths inside a folder reference — the
+    /// `.mlmodelc` packages live under `parakeet-tdt-0.6b-v2`, but that
+    /// directory itself is just a regular directory (not a typed resource), and
+    /// the extension-resolution machinery doesn't always index intermediate
     /// directory names from folder references.
-    static func bundledTdtCtc110mDirectory() -> URL? {
+    ///
+    /// The folder name MUST be `parakeet-tdt-0.6b-v2` (NO `-coreml`). This is
+    /// load-bearing and was the root cause of build 142's "Download failed:
+    /// permission denied in folder Parakeet" crash: FluidAudio's
+    /// `Repo.parakeetV2.folderName` falls through the `folderName` switch's
+    /// `default` (`name.replacingOccurrences(of: "-coreml", with: "")`) → it is
+    /// `parakeet-tdt-0.6b-v2`, NOT the HF repo-id `parakeet-tdt-0.6b-v2-coreml`
+    /// (ModelNames.swift). `AsrModels.modelsExist(at:)`/`download(to:)` resolve
+    /// `repoPath(from: dir) = dir.deletingLastPathComponent() + folderName`, so
+    /// the bundled leaf's last component must EQUAL `folderName` or `modelsExist`
+    /// looks one dir over (`.../Parakeet/parakeet-tdt-0.6b-v2`), finds nothing,
+    /// and tries to download into the read-only bundle. Keep this in sync with
+    /// the vendored dir name under `Resources/Models/Parakeet/`.
+    static func bundled600mDirectory() -> URL? {
         let url = Bundle.main.bundleURL
             .appendingPathComponent("Models", isDirectory: true)
             .appendingPathComponent("Parakeet", isDirectory: true)
-            .appendingPathComponent("parakeet-tdt-ctc-110m", isDirectory: true)
+            .appendingPathComponent("parakeet-tdt-0.6b-v2", isDirectory: true)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    /// Whether the user-selected speech-model variant has its weights
-    /// available — either bundled in the IPA (TDT-CTC 110M) or cached on
-    /// disk in Application Support (Parakeet 0.6B v2 opt-in). Used by
-    /// the eager warm-up path (`JotApp.task`) and any "models available"
-    /// UI gate to avoid silent first-run downloads (Guideline
-    /// 4.2.3(ii)). Resolves the variant from
-    /// `AppGroup.speechModelVariant`.
+    /// Whether the active dictation model's weights are available on disk.
+    /// Used by the eager warm-up gate (`warmIfNeeded()` / `JotApp.task`) and
+    /// any "models available" UI gate.
     ///
-    /// For the bundled variant this always returns `true` on a healthy
-    /// install: the `.mlmodelc` resources are part of the app bundle and
-    /// can't be evicted without re-installing the app.
+    /// - **Capable devices**: the 600M ships in the IPA, so this is `true` on
+    ///   any healthy install (the `.mlmodelc` resources can't be evicted
+    ///   without re-installing the app). Gating warm-up on this preserves the
+    ///   no-silent-download guarantee trivially (always true → always warms).
+    /// - **Sub-6GB devices**: the 110M is download-on-first-need, so this is
+    ///   `false` until the first dictation has fetched it. That's intended —
+    ///   it keeps `warmIfNeeded()` from silently downloading at launch (App
+    ///   Review 4.2.3(ii)); the download is triggered by the user's first
+    ///   dictation tap instead, where `.downloading` progress is surfaced.
     static func modelsExistOnDiskForSelectedVariant() -> Bool {
         AsrModels.modelsExist(at: modelDirectory(), version: selectedVersion)
+    }
+
+    /// The App-Support directory of the currently-ACTIVE downloaded dictation
+    /// model, or `nil` when the active model is the bundled 600M (nothing is
+    /// downloaded). This is the guard hook for an orphaned-download cleanup
+    /// sweep: any such sweep that deletes unused App-Support model dirs MUST
+    /// exclude this path, otherwise it would delete the 110M out from under a
+    /// low-RAM device that depends on it. The sweep itself is NOT implemented
+    /// here (see `docs/plans/single-model-600m-rip-eou.md`); this accessor
+    /// exists so a future sweep has a single source of truth for "the dir in
+    /// use." Returns `nil` on capable devices (no orphan risk — they download
+    /// nothing).
+    static func activeDownloadedModelDirectory() -> URL? {
+        DeviceCapability.is600MCapable ? nil : modelDirectory()
     }
 
     /// Sweep stale `<modelDir>.purging-*` siblings left behind by interrupted
@@ -1486,5 +1655,41 @@ private final class OneShotInputGate: @unchecked Sendable {
         guard !fired else { return false }
         fired = true
         return true
+    }
+}
+
+/// Run `operation`, returning its result, or `nil` if it does not finish
+/// within `seconds`. On timeout the operation task is **cancelled** and the
+/// `nil` is returned to the caller. This is the safety valve that bounds the
+/// vocabulary CTC spot/rescore so it can never permanently wedge the
+/// transcription publish or the MainActor model pipeline.
+///
+/// IMPORTANT semantics: this uses `withTaskGroup`, which awaits ALL of its
+/// children at scope exit — so `cancelAll()` only *requests* cancellation; the
+/// group still implicitly awaits the loser. Because CoreML inference does NOT
+/// reliably observe Swift task cancellation, the loser keeps running until its
+/// current `MLModel.prediction` returns, and this function does not actually
+/// return until then. The LIVENESS guarantee (always returns) holds anyway
+/// because each `prediction` is a single bounded call that always eventually
+/// completes — there is no infinite-loop path. What `seconds` truly bounds is
+/// the *number of additional chunks scheduled* after the deadline, not the
+/// exact wall-clock; a publish can be delayed up to one in-flight prediction
+/// beyond `seconds`. That is acceptable: the caller is never blocked forever.
+private func withTimeout<T: Sendable>(
+    seconds: Double,
+    operation: @escaping @Sendable () async throws -> T
+) async -> T? {
+    await withTaskGroup(of: T?.self) { group -> T? in
+        group.addTask {
+            try? await operation()
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            return nil
+        }
+        // First child to finish wins; cancel the rest and DO NOT await them.
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first
     }
 }

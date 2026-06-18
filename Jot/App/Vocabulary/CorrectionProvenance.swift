@@ -120,9 +120,6 @@ actor CorrectionProvenance {
         pending = []
         pendingAnchorText = ""
         guard !records.isEmpty, let url = fileURL(transcriptID) else {
-            DiagnosticsLog.record(
-                source: "main-app", category: .vocabularyGate, message: "provenance commit SKIPPED",
-                metadata: ["records": "\(records.count)", "id": transcriptID.uuidString])
             return
         }
         // Commit is once-per-fresh-id, but be defensive: if a payload already

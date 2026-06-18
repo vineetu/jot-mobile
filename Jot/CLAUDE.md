@@ -72,7 +72,7 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 ## Wizard / setup-flow conventions
 
 - The 7-panel wizard (W1–W7) lives in `Jot/App/SetupWizard/`. Each panel has its own file under `Steps/`. (The optional AI-offer follow-on was removed; the wizard is now exactly W1–W7.)
-- **Wizard contract:** any recording started inside the wizard (W5 keyboard test triggered via the keyboard's Dictate-tap notification) MUST be force-stopped before the wizard dismisses. Failing this leaks a zombie recording into the home view. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks. Don't bypass.
+- **Wizard contract:** any recording started inside the wizard (W5 keyboard test triggered via the keyboard's Dictate-tap notification) MUST be released before the wizard dismisses — **gently, via `recordingService.cancel()`** (honours Warm Hold, discards the never-saved W5 audio), NOT `forceStop()` (per the standing "never force-stop the mic" rule). Force-cut on leave/end is fine; never on wizard entry/re-entry. The teardown lives in `SetupWizardView.closeAndComplete()` and individual step `.onDisappear` hooks; the pipeline-in-flight-after-Stop case is reset with `markPipelineFinished()` + `publishPipelinePhase(.idle)`. Failing to release leaks a zombie recording into the home view. Don't bypass.
 
 ## Build / run
 

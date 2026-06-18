@@ -344,14 +344,19 @@ struct KeyboardView: View {
                 // header so the pill can shrink. Below 428 the pill keeps the
                 // timer and the header omits it to avoid duplication.
                 showsHeaderTimer: metrics.isLargeWidth,
+                // The label is now a full editorial cold-start line
+                // (`ColdStartCopy`), not a model name — no "Loading …" prefix.
+                // The strip defers showing it until a load is genuinely slow.
                 loadingLabel: recordingState.loadingVariantLabel.isEmpty
                     ? nil
-                    : "Loading \(recordingState.loadingVariantLabel)…",
+                    : recordingState.loadingVariantLabel,
                 // Short echo of the hero's "a sharper transcriber takes a second
-                // pass when you stop" promise, sized for the header. The status
-                // slot is a reusable container — future contexts (edit / feedback
-                // "won't be saved") can swap this copy.
-                statusLine: "We tidy this up when you stop"
+                // pass when you stop" promise, sized for the header. Shown ONLY
+                // once live text is streaming — never during the load/listen
+                // window (there's nothing yet to tidy up).
+                statusLine: recordingState.streamingPartialText.isEmpty
+                    ? nil
+                    : "We tidy this up when you stop"
             )
             .transition(
                 reduceMotion

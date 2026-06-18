@@ -199,6 +199,18 @@ struct ContentView: View {
     /// future code path pushes the hero without configuring `heroIntent`,
     /// we'd rather pop back than spuriously start a recording.
     @State private var heroIntent: HeroIntent = .adoptInFlight
+    /// True exactly while the recording hero is actually MOUNTED on screen,
+    /// tracked by the hero's `.onAppear` / `.onDisappear` inside the
+    /// `navigationDestination` closure below. `showRecordingHero` alone is NOT a
+    /// reliable proxy for "the hero is on the nav stack": the iOS interactive
+    /// swipe-back pops the hero via its `.onDisappear` safety net WITHOUT writing
+    /// `showRecordingHero` back to `false` (it latches `dismissingViaBack` and
+    /// bails to keep the recording alive — see `RecordingHeroView.onDisappear`).
+    /// That leaves `showRecordingHero == true` while the hero is gone, which
+    /// suppresses the home "Recording" return-pill (`isLiveRecordingInline`
+    /// requires `!showRecordingHero`). The scenePhase reconciliation below uses
+    /// THIS flag — the live mount truth — to detect and clear that desync.
+    @State private var heroIsPresented = false
 
     /// Darwin observer for the keyboard-dictate tap, installed only while the
     /// wizard is NOT presented (the wizard owns its own observer during its
@@ -348,6 +360,11 @@ struct ContentView: View {
                     showRecordingHero: $showRecordingHero,
                     intent: heroIntent
                 )
+                // Track the hero's true mount state so the scenePhase
+                // reconciliation can tell a genuinely-presented hero from a
+                // stuck `showRecordingHero` binding after a system swipe-back.
+                .onAppear { heroIsPresented = true }
+                .onDisappear { heroIsPresented = false }
             }
             .navigationDestination(for: UUID.self) { transcriptID in
                 // Programmatic push for Recents row taps. We push the UUID rather
@@ -545,6 +562,18 @@ struct ContentView: View {
             if phase == .active {
                 refreshDonationCardVisibility()
                 refreshWarmHoldNudge()
+                // Deferred one runloop hop: when the app foregrounds STRAIGHT
+                // into a legitimately-presented hero (warm `jot://dictate`
+                // resume, or a cold dictate that lands on the hero), SwiftUI
+                // delivers this scenePhase `.active` change and the hero's
+                // navigationDestination `.onAppear` in the same pass with no
+                // guaranteed ordering. Running reconcile synchronously could see
+                // `heroIsPresented == false` (onAppear pending) while
+                // `showRecordingHero == true` and dismiss a hero the user is
+                // actively viewing (clause (b)). Deferring lets the pending
+                // `.onAppear` flip `heroIsPresented = true` first, so reconcile
+                // only resets a GENUINELY desynced binding (swipe-back case).
+                DispatchQueue.main.async { reconcileHomeRecordingIndicator() }
             }
         }
         .onChange(of: visibleTranscriptIDs) { _, visibleIDs in
@@ -601,6 +630,42 @@ struct ContentView: View {
         pendingExternalKeyboardHero = false
         heroIntent = .openedFromExternalKeyboard
         showRecordingHero = true
+    }
+
+    /// Reconcile the home "Recording" return-pill against the live recording
+    /// state when the scene becomes active. The pill (`isLiveRecordingInline`)
+    /// is suppressed by two stale UI flags that a cold `jot://dictate` URL-bounce
+    /// or a system swipe-back can strand, leaving an in-progress (keyboard-
+    /// started) recording invisible on home:
+    ///
+    /// (a) `pendingExternalKeyboardHero` can stick `true`: it's cleared only in
+    ///     the guarded present sites (`presentExternalKeyboardHeroIfPending`),
+    ///     which early-return WITHOUT clearing if the hero/wizard is already up.
+    ///     If neither a hero nor the wizard is presented, a still-pending flag is
+    ///     stale — nothing will present from it — so clear it.
+    ///
+    /// (b) `showRecordingHero` can stay `true` after a system swipe-back: the
+    ///     hero's `.onDisappear` safety net keeps the recording alive and latches
+    ///     `dismissingViaBack` but never writes the binding back to `false`, so
+    ///     the binding desyncs from the (now unmounted) hero. If we ARE recording
+    ///     but the hero is genuinely NOT on screen (`!heroIsPresented`), reset the
+    ///     desynced binding so the pill re-appears.
+    ///
+    /// This only SURFACES already-true `isRecording` state — it never presents the
+    /// hero and never reintroduces the removed "adopt-unless-vetoed" model. The
+    /// three source-based present triggers (FAB tap, cold `jot://dictate`,
+    /// return-pill tap) are untouched.
+    private func reconcileHomeRecordingIndicator() {
+        // (a) Clear a stale external-keyboard-hero pending flag when nothing it
+        // could present is on screen.
+        if pendingExternalKeyboardHero, !showRecordingHero, !isWizardPresented {
+            pendingExternalKeyboardHero = false
+        }
+        // (b) Reset a desynced hero binding so the pill re-surfaces for a live
+        // recording whose hero was swipe-back-dismissed without writing back.
+        if recordingService.isRecording, showRecordingHero, !heroIsPresented {
+            showRecordingHero = false
+        }
     }
 
     // MARK: - WS-B unified keyboard-dictate receiver
