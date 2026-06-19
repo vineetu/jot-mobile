@@ -20,7 +20,15 @@ enum CorrectionInbox {
             guard let record = model.record(forKey: event.recordKey) else { continue }
             // Skip if already adjudicated in-app since the keyboard event was queued.
             if model.verdict(of: record) != nil { continue }
-            await model.pick(record, choice: event.verdict)
+            if event.verdict == "suppress" {
+                // "Stop asking" from the hold deck: hard-suppress the pair from
+                // keyboard asks, and keep the original (resolve the occurrence).
+                await CorrectionStore.shared.suppressBlock(
+                    originalWord: record.originalWord, term: record.term)
+                await model.pick(record, choice: "original")
+            } else {
+                await model.pick(record, choice: event.verdict)
+            }
         }
         // Remove exactly what we applied; a crash before here leaves the queue for
         // a safe retry, and any verdict enqueued during apply is preserved.

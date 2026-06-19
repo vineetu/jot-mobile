@@ -24,6 +24,27 @@ enum CorrectionBridge {
         let outcome: String         // "applied" | "kept"
         let contextBefore: String   // ~24 chars before the word (ellipsized)
         let contextAfter: String    // ~24 chars after
+        /// Char offset + length of the gated word in the published text — lets the
+        /// keyboard splice the chosen word deterministically for ask-before-paste
+        /// (Thread 2), instead of fragile context-matching. Optional: a blob encoded
+        /// before Thread 2 has no key, so the SYNTHESIZED decode yields nil (the
+        /// post-paste nudge path doesn't need it). The explicit init defaults keep
+        /// pre-Thread-2 call sites compiling.
+        let publishedStart: Int?
+        let publishedLength: Int?
+
+        init(recordKey: String, original: String, term: String, outcome: String,
+             contextBefore: String, contextAfter: String,
+             publishedStart: Int? = nil, publishedLength: Int? = nil) {
+            self.recordKey = recordKey
+            self.original = original
+            self.term = term
+            self.outcome = outcome
+            self.contextBefore = contextBefore
+            self.contextAfter = contextAfter
+            self.publishedStart = publishedStart
+            self.publishedLength = publishedLength
+        }
     }
 
     struct Asks: Codable, Sendable {

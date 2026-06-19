@@ -146,24 +146,32 @@ if !transient { try ledgerAppend(...) }           // heavy/throwable; still LAST
 - `computeAsks`/`publishAsks` must not throw/hang onto the paste path — on time-budget overrun, degrade to zero-asks rather than delay `ClipboardHandoff.publish`. Confirm `budgetMs` headroom with the A5 timing log.
 - New silent-loss note (SHOULD-4): an ask whose later `ledgerAppend` throws → its keyboard verdict is dropped on drain (`CorrectionInbox` skips when the transcript row is missing). Acceptable (append-throw is the rare degraded path); documented, not fixed.
 
-Keyboard gate pseudo — **in front of** the existing `flushPendingAutoPasteIfPossible`, never forking it:
+Keyboard gate — **GATE-AND-RE-ENTER, not a hoist** (revised after reading the full flush machinery; supersedes design-review NICE-2). `flushPendingAutoPasteIfPossible` is ALREADY re-entrant (it's called on every phase-change / Darwin wake). So rather than hoist the 350-line `performInsertAndVerify` out of its nested scope (surgery on the proven path), we add an early-return gate at the top of the happy path and let the deck **re-enter** flush after it resolves:
 ```
 flushPendingAutoPasteIfPossible():
-    payload = ClipboardHandoff.readFresh()                 // existing
-    guard session valid                                    // existing
-    asks = CorrectionBridge.readAsks(sessionID: payload.session)   // SESSION-FILTERED ONLY — never readLatestAsks (RACE-1)
-    if asks == nil || asks.isEmpty:
-        insertVerified(text: payload.text, session: payload.session)   // EXACTLY today's path — no change
-        return
-    stagedButNotInserted = true                            // INV-1 flag (see §5.5)
-    suppressReadyNudge(forSession: payload.session)        // legacy correctionAsksReady must not nudge over the deck
-    presentCardDeck(asks) { resolvedVerdicts in
-        finalText = applyVerdicts(payload.text, resolvedVerdicts)   // splice by offset, with guard (§5.6)
-        insertVerified(text: finalText, session: payload.session)   // SAME proven path, once, for every host
-        stagedButNotInserted = false
-    }
+    ... existing guards, readFresh(), session-match ...
+    if payload.sessionID == session.id:
+        if payload.text empty: existing cleanup; return                  // unchanged
+        // ── NEW GATE (before the insert machinery) ──
+        if !deckHandled.contains(session.id):
+            asks = CorrectionBridge.readAsks(sessionID: session.id)      // SESSION-FILTERED ONLY — never readLatestAsks (RACE-1)
+            if asks?.isEmpty == false:
+                suppressReadyNudge(forSession: session.id)               // legacy correctionAsksReady must not nudge over the deck
+                presentCardDeck(asks, defaultText: payload.text, session: session.id)
+                return                                                   // HOLD: nothing inserted, pending NOT consumed
+        // ── existing machinery, unchanged except its text source ──
+        let pasteText = deckResolvedText[session.id] ?? payload.text     // ONE-LINE change (was: payload.text)
+        ... adjustTextPosition(0) + bounded reconnect-poll + performInsertAndVerify + verify ...  // byte-for-byte
+
+// deck completion (resolve, per-card skip, or first-card-idle skip-all):
+onDeckResolved(session, finalText):
+    deckResolvedText[session] = finalText        // finalText = applyVerdicts(defaultText, verdicts) — splice by offset, guarded (§5.6)
+    deckHandled.insert(session)
+    flushPendingAutoPasteIfPossible()            // RE-ENTER → gate passes → SAME proven path inserts finalText
 ```
-- `insertVerified(text:session:)` = the existing `performInsertAndVerify` **hoisted out of its nested closure into a reusable method** (design-review NICE-2). Today it is a local closure baking in `pasteText = payload.text` (`JotKeyboardViewController.swift:1392,1403`); hoisting it is what keeps INV-2's single insert path real, and it is the largest hidden implementation cost (the same "root-decoupling → true single paste path" work the code defers at `:353-356`). **Prerequisite — do it first in Phase 2.**
+- **Why this beats the hoist:** the proven insert path (`performInsertAndVerify`, the build-103-106 reconnect-poll, the in-flight guards) stays **byte-for-byte**. INV-2 (single insert path) holds by construction — there is literally one insert site. INV-1 falls out for free: during the hold nothing is inserted and `markConsumed()`/`clearPendingPasteSession()` never run, so teardown-mid-deck can neither drop nor double the text (the pending session + the clipboard floor both survive) — **the `stagedButNotInserted` flag is no longer needed.**
+- `deckHandled` / `deckResolvedText` are controller-scoped (keyed by sessionID). Lost on teardown → a re-presented keyboard simply re-shows the unresolved deck (text never lost: pending intact). Acceptable, arguably better than silently pasting on teardown.
+- Caveat: re-entry relies on the handoff payload still being fresh (30s window). The deck resolves in seconds (first-card-idle = immediate skip-all, §5.4), so this holds in practice; if the payload ever expired mid-deck, the happy-path guard fails and we fall to the existing clipboard-floor recovery (no data loss). Capture `defaultText` at present-time so the resolved text never depends on a second payload read.
 
 ### 5.4 Card deck behavior (owner-specified, UX-confirmed)
 - ≤3 cards (matches `maxAsks=3`), one per ask, shown **inside the keyboard** (the existing 129pt strip slot — §7).
@@ -175,10 +183,8 @@ flushPendingAutoPasteIfPossible():
 - After last card resolved/skipped → `applyVerdicts` → single `insertVerified`. Done-state dwell **shortened to ~0.8–1.0s** (the user is waiting for the paste — the shipped 2.2s teach-card dwell is too long when it gates the paste; UX §7f).
 
 ### 5.5 Invariants (must hold) — INV-1 made concrete (design-review MUST-2)
-- **INV-1 (never lose text):** the staged text is ALWAYS eventually inserted. **The hazard:** today insert happens *before* the in-flight window opens, so `viewWillDisappear` (`JotKeyboardViewController.swift:430-449`) safely assumes "window open ⇒ already inserted" and consumes (`markConsumed` + `clearPendingPasteSession`). The deck **inverts** this — during the deck nothing is inserted yet, so the existing consume-on-teardown would **drop** the text. **Mechanism:** an explicit `stagedButNotInserted` flag the teardown path checks:
-  - teardown/app-switch mid-deck **with a live proxy** → run `applyVerdicts(defaults) + insertVerified` synchronously before dismiss;
-  - teardown **with a detached proxy** (insert unreliable) → **leave the pending session + payload INTACT (do NOT consume)** so the next flush re-pastes — safe from double-paste *because* `stagedButNotInserted == true` means no prior insert exists to duplicate (this is the only thing that reconciles INV-1 with the build-103-106 anti-double-paste consume). Clipboard floor remains the last resort.
-- **INV-2 (single insert path):** every host goes through the hoisted `insertVerified(text:session:)` exactly once. The gate changes only *when* and *with what text*. (Requires the closure→method hoist, §5.3.)
+- **INV-1 (never lose text) — satisfied for free by gate-and-re-enter (§5.3).** During the hold the gate `return`s *before* the insert machinery, so nothing is inserted and `markConsumed()`/`clearPendingPasteSession()` never run — the pending session stays intact. Teardown-mid-deck therefore cannot drop the text (it's still pending + on the clipboard floor) nor double it (no prior insert to duplicate). No `stagedButNotInserted` flag needed; the consume-on-teardown path (`JotKeyboardViewController` viewWillDisappear) only ever runs after a real insert, which the hold hasn't reached. A re-presented keyboard simply re-shows the unresolved deck.
+- **INV-2 (single insert path):** there is literally ONE insert site (the unchanged `performInsertAndVerify` inside flush). The deck only controls *whether* flush proceeds and *what text* it reads (`deckResolvedText[session] ?? payload.text`). No hoist, no second path.
 - **INV-3 (no race):** the keyboard reads `readAsks(sessionID:)` (session-filtered, never `readLatestAsks`) and never inserts before it has the ask set for THIS session (Option A ordering + RACE-1 fix).
 
 ### 5.6 Splicing on the keyboard side — by offset, with a fail-safe guard
@@ -204,7 +210,7 @@ flushPendingAutoPasteIfPossible():
 3. Update `features.md` §8.x (vocab) for the new keyboard suppression behavior; extend the `CorrectionAsksPublisher.swift:8-9` doc-comment to mention rejection-suppression (§10).
 
 **Phase 2 — Thread 2 (ask-before-paste):**
-4. **Prerequisite hoist:** lift `performInsertAndVerify` out of its nested closure into `insertVerified(text:session:)` (§5.3, NICE-2) — keeps INV-2's single path real. Adversarial-review this *alone* (it touches the hardened paste path) before building on it.
+4. ~~Hoist `performInsertAndVerify`~~ **SUPERSEDED by gate-and-re-enter (§5.3).** No hoist — the proven path stays byte-for-byte. The only change inside the machinery is its text source: `deckResolvedText[session] ?? payload.text`.
 5. Extend `CorrectionBridge.Ask` with **optional** `publishedStart/publishedLength` + the offset-baseline guard (§5.6).
 6. Narrowed `DictationPipeline` reorder: commit + asks-DATA write before `ClipboardHandoff.publish`, with time-budget degrade; keep `correctionAsksReady` from preceding paste; ledger append stays last (§5.3). Add the A5 timing log.
 7. Keyboard gate in front of `flushPendingAutoPasteIfPossible`: `readAsks(sessionID:)`-only, `stagedButNotInserted` flag + teardown reconciliation, `applyVerdicts` splice, card-deck controller honoring INV-1/2/3 (§5.3-5.6).

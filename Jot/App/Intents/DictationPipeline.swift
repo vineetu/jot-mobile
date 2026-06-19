@@ -358,6 +358,28 @@ enum DictationPipeline {
                 ClipboardHandoff.clearPendingPasteSession()
             }
 
+            // Ask-before-paste (Thread 2): the keyboard reads the correction asks
+            // SYNCHRONOUSLY at flush time to decide whether to hold the paste for a
+            // review deck — so the asks DATA must be in the App Group BEFORE the
+            // handoff below wakes the keyboard. Commit provenance + stage the asks
+            // here, but DO NOT post `correctionAsksReady` yet (it drives the legacy
+            // post-paste nudge; firing it pre-paste would race the deck). The ready
+            // signal is posted AFTER the handoff (below). Committing here is safe:
+            // provenance is keyed by the transcript UUID, not the SwiftData row
+            // (idempotent, non-persisting map), so it doesn't need the ledger append
+            // (which stays last, Step B). Cost is a filter + context-slice, no
+            // inference — it does not meaningfully gate the paste (the user already
+            // waited through record→transcribe).
+            var asksReadyToSignal = false
+            if !transient {
+                await CorrectionProvenance.shared.commit(transcriptID: transcriptID)
+                asksReadyToSignal = await CorrectionAsksPublisher.publish(
+                    transcriptID: transcriptID,
+                    sessionID: resolvedSessionID,
+                    publishedText: publishedText,
+                    signalReady: false)
+            }
+
             // Step A: publish FIRST. The keyboard's auto-paste cares about
             // the publish; the ledger row is a separate concern that must
             // not gate it.
@@ -378,6 +400,11 @@ enum DictationPipeline {
                 ]
             )
             CrossProcessNotification.post(name: CrossProcessNotification.transcriptReady)
+            // NOW (after the paste-triggering handoff) signal the asks staged above,
+            // so the legacy post-paste nudge can fire — never before the paste.
+            if asksReadyToSignal {
+                CrossProcessNotification.post(name: CrossProcessNotification.correctionAsksReady)
+            }
 
             // In-Jot (transient) stop: Jot is the foreground host, so insert the
             // text IN-PROCESS into Jot's own focused field. The keyboard's pending
@@ -422,17 +449,12 @@ enum DictationPipeline {
                         cleaned: cleanedText,
                         duration: duration
                     )
-                    // v1b — persist the gate's proposals against the now-saved
-                    // transcript id so the pane can show them for review (the
-                    // anchor baseline — the gate-output text — was captured at
-                    // record() time inside the rescore).
-                    await CorrectionProvenance.shared.commit(transcriptID: transcriptID)
-                    // Phase 2 — publish the ≤3 highest-value asks to the App Group
-                    // so the keyboard can show its post-dictation quick-review.
-                    await CorrectionAsksPublisher.publish(
-                        transcriptID: transcriptID,
-                        sessionID: resolvedSessionID,
-                        publishedText: publishedText)
+                    // NOTE: provenance commit + asks staging moved ABOVE the handoff
+                    // (ask-before-paste needs them readable when the keyboard wakes).
+                    // The ledger append stays here, last, still best-effort: if it
+                    // throws, the paste already landed and the asks already published
+                    // — a verdict on an ask whose row failed to append is dropped on
+                    // drain (CorrectionInbox skips a missing transcript; rare, accepted).
                 } catch {
                     logger.error(
                         "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"
