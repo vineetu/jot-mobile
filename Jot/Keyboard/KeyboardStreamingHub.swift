@@ -192,6 +192,15 @@ final class KeyboardStreamingHub {
     /// whenever `showCorrectionNudge` is true.
     private(set) var correctionAsks: CorrectionBridge.Asks?
 
+    /// **Ask-before-paste HOLD deck (Thread 2).** Whether the PRE-paste review deck
+    /// should render. Distinct from `showCorrectionNudge` (the post-paste teach
+    /// strip): while this is true the controller is HOLDING the paste until the deck
+    /// resolves, then re-enters its flush to insert the resolved text. Snapshot-backed
+    /// (rendered via `onShouldRender`).
+    private(set) var showAskDeck = false
+    /// The asks for the held session. Non-nil whenever `showAskDeck` is true.
+    private(set) var askDeckAsks: CorrectionBridge.Asks?
+
     // MARK: - Render-notify hook (snapshot-backed surfaces only)
 
     /// Hook the active controller installs (in `viewWillAppear`) so the hub can
@@ -384,7 +393,9 @@ final class KeyboardStreamingHub {
     /// time races the publish). Yields to an already-showing correction nudge or
     /// the warm-hold nudge.
     private func showCorrectionNudgeFromReady() {
-        guard !showCorrectionNudge, !showWarmHoldNudge else { return }
+        // Never raise the post-paste teach nudge while the pre-paste hold deck is up
+        // (or already showing a nudge / warm-hold). The deck owns the asks pre-paste.
+        guard !showCorrectionNudge, !showWarmHoldNudge, !showAskDeck else { return }
         let a = CorrectionBridge.readLatestAsks()
         if let a, !a.asks.isEmpty {
             DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
@@ -419,6 +430,28 @@ final class KeyboardStreamingHub {
     func clearCorrectionNudge() {
         showCorrectionNudge = false
         correctionAsks = nil
+        onShouldRender?()
+    }
+
+    /// Present the ask-before-paste HOLD deck for a session whose paste the
+    /// controller is gating. Yields to nothing — the controller only calls this
+    /// after it has decided to hold (asks present, deck not yet handled).
+    func presentAskDeck(_ asks: CorrectionBridge.Asks) {
+        guard !showAskDeck else { return }
+        // Clear any post-paste teach nudge that raced in on `correctionAsksReady` —
+        // the hold deck is the single surface for these asks while it's up.
+        showCorrectionNudge = false
+        correctionAsks = nil
+        askDeckAsks = asks
+        showAskDeck = true
+        onShouldRender?()
+    }
+
+    /// Tear the hold deck down — its session resolved, the controller is about to
+    /// re-enter its flush and paste the resolved text.
+    func dismissAskDeck() {
+        showAskDeck = false
+        askDeckAsks = nil
         onShouldRender?()
     }
 

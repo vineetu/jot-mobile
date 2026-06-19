@@ -150,6 +150,19 @@ struct KeyboardView: View {
     /// to recents and clear the published asks.
     let onCorrectionFinished: () -> Void
 
+    /// Ask-before-paste HOLD deck (Thread 2) — pre-paste review. Higher priority
+    /// than the post-paste correction nudge and the warm-hold nudge; while it shows
+    /// the controller is HOLDING the paste until the deck resolves.
+    let showAskDeck: Bool
+    let askDeckAsks: CorrectionBridge.Asks?
+    /// (recordKey, verdict) — owner picked a word in the hold deck.
+    let onAskDeckVerdict: (String, String) -> Void
+    /// (recordKey) — owner tapped "Stop asking" in the hold deck.
+    let onAskDeckStopAsking: (String) -> Void
+    /// Deck resolved (all cards answered/skipped, or skip-all) — the controller
+    /// re-enters its flush and pastes the resolved text.
+    let onAskDeckFinished: () -> Void
+
     let feedback: KeyboardFeedback
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -300,7 +313,25 @@ struct KeyboardView: View {
         // the app flags it (it only fires post-stop, so the strip is showing
         // recents — never the live stream — at that moment). One-shot, off the
         // shared App-Group boolean.
-        if showCorrectionNudge, !recordingState.isRecording, let asks = correctionAsks {
+        if showAskDeck, !recordingState.isRecording, let asks = askDeckAsks {
+            // Ask-before-paste HOLD deck — pre-paste, gates the paste. Wins over the
+            // post-paste nudge and warm-hold nudge while a session is held.
+            CorrectionReviewStrip(
+                asks: asks.asks,
+                totalUnresolved: asks.totalUnresolved,
+                reduceMotion: reduceMotion,
+                feedback: feedback,
+                onVerdict: onAskDeckVerdict,
+                onFinished: onAskDeckFinished,
+                holdMode: true,
+                onStopAsking: onAskDeckStopAsking
+            )
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top))
+            )
+        } else if showCorrectionNudge, !recordingState.isRecording, let asks = correctionAsks {
             CorrectionReviewStrip(
                 asks: asks.asks,
                 totalUnresolved: asks.totalUnresolved,

@@ -11,7 +11,14 @@ enum CorrectionAsksPublisher {
     static let maxAsks = 3
     static let contextWindow = 24
 
-    static func publish(transcriptID: UUID, sessionID: UUID, publishedText: String) async {
+    /// Stages the keyboard asks into the App Group and (when `signalReady`) posts
+    /// `correctionAsksReady`. Returns whether any asks were published. For
+    /// ask-before-paste the pipeline calls this with `signalReady: false` BEFORE the
+    /// clipboard handoff (so the keyboard can read asks synchronously at flush), then
+    /// posts the ready signal itself AFTER the handoff (never before the paste).
+    @discardableResult
+    static func publish(transcriptID: UUID, sessionID: UUID, publishedText: String,
+                        signalReady: Bool = true) async -> Bool {
         // MAPPED read (ephemeral): record anchors are gate-output offsets, but
         // the context snippets below slice `publishedText`, which post-gate
         // transforms (segmenter/filler/number/cleanup) may have shifted — map
@@ -24,10 +31,17 @@ enum CorrectionAsksPublisher {
         let unresolved = payload.records.filter { payload.verdicts[$0.key] == nil }
         guard !unresolved.isEmpty else {
             CorrectionBridge.clearAsks()
-            return
+            return false
         }
 
         let overrides = await CorrectionStore.shared.snapshot()
+        // Pairs the owner has clearly rejected (kept the original ≥ threshold times)
+        // or tapped "Stop asking" on — keyboard-only suppression. The transcript
+        // review reads neither signal, so it keeps surfacing them for deliberate fix.
+        let keyboardSuppressed = await CorrectionStore.shared.keyboardSuppressedPairs()
+        func pairKey(_ r: CorrectionProvenance.Record) -> String {
+            "\(Self.normalize(r.originalWord))|\(r.term.lowercased())"
+        }
         func prior(_ r: CorrectionProvenance.Record) -> Int {
             // Match the store's normalization exactly (lowercase + trim the same
             // punctuation set) so `prior` doesn't silently read 0 on a punctuated
@@ -43,9 +57,15 @@ enum CorrectionAsksPublisher {
         // (the gate correctly left the original) stay on the transcript only.
         // (Broader than the handoff's selectAsks, which deferred confident one-off
         // APPLYs to the transcript — but that left a fresh user seeing NO nudge.)
-        let candidates: [CorrectionProvenance.Record] = unresolved.filter {
-            $0.outcome == "applied" || prior($0) > 0 || $0.unsure
+        // EXCLUDE pairs the owner keeps rejecting (keyboardSuppressed) so the
+        // keyboard stops nagging — they remain reviewable on the transcript.
+        // Split into an explicitly-typed helper so the Swift type-checker doesn't
+        // choke on the compound predicate inside `.filter`.
+        func worthAsking(_ r: CorrectionProvenance.Record) -> Bool {
+            if keyboardSuppressed.contains(pairKey(r)) { return false }
+            return r.outcome == "applied" || prior(r) > 0 || r.unsure
         }
+        let candidates: [CorrectionProvenance.Record] = unresolved.filter(worthAsking)
         let ranked: [CorrectionProvenance.Record] = candidates.sorted { prior($0) > prior($1) }
         let selected: [CorrectionProvenance.Record] = Array(ranked.prefix(maxAsks))
 
@@ -54,11 +74,12 @@ enum CorrectionAsksPublisher {
             let (before, after) = context(of: r, in: publishedText)
             asks.append(CorrectionBridge.Ask(
                 recordKey: r.key, original: r.originalWord, term: r.term,
-                outcome: r.outcome, contextBefore: before, contextAfter: after))
+                outcome: r.outcome, contextBefore: before, contextAfter: after,
+                publishedStart: r.publishedStart, publishedLength: r.publishedLength))
         }
         guard !asks.isEmpty else {
             CorrectionBridge.clearAsks()
-            return
+            return false
         }
         CorrectionBridge.publishAsks(
             CorrectionBridge.Asks(
@@ -67,14 +88,17 @@ enum CorrectionAsksPublisher {
                 // surfaced asks) — drives the keyboard "Done" stage's "N more
                 // guesses are on the transcript in Jot." line.
                 totalUnresolved: unresolved.count))
-        // Signal the keyboard NOW that the asks exist (it can't reliably read them
-        // at paste time — they're written after the ledger append). The keyboard
-        // shows its nudge on this.
-        CrossProcessNotification.post(name: CrossProcessNotification.correctionAsksReady)
+        // Signal the keyboard that the asks exist. For ask-before-paste the caller
+        // stages with `signalReady: false` and posts this itself AFTER the handoff,
+        // so the ready signal can never precede the paste it gates.
+        if signalReady {
+            CrossProcessNotification.post(name: CrossProcessNotification.correctionAsksReady)
+        }
         DiagnosticsLog.record(
             source: "main-app", category: .vocabularyGate, message: "keyboard asks published",
             metadata: ["asks": "\(asks.count)", "unresolved": "\(unresolved.count)",
-                       "session": sessionID.uuidString])
+                       "session": sessionID.uuidString, "signalReady": "\(signalReady)"])
+        return true
     }
 
     /// Mirrors `CorrectionStore.normalize` so `prior` keys align.

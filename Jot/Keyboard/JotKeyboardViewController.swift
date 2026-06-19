@@ -299,6 +299,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// `KeyboardStreamingHub`; non-nil whenever `showCorrectionNudge` is true.
     private var correctionAsks: CorrectionBridge.Asks? { hub.correctionAsks }
 
+    // MARK: - Ask-before-paste hold deck (Thread 2)
+
+    /// Sessions whose review deck has already run (resolved or skipped). The flush
+    /// gate skips holding for these so the re-entry pastes instead of re-holding.
+    private var deckHandledSessions: Set<UUID> = []
+    /// Per-session text to paste after the deck resolves (the default spliced with
+    /// the owner's verdicts). The flush prefers this over the raw handoff payload.
+    private var deckResolvedText: [UUID: String] = [:]
+    /// Per-session default (the handoff payload text), captured when the deck is
+    /// presented so the splice never depends on a second payload read.
+    private var deckDefaultText: [UUID: String] = [:]
+    /// Per-session verdicts collected in the deck (recordKey → "term"|"original"),
+    /// used to splice the final text on finish.
+    private var deckVerdicts: [UUID: [String: String]] = [:]
+
     // MARK: - Haptic + audio feedback
 
     /// Owns the long-lived `UISelectionFeedbackGenerator` and
@@ -663,6 +678,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 // re-renders this controller — no separate `renderRootView()`.
                 self.hub.clearCorrectionNudge()
                 CorrectionBridge.clearAsks()
+            },
+            onAskDeckVerdict: { [weak self] key, verdict in
+                self?.handleAskDeckVerdict(recordKey: key, verdict: verdict)
+            },
+            onAskDeckStopAsking: { [weak self] key in
+                self?.handleAskDeckStopAsking(recordKey: key)
+            },
+            onAskDeckFinished: { [weak self] in
+                self?.handleAskDeckFinished()
             }
         )
     }
@@ -706,6 +730,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         keyboardInputs.hasSelection = hasFullAccess && hostHasSelection
         keyboardInputs.showCorrectionNudge = showCorrectionNudge
         keyboardInputs.correctionAsks = correctionAsks
+        keyboardInputs.showAskDeck = hub.showAskDeck
+        keyboardInputs.askDeckAsks = hub.askDeckAsks
     }
 
     /// Called when the Actions popover is about to open. Re-reads the
@@ -788,6 +814,113 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// already-pasted text (teach-only).
     private func maybeShowCorrectionNudge(sessionID: UUID) {
         hub.maybeShowCorrectionNudge(sessionID: sessionID)
+    }
+
+    // MARK: - Ask-before-paste hold deck handlers (Thread 2)
+
+    /// Hold deck: owner picked a word. Record it for the splice AND enqueue the
+    /// learning verdict (identical to the post-paste teach path).
+    private func handleAskDeckVerdict(recordKey: String, verdict: String) {
+        guard let asks = hub.askDeckAsks else { return }
+        deckVerdicts[asks.sessionID, default: [:]][recordKey] = verdict
+        CorrectionBridge.enqueueVerdict(
+            .init(transcriptID: asks.transcriptID, recordKey: recordKey, verdict: verdict))
+    }
+
+    /// Hold deck: owner tapped "Stop asking". Keep the original word in the pasted
+    /// text and enqueue a "suppress" verdict so the app stops asking this pair on the
+    /// keyboard (drained → `CorrectionStore.suppressBlock`). Transcript review is
+    /// unaffected.
+    private func handleAskDeckStopAsking(recordKey: String) {
+        guard let asks = hub.askDeckAsks else { return }
+        deckVerdicts[asks.sessionID, default: [:]][recordKey] = "original"
+        CorrectionBridge.enqueueVerdict(
+            .init(transcriptID: asks.transcriptID, recordKey: recordKey, verdict: "suppress"))
+    }
+
+    /// Hold deck resolved (all cards answered/skipped, or first-card skip-all).
+    /// Splice the verdicts into the staged text, mark the session handled, tear the
+    /// deck down, and RE-ENTER the flush — which now skips the gate and pastes the
+    /// resolved text through the one proven insert path.
+    private func handleAskDeckFinished() {
+        guard let asks = hub.askDeckAsks else {
+            hub.dismissAskDeck()
+            return
+        }
+        let session = asks.sessionID
+        let verdicts = deckVerdicts[session] ?? [:]
+        if let defaultText = deckDefaultText[session], !defaultText.isEmpty {
+            deckResolvedText[session] = applyVerdicts(defaultText, verdicts: verdicts, asks: asks.asks)
+        }
+        // else: no captured default (e.g. torn down mid-deck) — fall through; the
+        // re-entered flush pastes the live payload via the normal path.
+        deckHandledSessions.insert(session)
+        deckDefaultText[session] = nil
+        deckVerdicts[session] = nil
+        hub.dismissAskDeck()
+        flushPendingAutoPasteIfPossible()
+    }
+
+    /// Splice the owner's hold-deck verdicts into the staged text. Only edits where
+    /// a verdict DISAGREES with what's in the published text. Resolution mirrors the
+    /// app's `CorrectionReviewModel.resolveSpan`: the gated word is located by a
+    /// WHOLE-WORD, punctuation-trimmed, case-insensitive match anchored at the
+    /// reconciled `publishedStart` character offset — `publishedLength` is gate-time
+    /// "display/diag only" (`CorrectionProvenance.Record:46`) and must NOT be used to
+    /// size the splice (the strict length+equality guard is exactly what dropped a
+    /// "Rama"→"Ramaa" replacement when the original carried a trailing "."). If the
+    /// anchor doesn't resolve a whole-word match, that edit is skipped (fail-safe —
+    /// corrupting the pasted text is worse than leaving the default).
+    private func applyVerdicts(_ defaultText: String,
+                               verdicts: [String: String],
+                               asks: [CorrectionBridge.Ask]) -> String {
+        struct Edit { let start: Int; let end: Int; let replacement: String }
+        let chars = Array(defaultText)
+        var edits: [Edit] = []
+        for ask in asks {
+            guard let v = verdicts[ask.recordKey], let anchor = ask.publishedStart else { continue }
+            let inText = (ask.outcome == "applied") ? ask.term : ask.original   // word now in text
+            let want = (v == "term") ? ask.term : ask.original                  // chosen word
+            let inCore = Self.trimGatedWord(inText)
+            let wantCore = Self.trimGatedWord(want)
+            guard !wantCore.isEmpty, wantCore.caseInsensitiveCompare(inCore) != .orderedSame else { continue }
+            guard let (s, e) = Self.wholeWordRange(of: inCore, anchoredAtChar: anchor, in: chars) else { continue }
+            edits.append(Edit(start: s, end: e, replacement: wantCore))
+        }
+        DiagnosticsLog.record(
+            source: "keyboard", category: .vocabularyGate,
+            message: "ask-before-paste: applied verdict splices",
+            metadata: ["requested": "\(verdicts.count)", "spliced": "\(edits.count)"])
+        guard !edits.isEmpty else { return defaultText }
+        var out = chars
+        // Apply LAST occurrence first so earlier splices don't shift later offsets.
+        for edit in edits.sorted(by: { $0.start > $1.start }) {
+            guard edit.start >= 0, edit.end <= out.count, edit.start < edit.end else { continue }
+            out.replaceSubrange(edit.start..<edit.end, with: Array(edit.replacement))
+        }
+        return String(out)
+    }
+
+    /// Trim the surrounding punctuation the gate/provenance may carry on a word
+    /// (e.g. "Rama." → "Rama") — same set as `CorrectionReviewModel.resolveSpan`.
+    private static func trimGatedWord(_ s: String) -> String {
+        s.trimmingCharacters(in: CharacterSet(charactersIn: " .,;:!?\"'\u{2019}\u{201D})]}"))
+    }
+
+    /// Char range [start,end) of `word` if it sits as a WHOLE word starting exactly
+    /// at `anchor` (case-insensitive). Mirrors the app's anchor-exact resolution; nil
+    /// if the anchor doesn't land on that word (the body shifted — fail safe).
+    private static func wholeWordRange(of word: String, anchoredAtChar anchor: Int,
+                                       in chars: [Character]) -> (Int, Int)? {
+        let needle = Array(word)
+        guard !needle.isEmpty, anchor >= 0 else { return nil }
+        let end = anchor + needle.count
+        guard end <= chars.count else { return nil }
+        guard String(chars[anchor..<end]).caseInsensitiveCompare(word) == .orderedSame else { return nil }
+        let beforeOK = anchor == 0 || !chars[anchor - 1].isLetter
+        let afterOK = end == chars.count || !chars[end].isLetter
+        guard beforeOK, afterOK else { return nil }
+        return (anchor, end)
     }
 
     private var currentActionAvailability: KeyboardActionAvailability {
@@ -1346,6 +1479,39 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 renderRootView()
                 return
             }
+            // ── Ask-before-paste gate (Thread 2) ──
+            // If the app staged correction asks for this session and the review deck
+            // hasn't run yet, HOLD the paste: present the deck and return WITHOUT
+            // inserting or consuming anything (so teardown mid-deck can neither drop
+            // nor double the text — pending stays intact + the clipboard floor
+            // survives). The deck re-enters this flush on resolution with the chosen
+            // text in `deckResolvedText` (and `deckHandledSessions` set so this gate
+            // is skipped the second time).
+            if !deckHandledSessions.contains(session.id),
+               let staged = CorrectionBridge.readAsks(sessionID: session.id),
+               !staged.asks.isEmpty {
+                // MUST: a re-entrant flush (phase-change / re-present) can land WHILE
+                // the deck is open and before the session is "handled" — bail BEFORE
+                // touching any state so we never wipe the verdicts the user is mid-way
+                // through picking (which would paste the unspliced defaults).
+                if hub.showAskDeck { return }
+                // One deck at a time — drop any prior session's deck state so these
+                // dictionaries can't grow over the keyboard-process lifetime (incl.
+                // a session whose re-entry later sad-pathed without cleanup).
+                deckResolvedText = deckResolvedText.filter { $0.key == session.id }
+                deckDefaultText = deckDefaultText.filter { $0.key == session.id }
+                deckVerdicts = deckVerdicts.filter { $0.key == session.id }
+                deckHandledSessions = deckHandledSessions.filter { $0 == session.id }
+                deckDefaultText[session.id] = payload.text
+                deckVerdicts[session.id] = [:]
+                DiagnosticsLog.record(
+                    source: "keyboard", category: .vocabularyGate,
+                    message: "ask-before-paste: holding for review deck",
+                    metadata: ["sessionID": session.id.uuidString, "asks": "\(staged.asks.count)"])
+                hub.presentAskDeck(staged)
+                return
+            }
+
             magicFollowUpExpiresAt = Date().addingTimeInterval(ClipboardHandoff.freshnessWindow)
 
             // RE-SYNC THE HOST PROXY BEFORE INSERTING — bounded reconnect-poll.
@@ -1389,7 +1555,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             textDocumentProxy.adjustTextPosition(byCharacterOffset: 0)
 
             let pendingSessionID = session.id
-            let pasteText = payload.text
+            // After the hold deck resolves, paste the spliced text; otherwise the
+            // raw handoff payload (the common no-asks case).
+            let pasteText = deckResolvedText[session.id] ?? payload.text
 
             // Bounded reconnect-poll tunables.
             let pollIntervalMs = 30
@@ -1547,7 +1715,19 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     self.renderRootView()
                     // Post-paste correction quick-review: if the app published asks
                     // for this session, take over the strip slot to collect verdicts.
-                    self.maybeShowCorrectionNudge(sessionID: pendingSessionID)
+                    // Skip when the ask-before-paste deck already handled this session
+                    // (the verdicts were collected pre-paste) — and clean up its state.
+                    if self.deckHandledSessions.contains(pendingSessionID) {
+                        self.deckResolvedText[pendingSessionID] = nil
+                        self.deckDefaultText[pendingSessionID] = nil
+                        self.deckVerdicts[pendingSessionID] = nil
+                        self.deckHandledSessions.remove(pendingSessionID)
+                        // Symmetry with the teach path's onCorrectionFinished — clear
+                        // the App-Group asks blob now they're resolved pre-paste.
+                        CorrectionBridge.clearAsks()
+                    } else {
+                        self.maybeShowCorrectionNudge(sessionID: pendingSessionID)
+                    }
                 }
 
                 // Open the in-flight-paste window for the textDidChange (B) path.
@@ -1578,16 +1758,27 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     let settledLen = settledCtx?.count ?? -1
                     let stillEndsWith = (settledCtx ?? "").hasSuffix(pasteText)
                     let hasTextNow = self.textDocumentProxy.hasText
-                    // Survived = the text is still there. Strong signal: the
-                    // context still ends with what we inserted. Tolerant fallback:
-                    // the context did NOT SHRINK (settledLen >= the post-insert
-                    // length) — this absorbs a host autocorrect/keystroke that
-                    // mutates the inserted TAIL within the 350ms window (which
-                    // would break an exact `hasSuffix` and falsely flag a real
-                    // native paste as reverted). A genuine revert (web field drops
-                    // the insert) SHRINKS the context back toward the pre-insert
-                    // length, so it still classifies as not-survived.
-                    let survived = hasTextNow && (stillEndsWith || settledLen >= immediateAfterLen)
+                    // A NIL settled context (`settledLen == -1`, `hasText == false`)
+                    // means the host's INPUT CONNECTION went away after our insert —
+                    // web fields (Claude Code) re-render and drop the proxy. That is
+                    // NOT a revert: a genuine revert leaves a SHORTER but non-nil
+                    // context. Treating the disconnect as failure false-flagged
+                    // "couldn't paste" on every review re-entry even though the text
+                    // landed (immediateLen>0). So a disconnected settle is
+                    // INCONCLUSIVE — fall back to the immediate landed evidence.
+                    let proxyDisconnected = (settledCtx == nil)
+                    // Survived = the text is still there. Strong signal: the context
+                    // still ends with what we inserted. Tolerant fallback: the
+                    // context did NOT SHRINK (settledLen >= post-insert length) —
+                    // absorbs a host autocorrect/keystroke mutating the inserted TAIL
+                    // within the 350ms window. A genuine revert SHRINKS the context
+                    // (non-nil, shorter) → still not-survived. Disconnect (nil) +
+                    // confirmed-immediate-insert ⇒ trust the immediate read (the
+                    // transcript is on the clipboard from publish as a silent floor
+                    // either way, so a rare true-miss is still recoverable, but we
+                    // no longer cry wolf + invite a double-paste on the common case).
+                    let survived = (hasTextNow && (stillEndsWith || settledLen >= immediateAfterLen))
+                                || (proxyDisconnected && endsWithInserted)
 
                     DiagnosticsLog.record(
                         source: "keyboard",

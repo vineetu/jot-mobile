@@ -30,8 +30,19 @@ struct CorrectionReviewStrip: View {
     let feedback: KeyboardFeedback
     /// (recordKey, verdict) where verdict is "term" | "original".
     var onVerdict: (String, String) -> Void
-    /// Dismiss → return the strip slot to recents.
+    /// Dismiss → return the strip slot to recents (teach mode) OR "done, paste the
+    /// resolved text now" (hold mode).
     var onFinished: () -> Void
+
+    /// **HOLD mode (ask-before-paste, Thread 2).** When true the deck is GATING the
+    /// paste, not teaching post-paste: it starts straight at the cards (no nudge
+    /// stage), shows a per-card 10s countdown ring, offers "Stop asking", and on
+    /// completion `onFinished` means "paste the resolved text". First-card idle with
+    /// zero engagement → skip-all + finish (paste defaults). Default false = the
+    /// original post-paste teach strip, unchanged.
+    var holdMode: Bool = false
+    /// Hold mode only: owner tapped "Stop asking" on this ask (keyboard-only suppress).
+    var onStopAsking: (String) -> Void = { _ in }
 
     /// Matches the recents / streaming / warm-hold-nudge card height so toggling
     /// the strip in and out of the slot doesn't reflow the keyboard layout.
@@ -53,6 +64,10 @@ struct CorrectionReviewStrip: View {
     /// for the Done-stage "N more" count.
     @State private var verdictsGiven = 0
     @State private var appeared = false
+    /// Hold mode: has the owner interacted with ANY card yet? Gates the first-card
+    /// idle behavior — zero engagement on card 1 → skip-all (don't march them
+    /// through 3×10s); once engaged, an idle timeout skips only the current card.
+    @State private var hasEngaged = false
 
     /// Remaining unresolved after this session's verdicts (clamped at 0).
     private var remainingUnresolved: Int { max(0, totalUnresolved - verdictsGiven) }
@@ -79,9 +94,13 @@ struct CorrectionReviewStrip: View {
             .scaleEffect(reduceMotion ? 1 : (appeared ? 1 : 0.96))
             .opacity(appeared ? 1 : 0)
             .onAppear {
+                // Hold mode gates the paste — skip the "Review?" nudge and show the
+                // cards immediately (the user is waiting for their text to land).
+                if holdMode, stage == .nudge { stage = .review }
                 // Ground-truth that the strip actually rendered (not just the flag).
                 DiagnosticsLog.record(source: "keyboard", category: .vocabularyGate,
-                    message: "nudge rendered", metadata: ["asks": "\(asks.count)"])
+                    message: holdMode ? "hold-deck rendered" : "nudge rendered",
+                    metadata: ["asks": "\(asks.count)"])
                 withAnimation(
                     reduceMotion
                         ? .easeOut(duration: 0.2)
@@ -182,10 +201,21 @@ struct CorrectionReviewStrip: View {
             VStack(alignment: .leading, spacing: 10) {
                 // Spoken context with the gated word emphasized — reads as
                 // "what you said". The gated word is the one that ended up in
-                // text (applied → term, kept → original).
-                spokenLine(for: ask)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                // text (applied → term, kept → original). Hold mode tucks the
+                // per-card 10s countdown ring into the trailing space here.
+                HStack(alignment: .top, spacing: 8) {
+                    spokenLine(for: ask)
+                        // Cap to keep a long snippet from growing the 129pt card —
+                        // shrink rather than wrap (matches the chips' behavior).
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if holdMode {
+                        CountdownRing(seconds: 10, reduceMotion: reduceMotion)
+                            .frame(width: 22, height: 22)
+                    }
+                }
 
                 Spacer(minLength: 0)
 
@@ -219,18 +249,38 @@ struct CorrectionReviewStrip: View {
 
                         Spacer(minLength: 0)
 
-                        PressButton(reduceMotion: reduceMotion) {
-                            feedback.systemClick()
-                            advance()
-                        } label: {
-                            Text("Skip")
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(Color.jotKeyboardStreamText)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 6)
-                                .contentShape(Rectangle())
+                        // Hold mode: "Stop asking" replaces "Skip" (UX review §e).
+                        // Teach mode keeps "Skip" exactly as before.
+                        if holdMode {
+                            PressButton(reduceMotion: reduceMotion) {
+                                feedback.systemClick()
+                                hasEngaged = true
+                                onStopAsking(ask.recordKey)
+                                advance()
+                            } label: {
+                                Text("Stop asking")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(Color.jotKeyboardStreamText)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Stop asking about this word")
+                            .accessibilityHint("Jot won't ask about \"\(ask.original)\" again. You can still review it on the transcript in Jot.")
+                        } else {
+                            PressButton(reduceMotion: reduceMotion) {
+                                feedback.systemClick()
+                                advance()
+                            } label: {
+                                Text("Skip")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(Color.jotKeyboardStreamText)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Skip this word")
                         }
-                        .accessibilityLabel("Skip this word")
 
                         Text("\(index + 1) of \(asks.count)")
                             .font(.system(size: 11.5, weight: .medium).monospacedDigit())
@@ -241,6 +291,8 @@ struct CorrectionReviewStrip: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             // Re-key on the ask so context + chips animate per-ask if motion is on.
             .id(index)
+            // Hold mode: start this card's idle countdown (auto-skip / skip-all).
+            .onAppear { startCardCountdown(for: index) }
         } else {
             Color.clear
         }
@@ -272,6 +324,7 @@ struct CorrectionReviewStrip: View {
         PressButton(reduceMotion: reduceMotion) {
             feedback.systemClick()
             feedback.selectionTick()
+            hasEngaged = true   // hold mode: a chip tap counts as engagement
             onVerdict(ask.recordKey, verdict)
             verdictsGiven += 1
             withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .easeOut(duration: 0.2)) {
@@ -290,7 +343,7 @@ struct CorrectionReviewStrip: View {
                     // on one line, shrinking slightly if a name is long.
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                if inText {
+                if inText, !holdMode {
                     Text("IN TEXT")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.8))
@@ -324,7 +377,7 @@ struct CorrectionReviewStrip: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(Color.jotKeyboardAccentDeep)
-            Text("All reviewed.")
+            Text(holdMode ? "All set." : "All reviewed.")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.jotKeyboardActionsInk)
                 .multilineTextAlignment(.center)
@@ -342,7 +395,9 @@ struct CorrectionReviewStrip: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             Task {
-                try? await Task.sleep(for: .seconds(2.2))
+                // Hold mode gates the paste — don't make the user stare at a
+                // checkmark; finish fast so the (resolved) text lands.
+                try? await Task.sleep(for: .seconds(holdMode ? 0.9 : 2.2))
                 onFinished()
             }
         }
@@ -355,6 +410,24 @@ struct CorrectionReviewStrip: View {
         index += 1
         if index >= asks.count {
             stage = .done
+        }
+    }
+
+    /// Hold mode: the per-card 10s idle timeout. Drives the auto-skip independently
+    /// of the (cosmetic) ring animation, so Reduce Motion still auto-advances. Fires
+    /// only if still on this exact card and not mid-resolve. First card with zero
+    /// engagement → skip-all (paste defaults); otherwise skip just this card.
+    private func startCardCountdown(for cardIndex: Int) {
+        guard holdMode else { return }
+        Task {
+            try? await Task.sleep(for: .seconds(10))
+            guard stage == .review, index == cardIndex, verdictFeedback == nil else { return }
+            if !hasEngaged, cardIndex == 0 {
+                index = asks.count
+                stage = .done
+            } else {
+                advance()
+            }
         }
     }
 
@@ -419,5 +492,33 @@ private struct PressButton<Label: View>: View {
                     .onChanged { _ in pressed = true }
                     .onEnded { _ in pressed = false }
             )
+    }
+}
+
+/// Cosmetic per-card countdown ring for the hold deck — a brand-blue arc that
+/// depletes clockwise over `seconds`. Purely visual; the actual idle timeout is
+/// driven by `CorrectionReviewStrip.startCardCountdown`, so Reduce Motion (static
+/// full ring, no sweep) still auto-advances. Re-created per card by the parent's
+/// `.id(index)`, so it restarts each time.
+private struct CountdownRing: View {
+    let seconds: Double
+    let reduceMotion: Bool
+    @State private var trim: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.jotKeyboardGlassHairline, lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: trim)
+                .stroke(Color.jotKeyboardAccentDeep,
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .onAppear {
+            guard !reduceMotion else { return }   // static full ring
+            withAnimation(.linear(duration: seconds)) { trim = 0 }
+        }
+        .accessibilityHidden(true)
     }
 }

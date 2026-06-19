@@ -90,6 +90,7 @@ final class CorrectionReviewModel {
         // whose `publishedStart` may have just been shifted by the reconcile.
         await reload()
         let r = record(forKey: r.key) ?? r
+        let priorVerdict = payload.verdicts[r.key]   // for the blocked-keep transition guard below
         // kept + term → apply the term here; applied + original → revert here.
         if choice == "term", r.outcome == "kept" {
             await reportSelfEdit(editText(r, find: r.originalWord, replaceWith: r.term), key: r.key)
@@ -98,6 +99,16 @@ final class CorrectionReviewModel {
         }
         let delta = await CorrectionProvenance.shared.setVerdict(transcriptID: transcript.id, record: r, verdict: choice)
         await applyLearning(delta)
+        // "Keep original" on a BLOCKED pair contributes 0 to `net` (demote needs an
+        // APPLIED revert), so a common-word proposal like "okay"→"Okta" would be
+        // re-asked forever no matter how often it's rejected. Count it separately so
+        // the keyboard stops re-asking after `keyboardKeepSuppressThreshold` keeps.
+        // Keyboard-only suppression; the transcript pane still surfaces it. Guard on a
+        // genuine transition INTO "original" so a re-pick of the same verdict can't
+        // double-count (the increment is otherwise non-idempotent).
+        if choice == "original", r.outcome == "kept", priorVerdict != "original" {
+            await CorrectionStore.shared.noteBlockedKeep(originalWord: r.originalWord, term: r.term)
+        }
         await reload()
     }
 
@@ -112,6 +123,12 @@ final class CorrectionReviewModel {
         }
         let delta = await CorrectionProvenance.shared.clearVerdict(transcriptID: transcript.id, record: r)
         await applyLearning(delta)
+        // Symmetric with the blocked-keep increment in `pick`: undoing a "keep
+        // original" on a blocked pair gives back its `blockedKeeps`, so the keyboard
+        // suppression count never drifts above the real number of standing keeps.
+        if v == "original", r.outcome == "kept" {
+            await CorrectionStore.shared.clearBlockedKeep(originalWord: r.originalWord, term: r.term)
+        }
         await reload()
     }
 

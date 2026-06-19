@@ -42,6 +42,10 @@ final class KeyboardViewInputs {
     var hasSelection: Bool = false
     var showCorrectionNudge: Bool = false
     var correctionAsks: CorrectionBridge.Asks? = nil
+    /// Ask-before-paste HOLD deck (Thread 2) — pre-paste review; the paste is held
+    /// while this is true.
+    var showAskDeck: Bool = false
+    var askDeckAsks: CorrectionBridge.Asks? = nil
 }
 
 /// Concrete, build-once root for the hosted keyboard surface.
@@ -82,6 +86,9 @@ struct KeyboardRootHostView: View {
     let onWarmHoldNudgeDismiss: () -> Void
     let onCorrectionVerdict: (String, String) -> Void
     let onCorrectionFinished: () -> Void
+    let onAskDeckVerdict: (String, String) -> Void
+    let onAskDeckStopAsking: (String) -> Void
+    let onAskDeckFinished: () -> Void
 
     var body: some View {
         KeyboardView(
@@ -126,6 +133,11 @@ struct KeyboardRootHostView: View {
             correctionAsks: inputs.correctionAsks,
             onCorrectionVerdict: onCorrectionVerdict,
             onCorrectionFinished: onCorrectionFinished,
+            showAskDeck: inputs.showAskDeck,
+            askDeckAsks: inputs.askDeckAsks,
+            onAskDeckVerdict: onAskDeckVerdict,
+            onAskDeckStopAsking: onAskDeckStopAsking,
+            onAskDeckFinished: onAskDeckFinished,
             feedback: feedback
         )
     }
