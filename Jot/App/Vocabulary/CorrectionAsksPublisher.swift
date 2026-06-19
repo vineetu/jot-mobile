@@ -28,6 +28,13 @@ enum CorrectionAsksPublisher {
         }
 
         let overrides = await CorrectionStore.shared.snapshot()
+        // Pairs the owner has clearly rejected (kept the original ≥ threshold times)
+        // or tapped "Stop asking" on — keyboard-only suppression. The transcript
+        // review reads neither signal, so it keeps surfacing them for deliberate fix.
+        let keyboardSuppressed = await CorrectionStore.shared.keyboardSuppressedPairs()
+        func pairKey(_ r: CorrectionProvenance.Record) -> String {
+            "\(Self.normalize(r.originalWord))|\(r.term.lowercased())"
+        }
         func prior(_ r: CorrectionProvenance.Record) -> Int {
             // Match the store's normalization exactly (lowercase + trim the same
             // punctuation set) so `prior` doesn't silently read 0 on a punctuated
@@ -43,9 +50,15 @@ enum CorrectionAsksPublisher {
         // (the gate correctly left the original) stay on the transcript only.
         // (Broader than the handoff's selectAsks, which deferred confident one-off
         // APPLYs to the transcript — but that left a fresh user seeing NO nudge.)
-        let candidates: [CorrectionProvenance.Record] = unresolved.filter {
-            $0.outcome == "applied" || prior($0) > 0 || $0.unsure
+        // EXCLUDE pairs the owner keeps rejecting (keyboardSuppressed) so the
+        // keyboard stops nagging — they remain reviewable on the transcript.
+        // Split into an explicitly-typed helper so the Swift type-checker doesn't
+        // choke on the compound predicate inside `.filter`.
+        func worthAsking(_ r: CorrectionProvenance.Record) -> Bool {
+            if keyboardSuppressed.contains(pairKey(r)) { return false }
+            return r.outcome == "applied" || prior(r) > 0 || r.unsure
         }
+        let candidates: [CorrectionProvenance.Record] = unresolved.filter(worthAsking)
         let ranked: [CorrectionProvenance.Record] = candidates.sorted { prior($0) > prior($1) }
         let selected: [CorrectionProvenance.Record] = Array(ranked.prefix(maxAsks))
 

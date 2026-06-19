@@ -32,8 +32,48 @@ actor CorrectionStore {
         var term: String             // the vocab term, original casing ("Jamy")
         var confirmations: Int = 0
         var reverts: Int = 0
+        /// Count of times the owner said "keep original" on this pair while it was
+        /// BLOCKED (gate outcome "kept"). The learning `net` deliberately ignores
+        /// these — a kept-keep contributes 0 (demote needs an APPLIED revert,
+        /// `CorrectionProvenance.desiredContribution`), so for a common-word
+        /// proposal like "okay"→"Okta" `net` never moves no matter how many times
+        /// the owner rejects it. `blockedKeeps` is the ONLY signal of that repeated
+        /// rejection. Read ONLY by the keyboard ask filter (`keyboardSuppressedPairs`)
+        /// — the gate and the transcript pane ignore it, so suppression is
+        /// keyboard-only. Defaulted-decode for back-compat with corrections.json
+        /// written before this field existed.
+        var blockedKeeps: Int = 0
         var net: Int { confirmations - reverts }
+
+        init(originalWord: String, term: String,
+             confirmations: Int = 0, reverts: Int = 0, blockedKeeps: Int = 0) {
+            self.originalWord = originalWord
+            self.term = term
+            self.confirmations = confirmations
+            self.reverts = reverts
+            self.blockedKeeps = blockedKeeps
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case originalWord, term, confirmations, reverts, blockedKeeps
+        }
+
+        // Custom decode so an existing corrections.json (no `blockedKeeps` key)
+        // loads cleanly instead of throwing — a throw here makes `loadIfNeeded`
+        // silently drop ALL learned corrections. Encodable stays synthesized.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            originalWord = try c.decode(String.self, forKey: .originalWord)
+            term = try c.decode(String.self, forKey: .term)
+            confirmations = try c.decodeIfPresent(Int.self, forKey: .confirmations) ?? 0
+            reverts = try c.decodeIfPresent(Int.self, forKey: .reverts) ?? 0
+            blockedKeeps = try c.decodeIfPresent(Int.self, forKey: .blockedKeeps) ?? 0
+        }
     }
+
+    /// Threshold of repeated "keep original" rejections on a BLOCKED pair after
+    /// which the keyboard stops re-asking it (transcript review still surfaces it).
+    static let keyboardKeepSuppressThreshold = 2
 
     struct Term: Codable, Sendable {
         var mappings: [Mapping] = []
@@ -65,11 +105,34 @@ actor CorrectionStore {
         }
     }
 
-    /// True if the owner has confirmed a blocked `(originalWord → term)` proposal
-    /// is *correctly* blocked — the pane uses this to stop re-surfacing it.
+    /// True if the owner tapped "Stop asking" on a blocked `(originalWord → term)`
+    /// pair. Read ONLY by `keyboardSuppressedPairs` (keyboard-only) — the gate and
+    /// transcript pane do NOT consult this, so suppression never hides the pair
+    /// from the transcript review.
     func isBlockSuppressed(originalWord: String, term: String) -> Bool {
         loadIfNeeded()
         return terms[term.lowercased()]?.suppressedBlocks.contains(normalize(originalWord)) ?? false
+    }
+
+    /// Normalized `"<originalWord>|<term>"` keys the keyboard should STOP asking:
+    /// the owner has either kept the original ≥ `keyboardKeepSuppressThreshold`
+    /// times on a blocked pair (`blockedKeeps`) OR tapped "Stop asking"
+    /// (`suppressedBlocks`). Keyboard-only — the transcript review reads neither,
+    /// so it keeps surfacing these for deliberate correction. The key format
+    /// matches `CorrectionAsksPublisher.normalize(originalWord) + "|" +
+    /// term.lowercased()` exactly.
+    func keyboardSuppressedPairs() -> Set<String> {
+        loadIfNeeded()
+        var out: Set<String> = []
+        for (termKey, term) in terms {
+            for m in term.mappings where m.blockedKeeps >= Self.keyboardKeepSuppressThreshold {
+                out.insert("\(m.originalWord)|\(termKey)")
+            }
+            for ow in term.suppressedBlocks {
+                out.insert("\(ow)|\(termKey)")
+            }
+        }
+        return out
     }
 
     // MARK: - Verdicts (called by the pane)
@@ -108,8 +171,9 @@ actor CorrectionStore {
         log.info("correction revert \(originalWord, privacy: .public)→\(term, privacy: .public)")
     }
 
-    /// Owner confirmed a *blocked* proposal was correctly blocked ("keep the
-    /// original word"). Suppress it so the pane stops asking.
+    /// Owner tapped "Stop asking" on a *blocked* proposal — hard-suppress it from
+    /// keyboard asks immediately (see `keyboardSuppressedPairs`). Transcript review
+    /// is unaffected (it doesn't read `suppressedBlocks`).
     func suppressBlock(originalWord: String, term: String) {
         loadIfNeeded()
         let key = term.lowercased()
@@ -117,6 +181,27 @@ actor CorrectionStore {
         let ow = normalize(originalWord)
         if !t.suppressedBlocks.contains(ow) { t.suppressedBlocks.append(ow) }
         terms[key] = t
+        persist()
+    }
+
+    /// Owner said "keep original" on a BLOCKED pair (gate outcome "kept"). The
+    /// learning `net` ignores this (contributes 0), so we count it separately;
+    /// once it reaches `keyboardKeepSuppressThreshold` the keyboard stops re-asking
+    /// the pair. Called from the single verdict choke point (`CorrectionReviewModel.pick`),
+    /// so it counts keeps from BOTH the keyboard (drained via `CorrectionInbox`)
+    /// and the in-app pane.
+    func noteBlockedKeep(originalWord: String, term: String) {
+        loadIfNeeded()
+        mutate(originalWord: originalWord, term: term) { $0.blockedKeeps += 1 }
+        persist()
+        log.info("blocked-keep \(originalWord, privacy: .public)→\(term, privacy: .public)")
+    }
+
+    /// Reverse of `noteBlockedKeep` (an Undo of a blocked-pair "keep original").
+    /// Floored at 0 so it can never go negative.
+    func clearBlockedKeep(originalWord: String, term: String) {
+        loadIfNeeded()
+        mutate(originalWord: originalWord, term: term) { $0.blockedKeeps = max(0, $0.blockedKeeps - 1) }
         persist()
     }
 
