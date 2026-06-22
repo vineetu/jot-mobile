@@ -330,7 +330,9 @@
             "5.6"
           ],
           "image": "screens/keyboard/kb-actions-popover.png",
-          "captured": false
+          "captured": false,
+          "issue": "The Actions popover renders INSIDE the keyboard pane (top-left) and pushes the Recents list DOWN out of view, instead of floating over it as a context menu \u2014 so you lose the recents while it\u2019s open.",
+          "bug": "keyboard-actions-popover-layout"
         },
         {
           "id": "kb-status-banner",
@@ -339,7 +341,9 @@
             "5.10"
           ],
           "image": "screens/keyboard/kb-status-banner.png",
-          "captured": false
+          "captured": false,
+          "issue": "Adding a word to Vocabulary shows the SUCCESS confirmation (\u201cAdded \u2018\u2026\u2019 to your dictionary\u201d) in the RED error banner with an \u2715 icon, floating over the recents pane \u2014 should be success/green. It also does not appear instantly: it only surfaces after a follow-up action (e.g. pressing Enter).",
+          "bug": "keyboard-vocab-banner"
         },
         {
           "id": "kb-full-access",
@@ -459,7 +463,8 @@
             "7.5"
           ],
           "image": "screens/ios/rewrite-prompt-picker.png",
-          "captured": true
+          "captured": true,
+          "target": "The real Rewrite picker looks rougher than this. This cleaner layout is the design target \u2014 the app should be polished to match it. (Options shown are accurate: Cleanup, Voice prompt, AI prompt, Action Items, Email.)"
         },
         {
           "id": "rewrite-saved-prompts",

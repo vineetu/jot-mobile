@@ -1,29 +1,27 @@
-<div style="height:300px"></div>
+<!-- Voice prompt sheet (§7.13). Matched to the real on-device screen: ✕ top-left, centered
+     "Voice prompt", "● Listening…" (coral dot), left-aligned dictated instruction, large empty
+     space, full-width coral "■ Stop" pill at the bottom. -->
+<div style="height:150px"></div>
 
-<div class="jot-card" style="border-radius:24px 24px 0 0;margin:0 -18px -34px;padding:18px 18px 40px;min-height:360px;display:flex;flex-direction:column">
-  <div style="display:flex;align-items:center;margin-bottom:18px">
-    <div style="flex:1"></div>
-    <div style="font-weight:600;font-size:17px;color:var(--jot-ink)">Voice prompt</div>
-    <div style="flex:1;display:flex;justify-content:flex-end">
-      <span class="jot-donebtn" style="width:32px;height:32px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:999px">✕</span>
-    </div>
+<div class="jot-card" style="border-radius:24px 24px 0 0;margin:0 -18px -34px;min-height:600px;padding:10px 18px 40px;display:flex;flex-direction:column">
+  <div style="width:36px;height:5px;border-radius:3px;background:var(--jot-ink-cap);opacity:.45;margin:0 auto 16px"></div>
+
+  <div style="display:flex;align-items:center;margin-bottom:26px">
+    <span style="font-size:24px;color:var(--jot-ink);width:40px;line-height:1">✕</span>
+    <div style="flex:1;text-align:center;font-weight:700;font-size:19px;color:var(--jot-ink);margin-left:-40px">Voice prompt</div>
   </div>
 
-  <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:20px">
-    <span style="width:9px;height:9px;border-radius:50%;background:var(--jot-record)"></span>
-    <span style="font-family:ui-serif,'New York',Georgia,serif;font-style:italic;font-size:19px;color:var(--jot-ink)">Listening…</span>
+  <div style="display:flex;align-items:center;gap:9px;justify-content:center;margin-bottom:22px">
+    <span style="width:11px;height:11px;border-radius:50%;background:#FF6B57"></span>
+    <span style="font-size:20px;font-weight:600;color:var(--jot-ink)">Listening…</span>
   </div>
 
-  <div style="flex:1;font-size:18px;line-height:1.5;color:var(--jot-ink);text-align:center;padding:0 6px">
-    Make this shorter and turn it into an email to Sam<span style="color:var(--jot-ink-cap)"> </span>
-  </div>
+  <div style="font-size:18px;line-height:1.45;color:var(--jot-ink-2)">I think it's one of the back. Okay, I think I want you to simulate I want two lines.</div>
 
-  <div class="jot-caption" style="text-align:center;margin-bottom:20px">Say what you want changed, then tap Stop.</div>
+  <div style="flex:1"></div>
 
-  <div style="display:flex;justify-content:center">
-    <div style="width:72px;height:72px;border-radius:50%;background:var(--jot-record);display:flex;align-items:center;justify-content:center;box-shadow:0 0 28px rgba(224,23,59,0.4)">
-      <span style="width:26px;height:26px;border-radius:6px;background:#fff"></span>
-    </div>
+  <div style="height:58px;border-radius:999px;background:linear-gradient(#FF7059,#E85540);display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 24px rgba(255,90,73,0.42)">
+    <span style="width:18px;height:18px;border-radius:4px;background:#fff"></span>
+    <span style="color:#fff;font-size:18px;font-weight:600">Stop</span>
   </div>
-  <div style="text-align:center;margin-top:10px;color:var(--jot-ink-2);font-size:14px">Stop</div>
 </div>

@@ -22,6 +22,24 @@ Sizes appear on the Known Bugs below and on aspirational entries that haven't sh
 
 This section tracks user-facing bugs that are reproduced but not yet fixed. Each entry is a short symptom statement + the reproducer + the current root-cause hypothesis. Entries are removed when a fix lands and ships.
 
+### Keyboard "Added to Vocabulary" confirmation uses error styling and appears late
+**Size: S.** **Plan: [docs/plans/bug-keyboard-overlay-surfaces.md](../docs/plans/bug-keyboard-overlay-surfaces.md).** Mockup: atlas screen `kb-status-banner` (flagged). Relates to [§5.6](features.md#5-6-actions-popover) / [§5.10](features.md#5-10-status-banner).
+
+**Symptom:** Selecting a word in the keyboard and tapping **Add to Vocabulary** (••• Actions popover) shows the confirmation "Added '<word>' to your dictionary" in the **red error banner with an ✕ icon** — a success message rendered as an error. The banner floats over the top of the recents pane. Two defects: (1) wrong tint/icon (should be a success/green style, not the error red); (2) it does **not** appear instantly — it only surfaces after a follow-up action (e.g. pressing Enter / the next keystroke), so the confirmation is decoupled from the action that triggered it.
+
+**When it happens:** Every time a word is added to Vocabulary from the keyboard popover.
+
+**Current hypothesis:** the banner reuses a single error-styled status-banner component for all messages (no success variant), and the banner text is written to the App-Group `lastDictationStatusMessage` projection but the keyboard only re-reads/renders it on the next input event rather than reacting immediately to the add — so it shows late. Needs confirmation in `JotKeyboardViewController.refreshStatusBanner` / `setStatusBanner` and the add-to-vocab path.
+
+### Keyboard Actions popover displaces the Recents list instead of floating over it
+**Size: S.** **Plan: [docs/plans/bug-keyboard-overlay-surfaces.md](../docs/plans/bug-keyboard-overlay-surfaces.md).** Mockup: atlas screen `kb-actions-popover` (flagged). Relates to [§5.6](features.md#5-6-actions-popover).
+
+**Symptom:** Opening the ••• Actions popover renders the menu **inside the keyboard pane** (top-left) and pushes the [Recents strip](features.md#5-2-recents-strip-idle-state) down out of view, instead of floating over the recents as a context menu. The user loses the recents context while the popover is open, and the popover's lower rows (Undo/Redo) can be clipped by the control row.
+
+**When it happens:** Every time the Actions popover is opened.
+
+**Current hypothesis:** the popover is laid out as a sibling in the keyboard's vertical stack (taking layout space and pushing siblings down) rather than as an overlay (`.overlay`/`ZStack` anchored above the ••• key). Fixing it to a floating overlay would preserve the recents underneath.
+
 ### Keyboard-initiated dictation opens Jot but does not start recording
 **Size: S.** **Plan: [docs/plans/bug-cold-start-dictation-race.md](../docs/plans/bug-cold-start-dictation-race.md).** Hypothesis recorded here may not match code reality — see plan for diagnostic-first approach.
 

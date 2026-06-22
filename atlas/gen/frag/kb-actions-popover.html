@@ -1,57 +1,31 @@
-<!-- Actions popover open above the ••• key (§5.6). -->
+<!-- Actions popover (§5.6). Showcasing the CURRENT on-device BUG: the popover renders INSIDE
+     the keyboard pane (top-left) and PUSHES THE RECENTS LIST DOWN out of view, instead of
+     floating over it as a context menu. Items: Paste / Copy / Add to Vocabulary (Copy + Add
+     dimmed with no selection); Undo/Redo continue below the fold. Known issue (atlas flag). -->
 <div style="height:300px"></div>
 
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-  <span style="width:48px;height:48px;border-radius:50%;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center">
-    <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M12 5v14M5 12h14"/></svg>
-  </span>
-  <div style="flex:1;display:flex;align-items:center;gap:8px;height:48px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);border-radius:24px;padding:0 16px">
-    <span style="flex:1;color:var(--jot-ink-cap);font-size:16px">Text Message · SMS</span>
-    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:var(--jot-ink-cap)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
-  </div>
-</div>
+<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;margin:0 -6px;padding:14px 12px 18px;position:relative;overflow:hidden">
 
-<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;padding:14px 12px 18px;margin:0 -6px;position:relative">
-
-  <!-- popover anchored above the ••• key (bottom-left) -->
-  <div class="jot-card" style="position:absolute;left:12px;bottom:96px;width:220px;z-index:10;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.18)">
-    <div class="jot-row" style="padding:13px 16px">
-      <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;flex:none"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M9 5H6a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2V7a2 2 0 00-2-2h-3"/></svg>
-      <span class="grow jot-row-title">Paste</span>
+  <!-- popover card: in-pane, top-left, ~62% width. Recents are NOT shown — pushed below the fold by this card. -->
+  <div class="jot-card" style="width:64%;border-radius:14px;margin-bottom:14px">
+    <div class="jot-row" style="padding:14px 16px;gap:14px">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-ink);stroke-width:1.8;flex:none"><rect x="8" y="2.5" width="8" height="4" rx="1.2"/><path d="M9 4.5H6.5A1.5 1.5 0 005 6v13a1.5 1.5 0 001.5 1.5h11A1.5 1.5 0 0019 19V6a1.5 1.5 0 00-1.5-1.5H15"/></svg>
+      <span class="grow jot-row-title" style="font-size:17px;font-weight:400">Paste</span>
     </div>
-    <div class="jot-row" style="padding:13px 16px;opacity:0.4">
-      <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;flex:none"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h8"/></svg>
-      <span class="grow jot-row-title">Copy</span>
+    <div class="jot-row" style="padding:14px 16px;gap:14px;opacity:0.38">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-ink);stroke-width:1.8;flex:none"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M5.5 15.5h-.5A1.5 1.5 0 013.5 14V5A1.5 1.5 0 015 3.5h9A1.5 1.5 0 0115.5 5v.5"/></svg>
+      <span class="grow jot-row-title" style="font-size:17px;font-weight:400">Copy</span>
     </div>
-    <div class="jot-row" style="padding:13px 16px">
-      <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;flex:none"><path d="M9 7L4 12l5 5M4 12h11a5 5 0 010 10h-1"/></svg>
-      <span class="grow jot-row-title">Undo last insertion</span>
-    </div>
-    <div class="jot-row" style="padding:13px 16px">
-      <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;flex:none"><path d="M15 7l5 5-5 5M20 12H9a5 5 0 000 10h1"/></svg>
-      <span class="grow jot-row-title">Redo last insertion</span>
+    <div class="jot-row" style="padding:14px 16px;gap:14px;opacity:0.38">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;flex:none"><rect x="4" y="3.5" width="16" height="17" rx="2" fill="none" stroke="var(--jot-ink)" stroke-width="1.8"/><path d="M8 3.5v17" fill="none" stroke="var(--jot-ink)" stroke-width="1.4"/><text x="14" y="15.5" font-size="9" font-weight="700" text-anchor="middle" fill="var(--jot-ink)">A</text></svg>
+      <span class="grow jot-row-title" style="font-size:17px;font-weight:400">Add to Vocabulary</span>
     </div>
   </div>
 
-  <!-- RECENT list card (dimmed behind popover) -->
-  <div class="jot-card" style="margin:0 0 14px;opacity:0.5">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 6px">
-      <span class="jot-section" style="margin:0">Recent</span>
-      <span style="color:var(--jot-accent);font-size:14px;font-weight:600">See all ›</span>
-    </div>
-    <div class="jot-row" style="padding:11px 16px">
-      <span class="jot-row-sub" style="color:var(--jot-ink-cap);flex:none;width:62px">12:39 PM</span>
-      <span class="grow" style="color:var(--jot-accent-deep);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">I agree; the goal is to keep the cod…</span>
-    </div>
-    <div class="jot-row" style="padding:11px 16px">
-      <span class="jot-row-sub" style="color:var(--jot-ink-cap);flex:none;width:62px">12:32 PM</span>
-      <span class="grow" style="color:var(--jot-accent-deep);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">My name is Jamie and my wife's name…</span>
-    </div>
-  </div>
-
+  <!-- control row: ••• (active/open) / Jot down pill / return / backspace -->
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-    <span style="width:56px;height:54px;border-radius:11px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:#fff"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
+    <span style="width:56px;height:54px;border-radius:11px;background:rgba(26,140,255,0.18);border:0.5px solid rgba(26,140,255,0.35);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-accent)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
     </span>
     <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
       <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
@@ -65,7 +39,8 @@
     </span>
   </div>
 
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px 0">
+  <!-- bottom system row -->
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:0 10px">
     <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
     <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
   </div>
