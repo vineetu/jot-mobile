@@ -18,16 +18,16 @@ import AppIntents
 ///
 /// ## One AppShortcut tile, three intent entry points
 ///
-/// - **`RecordAndTranscribeIntent`** (tile + catalog) — *primary* Action
-///   Button binding for iOS 18+. `openAppWhenRun = false` + `AudioRecordingIntent`
-///   conformance gives us the "no app bounce, Live Activity is the UI"
-///   target experience. See that class's doc for the full research chain;
-///   see `docs/research/action-button-interaction-palette.md` §3.A for
-///   the iOS-side "blessed path" evidence.
+/// - **`RecordAndTranscribeIntent`** (tile + catalog) — *primary* binding.
+///   Uses `supportedModes = .foreground(.immediate)` to bring Jot forward and
+///   DEFERS the mic-start to scene-`.active` (iOS forbids starting capture from
+///   a non-foreground process — GitHub issue #3). There is a brief, unavoidable
+///   app-bounce on press; that is the Apple-prescribed path (DTS
+///   forums/thread/756507). See `docs/carplay/issue-3-mic-rootcause.md`.
 ///
 /// - **`DictateIntent`** (dormant — NOT registered here, NOT in catalog) —
-///   pre-`AudioRecordingIntent`-era toggle that uses `openAppWhenRun = true`
-///   to force-foreground Jot for mic activation. The intent stays compiled
+///   identical-shape toggle (also `supportedModes` foreground + deferred
+///   scene-active start). The intent stays compiled
 ///   in the binary and can be revived as an Action Button tile by flipping
 ///   `isDiscoverable` back to `true` and re-registering an `AppShortcut`
 ///   here — but Apple's AppIntents metadata extractor enforces that any
@@ -55,14 +55,19 @@ import AppIntents
 /// Accepting a one-app-update latency is cheaper than shipping a picker
 /// with two tiles to 100% of users for the 0% case.
 ///
-/// ## Why each shortcut keeps a single phrase
+/// ## Phrase count — the multi-phrase scar
 ///
-/// The earlier version of `DictateIntent`'s entry listed three phrases and
+/// An earlier version of `DictateIntent`'s entry listed three phrases and
 /// hit an iOS 26.2 Shortcuts-daemon commit bug ("Something went wrong,
-/// please try again later"). Apple's sample patterns use one unambiguous
-/// phrase per shortcut; doing the same here removes one dimension of
-/// variability in the generated metadata and keeps the Action Button
-/// binding flow reliable.
+/// please try again later") that broke the WHOLE provider binding —
+/// including the Action Button tile. For a while every shortcut therefore
+/// carried a single phrase. The record tile now carries three close verb
+/// variants again ("Jot this down" / "… it down" / "… something down") to
+/// widen Siri's near-exact matching; `AskJotIntent` stays single ("Ask
+/// Jot"). Because this re-enters the condition that previously broke
+/// binding, the on-device gate after ANY phrase change is: the Action
+/// Button must still bind AND still record. If it regresses on a given iOS
+/// release, collapse the record tile back to a single phrase.
 ///
 /// Provider is plain `struct`, not `public struct`: the provider lives in
 /// the main app target and doesn't need cross-module visibility. Apple's
@@ -71,17 +76,29 @@ import AppIntents
 /// types.
 struct JotAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        // Primary. iOS 18+ blessed path — no app bounce, Live Activity is
-        // the sole UI. See `RecordAndTranscribeIntent` class doc.
+        // Primary. Foregrounds Jot to record, with the mic-start deferred to
+        // scene-active (GitHub issue #3). See `RecordAndTranscribeIntent` doc.
         AppShortcut(
             intent: RecordAndTranscribeIntent(),
             phrases: [
                 // `\(.applicationName)` is required — AppShortcuts metadata
                 // validation rejects phrases without the placeholder (the
-                // literal "Jot" doesn't satisfy the validator). The phrase
-                // Siri matches against therefore reads "New Jot note" —
-                // expressed through the placeholder so the extractor accepts it.
-                "New \(.applicationName) note"
+                // literal "Jot" doesn't satisfy the validator). We lean INTO
+                // that: "Jot" is also the verb, so each phrase reads as a
+                // natural sentence ("Hey Siri, Jot this down") with the
+                // placeholder vanishing into the verb. Three close variants
+                // widen Siri's near-exact match without changing meaning.
+                //
+                // ⚠️ MULTI-PHRASE RISK: an earlier 3-phrase entry hit an
+                // iOS 26.2 Shortcuts-daemon commit bug ("Something went wrong,
+                // please try again later") that broke the WHOLE provider
+                // binding — including the Action Button tile below. We may be
+                // past that iOS now. On-device gate after any change here:
+                // confirm the Action Button still binds AND still records. If
+                // it regresses, collapse back to a single phrase.
+                "\(.applicationName) this down",
+                "\(.applicationName) it down",
+                "\(.applicationName) something down"
             ],
             shortTitle: "Jot down",
             // Coherent `waveform.*` family across all three Jot intents so
@@ -89,6 +106,23 @@ struct JotAppShortcuts: AppShortcutsProvider {
             // badge communicates "captures via mic, outputs transcription"
             // — the exact primary-path semantic.
             systemImageName: "waveform.badge.mic"
+        )
+
+        // "Hey Siri, Ask Jot" → AskJotIntent. Headless, no mic (Siri prompts
+        // for the question, AskEngine answers, Siri reads the clean spoken
+        // answer back). `\(.applicationName)` placeholder is required by the
+        // AppShortcuts validator (same reason as the phrase above). Single
+        // phrase on purpose — added incrementally to keep the iOS-26.2
+        // Shortcuts-daemon commit (which binds the WHOLE provider, including
+        // the Action Button tile above) stable; the on-device gate is that
+        // "Jot down" still binds + records after this is added.
+        AppShortcut(
+            intent: AskJotIntent(),
+            phrases: [
+                "Ask \(.applicationName)"
+            ],
+            shortTitle: "Ask your notes",
+            systemImageName: "sparkle.magnifyingglass"
         )
 
         // NOTE: `DictateIntent` is NOT registered as an `AppShortcut` here.

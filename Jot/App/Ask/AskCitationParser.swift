@@ -52,6 +52,23 @@ enum AskCitationParser {
         return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }()
 
+    /// Strip EVERY `[cite: …]` marker from `text`, returning clean prose.
+    /// The in-app Ask screen renders these markers as citation chips, but the
+    /// spoken / App-Intent (Shortcuts) path has nowhere to put chips, so the
+    /// raw "[cite: 1][cite: 2]…" leaks as noise. Used by `AskEngine`'s
+    /// `.spoken` answers. Collapses the stray double-space a removed marker
+    /// leaves between words.
+    static func stripMarkers(from text: String) -> String {
+        let ns = NSRange(text.startIndex..., in: text)
+        let stripped = markerRegex.stringByReplacingMatches(
+            in: text, options: [], range: ns, withTemplate: ""
+        )
+        return stripped
+            .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: " .", with: ".")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Parse the cumulative answer text into segments. Use this while
     /// the stream is in flight — call after every chunk arrives.
     static func parseStreaming(

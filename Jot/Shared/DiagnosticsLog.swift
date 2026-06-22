@@ -122,6 +122,10 @@ enum DiagnosticsCategory: String, Codable {
     /// attributed to "the spotter never found it" (no record) vs "the gate
     /// blocked it" (BLOCK record + numbers to tune).
     case vocabularyGate
+    /// TTS Lab read-aloud playback trace — synth sample counts, engine start,
+    /// per-chunk playback, and any error. Lets a "play does nothing" report be
+    /// diagnosed cable-free (Help → Diagnostics → Copy).
+    case tts
 }
 
 struct DiagnosticsEntry: Codable, Identifiable, Equatable {

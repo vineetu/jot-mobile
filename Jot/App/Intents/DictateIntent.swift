@@ -14,19 +14,21 @@ import os
 ///
 /// Apple explicitly documents that `AVAudioEngine`-based microphone capture
 /// cannot be started from a Shortcuts-invoked intent unless the app is in the
-/// foreground.¹ That is solved by `openAppWhenRun = true`: Jot is brought to
-/// the foreground for the brief window needed to activate the audio session.
+/// foreground.¹ Foregrounding via `supportedModes = .foreground(.immediate)`
+/// (the iOS 26 replacement for the deprecated `openAppWhenRun = true`) is
+/// necessary BUT not sufficient: iOS creates the foreground *during* `perform()`,
+/// so the mic-start is DEFERRED to scene-`.active` via
+/// `DictationIntentBridge.pendingForegroundStart` (GitHub issue #3; see
+/// `docs/carplay/issue-3-mic-rootcause.md`).
 ///
 /// We deliberately conform to the plain `AppIntent` — *not* the marker
-/// protocol `AudioRecordingIntent`. An earlier iteration conformed to
-/// `AudioRecordingIntent` on the theory that it would grant background-audio
-/// continuation, but that conformance reproducibly caused the intent to be
-/// *listed* in Settings → Action Button → Shortcut → Jot yet be
-/// *un-selectable* (tapping didn't bind). The working hypothesis after
-/// testing: Action Button's binding UI filters the specialized audio intent
-/// protocols to apps that actually need to run in the background without a
-/// foreground — which isn't us. Since `openAppWhenRun = true` foregrounds
-/// Jot anyway, plain `AppIntent` is both sufficient and bindable.²
+/// protocol `AudioRecordingIntent`. The fundamental reason: `AudioRecordingIntent`
+/// does NOT grant cold-background mic start (it requires a live Live Activity,
+/// removed from Jot, and only manages a foreground-started session — Apple DTS
+/// forums/thread/815725). Re-adding it would NOT fix issue #3. (An earlier
+/// iteration also found it made the intent *un-selectable* in the Action Button
+/// picker, which is a second, lesser reason.) Since we foreground anyway, plain
+/// `AppIntent` is both sufficient and bindable.²
 ///
 /// The pragmatic consequence for Experiment 4: the user *will* see Jot's app
 /// come forward for a moment. We don't route the user into any Jot screen;
@@ -92,10 +94,13 @@ struct DictateIntent: AppIntent {
     )
 
     /// Forcing the app to foreground is required for microphone capture from
-    /// a Shortcuts-invoked intent (see class doc). A `false` value here
-    /// reliably produces an `AVAudioSession` activation failure the moment
-    /// the recording layer tries to install its tap.
-    static let openAppWhenRun: Bool = true
+    /// a Shortcuts-invoked intent (see class doc). `supportedModes` with
+    /// `.foreground(.immediate)` is the iOS 26 replacement for the deprecated
+    /// `openAppWhenRun = true` (deprecated at iOS 26.0; our deployment floor).
+    /// Foregrounding is necessary BUT not sufficient — the actual mic-start is
+    /// deferred to scene-`.active` via `DictationIntentBridge.pendingForegroundStart`
+    /// (see `perform()`), because iOS creates the foreground *during* `perform()`.
+    static var supportedModes: IntentModes { .foreground(.immediate) }
 
     /// Intentionally `false`. `DictateIntent` is the dormant legacy fallback:
     /// it stays compiled in the binary but is NOT registered in
@@ -149,18 +154,17 @@ struct DictateIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        // Controller is always non-nil now — the bridge lazy-constructs it on
-        // first access. See `DictationIntentBridge` doc for why the earlier
-        // register/await dance is gone. No cold-launch race to guard against:
-        // in the `openAppWhenRun = true` path the app has already foregrounded
-        // by the time `perform()` runs, and in every case the bridge's lazy
-        // init runs synchronously inside this actor-hop.
         let controller = DictationIntentBridge.shared.controller
 
         switch controller.currentPhase {
         case .idle:
-            try await beginDictation(using: controller)
+            // Do NOT start the mic inline — see `DictationIntentBridge.pendingForegroundStart`.
+            // Request a foreground-gated start; `JotApp` begins recording via
+            // `triggerAutoStart` once the scene is confirmed `.active`.
+            DictationIntentBridge.shared.pendingForegroundStart = true
+            NotificationCenter.default.post(name: .jotDictateFromShortcut, object: nil)
         case .recording:
+            // Stop needs no foreground — the engine is already up. Safe inline.
             try await endDictation(using: controller)
         case .transcribing, .processing, .cleaning:
             return .result()
@@ -170,13 +174,6 @@ struct DictateIntent: AppIntent {
     }
 
     // MARK: - Toggle legs
-
-    @MainActor
-    private func beginDictation(using controller: any DictationController) async throws {
-        let startedAt = Date()
-        try await controller.startRecording(startedAt: startedAt)
-        await DictationActivityCoordinator.shared.start(startedAt: startedAt)
-    }
 
     @MainActor
     private func endDictation(using controller: any DictationController) async throws {
@@ -346,9 +343,31 @@ final class DictationIntentBridge {
     /// against the protocol and the impl type stays substitutable in tests.
     let controller: any DictationController
 
+    /// Set by a foreground dictation intent's START leg
+    /// (`RecordAndTranscribeIntent` / `DictateIntent`) to request that the app
+    /// begin recording once it is confirmed **foreground/active** — instead of
+    /// starting the mic inline in `perform()`.
+    ///
+    /// **Why:** iOS launches an App Intent into the *background* and creates the
+    /// foreground *during* `perform()` (Apple DTS, forums/thread/769924), so an
+    /// inline `RecordingService.start()` races the foreground transition and
+    /// intermittently fails with CoreAudio "engine failed to start" (GitHub
+    /// issue #3). `JotApp` consumes this flag on scene-`.active` and routes
+    /// through `triggerAutoStart` — the same scene-active-gated path the
+    /// keyboard's `jot://dictate` bounce already uses reliably.
+    var pendingForegroundStart = false
+
     private init() {
         self.controller = DictationControllerImpl()
     }
+}
+
+extension Notification.Name {
+    /// Posted by a foreground dictation intent's START leg after setting
+    /// `DictationIntentBridge.shared.pendingForegroundStart`. Lets `JotApp`
+    /// start *immediately* when the app is ALREADY foreground (no new
+    /// scene-`.active` transition will fire to trigger the deferred path).
+    static let jotDictateFromShortcut = Notification.Name("jot.dictateFromShortcut")
 }
 
 /// Process-wide implementation of `DictationController`.

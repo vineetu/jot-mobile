@@ -1,0 +1,128 @@
+/* Jot Atlas — generated-mockup design tokens + components.
+   Mirrored 1:1 from Jot/App/Design/JotDesign.swift + WallpaperBackground/IconTile/StatusPill.
+   Light = :root, Dark = [data-theme="dark"]. Change a value here only if the Swift token changed. */
+
+:root {
+  /* page */
+  --jot-page-base: #D1D3DA;                 /* Color.jotPageBase light */
+  --jot-ink: #15171C;                        /* jotPageInk light */
+  --jot-ink-2: rgba(60,60,67,0.72);          /* jotPageInkSecondary light */
+  --jot-ink-cap: rgba(60,60,67,0.62);        /* jotPageInkCaption light */
+  --jot-sep: rgba(60,60,67,0.10);            /* jotPageSeparator light */
+  /* brand */
+  --jot-accent: #1A8CFF;                      /* jotAccent / jotBlueTop */
+  --jot-accent-deep: #0064CC;                /* jotBlueBottom */
+  --jot-record: #E0173B;                      /* jotRecordingDot */
+  --jot-success: #34C759; --jot-success-ink: #1B8E3E;
+  --jot-warning: #FF9F30; --jot-warning-ink: #B87314;
+  /* glass card (Surface.regular, light) */
+  --jot-card-top: rgba(255,255,255,0.78);
+  --jot-card-bot: rgba(255,255,255,0.58);
+  --jot-card-border: rgba(255,255,255,0.55);
+  --jot-card-shadow: 0 4px 12px rgba(0,0,0,0.06);
+  --jot-card-blur: 18px;
+  /* wallpaper radials (light): blue TL, peach BR, periwinkle bottom */
+  --wp-1: radial-gradient(420px at 15% 10%, rgba(0,122,255,0.18), transparent 70%);
+  --wp-2: radial-gradient(460px at 95% 95%, rgba(255,200,140,0.16), transparent 70%);
+  --wp-3: radial-gradient(480px at 50% 100%, rgba(180,200,240,0.30), transparent 70%);
+}
+
+[data-theme="dark"] {
+  --jot-page-base: #15171C;                  /* jotPageBase dark */
+  --jot-ink: rgba(255,255,255,0.96);
+  --jot-ink-2: rgba(255,255,255,0.62);
+  --jot-ink-cap: rgba(255,255,255,0.46);
+  --jot-sep: rgba(255,255,255,0.10);
+  --jot-card-top: rgba(44,46,54,0.66);       /* flatter/darker to match real build-167 dark cards */
+  --jot-card-bot: rgba(34,36,44,0.5);
+  --jot-card-border: rgba(255,255,255,0.07);
+  --jot-card-shadow: none;
+  /* dark wallpaper: 2 blue radials over #15171C */
+  --wp-1: radial-gradient(460px at 20% 10%, rgba(31,71,171,0.45), transparent 70%);
+  --wp-2: radial-gradient(420px at 90% 80%, rgba(0,122,255,0.30), transparent 70%);
+  --wp-3: none;
+}
+
+/* ---- frame + chrome (built by shell.js) ---- */
+* { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: #2a2a30; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+       min-height: 100vh; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px; }
+.atlas-toolbar { display: flex; gap: 10px; align-items: center; color: #ddd; font-size: 13px; }
+.atlas-toolbar select, .atlas-toolbar button {
+  background: #3a3a42; color: #eee; border: 1px solid #4a4a52; border-radius: 8px; padding: 6px 10px; font: inherit; cursor: pointer; }
+.atlas-toolbar .seg { display: inline-flex; border: 1px solid #4a4a52; border-radius: 8px; overflow: hidden; }
+.atlas-toolbar .seg button { border: 0; border-radius: 0; }
+.atlas-toolbar .seg button.on { background: var(--jot-accent); color: #fff; }
+
+.device {
+  position: relative; width: 402px; height: 874px; flex: none;
+  background: var(--jot-page-base); border-radius: 55px; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.45); border: 1px solid rgba(0,0,0,0.3);
+}
+.device::before { /* wallpaper */
+  content: ""; position: absolute; inset: 0;
+  background: var(--wp-1), var(--wp-2), var(--wp-3), var(--jot-page-base);
+}
+.screen-scroll { position: absolute; inset: 0; overflow-y: auto; padding: 59px 18px 34px; }  /* safe areas */
+.statusbar { position: absolute; top: 0; left: 0; right: 0; height: 59px; z-index: 5;
+  display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 30px 0; pointer-events: none; }
+.statusbar .t { font-weight: 600; font-size: 15px; color: var(--jot-ink); }
+.statusbar .island { position: absolute; left: 50%; top: 11px; transform: translateX(-50%);
+  width: 125px; height: 36px; background: #000; border-radius: 20px; }
+.statusbar .r { display: flex; gap: 6px; align-items: center; color: var(--jot-ink); font-size: 12px; font-weight: 600; }
+
+/* ---- typography ---- */
+.jot-display { font-family: ui-serif, "New York", Georgia, serif; font-style: italic; font-weight: 400;
+  font-size: 38px; letter-spacing: -1.6px; color: var(--jot-ink); line-height: 1.05; }
+.jot-title { font-family: ui-serif, "New York", Georgia, serif; font-style: italic; font-weight: 400;
+  font-size: 30px; letter-spacing: -1.0px; color: var(--jot-ink); }
+.jot-section { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--jot-ink-cap); margin: 18px 2px 8px; }
+.jot-row-title { font-size: 15px; font-weight: 500; letter-spacing: -0.2px; color: var(--jot-ink); }
+.jot-row-sub { font-size: 12.5px; font-weight: 400; color: var(--jot-ink-2); line-height: 1.3; }
+.jot-caption { font-size: 12.5px; color: var(--jot-ink-cap); margin: 8px 4px 0; line-height: 1.35; }
+
+/* ---- glass card + rows ---- */
+.jot-card {
+  background: linear-gradient(var(--jot-card-top), var(--jot-card-bot));
+  -webkit-backdrop-filter: blur(var(--jot-card-blur)); backdrop-filter: blur(var(--jot-card-blur));
+  border: 0.5px solid var(--jot-card-border); border-radius: 18px; box-shadow: var(--jot-card-shadow);
+  overflow: hidden;
+}
+.jot-row { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.jot-row + .jot-row { border-top: 0.5px solid var(--jot-sep); }
+.jot-row .grow { flex: 1; min-width: 0; }
+.jot-chev { color: var(--jot-ink-cap); font-size: 16px; }
+.jot-ext { color: var(--jot-accent); font-size: 15px; font-weight: 600; }
+
+/* ---- icon tile (gradient, white glyph) ---- */
+.jot-tile { width: 30px; height: 30px; border-radius: 8.4px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(var(--c1), var(--c2)); box-shadow: 0 1px 1px rgba(0,0,0,0.10), inset 0 0.5px 0 rgba(255,255,255,0.35);
+  border: 0.5px solid rgba(0,0,0,0.06); }
+.jot-tile svg { width: 15px; height: 15px; fill: #fff; }
+.jot-tile.hero { width: 84px; height: 84px; border-radius: 23.5px; }
+.jot-tile.hero svg { width: 42px; height: 42px; }
+
+/* ---- status pill (5pt dot + 11pt label, 28pt tall) ---- */
+.jot-pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; }
+.jot-pill .dot { width: 5px; height: 5px; border-radius: 50%; }
+.jot-pill.success { color: var(--jot-success-ink); background: linear-gradient(rgba(52,199,89,0.20), rgba(52,199,89,0.12)); border: 0.5px solid rgba(52,199,89,0.30); }
+.jot-pill.success .dot { background: var(--jot-success); }
+.jot-pill.warning { color: var(--jot-warning-ink); background: linear-gradient(rgba(255,159,48,0.20), rgba(255,159,48,0.12)); border: 0.5px solid rgba(255,159,48,0.30); }
+.jot-pill.warning .dot { background: var(--jot-warning); }
+.jot-pill.info { color: var(--jot-accent); background: linear-gradient(rgba(26,140,255,0.20), rgba(26,140,255,0.12)); border: 0.5px solid rgba(26,140,255,0.30); }
+.jot-pill.info .dot { background: var(--jot-accent); }
+
+/* ---- iOS toggle ---- */
+.jot-toggle { width: 51px; height: 31px; border-radius: 999px; background: var(--jot-success); position: relative; flex: none; }
+.jot-toggle::after { content: ""; position: absolute; top: 2px; left: 22px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+.jot-toggle.off { background: rgba(120,120,128,0.32); }
+.jot-toggle.off::after { left: 2px; }
+
+/* ---- pill button (CTA) ---- */
+.jot-cta { display: flex; align-items: center; justify-content: center; gap: 8px; height: 56px; border-radius: 999px;
+  background: linear-gradient(var(--jot-accent), var(--jot-accent-deep)); color: #fff; font-size: 17px; font-weight: 600;
+  box-shadow: 0 0 24px rgba(26,140,255,0.4); }
+.jot-donebtn { background: var(--jot-card-top); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-radius: 999px; padding: 7px 16px; font-size: 15px; font-weight: 600; color: var(--jot-ink); border: 0.5px solid var(--jot-card-border); }

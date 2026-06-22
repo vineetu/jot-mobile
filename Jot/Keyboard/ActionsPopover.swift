@@ -40,6 +40,7 @@ struct ActionsPopover: View {
 
     let onPaste: () -> Void
     let onCopy: () -> Void
+    let onAddToVocabulary: () -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
     let onJumpToStart: () -> Void
@@ -65,6 +66,13 @@ struct ActionsPopover: View {
                 systemImage: "doc.on.doc",
                 enabled: hasSelection,
                 action: handle(onCopy)
+            )
+            divider
+            row(
+                title: "Add to Vocabulary",
+                systemImage: "character.book.closed",
+                enabled: hasSelection,
+                action: handle(onAddToVocabulary)
             )
             divider
             row(

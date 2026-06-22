@@ -871,7 +871,8 @@ struct RecordingHeroView: View {
                     recordingHeroLog.error(
                         "Recording start failed: \(error.localizedDescription, privacy: .public)"
                     )
-                    errorMessage = "Could not start recording: \(error.localizedDescription)"
+                    errorMessage = (error as? RecordingService.RecordingError)?.userFacingMessage
+                        ?? "Couldn't start recording — try again."
                     phase = .cancelled
                 }
             }
@@ -913,7 +914,8 @@ struct RecordingHeroView: View {
                         // us (interruption raced the resume); the service has
                         // already routed to internalStop. Surface the standard
                         // error path so the user isn't stuck on a dead hero.
-                        errorMessage = "Could not resume: \(error.localizedDescription)"
+                        errorMessage = (error as? RecordingService.RecordingError)?.userFacingMessage
+                            ?? "Couldn't resume recording — try again."
                         phase = .cancelled
                     }
                 }

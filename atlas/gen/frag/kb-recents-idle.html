@@ -1,0 +1,71 @@
+<!-- spacer pushes the keyboard strip to the bottom -->
+<div style="height:300px"></div>
+
+<!-- faux host text field -->
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+  <span style="width:48px;height:48px;border-radius:50%;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center">
+    <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M12 5v14M5 12h14"/></svg>
+  </span>
+  <div style="flex:1;display:flex;align-items:center;gap:8px;height:48px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);border-radius:24px;padding:0 16px">
+    <span style="width:2px;height:20px;background:var(--jot-accent)"></span>
+    <span style="flex:1;color:var(--jot-ink-cap);font-size:16px">Text Message · SMS</span>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:var(--jot-ink-cap)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+</div>
+
+<!-- keyboard strip -->
+<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;padding:14px 12px 18px;margin:0 -6px">
+
+  <!-- RECENT list card -->
+  <div class="jot-card" style="margin:0 0 14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 6px">
+      <span class="jot-section" style="margin:0">Recent</span>
+      <span style="color:var(--jot-accent);font-size:14px;font-weight:600">See all ›</span>
+    </div>
+    <div class="jot-row" style="padding:10px 14px">
+      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:23 PM</span>
+      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Hello, can you hear me? I think you can…</span>
+      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
+      </span>
+    </div>
+    <div class="jot-row" style="padding:10px 14px">
+      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:22 PM</span>
+      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">That's great. Cause from Thursday to…</span>
+      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
+      </span>
+    </div>
+    <div class="jot-row" style="padding:10px 14px">
+      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:21 PM</span>
+      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Where will he be staying in San Francis…</span>
+      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
+      </span>
+    </div>
+  </div>
+
+  <!-- control row: ••• / Jot down pill / return / backspace -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <span style="width:56px;height:54px;border-radius:11px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-ink)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
+    </span>
+    <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+      <span style="color:#fff;font-size:18px;font-weight:600">Jot down</span>
+    </div>
+    <span style="width:72px;height:54px;border-radius:11px;background:rgba(120,120,128,0.28);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M20 7v4a3 3 0 01-3 3H6m0 0l4-4m-4 4l4 4"/></svg>
+    </span>
+    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.34);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><path d="M21 6H9L3 12l6 6h12a1 1 0 001-1V7a1 1 0 00-1-1z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>
+    </span>
+  </div>
+
+  <!-- bottom system row: globe / mic -->
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px 0">
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+
+</div>

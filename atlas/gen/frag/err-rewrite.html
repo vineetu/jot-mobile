@@ -1,0 +1,44 @@
+<!-- Rewrite error (§12.4) — Transcript Detail shows a dismissible error card. -->
+<div style="position:absolute;inset:0;display:flex;flex-direction:column;padding:0">
+<div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;opacity:0.5">‹</div>
+
+<div style="display:flex;align-items:center;gap:10px;margin:18px 2px 14px;font-size:13px;color:var(--jot-ink-cap)">
+  <span>2 hours ago</span>
+  <span>·</span>
+  <span>3784 words</span>
+  <span>·</span>
+  <span>22:22</span>
+</div>
+
+<!-- error card with dismiss -->
+<div style="display:flex;align-items:flex-start;gap:12px;background:linear-gradient(rgba(224,23,59,0.14),rgba(224,23,59,0.08));border:0.5px solid rgba(224,23,59,0.30);border-radius:14px;padding:14px 16px;margin-bottom:14px">
+  <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-record);stroke-width:2;flex:none;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.01"/></svg>
+  <div class="grow">
+    <div style="font-size:15px;font-weight:600;color:var(--jot-ink)">Rewrite couldn't finish</div>
+    <div class="jot-row-sub" style="margin-top:2px;line-height:1.4">The AI model ran out of memory partway through. Your original transcript is untouched — try Articulate again.</div>
+  </div>
+  <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:var(--jot-ink-cap);stroke-width:2.2;flex:none;margin-top:1px"><path d="M16 8L8 16M8 8l8 8"/></svg>
+</div>
+
+<!-- original transcript card -->
+<div class="jot-card" style="flex:1;padding:18px;overflow:hidden">
+  <div style="font-size:16px;line-height:1.55;color:var(--jot-ink)">My name is Jamie and my wife's name is Marta. We were waiting to hear back from the host in San Juan about whether they could accommodate our stay request for next month. We've gone ahead and released the request so we can make another booking if needed…</div>
+</div>
+
+<!-- action bar -->
+<div class="jot-card" style="position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:18px;padding:12px 18px;border-radius:999px">
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M6 7h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2zM9 7V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7h16" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round"/></svg>
+  </span>
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M16 3l5 5L8 21H3v-5zM13 6l5 5" fill="none" stroke="var(--jot-ink-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+  <div class="jot-cta" style="flex:1;height:44px;font-size:16px;box-shadow:none">
+    <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#fff"><path d="M12 2l1.6 4.4L18 8l-4.4 1.6L12 14l-1.6-4.4L6 8l4.4-1.6z"/></svg>
+    Articulate
+  </div>
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M9 9h9a2 2 0 012 2v9a2 2 0 01-2 2H9a2 2 0 01-2-2v-9a2 2 0 012-2z M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+</div>
+</div>

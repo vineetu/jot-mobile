@@ -1,0 +1,907 @@
+{
+  "app": "Jot",
+  "generatedFrom": "Jot/features.md",
+  "note": "Join table between features.md sections and the visual mockup. Each screen lists the feature sections it demonstrates, its screenshot slot, and behavior/dimension annotations. captured:false => slot still needs a real screenshot. Dimensions come from JotDesign tokens (the real source of truth) \u2014 never hand-typed guesses.",
+  "surfaces": [
+    {
+      "id": "1-home",
+      "num": "1",
+      "title": "Home & Library",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "home-library",
+          "title": "Transcript Library",
+          "sections": [
+            "1.1",
+            "1.2",
+            "1.7",
+            "1.8",
+            "1.9"
+          ],
+          "image": "screens/ios/home-library.png",
+          "captured": false
+        },
+        {
+          "id": "home-empty",
+          "title": "Empty State",
+          "sections": [
+            "1.4"
+          ],
+          "image": "screens/ios/home-empty.png",
+          "captured": false
+        },
+        {
+          "id": "home-search",
+          "title": "Live Search",
+          "sections": [
+            "1.3"
+          ],
+          "image": "screens/ios/home-search.png",
+          "captured": false
+        },
+        {
+          "id": "home-no-results",
+          "title": "No Search Results",
+          "sections": [
+            "1.5"
+          ],
+          "image": "screens/ios/home-no-results.png",
+          "captured": false
+        },
+        {
+          "id": "home-fab",
+          "title": "Floating Dictate Button",
+          "sections": [
+            "1.6"
+          ],
+          "image": "screens/ios/home-fab.png",
+          "captured": false
+        },
+        {
+          "id": "home-multiselect",
+          "title": "Multi-Select & Combine",
+          "sections": [
+            "1.11"
+          ],
+          "image": "screens/ios/home-multiselect.png",
+          "captured": false
+        },
+        {
+          "id": "home-ask-entry",
+          "title": "Ask Jot Entry Point",
+          "sections": [
+            "1.12"
+          ],
+          "image": "screens/ios/home-ask-entry.png",
+          "captured": false
+        },
+        {
+          "id": "home-dark",
+          "title": "Dark Appearance",
+          "sections": [
+            "1.13"
+          ],
+          "image": "screens/ios/home-dark.png",
+          "captured": true
+        }
+      ]
+    },
+    {
+      "id": "2-recording",
+      "num": "2",
+      "title": "Recording Experience",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "rec-surface",
+          "title": "Full-Screen Recording Surface",
+          "sections": [
+            "2.1",
+            "2.2",
+            "2.3"
+          ],
+          "image": "screens/ios/rec-surface.png",
+          "captured": true
+        },
+        {
+          "id": "rec-paused",
+          "title": "Paused",
+          "sections": [
+            "2.4"
+          ],
+          "image": "screens/ios/rec-paused.png",
+          "captured": false
+        },
+        {
+          "id": "rec-streaming",
+          "title": "Live Streaming Transcript",
+          "sections": [
+            "2.3",
+            "2.8"
+          ],
+          "image": "screens/ios/rec-streaming.png",
+          "captured": false
+        },
+        {
+          "id": "rec-cold-start",
+          "title": "Cold-Start Loading",
+          "sections": [
+            "2.14"
+          ],
+          "image": "screens/ios/rec-cold-start.png",
+          "captured": false
+        },
+        {
+          "id": "rec-followup",
+          "title": "Chained Follow-Up Commands",
+          "sections": [
+            "2.11"
+          ],
+          "image": "screens/ios/rec-followup.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "3-detail",
+      "num": "3",
+      "title": "Transcript Detail",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "detail-original",
+          "title": "Original Tab",
+          "sections": [
+            "3.1",
+            "3.2",
+            "3.3"
+          ],
+          "image": "screens/ios/detail-original.png",
+          "captured": true
+        },
+        {
+          "id": "detail-rewrite",
+          "title": "Rewrite Tab",
+          "sections": [
+            "3.1",
+            "3.4"
+          ],
+          "image": "screens/ios/detail-rewrite.png",
+          "captured": true
+        },
+        {
+          "id": "detail-action-bar",
+          "title": "Action Bar",
+          "sections": [
+            "3.5"
+          ],
+          "image": "screens/ios/detail-action-bar.png",
+          "captured": false
+        },
+        {
+          "id": "detail-rewrite-progress",
+          "title": "Rewrite Progress & Cancel",
+          "sections": [
+            "3.6"
+          ],
+          "image": "screens/ios/detail-rewrite-progress.png",
+          "captured": true
+        },
+        {
+          "id": "detail-edit",
+          "title": "Edit Transcript",
+          "sections": [
+            "3.7"
+          ],
+          "image": "screens/ios/detail-edit.png",
+          "captured": true
+        },
+        {
+          "id": "detail-rewrite-feedback",
+          "title": "Rewrite Feedback",
+          "sections": [
+            "3.8"
+          ],
+          "image": "screens/ios/detail-rewrite-feedback.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "4-wizard",
+      "num": "4",
+      "title": "Setup Wizard",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "wiz-w1",
+          "title": "W1 Welcome",
+          "sections": [
+            "4.1"
+          ],
+          "image": "screens/ios/wiz-w1.png",
+          "captured": true
+        },
+        {
+          "id": "wiz-w2",
+          "title": "W2 Microphone Permission",
+          "sections": [
+            "4.2"
+          ],
+          "image": "screens/ios/wiz-w2.png",
+          "captured": false
+        },
+        {
+          "id": "wiz-w3",
+          "title": "W3 Keyboard Install & Full Access",
+          "sections": [
+            "4.3"
+          ],
+          "image": "screens/ios/wiz-w3.png",
+          "captured": true
+        },
+        {
+          "id": "wiz-w4",
+          "title": "W4 How It Works",
+          "sections": [
+            "4.4"
+          ],
+          "image": "screens/ios/wiz-w4.png",
+          "captured": true
+        },
+        {
+          "id": "wiz-w5",
+          "title": "W5 Keyboard Try-It",
+          "sections": [
+            "4.5"
+          ],
+          "image": "screens/ios/wiz-w5.png",
+          "captured": true
+        },
+        {
+          "id": "wiz-w6",
+          "title": "W6 Warm Hold Opt-In",
+          "sections": [
+            "4.6"
+          ],
+          "image": "screens/ios/wiz-w6.png",
+          "captured": true
+        },
+        {
+          "id": "wiz-w7",
+          "title": "W7 Completion",
+          "sections": [
+            "4.7"
+          ],
+          "image": "screens/ios/wiz-w7.png",
+          "captured": true
+        }
+      ]
+    },
+    {
+      "id": "5-keyboard",
+      "num": "5",
+      "title": "Jot Keyboard",
+      "platform": "keyboard",
+      "screens": [
+        {
+          "id": "kb-recents-idle",
+          "title": "Recents Strip (Idle)",
+          "sections": [
+            "5.1",
+            "5.2"
+          ],
+          "image": "screens/keyboard/kb-recents-idle.png",
+          "captured": true
+        },
+        {
+          "id": "kb-streaming",
+          "title": "Streaming Strip (Recording)",
+          "sections": [
+            "5.3",
+            "5.4"
+          ],
+          "image": "screens/keyboard/kb-streaming.png",
+          "captured": true
+        },
+        {
+          "id": "kb-no-speech-hint",
+          "title": "No-Speech Hint",
+          "sections": [
+            "5.3"
+          ],
+          "image": "screens/keyboard/kb-no-speech-hint.png",
+          "captured": false
+        },
+        {
+          "id": "kb-working",
+          "title": "Post-Stop Working State",
+          "sections": [
+            "5.5"
+          ],
+          "image": "screens/keyboard/kb-working.png",
+          "captured": false
+        },
+        {
+          "id": "kb-actions-popover",
+          "title": "Actions Popover",
+          "sections": [
+            "5.6"
+          ],
+          "image": "screens/keyboard/kb-actions-popover.png",
+          "captured": false
+        },
+        {
+          "id": "kb-status-banner",
+          "title": "Status Banner",
+          "sections": [
+            "5.10"
+          ],
+          "image": "screens/keyboard/kb-status-banner.png",
+          "captured": false
+        },
+        {
+          "id": "kb-full-access",
+          "title": "Full Access Requirement",
+          "sections": [
+            "5.11"
+          ],
+          "image": "screens/keyboard/kb-full-access.png",
+          "captured": false
+        },
+        {
+          "id": "kb-vocab-correction",
+          "title": "Vocabulary Correction Prompt",
+          "sections": [
+            "5.8",
+            "8.8"
+          ],
+          "image": "screens/keyboard/kb-vocab-correction.png",
+          "captured": false
+        },
+        {
+          "id": "kb-dark",
+          "title": "Dark Mode",
+          "sections": [
+            "5.9"
+          ],
+          "image": "screens/keyboard/kb-dark.png",
+          "captured": true
+        }
+      ]
+    },
+    {
+      "id": "6-settings",
+      "num": "6",
+      "title": "Settings",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "settings-main",
+          "title": "Settings Main",
+          "sections": [
+            "6.1",
+            "6.2",
+            "6.3",
+            "6.4",
+            "6.5"
+          ],
+          "image": "screens/ios/settings-main.png",
+          "captured": true
+        },
+        {
+          "id": "settings-model-mgmt",
+          "title": "Speech Model Management",
+          "sections": [
+            "6.1"
+          ],
+          "image": "screens/ios/settings-model-mgmt.png",
+          "captured": true
+        },
+        {
+          "id": "settings-privacy",
+          "title": "Privacy Controls",
+          "sections": [
+            "6.4"
+          ],
+          "image": "screens/ios/settings-privacy.png",
+          "captured": false
+        },
+        {
+          "id": "settings-about",
+          "title": "About & Support",
+          "sections": [
+            "6.5"
+          ],
+          "image": "screens/ios/settings-about.png",
+          "captured": true
+        },
+        {
+          "id": "settings-acknowledgements",
+          "title": "Acknowledgements",
+          "sections": [
+            "6.6"
+          ],
+          "image": "screens/ios/settings-acknowledgements.png",
+          "captured": false
+        },
+        {
+          "id": "settings-donations",
+          "title": "Donations",
+          "sections": [
+            "6.7"
+          ],
+          "image": "screens/ios/settings-donations.png",
+          "captured": true
+        }
+      ]
+    },
+    {
+      "id": "7-rewrite",
+      "num": "7",
+      "title": "AI Rewrite",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "rewrite-activation",
+          "title": "Activation Model",
+          "sections": [
+            "7.3"
+          ],
+          "image": "screens/ios/rewrite-activation.png",
+          "captured": false
+        },
+        {
+          "id": "rewrite-prompt-picker",
+          "title": "Prompt Picker",
+          "sections": [
+            "7.5"
+          ],
+          "image": "screens/ios/rewrite-prompt-picker.png",
+          "captured": true
+        },
+        {
+          "id": "rewrite-saved-prompts",
+          "title": "Saved Prompt Management",
+          "sections": [
+            "7.7"
+          ],
+          "image": "screens/ios/rewrite-saved-prompts.png",
+          "captured": false
+        },
+        {
+          "id": "rewrite-model-download",
+          "title": "Model Download Management",
+          "sections": [
+            "7.8"
+          ],
+          "image": "screens/ios/rewrite-model-download.png",
+          "captured": false
+        },
+        {
+          "id": "rewrite-switch-model",
+          "title": "Switch Model Picker",
+          "sections": [
+            "7.9"
+          ],
+          "image": "screens/ios/rewrite-switch-model.png",
+          "captured": false
+        },
+        {
+          "id": "rewrite-new-prompt",
+          "title": "New Prompt Sheet",
+          "sections": [
+            "7.12"
+          ],
+          "image": "screens/ios/rewrite-new-prompt.png",
+          "captured": false
+        },
+        {
+          "id": "rewrite-voice-prompt",
+          "title": "Voice Prompt",
+          "sections": [
+            "7.13"
+          ],
+          "image": "screens/ios/rewrite-voice-prompt.png",
+          "captured": false
+        },
+        {
+          "id": "ai-settings",
+          "title": "AI Settings",
+          "sections": [
+            "6.3",
+            "7.11"
+          ],
+          "image": "screens/ios/ai-settings.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "8-vocab",
+      "num": "8",
+      "title": "Vocabulary Boost",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "vocab-list",
+          "title": "Custom Term List",
+          "sections": [
+            "8.1",
+            "8.6",
+            "8.7"
+          ],
+          "image": "screens/ios/vocab-list.png",
+          "captured": true
+        },
+        {
+          "id": "vocab-empty",
+          "title": "Empty State",
+          "sections": [
+            "8.2"
+          ],
+          "image": "screens/ios/vocab-empty.png",
+          "captured": false
+        },
+        {
+          "id": "vocab-add",
+          "title": "Term Addition",
+          "sections": [
+            "8.3"
+          ],
+          "image": "screens/ios/vocab-add.png",
+          "captured": false
+        },
+        {
+          "id": "vocab-edit",
+          "title": "Term Editing & Ordering",
+          "sections": [
+            "8.4"
+          ],
+          "image": "screens/ios/vocab-edit.png",
+          "captured": false
+        },
+        {
+          "id": "vocab-warnings",
+          "title": "Term Quality Warnings",
+          "sections": [
+            "8.5"
+          ],
+          "image": "screens/ios/vocab-warnings.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "9-help",
+      "num": "9",
+      "title": "Help & Onboarding Reference",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "help-main",
+          "title": "Help Screen",
+          "sections": [
+            "9.1",
+            "9.7"
+          ],
+          "image": "screens/ios/help-main.png",
+          "captured": true
+        },
+        {
+          "id": "help-how-it-works",
+          "title": "How Jot Works",
+          "sections": [
+            "9.2"
+          ],
+          "image": "screens/ios/help-how-it-works.png",
+          "captured": true
+        },
+        {
+          "id": "help-rewrite-guide",
+          "title": "AI Rewrite Guide",
+          "sections": [
+            "9.3"
+          ],
+          "image": "screens/ios/help-rewrite-guide.png",
+          "captured": false
+        },
+        {
+          "id": "help-privacy",
+          "title": "Privacy Explainer",
+          "sections": [
+            "9.4"
+          ],
+          "image": "screens/ios/help-privacy.png",
+          "captured": false
+        },
+        {
+          "id": "help-troubleshooting",
+          "title": "Collapsible Troubleshooting",
+          "sections": [
+            "9.5"
+          ],
+          "image": "screens/ios/help-troubleshooting.png",
+          "captured": true
+        },
+        {
+          "id": "help-feedback",
+          "title": "Feedback Contact",
+          "sections": [
+            "9.6"
+          ],
+          "image": "screens/ios/help-feedback.png",
+          "captured": true
+        }
+      ]
+    },
+    {
+      "id": "10-integrations",
+      "num": "10",
+      "title": "System Integrations",
+      "platform": "system",
+      "screens": [
+        {
+          "id": "int-shortcuts-actions",
+          "title": "Shortcuts Actions",
+          "sections": [
+            "10.1",
+            "10.4",
+            "10.5"
+          ],
+          "image": "screens/system/int-shortcuts-actions.png",
+          "captured": false
+        },
+        {
+          "id": "int-action-button",
+          "title": "Action Button Config",
+          "sections": [
+            "10.2"
+          ],
+          "image": "screens/system/int-action-button.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "12-errors",
+      "num": "12",
+      "title": "Error States & Recovery",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "err-mic-denied",
+          "title": "Microphone Permission Denied",
+          "sections": [
+            "12.1"
+          ],
+          "image": "screens/ios/err-mic-denied.png",
+          "captured": false
+        },
+        {
+          "id": "err-model-download",
+          "title": "Model Download Failure",
+          "sections": [
+            "12.2"
+          ],
+          "image": "screens/ios/err-model-download.png",
+          "captured": false
+        },
+        {
+          "id": "err-ai-download",
+          "title": "AI Model Download Failure",
+          "sections": [
+            "12.3"
+          ],
+          "image": "screens/ios/err-ai-download.png",
+          "captured": false
+        },
+        {
+          "id": "err-rewrite",
+          "title": "Rewrite Error",
+          "sections": [
+            "12.4"
+          ],
+          "image": "screens/ios/err-rewrite.png",
+          "captured": false
+        },
+        {
+          "id": "err-kb-banner",
+          "title": "Keyboard Status Banner",
+          "sections": [
+            "12.6"
+          ],
+          "image": "screens/keyboard/err-kb-banner.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "13-privacy",
+      "num": "13",
+      "title": "Privacy & Data Disclosures",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "privacy-on-device",
+          "title": "Fully On-Device Processing",
+          "sections": [
+            "13.1"
+          ],
+          "image": "screens/ios/privacy-on-device.png",
+          "captured": false
+        },
+        {
+          "id": "privacy-warm-hold",
+          "title": "Warm Hold Disclosure",
+          "sections": [
+            "13.2"
+          ],
+          "image": "screens/ios/privacy-warm-hold.png",
+          "captured": false
+        },
+        {
+          "id": "privacy-full-access",
+          "title": "Full Access Disclosure",
+          "sections": [
+            "13.3"
+          ],
+          "image": "screens/ios/privacy-full-access.png",
+          "captured": false
+        },
+        {
+          "id": "privacy-ios-settings-helper",
+          "title": "iOS Settings Helper",
+          "sections": [
+            "13.6a"
+          ],
+          "image": "screens/system/privacy-ios-settings-helper.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "14-ask",
+      "num": "14",
+      "title": "Ask Jot",
+      "platform": "ios",
+      "screens": [
+        {
+          "id": "ask-main",
+          "title": "Ask Main (Q&A)",
+          "sections": [
+            "14.1",
+            "14.2"
+          ],
+          "image": "screens/ios/ask-main.png",
+          "captured": true
+        },
+        {
+          "id": "ask-answer-cited",
+          "title": "Cited Answer",
+          "sections": [
+            "14.3"
+          ],
+          "image": "screens/ios/ask-answer-cited.png",
+          "captured": true
+        },
+        {
+          "id": "ask-indexing",
+          "title": "Library Indexing",
+          "sections": [
+            "14.4"
+          ],
+          "image": "screens/ios/ask-indexing.png",
+          "captured": true
+        },
+        {
+          "id": "ask-model-choice",
+          "title": "Answer Model Choice",
+          "sections": [
+            "14.5"
+          ],
+          "image": "screens/ios/ask-model-choice.png",
+          "captured": false
+        },
+        {
+          "id": "ask-howto",
+          "title": "How-To Answers About Jot",
+          "sections": [
+            "14.7"
+          ],
+          "image": "screens/ios/ask-howto.png",
+          "captured": false
+        }
+      ]
+    },
+    {
+      "id": "W-watch",
+      "num": "W",
+      "title": "Apple Watch",
+      "platform": "watch",
+      "screens": [
+        {
+          "id": "watch-root",
+          "title": "Root / Home",
+          "sections": [
+            "2.13"
+          ],
+          "image": "screens/watch/watch-root.png",
+          "captured": false
+        },
+        {
+          "id": "watch-recording",
+          "title": "Recording",
+          "sections": [
+            "2.13"
+          ],
+          "image": "screens/watch/watch-recording.png",
+          "captured": false
+        },
+        {
+          "id": "watch-recents",
+          "title": "Recent Transcripts",
+          "sections": [
+            "2.13"
+          ],
+          "image": "screens/watch/watch-recents.png",
+          "captured": false
+        },
+        {
+          "id": "watch-detail",
+          "title": "Transcript Detail",
+          "sections": [
+            "2.13"
+          ],
+          "image": "screens/watch/watch-detail.png",
+          "captured": false
+        },
+        {
+          "id": "watch-diagnostics",
+          "title": "Diagnostics",
+          "sections": [
+            "2.13"
+          ],
+          "image": "screens/watch/watch-diagnostics.png",
+          "captured": false
+        }
+      ]
+    }
+  ],
+  "devices": [
+    {
+      "id": "14pro",
+      "name": "iPhone 14/15 Pro",
+      "ptW": 393,
+      "ptH": 852,
+      "scale": 3
+    },
+    {
+      "id": "16pro",
+      "name": "iPhone 16/17 Pro",
+      "ptW": 402,
+      "ptH": 874,
+      "scale": 3,
+      "default": true
+    },
+    {
+      "id": "15promax",
+      "name": "iPhone 14/15 Pro Max",
+      "ptW": 430,
+      "ptH": 932,
+      "scale": 3
+    },
+    {
+      "id": "16promax",
+      "name": "iPhone 16/17 Pro Max",
+      "ptW": 440,
+      "ptH": 956,
+      "scale": 3
+    }
+  ],
+  "safeArea": {
+    "top": 59,
+    "bottom": 34
+  }
+}

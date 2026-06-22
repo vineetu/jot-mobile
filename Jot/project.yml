@@ -24,7 +24,7 @@ settings:
     # is minimal — scripts can already do anything they want during a
     # build; the sandbox is defense-in-depth, not a security boundary.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    CURRENT_PROJECT_VERSION: "150"
+    CURRENT_PROJECT_VERSION: "168"
     MARKETING_VERSION: "1.0.6"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
@@ -142,6 +142,15 @@ targets:
       # a valid `icon-1024.png` got dropped on the floor.
       - path: Resources/Assets.xcassets
       - path: Resources/PrivacyInfo.xcprivacy
+      # iOS Settings.bundle — adds help + an accurate privacy explainer to the
+      # system Settings → Jot page, below the permission toggles (the Willow
+      # pattern). Shipped as a FOLDER REFERENCE so the bundle's Root.plist is
+      # copied as-is and NOT re-compiled into the app's flattened plist. See
+      # Resources/Settings.bundle/Root.plist + Settings → PRIVACY in
+      # App/Settings/SettingsView.swift (mirrored copy).
+      - path: Resources/Settings.bundle
+        type: folder
+        buildPhase: resources
       # Common-word frequency list (top ~24k English words) for the vocabulary
       # gate's common-word guard — stops a custom term overwriting an everyday
       # word. See App/Vocabulary/{CommonWords,VocabularyGate}.swift.
@@ -153,6 +162,11 @@ targets:
       # scripts/check-help-corpus-fresh.sh guards staleness at build time.
       # See App/Ask/HelpCorpus.swift + docs/ask-product-help/design.md.
       - path: Resources/help-corpus.json
+        buildPhase: resources
+      # TTS Lab — Supertonic-3 voice-style presets (F1-F5, M1-M5; ~2.9 MB
+      # total). 10 bundled voices; only the ~398 MB Supertonic model downloads
+      # at runtime on opt-in. Loaded via `Supertonic3VoiceStyle.load(from:)`.
+      - path: Resources/SupertonicVoices
         buildPhase: resources
       # Fraunces editorial typeface (SIL OFL). Phase 1 of the UX overhaul
       # bundles the 72pt opsz-keyed statics; UIAppFonts in
@@ -261,12 +275,19 @@ targets:
       # transcript cleanup. It is NOT a rewrite provider — Qwen 3.5 on
       # MLX is the sole rewrite backend.
       - sdk: FoundationModels.framework
+      # Apple Translation framework (iOS 18+) — on-device offline translation for
+      # the TTS Lab (translate a transcript before Kokoro reads it in a non-English
+      # voice). SwiftUI-tied API; main-app target only.
+      - sdk: Translation.framework
       # EmbeddingGemma-300M sentence encoder (CoreML/ANE). Main-app-only —
       # `JotKeyboard` and `JotWatch` never link this. Hides the package API
       # behind `EmbeddingGemmaService` (single import site).
       - package: CoreMLLLM
         product: CoreMLLLM
       - target: JotKeyboard
+      # "Send to Jot" Share Extension — embedded into the app's PlugIns/ so it
+      # registers in the iOS share sheet for audio. Default embed (app-extension).
+      - target: JotShareExtension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot
@@ -329,6 +350,14 @@ targets:
       - path: App/Design/Components/RowChevron.swift
       - path: App/Design/Components/StatusPill.swift
       - path: App/Design/Components/TranscribingText.swift
+      # Common-word guard for the keyboard's "Add to Vocabulary" ("..." popover):
+      # the bundled ~24k-word list lets the keyboard tell the user a selection is
+      # a common word BEFORE queueing it (same guard the main app applies).
+      # CommonWords loads `common-words.txt` from `Bundle.main`, so the asset
+      # must ride in the appex bundle too.
+      - path: App/Vocabulary/CommonWords.swift
+      - path: Resources/common-words.txt
+        buildPhase: resources
       - path: Resources/PrivacyInfo.xcprivacy
       # Fraunces must also be inside the keyboard extension bundle so the
       # streaming-strip / just-now-marker text rendered from the appex
@@ -394,6 +423,55 @@ targets:
         # Settings → General → Keyboard → Keyboards shows the lavender
         # paper-crane icon next to "Jot Dictation".
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+  # "Send to Jot" Share Extension. Appears in the iOS share sheet for AUDIO
+  # only (the activation-rule predicate below). Stages shared audio into the
+  # App Group's PendingShares/ queue and shows "Saved to Jot ✓" — it never
+  # opens the app (Model B). The main app's PendingShareDrainer transcribes
+  # the queue on its next foreground. Pulls in Shared/ for AppGroup; no heavy
+  # deps (a share extension can't run Parakeet — see the design doc).
+  JotShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+      - path: Shared
+    info:
+      path: Resources/ShareExtension-Info.plist
+      properties:
+        CFBundleDisplayName: Jot
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # Jot only appears in the share sheet when EVERY shared item is
+            # audio (m4a/mp3/wav/caf/aiff all conform to public.audio).
+            NSExtensionActivationRule: |
+              SUBQUERY (
+                  extensionItems,
+                  $extensionItem,
+                  SUBQUERY (
+                      $extensionItem.attachments,
+                      $attachment,
+                      ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio"
+                  ).@count == $extensionItem.attachments.@count
+              ).@count == $extensionItems.@count
+    entitlements:
+      path: Resources/ShareExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.vineetu.jot.mobile.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vineetu.jot.mobile.Jot.ShareExtension
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG

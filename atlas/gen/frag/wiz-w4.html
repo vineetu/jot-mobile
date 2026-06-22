@@ -1,0 +1,64 @@
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+<!-- top chrome: back chevron + page dots (W4 active) + close -->
+<div style="display:flex;align-items:center;justify-content:center;position:relative;margin:8px 0 6px;min-height:36px">
+  <div class="jot-donebtn" style="position:absolute;left:0;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700">‹</div>
+  <div style="display:flex;align-items:center;gap:7px">
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.55"></span>
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.55"></span>
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.55"></span>
+    <span style="width:9px;height:9px;border-radius:50%;background:var(--jot-accent)"></span>
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.4"></span>
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.4"></span>
+    <span style="width:7px;height:7px;border-radius:50%;background:var(--jot-ink-cap);opacity:0.4"></span>
+  </div>
+  <div class="jot-donebtn" style="position:absolute;right:0;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:16px;font-weight:600">✕</div>
+</div>
+
+<div class="jot-display" style="font-size:38px;text-align:center;margin:14px 0 0">How it works</div>
+
+<!-- phone illustration with STEP 1 badge -->
+<div style="display:flex;justify-content:center;margin:18px 0 4px">
+  <div style="position:relative;width:170px;height:210px;background:linear-gradient(#e9eaef,#dadce3);border-radius:26px;border:1px solid rgba(0,0,0,0.06);box-shadow:0 10px 24px rgba(0,0,0,0.12);overflow:hidden">
+    <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:48px;height:11px;background:#000;border-radius:8px"></div>
+    <!-- chat bubbles + STEP 1 badge -->
+    <div style="position:absolute;top:20px;left:14px;width:60px;height:11px;background:rgba(0,0,0,0.10);border-radius:6px"></div>
+    <div style="position:absolute;top:18px;right:14px;background:var(--jot-accent);color:#fff;font-size:9px;font-weight:800;letter-spacing:0.6px;padding:4px 9px;border-radius:999px">STEP 1</div>
+    <div style="position:absolute;top:42px;right:14px;width:74px;height:14px;background:rgba(26,140,255,0.30);border-radius:7px"></div>
+    <div style="position:absolute;top:62px;left:14px;width:84px;height:11px;background:rgba(0,0,0,0.10);border-radius:6px"></div>
+    <!-- keyboard split + control cluster -->
+    <div style="position:absolute;bottom:0;left:0;right:0;height:96px;background:rgba(190,192,200,0.55);border-top:1px solid rgba(255,255,255,0.4)"></div>
+    <div style="position:absolute;bottom:64px;left:14px;width:92px;height:9px;background:rgba(0,0,0,0.12);border-radius:5px"></div>
+    <div style="position:absolute;bottom:18px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:14px">
+      <span style="width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></span>
+      <span style="width:62px;height:30px;border-radius:999px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center"><span style="width:13px;height:13px;border-radius:50%;border:2px solid rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center"><span style="width:5px;height:5px;border-radius:50%;background:#fff"></span></span></span>
+      <span style="width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></span>
+    </div>
+  </div>
+</div>
+
+<!-- numbered steps -->
+<div style="display:flex;flex-direction:column;gap:14px;margin:14px 6px 0">
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="width:28px;height:28px;border-radius:50%;background:var(--jot-accent);color:#fff;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">1</span>
+    <span style="font-size:16px;font-weight:700;color:var(--jot-ink)">Tap Jot down on your keyboard</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="width:28px;height:28px;border-radius:50%;border:1.5px solid rgba(26,140,255,0.5);color:var(--jot-accent);font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">2</span>
+    <span style="font-size:16px;color:var(--jot-ink-2)">Jot opens and starts recording</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="width:28px;height:28px;border-radius:50%;border:1.5px solid rgba(26,140,255,0.5);color:var(--jot-accent);font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">3</span>
+    <span style="font-size:16px;color:var(--jot-ink-2)">Swipe back to your app</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="width:28px;height:28px;border-radius:50%;border:1.5px solid rgba(26,140,255,0.5);color:var(--jot-accent);font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">4</span>
+    <span style="font-size:16px;color:var(--jot-ink-2)">Stop from the keyboard when you're done</span>
+  </div>
+</div>
+
+<div class="jot-caption" style="text-align:center;margin:18px 10px 0;line-height:1.4">We'd skip this step if we could. Apple doesn't let keyboards use the mic directly — so Jot hops back to capture. If that ever changes, this goes away.</div>
+
+<div style="flex:1"></div>
+
+<div class="jot-cta">Got it</div>
+</div>

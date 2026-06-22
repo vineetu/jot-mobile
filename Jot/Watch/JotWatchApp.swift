@@ -1,9 +1,10 @@
 import SwiftUI
 import WatchKit
 
-/// Standalone watchOS app entry. Hosts `RootView` (mic button + queue
-/// badge + nav to recent transcripts) and handles deep-links from the
-/// widget / complication to launch directly into recording.
+/// Standalone watchOS app entry. Hosts `RootView` (round glowing dictate
+/// hero + Recent list with pending cards + nav to recent transcripts) and
+/// handles deep-links from the widget / complication to launch directly
+/// into recording.
 ///
 /// Design doc: `docs/plans/watch-dictation-design.md`
 /// Architecture doc: `docs/plans/watch-dictation.md`

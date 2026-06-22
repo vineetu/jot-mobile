@@ -2,70 +2,66 @@ import SwiftUI
 
 /// Default screen when the Jot watch app opens.
 ///
-/// ## IA (build 49)
+/// ## IA (2026 watch refresh)
 ///
-/// One vertically-scrollable surface (Crown-driven):
+/// One vertically-scrollable surface (Crown-driven), opening directly on the
+/// record button — no app-name title (we're already in the Watch app):
 ///
-/// 1. **Dictate hero** (above the fold, always visible on cold open).
-/// 2. **Sync ribbons** — amber "N pending sync" / green "✓ N synced",
-///    only rendered when relevant. The amber ribbon grows a
-///    "Sync stuck? ›" subline after 30s of unresolved pending so the
-///    user can one-tap into Diagnostics when sync is actually broken.
-/// 3. **"RECENT" section** — top 5 transcripts inlined, each row a
-///    `NavigationLink` to `TranscriptDetailView`. "Show all (N) ›"
-///    row pushes the full list when count > 5.
-/// 4. **Last synced caption** — dimmed footnote.
-/// 5. **"Sync diagnostics ›"** — single muted footer row, only
-///    discoverable by scrolling past the transcripts. The "Sync stuck?"
-///    affordance (#2 above) is the primary discovery path when sync
-///    is broken.
+/// 1. **Dictate hero** — a large round glowing blue button (`WatchHeroCircle`)
+///    that slowly breathes; tap to record. "Tap to dictate" caption below.
+/// 2. **"Recent" section** — a header row with the section name and an
+///    "All N" link (→ full list, only when > 3 transcripts). Then any
+///    **pending recordings** (textless — queued or transcribing) as
+///    subtle-tag cards at the TOP, followed by the most recent 3
+///    transcripts, each its own card → `TranscriptDetailView`.
+/// 3. **"Sync diagnostics ›"** — a single muted footer row at the very
+///    bottom, only discoverable by scrolling past the transcripts. Sync is
+///    automatic; this is the deliberate, quiet path to the status surface +
+///    Reset sync.
 ///
-/// Pre-build-49, Recents and Diagnostics were peer `NavigationLink`s on
-/// a non-scrolling root. The flat `HStack { Text; Spacer; Image }`
-/// labels lacked `.contentShape(Rectangle())`, so taps in the right
-/// half of the Recent row often fell through and the next-nearest
-/// hit-test grabbed Diagnostics — the user's "tapping Recent opens
-/// Diagnostics" report. See `docs/plans/watch-ux-overhaul.md` §2.3.
+/// The old top-of-screen amber "N pending sync" ribbon and the transient
+/// green "✓ synced" ribbon were removed — pending now lives in the Recents
+/// list, and a pending row quietly becoming a transcript IS the success
+/// signal. See `docs/watch-redesign/design.md`.
 struct RootView: View {
     @Environment(WatchTranscriptStore.self) private var transcriptStore
     @Environment(WatchSyncQueue.self) private var queue
     @Binding var pendingRecordRequest: Bool
 
     @State private var showingRecording: Bool = false
-    @State private var lastSyncedCount: Int = 0
-    @State private var showSyncRibbon: Bool = false
-    @State private var syncRibbonTask: Task<Void, Never>?
     @State private var showingFullAlert: Bool = false
 
-    /// True once `queue.pendingCount` has stayed > 0 for the threshold
-    /// duration without an ack. Drives the "Sync stuck? ›" subline on
-    /// the amber pending ribbon.
-    @State private var syncStuck: Bool = false
-    @State private var stuckTask: Task<Void, Never>?
+    /// Playback of non-synced recordings (tap a pending row to hear it).
+    private let player = WatchPendingAudioPlayer.shared
 
-    /// Empirically-chosen "stuck" threshold. Under normal phone
-    /// reachability acks land in 1-5s; 30s + still pending is a strong
-    /// signal that sync is genuinely broken.
-    private let stuckThresholdSeconds: TimeInterval = 30
+    /// How many transcripts to inline on the root before the "All N" link
+    /// takes over.
+    private let inlinePreviewCount = 3
 
-    /// How many transcripts to inline on the root before falling back
-    /// to the "Show all" push.
-    private let inlinePreviewCount = 5
+    /// Insets for a card row — horizontal margin from the screen edge; the
+    /// `WatchListCard` background adds its own vertical inset for the gap.
+    private let cardInsets = EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: JotDesignWatchSafe.watchRowSpacing + 4) {
-                    dictateHero
-                    syncRibbons
-                    recentSection
-                    diagnosticsFooter
+            List {
+                dictateHero
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 10, trailing: 0))
+
+                recentRows
+
+                NavigationLink {
+                    DiagnosticsView()
+                } label: {
+                    WatchUtilityRow(title: "Sync diagnostics", systemImage: "stethoscope")
                 }
-                .padding(.horizontal, JotDesignWatchSafe.watchPageGutter)
-                .padding(.top, 4)
-                .padding(.bottom, 12)
+                .accessibilityHint("Live sync state and Reset sync button.")
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 6, leading: 4, bottom: 8, trailing: 4))
             }
-            .navigationTitle("Jot")
+            .listStyle(.plain)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingRecording) {
                 RecordingView()
@@ -82,23 +78,15 @@ struct RootView: View {
                     pendingRecordRequest = false
                 }
             }
-            .onChange(of: queue.pendingCount, initial: true) { _, newCount in
-                manageStuckWatcher(pendingCount: newCount)
-            }
-            .onReceive(WatchConnectivityClient.shared.ackPublisher) { count in
-                showSyncRibbonForCount(count)
-                // An ack means sync is alive — clear the stuck flag
-                // even if pendingCount is still > 0 (more to drain).
-                syncStuck = false
-            }
         }
     }
 
     // MARK: - Hero
 
     private var dictateHero: some View {
-        VStack(spacing: 0) {
-            MicButton {
+        let diameter = WatchMetrics.heroDiameter
+        return VStack(spacing: 22) {
+            Button {
                 if queue.isFull {
                     showingFullAlert = true
                     WKInterfaceDevice.current().play(.failure)
@@ -106,124 +94,103 @@ struct RootView: View {
                 }
                 showingRecording = true
                 WKInterfaceDevice.current().play(.start)
+            } label: {
+                WatchHeroCircle(
+                    fill: JotDesignWatchSafe.watchDictateHero,
+                    glow: JotDesignWatchSafe.watchDictateGlow,
+                    diameter: diameter
+                ) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: WatchMetrics.heroGlyph))
+                        .foregroundStyle(.white)
+                }
             }
+            .buttonStyle(HeroPressStyle())
             .accessibilityIdentifier("micButton")
+            .accessibilityLabel("Dictate")
+            .accessibilityHint("Double-tap to begin recording.")
+
+            Text("Tap to dictate")
+                .font(.system(size: 17, weight: .semibold))
+                .tracking(-0.2)
+                .foregroundStyle(JotDesignWatchSafe.jotPageInk)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
+        .padding(.top, 6)
     }
 
-    // MARK: - Sync ribbons
+    // MARK: - Recent rows
 
     @ViewBuilder
-    private var syncRibbons: some View {
-        if queue.pendingCount > 0 {
-            pendingRibbon
-        }
-        if showSyncRibbon {
-            Text("✓ \(lastSyncedCount) synced")
-                .font(.caption2)
-                .foregroundStyle(JotDesignWatchSafe.jotSyncSuccess)
-                .frame(maxWidth: .infinity)
-                .transition(.opacity)
-        }
-    }
+    private var recentRows: some View {
+        let pending = WatchPending.waitingToSync(queue: queue)
+        let transcripts = transcriptStore.transcripts
 
-    private var pendingRibbon: some View {
-        NavigationLink {
-            DiagnosticsView()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.caption2)
-                    .foregroundStyle(JotDesignWatchSafe.jotPendingAmber)
-                Text("\(queue.pendingCount) pending sync")
-                    .font(.caption2)
-                    .foregroundStyle(JotDesignWatchSafe.jotPendingAmber)
-                if syncStuck {
-                    Text("· Sync stuck?")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(JotDesignWatchSafe.jotPendingAmber)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(JotDesignWatchSafe.jotPendingAmber)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, JotDesignWatchSafe.watchCardPaddingH)
-            .padding(.vertical, JotDesignWatchSafe.watchCardPaddingV - 2)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            syncStuck
-                ? "\(queue.pendingCount) recordings pending sync. Sync stuck. Double-tap to open diagnostics."
-                : "\(queue.pendingCount) recordings pending sync to iPhone."
-        )
-        // Until the stuck signal fires, the ribbon is informational —
-        // disable the NavigationLink to avoid surprising the user with
-        // an unexpected push on a casual glance.
-        .disabled(!syncStuck)
-    }
+        recentHeaderRow(count: transcripts.count)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 6, trailing: 4))
 
-    // MARK: - Recent section
-
-    @ViewBuilder
-    private var recentSection: some View {
-        WatchSectionLabel("Recent")
-        if transcriptStore.transcripts.isEmpty {
-            WatchCard {
-                emptyRecentRow
-            }
+        if transcripts.isEmpty && pending.isEmpty {
+            emptyRecentRow
+                .listRowBackground(WatchListCard())
+                .listRowInsets(cardInsets)
         } else {
-            WatchCard {
-                VStack(spacing: 0) {
-                    let visible = Array(transcriptStore.transcripts.prefix(inlinePreviewCount))
-                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, transcript in
-                        if index > 0 { WatchInlineDivider() }
-                        NavigationLink {
-                            TranscriptDetailView(transcript: transcript)
+            ForEach(pending) { item in
+                WatchPendingCell(item: item, isPlaying: player.isPlaying(item.id))
+                    .listRowBackground(WatchListCard())
+                    .listRowInsets(cardInsets)
+                    .onTapGesture { player.toggle(item.id) }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            if player.isPlaying(item.id) { player.stop() }
+                            queue.remove(uuid: item.id)
+                            WKInterfaceDevice.current().play(.click)
                         } label: {
-                            WatchTranscriptRow(transcript: transcript)
+                            Label("Delete", systemImage: "trash")
                         }
-                        .buttonStyle(.plain)
                     }
-                }
             }
 
-            if transcriptStore.transcripts.count > inlinePreviewCount {
+            ForEach(Array(transcripts.prefix(inlinePreviewCount))) { transcript in
                 NavigationLink {
-                    RecentTranscriptsView()
+                    TranscriptDetailView(transcript: transcript)
                 } label: {
-                    HStack(spacing: 6) {
-                        Text("Show all (\(transcriptStore.transcripts.count))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(JotDesignWatchSafe.jotBlueTop)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(JotDesignWatchSafe.jotBlueTop)
-                    }
-                    .padding(.horizontal, JotDesignWatchSafe.watchCardPaddingH)
-                    .padding(.vertical, JotDesignWatchSafe.watchCardPaddingV)
-                    .contentShape(Rectangle())
+                    WatchNoteCell(transcript: transcript)
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint("Opens the full transcript list.")
+                .listRowBackground(WatchListCard())
+                .listRowInsets(cardInsets)
             }
+        }
+    }
 
-            if let lastSynced = transcriptStore.lastSyncedAt {
-                let staleHours = Date().timeIntervalSince(lastSynced) / 3600
-                let isStale = staleHours > 24
-                Text("Last synced \(lastSynced.formatted(.relative(presentation: .named)))")
-                    .font(.caption2)
-                    .foregroundStyle(
-                        isStale
-                            ? JotDesignWatchSafe.jotPendingAmber
-                            : JotDesignWatchSafe.jotPageInkCaption
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
+    /// "Recent" + (when there are more than the inlined few) a trailing
+    /// "All N" that opens the full list. The whole header row is the link so
+    /// it works reliably inside `List` (an inline `NavigationLink` in a row's
+    /// subview is unreliable on watchOS).
+    @ViewBuilder
+    private func recentHeaderRow(count: Int) -> some View {
+        if count > inlinePreviewCount {
+            NavigationLink {
+                RecentTranscriptsView()
+            } label: {
+                headerLabel(count: count)
+            }
+            .accessibilityHint("Opens the full transcript list.")
+        } else {
+            headerLabel(count: count)
+        }
+    }
+
+    private func headerLabel(count: Int) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Recent")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(JotDesignWatchSafe.jotPageInkSecondary)
+            Spacer()
+            if count > inlinePreviewCount {
+                Text("All \(count)")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(JotDesignWatchSafe.jotBlueTop)
             }
         }
     }
@@ -236,104 +203,12 @@ struct RootView: View {
             Text("No transcripts yet")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(JotDesignWatchSafe.jotPageInk)
-            Text("Tap Jot down to record one.")
+            Text("Tap to dictate one.")
                 .font(.caption2)
                 .foregroundStyle(JotDesignWatchSafe.jotPageInkSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
-    }
-
-    // MARK: - Diagnostics footer
-
-    private var diagnosticsFooter: some View {
-        NavigationLink {
-            DiagnosticsView()
-        } label: {
-            WatchUtilityRow(title: "Sync diagnostics", systemImage: "stethoscope")
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Live sync state and Reset sync button.")
-        .padding(.top, 8)
-    }
-
-    // MARK: - Stuck watcher
-
-    /// Starts / cancels the "Sync stuck?" timer based on `pendingCount`.
-    /// Fires once when the count first goes >0; cancels when the count
-    /// drops to 0 or an ack arrives.
-    private func manageStuckWatcher(pendingCount: Int) {
-        stuckTask?.cancel()
-        if pendingCount == 0 {
-            syncStuck = false
-            return
-        }
-        stuckTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(stuckThresholdSeconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            if queue.pendingCount > 0 {
-                syncStuck = true
-            }
-        }
-    }
-
-    // MARK: - Sync ribbon animation
-
-    private func showSyncRibbonForCount(_ count: Int) {
-        if showSyncRibbon {
-            lastSyncedCount += count
-        } else {
-            lastSyncedCount = count
-            withAnimation(.easeIn(duration: 0.2)) {
-                showSyncRibbon = true
-            }
-        }
-        syncRibbonTask?.cancel()
-        syncRibbonTask = Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    showSyncRibbon = false
-                }
-                lastSyncedCount = 0
-            }
-        }
-    }
-}
-
-/// The "Dictate" capsule button. Brand blue gradient, mic glyph + label,
-/// ~96×64 (well above the 44pt minimum target). Unchanged from build 48.
-private struct MicButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: "mic.fill")
-                    .font(.title2)
-                Text("Jot down")
-                    .font(.footnote)
-                    .fontWeight(.semibold)
-            }
-            .foregroundStyle(.white)
-            .frame(width: 96, height: 64)
-            .background(
-                Capsule().fill(
-                    LinearGradient(
-                        colors: [
-                            JotDesignWatchSafe.jotBlueTop,
-                            JotDesignWatchSafe.jotBlueBottom
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Jot down")
-        .accessibilityHint("Double-tap to begin recording.")
     }
 }

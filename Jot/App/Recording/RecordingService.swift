@@ -20,17 +20,68 @@ final class RecordingService {
         /// the user a real banner instead of opening the hero with
         /// "Listening…" and capturing nothing.
         case micUnavailable
+        /// TRANSIENT (warm-hold audio-yield harness, MF-1): the V1/V4 on-resume
+        /// `setCategory` restore threw, so `startFromWarmHold` tore the engine
+        /// down and signals `start()` to cold-start instead of resuming a
+        /// mis-configured session. Internal control-flow only — never surfaced.
+        case warmYieldRestoreFailed
 
-        var errorDescription: String? {
+        /// Single source of truth for user-facing copy. EVERY surface (hero
+        /// alert, foreground auto-start alert, keyboard banner, Shortcuts /
+        /// AppIntents) renders this — `errorDescription` and
+        /// `localizedStringResource` both delegate here so the same failure
+        /// never reads four different ways depending on where it shows.
+        ///
+        /// ## No raw CoreAudio text
+        ///
+        /// The associated `Error` values on `.sessionConfiguration` /
+        /// `.engineStart` carry a raw CoreAudio `localizedDescription`
+        /// ("The operation couldn't be completed. (com.apple.coreaudio…
+        /// error 561145187.)") — historically interpolated straight into the
+        /// user's face. We deliberately DROP it here; the diagnostic NSError
+        /// domain/code is still logged at the throw site
+        /// (`configureSession`'s `setActive` catch, `engine.start()`'s catch),
+        /// which is where engineers look. The user gets a plain sentence.
+        ///
+        /// ## Why no heuristic
+        ///
+        /// The flagship case is "user is on a call (Teams/Zoom/FaceTime/phone),
+        /// taps dictate, another app holds the mic." There is no iOS API to ask
+        /// "is the mic free?" — the only signal is that *acquiring* it failed.
+        /// So we don't guess (no `isOtherAudioPlaying` sniffing, no CoreAudio
+        /// code allowlist): a start-time failure means we couldn't get the mic,
+        /// and the overwhelmingly common reason is another app holding it, so we
+        /// say that honestly instead of leaking the raw CoreAudio text. (The
+        /// full fix also reorders to acquire-then-present so this message only
+        /// ever appears when a start genuinely fails — see the mic-availability
+        /// plan.)
+        var userFacingMessage: String {
             switch self {
-            case .alreadyRunning: return "A recording is already in progress."
-            case .notRunning: return "No recording is in progress."
-            case .converterUnavailable: return "Could not build the 16 kHz audio converter."
-            case .sessionConfiguration(let error): return "Audio session error: \(error.localizedDescription)"
-            case .engineStart(let error): return "Audio engine failed to start: \(error.localizedDescription)"
-            case .micUnavailable: return "Microphone is busy — another app is using it. Try again in a moment."
+            case .micUnavailable:
+                return Self.micBusyMessage
+            case .sessionConfiguration, .engineStart:
+                // Couldn't acquire the mic at start — most commonly another app
+                // (a call) holds it. Honest message, never the raw CoreAudio
+                // text, and no heuristic guess.
+                return Self.micBusyMessage
+            case .converterUnavailable:
+                return "Couldn't start recording. Restart Jot and try again."
+            case .alreadyRunning:
+                return "Jot is already recording."
+            case .notRunning:
+                return "No recording is in progress."
+            case .warmYieldRestoreFailed:
+                // Never surfaced (internal control-flow only) — a sane string
+                // exists only so the property is total.
+                return "Couldn't start recording — try again."
             }
         }
+
+        /// The flagship "another app holds the mic" copy. Owner-approved.
+        static let micBusyMessage =
+            "Microphone is busy — another app (like a call) is using it. Try again when it's free."
+
+        var errorDescription: String? { userFacingMessage }
     }
 
     /// Process-wide singleton. Both the foreground scene (`JotApp.swift` →
@@ -525,6 +576,12 @@ final class RecordingService {
     func start() async throws {
         guard !isRecording else { throw RecordingError.alreadyRunning }
 
+        // Make any in-flight TTS read-aloud yield the shared audio session BEFORE
+        // we (cold OR warm) touch `.record`, so its `.playback` engine can't
+        // collide with the mic. No-op when nothing is playing — the arbiter never
+        // touches the session itself, so a warm-held session is untouched here.
+        AudioSessionArbiter.shared.yieldForRecording()
+
         // Ensure the keyboard Pause/Resume Darwin observers exist before this
         // recording can be paused from the keyboard (§10.2). Idempotent.
         installCrossProcessPauseResumeObservers()
@@ -538,12 +595,23 @@ final class RecordingService {
 
         if isWarm {
             if let engine, engine.isRunning, isTapInstalled {
-                try await startFromWarmHold(engine: engine)
-                return
+                do {
+                    try await startFromWarmHold(engine: engine)
+                    return
+                } catch RecordingError.warmYieldRestoreFailed {
+                    // The on-resume `.mixWithOthers` restore threw (likely a
+                    // background `cannotInterruptOthers`). Rather than resume a
+                    // session left non-mixable (which would hit `.micUnavailable`),
+                    // gently cool the warm engine and fall through to a full cold
+                    // `configureSession` below. `startFromWarmHold` has already
+                    // torn the engine down before throwing this case.
+                    log.error("Warm-resume mixWithOthers restore failed — cold-starting instead")
+                    exitWarmHold()
+                }
+            } else {
+                log.error("Warm-hold state had no running tapped engine; falling back to cold start.")
+                exitWarmHold()
             }
-
-            log.error("Warm-hold state had no running tapped engine; falling back to cold start.")
-            exitWarmHold()
         }
 
         try configureSession()
@@ -587,6 +655,16 @@ final class RecordingService {
             engine.prepare()
             try engine.start()
         } catch {
+            // Log the underlying CoreAudio domain/code (mirrors configureSession's
+            // diagnostics). This is the failure GitHub issue #3 surfaces when a
+            // dictation intent starts the mic before the app is truly foreground —
+            // capturing the exact code makes a surviving foreground-race detectable
+            // on device rather than hidden behind the generic "engine failed to
+            // start" banner.
+            let ns = error as NSError
+            log.error(
+                "engine.start() FAILED — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) localizedDescription=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+            )
             _ = endActiveSlice()
             removeTapIfInstalled(from: input)
             restoreSession()
@@ -636,6 +714,22 @@ final class RecordingService {
         warmCooldownTask = nil
         warmHeartbeatTask?.cancel()
         warmHeartbeatTask = nil
+
+        // Restore `.mixWithOthers` (dropped at warm entry by
+        // `dropMixWithOthersForWarmIdle`) BEFORE resuming, so the next dictation
+        // keeps the `.micUnavailable` mitigation (can come up while another app
+        // holds the mic). On throw, tear the engine down and signal `start()` to
+        // cold-start rather than resume a non-mixable session. Measured on-device
+        // at 15–19ms — no warm-resume regression.
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.mixWithOthers])
+        } catch {
+            let ns = error as NSError
+            log.error("Warm-resume mixWithOthers restore failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public)")
+            fullyTeardownEngine()
+            throw RecordingError.warmYieldRestoreFailed
+        }
+
         pendingWarmHoldPublish = false
         isWarm = false
         AppGroup.warmHoldExpiresAt = nil
@@ -667,6 +761,7 @@ final class RecordingService {
         setCurrentRecordingStartedAt(startedAt)
         publishPipelinePhase(.recording)
         log.info("Warm recording resumed at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
+        log.notice("Warm-hold resumed; restored mixWithOthers")
 
         Task { [weak self] in
             await self?.kickOffStreamingSession()
@@ -1153,6 +1248,14 @@ final class RecordingService {
 
         log.info("Warm hold entered; expiresAt=\(expiresAt.timeIntervalSince1970, privacy: .public)")
 
+        // Drop `.mixWithOthers` for the idle warm window so another app starting
+        // playback (YouTube, Music) generates an interruption `.began` that
+        // `handleInterruption` yields on (`restoreSession` → `setActive(false,
+        // .notifyOthersOnDeactivation)` lets the other app's audio through).
+        // Restored on warm-resume by `startFromWarmHold`. Idle-only — never
+        // during active capture (`enterWarmHold` already guards `!isCapturingSlice`).
+        dropMixWithOthersForWarmIdle()
+
         if isPipelineInFlight {
             pendingWarmHoldPublish = true
             log.notice("[WARM-HOLD-DEBUG] publication deferred until pipeline finishes")
@@ -1185,6 +1288,35 @@ final class RecordingService {
         }
 
         log.notice("[WARM-HOLD-DEBUG] warm state published, expiresAt=\(warmExpiresAt.timeIntervalSince1970, privacy: .public)")
+    }
+
+    // MARK: - Warm-hold mic yielding
+
+    /// Drop `.mixWithOthers` for the idle warm window so another app starting
+    /// playback generates an interruption `.began` that `handleInterruption`
+    /// yields on (validated on-device: YouTube + Apple Music both interrupt and
+    /// recover). A mixable `.record` session suppresses that interruption, which
+    /// is why a warm-held Jot would otherwise silently block the other app's
+    /// audio forever. Restored on warm-resume by `startFromWarmHold`.
+    ///
+    /// Idle-window only — the caller (`enterWarmHold`) already guards
+    /// `engine.isRunning, isTapInstalled, !isCapturingSlice`, so this never runs
+    /// during active capture. No `setActive` cycle (options-only on the live
+    /// session); on a real iPhone the option clears in place (opts 1→0).
+    ///
+    /// On throw, skip the drop and keep the session exactly as the warm engine
+    /// had it (never leave it indeterminate). The background `setCategory` can
+    /// fail with `cannotInterruptOthers` (561017449); if so we simply stay
+    /// mixable for this window — the only cost is that this window won't yield,
+    /// which is strictly no worse than the pre-fix behavior.
+    private func dropMixWithOthersForWarmIdle() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.record, mode: .measurement, options: [])
+        } catch {
+            let ns = error as NSError
+            log.error("Warm-hold mixWithOthers drop failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public). Staying mixable for this window.")
+        }
     }
 
     private func exitWarmHold() {
@@ -1770,7 +1902,12 @@ final class RecordingService {
         switch type {
         case .began:
             if isWarm {
-                log.notice("Audio session interrupted during warm hold — cooling engine")
+                // The production warm-hold yield: dropping `.mixWithOthers` at
+                // warm entry makes the idle session non-mixable, so another app
+                // starting playback delivers this interruption. Cooling here
+                // (`restoreSession` → `setActive(false, .notifyOthersOnDeactivation)`)
+                // is what hands the mic + route back to that app.
+                log.notice("warm-hold yielded mic to another app (interruption began)")
                 exitWarmHold()
             } else {
                 log.notice("Audio session interrupted — stopping recording")
@@ -2624,6 +2761,7 @@ extension RecordingService.RecordingError: CustomNSError {
     /// - 3: `sessionConfiguration(Error)`
     /// - 4: `engineStart(Error)`
     /// - 5: `micUnavailable`
+    /// - 6: `warmYieldRestoreFailed` (TRANSIENT — internal control flow only)
     public var errorCode: Int {
         switch self {
         case .alreadyRunning: return 0
@@ -2632,6 +2770,7 @@ extension RecordingService.RecordingError: CustomNSError {
         case .sessionConfiguration: return 3
         case .engineStart: return 4
         case .micUnavailable: return 5
+        case .warmYieldRestoreFailed: return 6
         }
     }
 
@@ -2646,19 +2785,9 @@ extension RecordingService.RecordingError: CustomLocalizedStringResourceConverti
     /// recipient is someone looking at an opaque Shortcut failure banner on
     /// an Action Button press, with no obvious "what do I do next" affordance.
     public var localizedStringResource: LocalizedStringResource {
-        switch self {
-        case .alreadyRunning:
-            return "Jot is already recording. Stop the current recording before starting another."
-        case .notRunning:
-            return "No Jot recording is in progress."
-        case .converterUnavailable:
-            return "Jot could not prepare the 16 kHz audio converter. Restart the app and try again."
-        case .sessionConfiguration(let error):
-            return "Audio session could not be configured: \(error.localizedDescription)"
-        case .engineStart(let error):
-            return "Audio engine failed to start: \(error.localizedDescription)"
-        case .micUnavailable:
-            return "Microphone is busy — another app is using it. Try again in a moment."
-        }
+        // Single source of truth — same friendly copy the in-app and keyboard
+        // surfaces show (see `userFacingMessage`). `LocalizedStringResource`
+        // wraps the already-resolved String so Shortcuts renders identical text.
+        LocalizedStringResource(stringLiteral: userFacingMessage)
     }
 }

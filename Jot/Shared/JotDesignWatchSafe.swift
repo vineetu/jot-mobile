@@ -63,6 +63,63 @@ enum JotDesignWatchSafe {
     /// Resolves to system `.green`.
     static let jotSyncSuccess = Color.green
 
+    // MARK: - Watch redesign heroes (2026 watch refresh)
+    //
+    // Round-hero gradients + glows for the Dictate (blue) and Recording
+    // (coral) circles, plus the blue pill gradient. These are watch-only —
+    // the iOS DictateFAB uses its own gradient — so they intentionally do
+    // NOT mirror into `JotDesign.swift`. Hex values come straight from the
+    // `design_handoff_watch_redesign` spec.
+
+    /// Dictate hero radial fill. `#5BB4FF → #1B86F0 (52%) → #0061C8`,
+    /// light source high (center y = 0.3) so the sphere reads lit from above.
+    static let watchDictateHero = RadialGradient(
+        gradient: Gradient(stops: [
+            .init(color: Color(red: 0x5B / 255.0, green: 0xB4 / 255.0, blue: 0xFF / 255.0), location: 0.0),
+            .init(color: Color(red: 0x1B / 255.0, green: 0x86 / 255.0, blue: 0xF0 / 255.0), location: 0.52),
+            .init(color: Color(red: 0x00 / 255.0, green: 0x61 / 255.0, blue: 0xC8 / 255.0), location: 1.0)
+        ]),
+        center: UnitPoint(x: 0.5, y: 0.3),
+        startRadius: 0,
+        endRadius: 96
+    )
+
+    /// Recording hero radial fill (coral). `#FF8E7A → #FF6B57 (52%) → #E0533F`.
+    static let watchRecordHero = RadialGradient(
+        gradient: Gradient(stops: [
+            .init(color: Color(red: 0xFF / 255.0, green: 0x8E / 255.0, blue: 0x7A / 255.0), location: 0.0),
+            .init(color: Color(red: 0xFF / 255.0, green: 0x6B / 255.0, blue: 0x57 / 255.0), location: 0.52),
+            .init(color: Color(red: 0xE0 / 255.0, green: 0x53 / 255.0, blue: 0x3F / 255.0), location: 1.0)
+        ]),
+        center: UnitPoint(x: 0.5, y: 0.3),
+        startRadius: 0,
+        endRadius: 96
+    )
+
+    /// Coral waveform bar color while recording. `#FF6B57` — matches the
+    /// record hero so the level meter reads as part of the same moment
+    /// (replaces the old blue `jotAccent` bars).
+    static let watchRecordWave = Color(red: 0xFF / 255.0, green: 0x6B / 255.0, blue: 0x57 / 255.0)
+
+    /// Soft glow behind the Dictate hero. `#1A8CFF @ 0.30`.
+    static let watchDictateGlow = Color(red: 0x1A / 255.0, green: 0x8C / 255.0, blue: 0xFF / 255.0).opacity(0.30)
+
+    /// Soft glow behind the Recording hero. `#FF6B57 @ 0.32`.
+    static let watchRecordGlow = Color(red: 0xFF / 255.0, green: 0x6B / 255.0, blue: 0x57 / 255.0).opacity(0.32)
+
+    /// Full-width blue pill gradient (Reset sync). `168°: #3AA0FF → #1483F2 → #0064CC`.
+    /// SwiftUI has no angle param on `LinearGradient`; 168° ≈ top→bottom with a
+    /// slight lean, approximated topLeading→bottomTrailing.
+    static let jotBlueGrad = LinearGradient(
+        gradient: Gradient(stops: [
+            .init(color: Color(red: 0x3A / 255.0, green: 0xA0 / 255.0, blue: 0xFF / 255.0), location: 0.0),
+            .init(color: Color(red: 0x14 / 255.0, green: 0x83 / 255.0, blue: 0xF2 / 255.0), location: 0.5),
+            .init(color: Color(red: 0x00 / 255.0, green: 0x64 / 255.0, blue: 0xCC / 255.0), location: 1.0)
+        ]),
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
     // MARK: - Page inks (light/dark adaptive)
     //
     // The `Color.primary` / `Color.secondary` semantic colors handle most

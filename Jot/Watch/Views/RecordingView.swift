@@ -6,13 +6,21 @@ private let viewLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot.watch", cate
 
 /// Modal sheet over `RootView`. Drives a `WatchRecorder` session that
 /// captures AAC 16kHz mono audio. No Cancel — once recording starts, the
-/// only exit is Stop (or the 15-min cap auto-save). This is intentional:
-/// silent data loss from accidental Cancel taps is worse than the rare
-/// "I changed my mind" case.
+/// only exit is Stop (tap the coral hero) or the 15-min cap auto-save. This
+/// is intentional: silent data loss from accidental Cancel taps is worse
+/// than the rare "I changed my mind" case. (This is why the 2026 redesign
+/// did NOT adopt the handoff's top-left ✕ — see `docs/watch-redesign/design.md`.)
+///
+/// ## 2026 redesign
+///
+/// The blue Stop pill + red-dot/timer row were replaced by a single coral
+/// hero circle (`WatchHeroCircle`) with the running `mm:ss` timer **inside**
+/// it — tapping the circle stops. A 21-bar coral waveform sits below, then a
+/// quiet "Tap to stop" caption (the button itself carries no "Stop" word).
 ///
 /// Uses `WKExtendedRuntimeSession(sessionType: .audioRecording)` to keep
-/// `AVAudioRecorder` running while the wrist is lowered. Without this
-/// the watch app suspends within ~3 minutes and recording silently dies.
+/// `AVAudioRecorder` running while the wrist is lowered. Without this the
+/// watch app suspends within ~3 minutes and recording silently dies.
 struct RecordingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -25,7 +33,9 @@ struct RecordingView: View {
     /// recreation races since the singleton outlives the view.
     private var recorder: WatchRecorder { WatchRecorder.shared }
     @State private var elapsedSeconds: Int = 0
-    @State private var amplitudeBars: [Float] = Array(repeating: 0.1, count: 10)
+    @State private var amplitudeBars: [Float] = Array(repeating: 0, count: 21)
+    /// Low-pass state for the level meter so bars glide instead of snapping.
+    @State private var smoothedLevel: Float = 0
     @State private var showingCapWarning: Bool = false
     @State private var showingCapAlert: Bool = false
     @State private var timerTask: Task<Void, Never>?
@@ -33,112 +43,76 @@ struct RecordingView: View {
     @State private var saving: Bool = false
     /// Surfaced via alert if `stopAndSave` throws. Previously this was a
     /// silent `try?`, which made the "nothing happens after I record"
-    /// failure mode invisible — the recording would dismiss with no
-    /// signal that the audio file failed to save or that enqueue
-    /// dropped it. Now the user sees the actual error string.
+    /// failure mode invisible.
     @State private var saveError: String?
 
     /// Recording cap: 15 minutes. At 14:30 we warn with a haptic +
-    /// banner; at 15:00 we auto-save. Matches what Parakeet handles
-    /// comfortably and is far enough above typical "thought" capture.
+    /// banner; at 15:00 we auto-save.
     private let capSeconds: Int = 15 * 60
     private let warnAtSeconds: Int = 14 * 60 + 30
 
-    /// `true` when motion-based animations should freeze. Combined
-    /// signal: AOD via `isLuminanceReduced`, or accessibility setting.
+    /// `true` when motion-based animations should freeze. Combined signal:
+    /// AOD via `isLuminanceReduced`, or accessibility setting.
     private var staticVisuals: Bool { isLuminanceReduced || reduceMotion }
 
     var body: some View {
-        VStack(spacing: 14) {
+        let diameter = WatchMetrics.heroDiameter
+        return VStack(spacing: 18) {
             Spacer(minLength: 0)
 
-            // Dot + timer row. Fully static — no halo, no pulse, no
-            // opacity animation. Earlier iterations had a blurred halo
-            // + scale pulse + opacity blink which together read as a
-            // bouncing red bloom on the small watch screen. The static
-            // red dot + monospaced timer + waveform are enough cue
-            // that recording is live; the animation was visual noise.
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(JotDesignWatchSafe.jotRecordingDot)
-                    .frame(width: 10, height: 10)
-                    .accessibilityLabel("Recording")
-
-                Text(timerString)
-                    .font(.title2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(JotDesignWatchSafe.jotPageInk)
-                    .accessibilityValue("\(elapsedSeconds) seconds elapsed")
-
-                if staticVisuals {
-                    Text("REC")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(JotDesignWatchSafe.jotRecord)
-                }
-            }
-
-            // Waveform — hidden under AOD or Reduce Motion (no value
-            // when it can't animate).
-            if !staticVisuals {
-                HStack(spacing: 3) {
-                    ForEach(0..<amplitudeBars.count, id: \.self) { i in
-                        Capsule()
-                            .fill(JotDesignWatchSafe.jotAccent)
-                            .frame(width: 3, height: CGFloat(8 + amplitudeBars[i] * 32))
+            // Coral hero — tap to stop. Timer lives INSIDE the circle; a
+            // brief spinner replaces it while saving.
+            Button {
+                stopAndSave()
+            } label: {
+                WatchHeroCircle(
+                    fill: JotDesignWatchSafe.watchRecordHero,
+                    glow: JotDesignWatchSafe.watchRecordGlow,
+                    diameter: diameter
+                ) {
+                    if saving {
+                        ProgressView().tint(.white)
+                    } else {
+                        Text(timerString)
+                            .font(.system(size: WatchMetrics.heroTimer, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .contentTransition(.numericText())
                     }
                 }
-                .frame(height: 40)
-                .accessibilityHidden(true)
+            }
+            .buttonStyle(HeroPressStyle())
+            .disabled(saving)
+            .accessibilityLabel("Stop recording")
+            .accessibilityValue("\(elapsedSeconds) seconds elapsed")
+            .accessibilityHint("Saves the recording and queues it for sync to iPhone.")
+
+            // Live level — coral bars below the circle. Hidden under AOD /
+            // Reduce Motion (no value when it can't animate); a static "REC"
+            // cue stands in.
+            if staticVisuals {
+                Text("REC")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(JotDesignWatchSafe.watchRecordWave)
+                    .frame(height: 44)
+            } else {
+                waveform
             }
 
             if showingCapWarning {
-                Text("Reaching 15 min — tap Stop to save or keep recording")
+                Text("Reaching 15 min — tap to stop, or keep recording")
                     .font(.caption2)
                     .foregroundStyle(JotDesignWatchSafe.jotRecord)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 4)
+            } else {
+                Text("Tap to stop")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(JotDesignWatchSafe.jotPageInkSecondary)
             }
 
             Spacer(minLength: 0)
-
-            Button {
-                stopAndSave()
-            } label: {
-                HStack(spacing: 6) {
-                    if saving {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "stop.fill")
-                        Text("Stop")
-                            .fontWeight(.semibold)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(
-                    // Brand blue gradient — matches the mic button on
-                    // RootView so the start/stop pair reads as one CTA
-                    // family. Was jotRecord (red) which over-indexed on
-                    // "alarm/stop" semantics; the red dot already carries
-                    // that signal.
-                    Capsule().fill(
-                        LinearGradient(
-                            colors: [
-                                JotDesignWatchSafe.jotBlueTop,
-                                JotDesignWatchSafe.jotBlueBottom
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                )
-                .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-            .disabled(saving)
-            .accessibilityLabel("Stop recording")
-            .accessibilityHint("Saves the recording and queues it for sync to iPhone.")
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .interactiveDismissDisabled(true)
@@ -160,6 +134,25 @@ struct RecordingView: View {
         }
     }
 
+    private var waveform: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<amplitudeBars.count, id: \.self) { i in
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.5), JotDesignWatchSafe.watchRecordWave],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(width: 3, height: CGFloat(6 + amplitudeBars[i] * 34))
+            }
+        }
+        .frame(height: 44)
+        .shadow(color: JotDesignWatchSafe.watchRecordWave.opacity(0.5), radius: 4)
+        .accessibilityHidden(true)
+    }
+
     // MARK: - Lifecycle
 
     private func startRecording() {
@@ -168,10 +161,6 @@ struct RecordingView: View {
             startTimer()
             startAmplitudePoll()
         } catch {
-            // If the recorder fails to start (e.g., permission denied,
-            // hardware unavailable), dismiss immediately. Production
-            // code surfaces the error via DiagnosticsLog; for v1 we
-            // just bail.
             dismiss()
         }
     }
@@ -187,7 +176,6 @@ struct RecordingView: View {
                 let file = try await recorder.stopAndSave()
                 viewLog.info("stopAndSave() — recorder returned uuid=\(file.uuid, privacy: .public)")
                 queue.enqueue(file)
-                // Kick off the file transfer.
                 WatchConnectivityClient.shared.transferQueuedFiles()
                 viewLog.info("stopAndSave() — enqueued + transferQueuedFiles called")
             } catch {
@@ -196,8 +184,6 @@ struct RecordingView: View {
             }
             await MainActor.run {
                 if let capturedError {
-                    // Surface the error to the user instead of dismissing
-                    // silently. Without this the failure is invisible.
                     saveError = capturedError
                     saving = false
                 } else {
@@ -210,7 +196,32 @@ struct RecordingView: View {
     private func cleanup() {
         timerTask?.cancel()
         amplitudeTask?.cancel()
-        recorder.cancelIfActive()
+
+        // If we're tearing down while still actively recording, the user
+        // dismissed the sheet via the system ✕ (on watchOS 26
+        // `interactiveDismissDisabled` does NOT suppress that button — verified
+        // on-sim). The standing invariant is "the only exit is Stop, never lose
+        // audio," so treat that dismissal as Stop: SAVE the capture, don't
+        // discard it. The normal Stop path has already set `saving`/cleared
+        // `isRecording`, so this only fires for the ✕-while-recording case.
+        // Capture the singletons directly (not via `self`) — the view is going
+        // away — per the watch teardown rule.
+        let recorder = WatchRecorder.shared
+        guard recorder.isRecording, !saving else {
+            recorder.cancelIfActive()  // genuine teardown with nothing in flight
+            return
+        }
+        Task { @MainActor in
+            do {
+                let file = try await recorder.stopAndSave()
+                WatchSyncQueue.shared.enqueue(file)
+                WatchConnectivityClient.shared.transferQueuedFiles()
+                viewLog.info("cleanup() — saved on sheet-dismiss uuid=\(file.uuid, privacy: .public)")
+            } catch {
+                viewLog.error("cleanup() — save-on-dismiss FAILED: \(error.localizedDescription, privacy: .public)")
+                recorder.cancelIfActive()
+            }
+        }
     }
 
     private func startTimer() {
@@ -241,11 +252,20 @@ struct RecordingView: View {
     private func startAmplitudePoll() {
         amplitudeTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                // 150ms — 50% slower than the old 100ms, so it reads calm.
+                try? await Task.sleep(nanoseconds: 150_000_000)
                 guard !Task.isCancelled else { break }
-                let normalized = recorder.normalizedAveragePower()
+                let raw = recorder.normalizedAveragePower()
                 await MainActor.run {
-                    amplitudeBars = amplitudeBars.dropFirst() + [normalized]
+                    // Real-voice scrolling meter: NO random shimmer (the old
+                    // distracting jitter) and NO baseline floor — so the bars
+                    // trace what's actually said and sit ~flat in silence.
+                    // Light low-pass keeps the glide smooth. Each tick pushes
+                    // the newest level on the right and scrolls the rest left.
+                    smoothedLevel = smoothedLevel * 0.5 + raw * 0.5
+                    withAnimation(.easeOut(duration: 0.22)) {
+                        amplitudeBars = Array(amplitudeBars.dropFirst()) + [smoothedLevel]
+                    }
                 }
             }
         }

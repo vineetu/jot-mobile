@@ -122,6 +122,14 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.correction-asks-ready"
     )
 
+    /// Keyboard → app: a word was queued for "Add to Vocabulary" (in
+    /// `AppGroup.Keys.pendingVocabAdds`). A foreground/running app can drain it
+    /// immediately via `VocabularyAddInbox`; a suspended app doesn't process
+    /// Darwin posts live, so the reliable backstop is the next-foreground drain.
+    static let vocabAddRequested = Name(
+        rawValue: "com.vineetu.jot.mobile.vocab-add-requested"
+    )
+
     /// Live foreground handshake ("ping/pong") that decides whether a keyboard
     /// Dictate tap records INLINE (Jot is the foreground host) or cold-starts via
     /// the URL bounce (Jot is backgrounded / another app is foreground).

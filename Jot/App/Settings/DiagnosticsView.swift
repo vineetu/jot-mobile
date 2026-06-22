@@ -276,6 +276,7 @@ struct DiagnosticsView: View {
         case .classifyMemoryWarning: return ("CLASSIFY/MEM", Color.jotWarning)
         case .appUnresponsiveRecovery: return ("RECOVER", Color.jotWarning)
         case .vocabularyGate: return ("VOCAB", Color.jotAccent)
+        case .tts: return ("TTS", Color.jotAccent)
         }
     }
 

@@ -139,8 +139,8 @@ final class AskController {
     /// inside its ~4k context window (see ask-mode.md §7); Qwen's larger window
     /// lets the extra `retrievalKQwen` sources actually reach the prompt instead
     /// of being trimmed away.
-    private static let userTurnCharLimit = 12000        // Apple Intelligence
-    private static let userTurnCharLimitQwen = 40000    // on-board Qwen
+    static let userTurnCharLimit = 12000        // Apple Intelligence
+    static let userTurnCharLimitQwen = 40000    // on-board Qwen
 
     /// Per-snippet truncation point. See ask-mode.md §7.
     private static let snippetCharLimit = 500
@@ -304,7 +304,7 @@ final class AskController {
             if !nq.isEmpty {
                 let helpBest = await HelpCorpusIndex.shared.bestCosine(nq)
                 if helpBest > Self.helpRouteFloor {
-                    let notesBest = bestTranscriptCosine(nq)
+                    let notesBest = Self.bestTranscriptCosine(nq)
                     if helpBest > notesBest + Self.helpRouteMargin {
                         Self.log.info("Ask routed to help lane (helpBest=\(helpBest, format: .fixed(precision: 3)) notesBest=\(notesBest, format: .fixed(precision: 3)))")
                         await runHelpLane(question: question, queryVector: nq, charLimit: charLimit)
@@ -319,20 +319,20 @@ final class AskController {
         if let scope = dateScope {
             if Self.queryHasTopicBeyondDate(question) {
                 do {
-                    let ranked = try await retrieveTopK(forQuery: question, k: k, dateInterval: scope.interval)
+                    let ranked = try await Self.retrieveTopK(forQuery: question, k: k, dateInterval: scope.interval)
                     // If nothing in the window matched the topic, fall back to the
                     // chronological window rather than an empty result.
-                    retrieved = ranked.isEmpty ? retrieveByDate(scope, k: k) : ranked
+                    retrieved = ranked.isEmpty ? Self.retrieveByDate(scope, k: k) : ranked
                 } catch {
                     Self.log.error("In-window retrieval failed; using chronological: \(error.localizedDescription, privacy: .public)")
-                    retrieved = retrieveByDate(scope, k: k)
+                    retrieved = Self.retrieveByDate(scope, k: k)
                 }
             } else {
-                retrieved = retrieveByDate(scope, k: k)
+                retrieved = Self.retrieveByDate(scope, k: k)
             }
         } else {
             do {
-                retrieved = try await retrieveTopK(forQuery: question, k: k)
+                retrieved = try await Self.retrieveTopK(forQuery: question, k: k)
             } catch {
                 Self.log.error("Retrieval failed: \(error.localizedDescription, privacy: .public)")
                 phase = .error("Couldn't search your transcripts. Try again.")
@@ -460,7 +460,7 @@ final class AskController {
     /// Best (max) cosine of the normalized query against any stored transcript
     /// chunk — the notes side of the lane-routing comparison. 0 when nothing is
     /// indexed yet (so a product question on a fresh corpus routes to help).
-    private func bestTranscriptCosine(_ normalizedQuery: [Float]) -> Float {
+    static func bestTranscriptCosine(_ normalizedQuery: [Float]) -> Float {
         let chunks = ChunkStore.allChunks(modelVersion: EmbeddingGemmaService.modelVersion)
         var best: Float = 0
         for chunk in chunks {
@@ -549,7 +549,8 @@ final class AskController {
         }
     }
 
-    private static let helpInstructionsBlock: String = """
+    /// `internal` so `AskEngine`'s help lane uses the byte-identical prompt.
+    static let helpInstructionsBlock: String = """
         You are Jot's built-in help assistant. Answer the user's question about how to use the Jot app, using ONLY the help excerpts provided below the question. Be concise, direct, and practical — tell the user exactly what to do, in plain prose.
 
         Do not invent features, buttons, or settings that are not in the excerpts. If the excerpts do not contain the answer, say so plainly in one sentence (for example "Jot's help doesn't cover that.") and stop.
@@ -561,7 +562,7 @@ final class AskController {
         Output ONLY the answer text. No preamble, no "based on Jot's help" hedging at the front.
         """
 
-    private static func buildHelpUserTurn(question: String, chunks: [HelpChunk], charLimit: Int) -> String {
+    static func buildHelpUserTurn(question: String, chunks: [HelpChunk], charLimit: Int) -> String {
         var lines: [String] = ["QUESTION:", question, "", "JOT HELP EXCERPTS:"]
         var blocks: [String] = chunks.map { truncateSnippet($0.text, limit: snippetCharLimit) }
         // Trim lowest-ranked excerpts to fit the budget (chunks are in fused-rank
@@ -580,7 +581,9 @@ final class AskController {
 
     // MARK: - Backend selection
 
-    private enum Backend {
+    /// `internal` (was `private`) so the headless `AskEngine` shares the exact
+    /// same backend-selection result type — no parallel availability logic.
+    enum Backend {
         case appleFM
         case qwen
         case none(UnavailableReason)
@@ -590,7 +593,8 @@ final class AskController {
     /// `AppGroup.askBackend == "qwen"` → prefer the on-board model; otherwise
     /// (default) prefer Apple Intelligence. Each falls back to the other if its
     /// preferred backend isn't usable, so Ask works as long as *either* is.
-    private static func pickBackend() -> Backend {
+    /// `internal` so `AskEngine` reuses it.
+    static func pickBackend() -> Backend {
         let appleAvailable: Bool
         switch SystemLanguageModel.default.availability {
         case .available: appleAvailable = true
@@ -633,7 +637,10 @@ final class AskController {
 
     // MARK: - Retrieval
 
-    private func retrieveTopK(forQuery query: String, k: Int, dateInterval: DateInterval? = nil) async throws -> [Transcript] {
+    /// `static` so the headless `AskEngine` can reuse the identical retrieval
+    /// path without constructing an `@Observable @MainActor` controller. Holds
+    /// no instance state — builds its own short-lived `ModelContext`.
+    static func retrieveTopK(forQuery query: String, k: Int, dateInterval: DateInterval? = nil) async throws -> [Transcript] {
         let context = ModelContext(JotModelContainer.shared)
 
         // Brute-force lexical FLOOR over raw transcript text. Every note is
@@ -784,7 +791,7 @@ final class AskController {
     /// True when a date-scoped question carries a subject to rank by beyond the
     /// date/scaffolding words — so the in-window notes should be ranked by
     /// relevance (hybrid) rather than chronology. Heuristic, deterministic.
-    private static func queryHasTopicBeyondDate(_ question: String) -> Bool {
+    static func queryHasTopicBeyondDate(_ question: String) -> Bool {
         // Letter-only tokens (numbers like "30" in "last 30 days" are date
         // quantities, never topics). A 2+ char token outside the scaffolding set
         // is a topic — so short real topics ("ai", "hr") still rank by relevance.
@@ -1049,7 +1056,7 @@ final class AskController {
     /// a summary reads oldest → newest. Mirrors the Recents `@Query`
     /// (no superseded/derived filtering) so "my notes" means the same
     /// thing here as on the home screen.
-    private func retrieveByDate(_ scope: DateScope, k: Int) -> [Transcript] {
+    static func retrieveByDate(_ scope: DateScope, k: Int) -> [Transcript] {
         let context = ModelContext(JotModelContainer.shared)
         let start = scope.interval.start
         let end = scope.interval.end
@@ -1065,7 +1072,8 @@ final class AskController {
 
     // MARK: - Prompt construction
 
-    private static let instructionsBlock: String = """
+    /// `internal` so `AskEngine` answers from the byte-identical system prompt.
+    static let instructionsBlock: String = """
         You are answering a question using ONLY the user's own dictated transcripts. You will be given a question followed by a numbered list of transcripts the user has previously dictated. Synthesize a concise, accurate answer that draws only from those transcripts.
 
         Citation contract: when a sentence in your answer relies on a specific transcript, append the marker [cite: N] inline at the end of that sentence (or clause), where N is the bracket number shown in front of that transcript in the source list — for example [cite: 3]. You may cite the same transcript multiple times, and may stack markers like [cite: 2][cite: 5] when a sentence draws on more than one. Only use numbers that actually appear in the list; never write a number that isn't shown, and never put anything other than that number inside the brackets.
@@ -1079,7 +1087,7 @@ final class AskController {
         Output ONLY the answer text with inline citation markers. No preamble, no bullet headers, no commentary about the question, no "based on your notes" hedging at the front, no list of sources at the end.
         """
 
-    private static func buildUserTurn(question: String, transcripts: [Transcript], charLimit: Int) -> String {
+    static func buildUserTurn(question: String, transcripts: [Transcript], charLimit: Int) -> String {
         var lines: [String] = []
         lines.append("QUESTION:")
         lines.append(question)
@@ -1124,7 +1132,7 @@ final class AskController {
         return String(prefix) + "…"
     }
 
-    private static func stripControlCharacters(from raw: String) -> String {
+    static func stripControlCharacters(from raw: String) -> String {
         let filtered = raw.unicodeScalars.filter { scalar in
             if scalar == "\n" || scalar == "\t" { return true }
             let value = scalar.value
@@ -1135,7 +1143,7 @@ final class AskController {
 
     // MARK: - Math
 
-    private static func normalize(_ v: [Float]) -> [Float] {
+    static func normalize(_ v: [Float]) -> [Float] {
         var sumSq: Float = 0
         for x in v { sumSq += x * x }
         let norm = sumSq.squareRoot()
@@ -1152,7 +1160,7 @@ final class AskController {
 
     // MARK: - Helpers
 
-    private static func extractCitedIDs(from segments: [AskAnswerSegment]) -> Set<UUID> {
+    static func extractCitedIDs(from segments: [AskAnswerSegment]) -> Set<UUID> {
         var ids: Set<UUID> = []
         for segment in segments {
             if case .citation(let id, _) = segment {

@@ -70,6 +70,29 @@ final class WatchSyncQueue {
         persist()
     }
 
+    /// User-initiated discard of a queued recording: remove it from the
+    /// queue AND delete its local `.m4a`. Distinct from `ack(uuid:)` — that's
+    /// the PHONE confirming receipt; this is the OWNER choosing not to sync a
+    /// recording (e.g. a stuck one they'd rather drop). Idempotent.
+    func remove(uuid: String) {
+        guard let index = pendingFiles.firstIndex(where: { $0.uuid == uuid }) else {
+            return
+        }
+        let removed = pendingFiles.remove(at: index)
+        pendingCount = pendingFiles.count
+        let url = WatchRecorder.pendingDirectory.appendingPathComponent("\(removed.uuid).m4a")
+        try? FileManager.default.removeItem(at: url)
+        persist()
+        queueLog.info("user removed uuid=\(removed.uuid, privacy: .public) newPendingCount=\(self.pendingCount, privacy: .public)")
+    }
+
+    /// Local `.m4a` URL for a queued recording, if it still exists on disk.
+    /// Used by `WatchPendingAudioPlayer` for tap-to-play.
+    func fileURL(for uuid: String) -> URL? {
+        let url = WatchRecorder.pendingDirectory.appendingPathComponent("\(uuid).m4a")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
     /// Returns all queued files that have a local .m4a on disk and
     /// haven't been acked. Used by `WatchConnectivityClient` to drive
     /// `transferFile` calls.

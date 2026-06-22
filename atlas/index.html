@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jot Atlas — visual feature map</title>
+<style>
+  :root {
+    --accent: #1A8CFF;          /* JotDesign.jotAccent */
+    --accent-dim: #E8F2FF;
+    --ink: #1c1c1e;
+    --ink-2: #6b6b70;
+    --ink-3: #9a9aa0;
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --line: #e4e6ea;
+    --ok: #2bb673;
+    --warn: #e0173b;          /* JotDesign.jotRecordingDot */
+    --pin: #E0173B;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    color: var(--ink); background: var(--bg);
+    display: grid; grid-template-columns: 280px 1fr 340px; grid-template-rows: 52px 1fr;
+    grid-template-areas: "top top top" "side main meta"; height: 100vh;
+  }
+  /* top bar */
+  .top { grid-area: top; display: flex; align-items: center; gap: 16px; padding: 0 18px;
+         background: var(--card); border-bottom: 1px solid var(--line); }
+  .top .brand { font-weight: 700; font-size: 15px; letter-spacing: -0.2px; }
+  .top .brand span { color: var(--accent); }
+  .top .tabs { display: flex; gap: 4px; margin-left: 8px; }
+  .top .tab { padding: 6px 12px; border-radius: 8px; cursor: pointer; color: var(--ink-2); font-weight: 600; }
+  .top .tab.active { background: var(--accent-dim); color: var(--accent); }
+  .top .spacer { flex: 1; }
+  .top .stat { color: var(--ink-2); font-size: 12px; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px;
+         padding: 7px 12px; font-weight: 600; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.warn { color: var(--warn); }
+  .btn:active { transform: translateY(1px); }
+
+  /* sidebar */
+  .side { grid-area: side; overflow: auto; background: var(--card); border-right: 1px solid var(--line); padding: 8px 0; }
+  .surface { padding: 0; }
+  .surface > .s-head { display: flex; align-items: center; gap: 8px; padding: 9px 14px; cursor: pointer;
+                       font-weight: 700; color: var(--ink); }
+  .surface > .s-head .num { color: var(--ink-3); font-variant-numeric: tabular-nums; min-width: 18px; }
+  .surface > .s-head .plat { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+                             color: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; }
+  .screen-row { display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 34px; cursor: pointer; color: var(--ink-2); }
+  .screen-row:hover { background: var(--bg); }
+  .screen-row.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.cap { background: var(--ok); }
+  .dot.miss { background: transparent; border: 1.5px solid var(--ink-3); }
+  .dot.pinned { box-shadow: 0 0 0 2px var(--pin); }
+  .screen-row .pc { margin-left: auto; font-size: 11px; color: var(--pin); font-weight: 700; }
+
+  /* main */
+  .main { grid-area: main; overflow: auto; display: flex; flex-direction: column; align-items: center;
+          justify-content: flex-start; padding: 24px; gap: 14px; }
+  .stage-head { width: 100%; max-width: 720px; display: flex; align-items: center; gap: 10px; }
+  .stage-head h2 { font-size: 16px; margin: 0; }
+  .stage-head .secs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: 11px; background: var(--accent-dim); color: var(--accent); border-radius: 6px; padding: 2px 7px; font-weight: 700; }
+  .stage-head .spacer { flex: 1; }
+  .pinmode { display: flex; align-items: center; gap: 6px; }
+  .frame-wrap { position: relative; }
+  .frame { position: relative; background: #fff; border-radius: 28px; overflow: hidden;
+           box-shadow: 0 8px 40px rgba(0,0,0,.14); border: 1px solid var(--line); }
+  .frame.pinning { cursor: crosshair; }
+  .frame img { display: block; width: auto; max-width: 360px; max-height: 70vh; }
+  .placeholder { width: 320px; height: 660px; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 10px; color: var(--ink-3); text-align: center; padding: 20px; }
+  .placeholder .big { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+  .placeholder code { background: var(--bg); padding: 2px 6px; border-radius: 5px; font-size: 11px; color: var(--ink); }
+  .pin { position: absolute; transform: translate(-50%, -50%); width: 24px; height: 24px; border-radius: 50%;
+         background: var(--pin); color: #fff; font-size: 12px; font-weight: 800; display: flex; align-items: center;
+         justify-content: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4); border: 2px solid #fff; }
+  .imgmeta { color: var(--ink-3); font-size: 12px; }
+
+  /* meta panel */
+  .meta { grid-area: meta; overflow: auto; background: var(--card); border-left: 1px solid var(--line); padding: 18px; }
+  .meta h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--ink-3); margin: 18px 0 8px; }
+  .meta h3:first-child { margin-top: 0; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .kv .k { color: var(--ink-2); } .kv .v { font-weight: 600; text-align: right; }
+  .pinlist { display: flex; flex-direction: column; gap: 8px; }
+  .pincard { border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .pincard .ph { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .pincard .badge { width: 20px; height: 20px; border-radius: 50%; background: var(--pin); color: #fff;
+                    font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+  .pincard .loc { color: var(--ink-3); font-size: 11px; }
+  .pincard textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 7px; resize: vertical;
+                      font: inherit; min-height: 48px; }
+  .pincard .del { margin-left: auto; color: var(--warn); cursor: pointer; font-size: 12px; font-weight: 700; }
+  .empty-note { color: var(--ink-3); padding: 12px 0; }
+  a.feat { color: var(--accent); text-decoration: none; font-weight: 600; }
+
+  /* list views (by feature / progress) */
+  .listview { width: 100%; max-width: 760px; }
+  .listview table { width: 100%; border-collapse: collapse; }
+  .listview td, .listview th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .listview th { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--ok); }
+  .link { color: var(--accent); cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">Jot <span>Atlas</span></div>
+    <div class="tabs">
+      <div class="tab active" data-view="browse">Browse</div>
+      <div class="tab" data-view="feature">By Feature §</div>
+      <div class="tab" data-view="progress">Capture Progress</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="stat" id="globalStat"></div>
+    <button class="btn warn" id="clearScreen" title="Clear pins on this screen">Clear pins</button>
+    <button class="btn primary" id="exportBtn">Export request ▾</button>
+  </div>
+
+  <div class="side" id="side"></div>
+  <div class="main" id="main"></div>
+  <div class="meta" id="meta"></div>
+
+<script>
+const FEATURES_URL = "../Jot/features.md"; // for reference; anchors below link relative to repo
+const LS = (id) => `jot-atlas:pins:${id}`;
+let ATLAS = null, current = null, pinning = false, view = "browse";
+
+// ---- persistence ----
+function getPins(id){ try { return JSON.parse(localStorage.getItem(LS(id))) || []; } catch { return []; } }
+function setPins(id, pins){ localStorage.setItem(LS(id), JSON.stringify(pins)); render(); }
+function allScreens(){ return ATLAS.surfaces.flatMap(s => s.screens.map(sc => ({...sc, surface: s}))); }
+function screenById(id){ return allScreens().find(s => s.id === id); }
+
+// coarse human location for JSON-only export legibility
+function locWord(x, y){
+  const col = x < 0.34 ? "left" : x > 0.66 ? "right" : "center";
+  const row = y < 0.30 ? "top" : y > 0.70 ? "bottom" : "middle";
+  return `${row}-${col}`;
+}
+function featureAnchor(sec){
+  // features.md anchor convention: "### 1.2 Foo" -> #1-2-...  We only know the number reliably,
+  // so link to the file; the number is the durable join key shown as the chip.
+  return `${FEATURES_URL}`;
+}
+
+// ---- rendering ----
+function render(){
+  renderSidebar();
+  renderGlobalStat();
+  if (view === "browse") renderStage();
+  else if (view === "feature") renderFeatureView();
+  else renderProgressView();
+}
+
+function renderGlobalStat(){
+  const scr = allScreens();
+  const cap = scr.filter(s => s.captured).length;
+  const pinned = scr.filter(s => getPins(s.id).length).length;
+  document.getElementById("globalStat").textContent =
+    `${cap}/${scr.length} captured · ${pinned} screens annotated`;
+}
+
+function renderSidebar(){
+  const el = document.getElementById("side");
+  el.innerHTML = "";
+  for (const s of ATLAS.surfaces){
+    const wrap = document.createElement("div"); wrap.className = "surface";
+    const head = document.createElement("div"); head.className = "s-head";
+    head.innerHTML = `<span class="num">${s.num}</span><span>${s.title}</span><span class="plat">${s.platform}</span>`;
+    wrap.appendChild(head);
+    for (const sc of s.screens){
+      const row = document.createElement("div");
+      row.className = "screen-row" + (current === sc.id && view==="browse" ? " active" : "");
+      const pins = getPins(sc.id);
+      row.innerHTML =
+        `<span class="dot ${sc.captured ? "cap":"miss"} ${pins.length?"pinned":""}"></span>` +
+        `<span>${sc.title}</span>` +
+        (pins.length ? `<span class="pc">${pins.length}</span>` : "");
+      row.onclick = () => { view = "browse"; setActiveTab(); current = sc.id; pinning = false; render(); };
+      wrap.appendChild(row);
+    }
+    el.appendChild(wrap);
+  }
+}
+
+function renderStage(){
+  const main = document.getElementById("main");
+  const meta = document.getElementById("meta");
+  if (!current) current = ATLAS.surfaces[0].screens[0].id;
+  const sc = screenById(current);
+  main.innerHTML = ""; meta.innerHTML = "";
+
+  // header
+  const head = document.createElement("div"); head.className = "stage-head";
+  head.innerHTML = `<h2>${sc.surface.num}. ${sc.title}</h2>
+    <div class="secs">${sc.sections.map(x=>`<span class="chip">§${x}</span>`).join("")}</div>
+    <div class="spacer"></div>
+    <label class="pinmode"><input type="checkbox" id="pinToggle" ${pinning?"checked":""}/> Pinpoint mode</label>`;
+  main.appendChild(head);
+
+  // frame
+  const wrap = document.createElement("div"); wrap.className = "frame-wrap";
+  const frame = document.createElement("div"); frame.className = "frame" + (pinning?" pinning":"");
+  const pins = getPins(sc.id);
+
+  if (sc.captured){
+    const img = document.createElement("img");
+    img.src = sc.image; img.alt = sc.title;
+    img.onload = () => {
+      const m = document.querySelector("#imgmeta");
+      if (m) m.textContent = `${img.naturalWidth}×${img.naturalHeight}px · ~${Math.round(img.naturalWidth/ATLAS.device.scale)}×${Math.round(img.naturalHeight/ATLAS.device.scale)}pt @${ATLAS.device.scale}x`;
+    };
+    img.onerror = () => { frame.innerHTML = placeholderHTML(sc, true); };
+    frame.appendChild(img);
+  } else {
+    frame.innerHTML = placeholderHTML(sc, false);
+  }
+  // pin markers
+  pins.forEach((p, i) => {
+    const dot = document.createElement("div"); dot.className = "pin";
+    dot.style.left = (p.x*100)+"%"; dot.style.top = (p.y*100)+"%";
+    dot.textContent = i+1;
+    dot.onclick = (e) => { e.stopPropagation(); document.getElementById("note-"+i)?.focus(); };
+    frame.appendChild(dot);
+  });
+  frame.onclick = (e) => {
+    if (!pinning) return;
+    const r = frame.getBoundingClientRect();
+    const x = (e.clientX - r.left)/r.width, y = (e.clientY - r.top)/r.height;
+    if (x<0||x>1||y<0||y>1) return;
+    const next = getPins(sc.id); next.push({ x:+x.toFixed(4), y:+y.toFixed(4), note:"" });
+    setPins(sc.id, next);
+  };
+  wrap.appendChild(frame);
+  main.appendChild(wrap);
+
+  const im = document.createElement("div"); im.className = "imgmeta"; im.id = "imgmeta";
+  im.textContent = sc.captured ? "" : "No screenshot yet";
+  main.appendChild(im);
+
+  document.getElementById("pinToggle").onchange = (e) => { pinning = e.target.checked; renderStage(); };
+
+  // meta panel
+  meta.innerHTML = `<h3>Screen</h3>
+    <div class="kv"><span class="k">ID</span><span class="v">${sc.id}</span></div>
+    <div class="kv"><span class="k">Surface</span><span class="v">${sc.surface.num}. ${sc.surface.title}</span></div>
+    <div class="kv"><span class="k">Platform</span><span class="v">${sc.surface.platform}</span></div>
+    <div class="kv"><span class="k">Captured</span><span class="v">${sc.captured?"✓ yes":"— no"}</span></div>
+    <h3>Feature sections</h3>
+    ${sc.sections.map(x=>`<div class="kv"><span class="k">§${x}</span><a class="feat" href="${featureAnchor(x)}" target="_blank">features.md ↗</a></div>`).join("")}
+    ${sc.behavior ? `<h3>Behavior</h3><div>${sc.behavior}</div>`:""}
+    ${(sc.dimensions&&sc.dimensions.length) ? `<h3>Dimensions (from JotDesign)</h3>${sc.dimensions.map(d=>`<div class="kv"><span class="k">${d.label}${d.token?` <span style="color:var(--ink-3)">(${d.token})</span>`:""}</span><span class="v">${d.value}</span></div>`).join("")}`:""}
+    <h3>Pins & comments</h3>
+    <div class="pinlist" id="pinlist"></div>`;
+
+  const list = document.getElementById("pinlist");
+  if (!pins.length) list.innerHTML = `<div class="empty-note">Turn on Pinpoint mode, click the screen to drop a marker, then type what you want to change.</div>`;
+  pins.forEach((p, i) => {
+    const c = document.createElement("div"); c.className = "pincard";
+    c.innerHTML = `<div class="ph"><span class="badge">${i+1}</span><span class="loc">${locWord(p.x,p.y)} · ${(p.x*100|0)}%,${(p.y*100|0)}%</span><span class="del" data-i="${i}">delete</span></div>
+      <textarea id="note-${i}" placeholder="What do you want to change here?">${p.note||""}</textarea>`;
+    list.appendChild(c);
+    c.querySelector("textarea").oninput = (e) => {
+      const arr = getPins(sc.id); arr[i].note = e.target.value;
+      localStorage.setItem(LS(sc.id), JSON.stringify(arr)); // save without full re-render (keep focus)
+      document.querySelector(".screen-row.active .pc"); renderSidebar(); renderGlobalStat();
+    };
+    c.querySelector(".del").onclick = () => { const arr = getPins(sc.id); arr.splice(i,1); setPins(sc.id, arr); };
+  });
+}
+
+function placeholderHTML(sc, errored){
+  return `<div class="placeholder"><div class="big">${errored?"Image not found":"NEEDS SCREENSHOT"}</div>
+    <div>Drop a screenshot at</div><code>atlas/${sc.image}</code>
+    <div>then set <code>"captured": true</code> in atlas.json</div></div>`;
+}
+
+function renderFeatureView(){
+  document.getElementById("meta").innerHTML = "";
+  const main = document.getElementById("main"); main.innerHTML = "";
+  const map = {};
+  for (const sc of allScreens()) for (const sec of sc.sections){ (map[sec] ||= []).push(sc); }
+  const keys = Object.keys(map).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  const box = document.createElement("div"); box.className = "listview";
+  box.innerHTML = `<h2 style="margin-top:0">Browse by feature §</h2>
+    <table><thead><tr><th>§</th><th>Shown in screen(s)</th></tr></thead><tbody>
+    ${keys.map(k=>`<tr><td><span class="chip">§${k}</span></td>
+      <td>${map[k].map(sc=>`<span class="link" data-id="${sc.id}">${sc.surface.num}. ${sc.title}</span>`).join(" · ")}</td></tr>`).join("")}
+    </tbody></table>`;
+  main.appendChild(box);
+  box.querySelectorAll(".link").forEach(l => l.onclick = () => { view="browse"; setActiveTab(); current = l.dataset.id; render(); });
+}
+
+function renderProgressView(){
+  document.getElementById("meta").innerHTML = "";
+  const main = document.getElementById("main"); main.innerHTML = "";
+  const box = document.createElement("div"); box.className = "listview";
+  let rows = "";
+  for (const s of ATLAS.surfaces){
+    const cap = s.screens.filter(x=>x.captured).length, tot = s.screens.length;
+    rows += `<tr><td><b>${s.num}. ${s.title}</b></td><td style="width:160px"><div class="bar"><span style="width:${tot?cap/tot*100:0}%"></span></div></td><td>${cap}/${tot}</td></tr>`;
+    for (const sc of s.screens){
+      rows += `<tr><td style="padding-left:24px"><span class="link" data-id="${sc.id}">${sc.title}</span></td>
+        <td colspan="2">${sc.captured?'<span style="color:var(--ok)">✓ captured</span>':'<span style="color:var(--ink-3)">○ needs screenshot — <code>atlas/'+sc.image+'</code></span>'}</td></tr>`;
+    }
+  }
+  box.innerHTML = `<h2 style="margin-top:0">Capture progress</h2><table>${rows}</table>`;
+  main.appendChild(box);
+  box.querySelectorAll(".link").forEach(l => l.onclick = () => { view="browse"; setActiveTab(); current = l.dataset.id; render(); });
+}
+
+// ---- export ----
+function buildRequest(scope){
+  const screens = (scope==="screen" ? [screenById(current)] : allScreens())
+    .filter(sc => getPins(sc.id).length)
+    .map(sc => ({
+      screen: sc.id, title: sc.title, surface: `${sc.surface.num}. ${sc.surface.title}`,
+      sections: sc.sections, image: sc.image, captured: sc.captured,
+      pins: getPins(sc.id).map((p,i)=>({ n:i+1, xPct:+(p.x*100).toFixed(1), yPct:+(p.y*100).toFixed(1),
+        location: locWord(p.x,p.y), note: p.note||"" }))
+    }));
+  return { app: "Jot", device: ATLAS.device, exportedAt: new Date().toISOString(),
+           note: "Open each referenced image at atlas/<image> and locate pins by xPct/yPct (% from top-left).",
+           screens };
+}
+function download(obj, name){
+  const blob = new Blob([JSON.stringify(obj,null,2)], {type:"application/json"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+}
+document.getElementById("exportBtn").onclick = () => {
+  const req = buildRequest("all");
+  if (!req.screens.length){ alert("No pins yet. Turn on Pinpoint mode and mark something first."); return; }
+  download(req, `jot-atlas-request-${Date.now()}.json`);
+};
+document.getElementById("clearScreen").onclick = () => {
+  if (current && confirm("Clear all pins on this screen?")) setPins(current, []);
+};
+function setActiveTab(){ document.querySelectorAll(".top .tab").forEach(t=>t.classList.toggle("active", t.dataset.view===view)); }
+document.querySelectorAll(".top .tab").forEach(t => t.onclick = () => { view = t.dataset.view; setActiveTab(); render(); });
+
+// ---- boot ----
+fetch("atlas.json").then(r=>r.json()).then(data => { ATLAS = data; render(); })
+  .catch(e => { document.getElementById("main").innerHTML =
+    `<div style="max-width:560px;padding:30px"><h2>Couldn't load atlas.json</h2>
+    <p>Open this over a local server, not <code>file://</code> (browsers block local fetch):</p>
+    <pre style="background:#fff;padding:12px;border-radius:8px;border:1px solid #e4e6ea">cd atlas
+python3 -m http.server 8000
+# then open http://localhost:8000</pre><p style="color:#888">${e}</p></div>`; });
+</script>
+</body>
+</html>

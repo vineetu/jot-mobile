@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  iOS Settings.bundle for Jot.
+
+  Appears in the system Settings app under "Jot", BELOW the system-provided
+  permission toggles (Siri & Search, Microphone, Keyboards, etc.). It carries
+  no editable preferences of its own — every group is a header + footer text
+  pair used purely to surface help and an accurate privacy explainer right
+  where the user is looking when they go hunting for the Keyboards toggle.
+
+  This mirrors the Willow voice-keyboard pattern the design references, with
+  Jot-accurate copy: everything is on-device; the ONLY thing that ever leaves
+  the phone is feedback the user explicitly chooses to send from the main app.
+  Do NOT overstate this to "nothing ever leaves" — the Send-Feedback caveat is
+  load-bearing (see features.md §13.6).
+
+  The same copy is mirrored inside the in-app Settings → PRIVACY section
+  (App/Settings/SettingsView.swift, `privacyHelperBlock`) so users who never
+  open iOS Settings still see it.
+-->
+<dict>
+	<key>PreferenceSpecifiers</key>
+	<array>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Don't see "Keyboards" settings?</string>
+			<key>FooterText</key>
+			<string>Close Settings, then open it again and tap Jot. Or open the Jot app, go to Settings → Privacy → Full Access, and follow the breadcrumb: General → Keyboard → Keyboards → Jot. Turn on Allow Full Access there, then come back.</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Your privacy is protected</string>
+			<key>FooterText</key>
+			<string>Nothing you say or type ever leaves your iPhone.*
+
+Full keyboard access lets Jot use your microphone to turn your speech into text in real time — that's all it's used for. It never reads or sends what you type.
+
+You can confirm all of this yourself in Apple's App Privacy Report (Settings → Privacy &amp; Security → App Privacy Report).</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>FooterText</key>
+			<string>*The one exception is the Send Feedback form in the Jot app's Settings: if you deliberately open it and send feedback, only that feedback leaves your device — nothing else, ever. Nothing is sent automatically.</string>
+		</dict>
+	</array>
+</dict>
+</plist>

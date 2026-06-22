@@ -27,20 +27,17 @@ struct DiagnosticsView: View {
             VStack(alignment: .leading, spacing: JotDesignWatchSafe.watchRowSpacing + 4) {
                 WatchCard { statusContent }
 
-                WatchCard(paddingH: 6, paddingV: 6) {
-                    Button {
-                        WatchConnectivityClient.shared.resetSync()
-                        snapshot = WatchConnectivityClient.shared.snapshot()
-                    } label: {
-                        Text("Reset sync")
-                            .font(.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(JotDesignWatchSafe.jotBlueBottom)
+                WatchPillButton(title: "Reset sync") {
+                    WatchConnectivityClient.shared.resetSync()
+                    snapshot = WatchConnectivityClient.shared.snapshot()
                 }
+
+                Text("Resets the queue and re-sends pending notes to your iPhone.")
+                    .font(.caption2)
+                    .foregroundStyle(JotDesignWatchSafe.jotPageInkCaption)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 4)
 
                 if WatchConnectivityClient.shared.consecutiveResetAttempts >= 2 {
                     escalationBanner

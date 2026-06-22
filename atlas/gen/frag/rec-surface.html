@@ -1,0 +1,29 @@
+<div style="display:flex;flex-direction:column;height:100%">
+  <!-- back chevron, glass circle -->
+  <span class="jot-donebtn" style="width:40px;height:40px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:20px;font-weight:500;align-self:flex-start">‹</span>
+
+  <!-- top instruction line: small, regular (NOT serif), muted grey, two lines -->
+  <div style="font-size:13px;font-weight:400;line-height:1.35;color:var(--jot-ink-2);margin:14px 6px 0;max-width:300px">A sharper transcriber takes a second pass when you stop and tidies the live text.</div>
+
+  <!-- large dark glass card filling most of the screen, live text pinned bottom-left -->
+  <div class="jot-card" style="flex:1;margin-top:16px;display:flex;flex-direction:column;justify-content:flex-end;padding:24px 22px">
+    <div class="jot-title" style="font-size:24px;line-height:1.32;letter-spacing:-0.4px;font-style:italic">Hello, can you hear me? I think you can hear me.<span style="color:var(--jot-ink-cap);font-style:normal"> …</span></div>
+  </div>
+
+  <!-- control cluster: pause / blue timer pill / trash -->
+  <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:18px 0 8px">
+    <!-- pause, grey glass circle -->
+    <div style="width:64px;height:64px;border-radius:50%;background:var(--jot-card-top);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:0.5px solid var(--jot-card-border);box-shadow:0 4px 14px rgba(0,0,0,0.12);display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:var(--jot-ink)"><path d="M8 5h3v14H8zm5 0h3v14h-3z"/></svg>
+    </div>
+    <!-- blue pill: white rounded-square + mono timer -->
+    <div style="display:flex;align-items:center;gap:12px;height:64px;padding:0 26px 0 18px;border-radius:999px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));box-shadow:0 0 28px rgba(26,140,255,0.55)">
+      <span style="width:24px;height:24px;border-radius:7px;background:#fff;flex:none"></span>
+      <span style="font-family:ui-monospace,'SF Mono',monospace;font-size:22px;font-weight:600;color:#fff">0:06</span>
+    </div>
+    <!-- trash, grey glass circle, red icon -->
+    <div style="width:64px;height:64px;border-radius:50%;background:var(--jot-card-top);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:0.5px solid var(--jot-card-border);box-shadow:0 4px 14px rgba(0,0,0,0.12);display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:21px;height:21px;fill:var(--jot-record)"><path d="M9 3h6l1 2h4v2H4V5h4zm-3 4h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2z"/></svg>
+    </div>
+  </div>
+</div>

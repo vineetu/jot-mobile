@@ -1,0 +1,65 @@
+<!-- spacer pushes the keyboard strip to the bottom -->
+<div style="height:300px"></div>
+
+<!-- faux host text field -->
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+  <span style="width:48px;height:48px;border-radius:50%;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center">
+    <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M12 5v14M5 12h14"/></svg>
+  </span>
+  <div style="flex:1;display:flex;align-items:center;gap:8px;height:48px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);border-radius:24px;padding:0 16px">
+    <span style="width:2px;height:20px;background:var(--jot-accent)"></span>
+    <span style="flex:1;color:var(--jot-ink-cap);font-size:16px">Text Message · SMS</span>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:var(--jot-ink-cap)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+</div>
+
+<!-- keyboard strip -->
+<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;padding:14px 12px 18px;margin:0 -6px">
+
+  <!-- streaming pane -->
+  <div class="jot-card" style="position:relative;margin:0 0 14px;min-height:118px;display:flex;flex-direction:column;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="width:8px;height:8px;border-radius:50%;background:var(--jot-accent);box-shadow:0 0 8px var(--jot-accent);flex:none"></span>
+      <span style="color:var(--jot-ink-2);font-size:13px;flex:1">We tidy this up when you stop</span>
+      <!-- 5-bar waveform -->
+      <span style="display:flex;align-items:flex-end;gap:2px;height:14px">
+        <i style="width:2.5px;height:6px;background:var(--jot-accent);border-radius:2px"></i>
+        <i style="width:2.5px;height:12px;background:var(--jot-accent);border-radius:2px"></i>
+        <i style="width:2.5px;height:8px;background:var(--jot-accent);border-radius:2px"></i>
+        <i style="width:2.5px;height:14px;background:var(--jot-accent);border-radius:2px"></i>
+        <i style="width:2.5px;height:7px;background:var(--jot-accent);border-radius:2px"></i>
+      </span>
+    </div>
+    <!-- live italic serif preview, left-aligned, mid pane -->
+    <div style="flex:1;display:flex;align-items:center">
+      <span class="jot-title" style="font-size:17px;letter-spacing:-0.4px;color:var(--jot-ink)">My name is Vineet.<span style="color:var(--jot-ink-cap);opacity:0.7"> …</span></span>
+    </div>
+    <!-- thin blue caret on the right edge -->
+    <span style="position:absolute;right:14px;top:34px;bottom:14px;width:2px;border-radius:1px;background:var(--jot-accent);opacity:0.7"></span>
+  </div>
+
+  <!-- control row: trash / pause / blue stop+timer pill / return -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <span style="width:56px;height:54px;border-radius:11px;background:rgba(224,23,59,0.14);border:0.5px solid rgba(224,23,59,0.30);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-record);stroke-width:2"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>
+    </span>
+    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.28);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:var(--jot-ink)"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+    </span>
+    <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:12px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
+      <span style="width:18px;height:18px;border-radius:4px;background:#fff;flex:none"></span>
+      <span style="color:#fff;font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:1px">00:04</span>
+      <span style="width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.85);flex:none"></span>
+    </div>
+    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.28);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M20 7v4a3 3 0 01-3 3H6m0 0l4-4m-4 4l4 4"/></svg>
+    </span>
+  </div>
+
+  <!-- bottom system row: globe / mic -->
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px 0">
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+
+</div>

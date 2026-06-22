@@ -300,11 +300,17 @@ private struct StreamingPane: View {
                                     KeyboardLoadingText(label: loadingLabel,
                                                         reduceMotion: reduceMotion)
                                 } else if partialText.isEmpty {
-                                    // Either no load, or a load still under the
-                                    // reveal threshold: the same calm "Listening…"
-                                    // as any other wait — alive from second one,
-                                    // quiet (no waveform).
-                                    listeningPlaceholder
+                                    // No text yet: the calm "Listening…" — but if
+                                    // NOTHING comes back after a few seconds, it
+                                    // escalates to a hint, so a silent mic or a
+                                    // stuck pipeline isn't an indefinite,
+                                    // unexplained "Listening" (the 2-min-no-text
+                                    // bug). Measures from when listening began, so
+                                    // a slow cold-start load never false-triggers.
+                                    ListeningOrNoSpeechHint(
+                                        isPaused: isPaused,
+                                        reduceMotion: reduceMotion
+                                    )
                                 } else {
                                     // WS-A / R15: live transcript renders in the
                                     // already-bundled Fraunces ITALIC (the
@@ -499,6 +505,90 @@ private struct StreamingPane: View {
             return "Listening for dictation"
         }
         return "Live transcript: \(tail)"
+    }
+}
+
+// MARK: - "Not hearing you" watchdog
+
+/// "Listening…" that escalates to a hint when **no text comes back**. Covers the
+/// case where the keyboard otherwise sits on "Listening" indefinitely with no
+/// signal that anything is wrong — a silent/covered mic, or a stuck transcription
+/// pipeline (the reported "spoke for 2 minutes, only ever showed Listening" bug).
+///
+/// Trigger: shown only in the no-text "Listening" state (so a slow cold-start
+/// model load — which renders its own loading copy, not this — never trips it).
+/// Time is measured from when THIS view appears (listening began), via the
+/// `@State` default, not from recording start. After `hintAfter` seconds with
+/// still no text, the placeholder is replaced by the hint.
+///
+/// Message split by the **peak** mic level seen (robust against a single
+/// between-words dip): near-silent ⇒ we're genuinely not hearing you; audible but
+/// no text ⇒ the pipeline is stuck, so suggest stop + retry.
+private struct ListeningOrNoSpeechHint: View {
+    let isPaused: Bool
+    let reduceMotion: Bool
+
+    /// Escalate to the hint after this long with no text while listening.
+    private static let hintAfter: TimeInterval = 6
+    /// Peak mic level under which we treat it as "not hearing you".
+    private static let silenceCeiling: Double = 0.08
+
+    /// When the listening state began (= when this view first appeared). Stable
+    /// across re-renders because it's a `@State` default, evaluated once.
+    @State private var listeningSince = Date()
+
+    /// Highest mic level seen since appearing. A reference holder so the per-tick
+    /// update is NOT a `@State` mutation during view evaluation (which SwiftUI
+    /// forbids); the TimelineView re-render reads `.value` fresh each tick.
+    private final class Peak { var value: Double = 0 }
+    @State private var peak = Peak()
+
+    var body: some View {
+        TimelineView(.periodic(from: listeningSince, by: 1)) { context in
+            let elapsed = context.date.timeIntervalSince(listeningSince)
+            // `recordPeak…` does the side effect (peak update) outside the
+            // ViewBuilder so the closure below contains only view-producing code.
+            let notHearing = recordPeakAndCheckSilence()
+
+            if isPaused || elapsed < Self.hintAfter {
+                listening
+            } else {
+                hint(notHearing: notHearing)
+            }
+        }
+    }
+
+    /// Fold the current mic level into the running peak, return whether the peak
+    /// is still under the "not hearing you" ceiling. Side effect kept out of the
+    /// ViewBuilder closure (a bare mutating `if` there breaks view-type inference).
+    private func recordPeakAndCheckSilence() -> Bool {
+        let level = Double(AmplitudeProjection.read()?.amplitude ?? 0)
+        if level > peak.value { peak.value = level }
+        return peak.value < Self.silenceCeiling
+    }
+
+    private var listening: some View {
+        SteppingEllipsis(
+            leading: "Listening",
+            font: .system(size: 13, weight: .regular),
+            textColor: Color.jotKeyboardStreamText,
+            dotColor: Color.jotKeyboardAccent,
+            reduceMotion: reduceMotion
+        )
+        .lineSpacing(13 * 0.55)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func hint(notHearing: Bool) -> some View {
+        Text(notHearing
+             ? "I'm not hearing you — speak up, or make sure your mic isn't covered."
+             : "Having trouble catching that. Tap stop and try again.")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.jotKeyboardStreamText)
+            .lineSpacing(13 * 0.4)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

@@ -1,0 +1,56 @@
+<!-- Apple Watch — Jot root/home (RootView.swift). Watch UI is dark by default. -->
+<div style="max-width:200px;margin:40px auto;background:#000;border-radius:36px;padding:18px 12px 16px;color:#fff;font-family:-apple-system,system-ui,sans-serif">
+
+  <!-- Dictate hero: glowing blue breathing sphere + mic glyph -->
+  <div style="display:flex;flex-direction:column;align-items:center;gap:18px;padding-top:4px">
+    <div style="position:relative;width:96px;height:96px;display:flex;align-items:center;justify-content:center">
+      <div style="position:absolute;width:120px;height:120px;border-radius:50%;background:radial-gradient(circle,rgba(26,140,255,0.45),transparent 70%);filter:blur(8px)"></div>
+      <div style="position:relative;width:96px;height:96px;border-radius:50%;background:radial-gradient(circle at 50% 30%,#5BB4FF 0%,#1B86F0 52%,#0061C8 100%);box-shadow:0 0 16px rgba(26,140,255,0.6),inset 0 1.5px 0 rgba(255,255,255,0.5);display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" style="width:36px;height:36px;fill:#fff"><path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zm-7 9a7 7 0 0014 0M12 19v3"/><path d="M12 3a3 3 0 013 3v6a3 3 0 01-6 0V6a3 3 0 013-3z"/></svg>
+      </div>
+    </div>
+    <div style="font-size:17px;font-weight:600;letter-spacing:-0.2px;color:#fff">Tap to dictate</div>
+  </div>
+
+  <!-- Recent header -->
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin:18px 4px 8px">
+    <span style="font-size:14px;font-weight:600;color:rgba(255,255,255,0.62)">Recent</span>
+    <span style="font-size:14px;font-weight:600;color:#1A8CFF">All 7</span>
+  </div>
+
+  <!-- Pending recording card (waiting to sync) -->
+  <div style="background:linear-gradient(rgba(255,255,255,0.075),rgba(255,255,255,0.035));border:0.5px solid rgba(255,255,255,0.09);border-radius:18px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+    <div style="width:30px;height:30px;border-radius:50%;background:rgba(26,140,255,0.18);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:#1A8CFF"><path d="M8 5v14l11-7z"/></svg>
+    </div>
+    <div style="min-width:0">
+      <div style="font-size:16px;font-weight:600;letter-spacing:-0.2px;color:#fff">Waiting to sync</div>
+      <div style="font-size:13px;color:#FF9F30">2 min ago</div>
+    </div>
+  </div>
+
+  <!-- Transcript cards -->
+  <div style="background:linear-gradient(rgba(255,255,255,0.075),rgba(255,255,255,0.035));border:0.5px solid rgba(255,255,255,0.09);border-radius:18px;padding:10px 12px;margin-bottom:8px">
+    <div style="font-size:17px;font-weight:600;letter-spacing:-0.2px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pick up almond milk and eggs</div>
+    <div style="display:flex;align-items:center;gap:4px;margin-top:3px">
+      <span style="font-size:13px;color:rgba(255,255,255,0.62)">Jun 21, 9:14 AM</span>
+      <svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:rgba(255,255,255,0.62)"><rect x="7" y="2" width="10" height="20" rx="3" fill="none" stroke="rgba(255,255,255,0.62)" stroke-width="2"/></svg>
+    </div>
+  </div>
+  <div style="background:linear-gradient(rgba(255,255,255,0.075),rgba(255,255,255,0.035));border:0.5px solid rgba(255,255,255,0.09);border-radius:18px;padding:10px 12px;margin-bottom:8px">
+    <div style="font-size:17px;font-weight:600;letter-spacing:-0.2px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Call the dentist back Tuesday</div>
+    <div style="font-size:13px;color:rgba(255,255,255,0.62);margin-top:3px">Jun 20, 4:02 PM</div>
+  </div>
+  <div style="background:linear-gradient(rgba(255,255,255,0.075),rgba(255,255,255,0.035));border:0.5px solid rgba(255,255,255,0.09);border-radius:18px;padding:10px 12px;margin-bottom:8px">
+    <div style="font-size:17px;font-weight:600;letter-spacing:-0.2px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Idea for the launch deck</div>
+    <div style="font-size:13px;color:rgba(255,255,255,0.62);margin-top:3px">Jun 19, 8:30 AM</div>
+  </div>
+
+  <!-- Sync diagnostics footer (muted) -->
+  <div style="display:flex;align-items:center;gap:8px;padding:6px;margin-top:2px">
+    <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:rgba(255,255,255,0.42)"><path d="M5 3v9a4 4 0 008 0V8a2 2 0 114 0v3"/><circle cx="18" cy="13" r="2" fill="rgba(255,255,255,0.42)"/></svg>
+    <span style="font-size:12px;color:rgba(255,255,255,0.42)">Sync diagnostics</span>
+    <span style="margin-left:auto;font-size:12px;color:rgba(255,255,255,0.42)">›</span>
+  </div>
+
+</div>

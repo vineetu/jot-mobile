@@ -1,0 +1,30 @@
+<!-- Microphone permission denied (§12.1) — main-app alert over the recording surface. -->
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+  <span class="jot-tile" style="--c1:#15171C;--c2:#15171C;width:34px;height:34px;border-radius:50%;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border)">
+    <svg viewBox="0 0 24 24" style="fill:none;stroke:var(--jot-ink);stroke-width:2.4"><path d="M15 9l-6 6M9 9l6 6"/></svg>
+  </span>
+  <span class="jot-donebtn">Done</span>
+</div>
+
+<div class="jot-display" style="margin:6px 0 2px">Jot down.</div>
+<div class="jot-caption" style="margin:2px 4px 0">Tap the mic to start dictating.</div>
+
+<!-- dimmed recording surface placeholder -->
+<div style="height:150px;display:flex;align-items:center;justify-content:center;opacity:0.4;margin-top:24px">
+  <span class="jot-tile hero" style="--c1:#FF9A33;--c2:#D17E2A">
+    <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </span>
+</div>
+
+<!-- iOS-style alert -->
+<div style="position:relative;margin-top:34px;display:flex;justify-content:center">
+  <div style="width:280px;border-radius:20px;overflow:hidden;background:linear-gradient(var(--jot-card-top),var(--jot-card-bot));-webkit-backdrop-filter:blur(28px);backdrop-filter:blur(28px);border:0.5px solid var(--jot-card-border);box-shadow:0 16px 48px rgba(0,0,0,0.30)">
+    <div style="padding:20px 20px 16px;text-align:center">
+      <div class="jot-row-title" style="font-size:17px;font-weight:600;margin-bottom:6px">Microphone Access Needed</div>
+      <div class="jot-row-sub" style="font-size:13px;line-height:1.4">Jot needs the microphone to dictate. Turn it on in iOS Settings → Privacy → Microphone → Jot.</div>
+    </div>
+    <div style="border-top:0.5px solid var(--jot-sep);height:46px;display:flex;align-items:center;justify-content:center">
+      <span style="color:var(--jot-accent);font-size:17px;font-weight:600">OK</span>
+    </div>
+  </div>
+</div>

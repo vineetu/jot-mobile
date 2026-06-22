@@ -645,6 +645,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             recordingState: recordingState,
             feedback: feedback,
             onCopy: { [weak self] in self?.handleCopyMenuSelection() },
+            onAddToVocabulary: { [weak self] in self?.handleAddToVocabulary() },
             onPaste: { [weak self] in self?.handlePasteMenuSelection() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
             onRedoInsertion: { [weak self] in self?.handleRedoMenuSelection() },
@@ -1102,6 +1103,35 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleCopyMenuSelection() {
         fireMenuSelectionFeedback()
         copySelectionToPasteboard()
+    }
+
+    /// "Add to Vocabulary" — queue the host's current selection for the main
+    /// app's vocabulary. The keyboard can't run the (CTC-rescore) vocabulary
+    /// add itself, so it appends the word to a JSON `[String]` queue in the
+    /// App Group and pings the app via a Darwin notification; the app drains
+    /// `pendingVocabAdds` on next foreground (`VocabularyAddInbox`). Common
+    /// words are filtered here so we never enqueue noise like "the".
+    private func handleAddToVocabulary() {
+        guard let raw = textDocumentProxy.selectedText else {
+            setStatusBanner("Select a word first")
+            return
+        }
+        let word = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return }
+        if CommonWords.isCommon(word.lowercased()) {
+            setStatusBanner("‘\(word)’ is a common word — not added")
+            return
+        }
+        // Append to the App-Group queue (JSON [String]) so multiple adds before
+        // the app foregrounds all land.
+        var pending = AppGroup.defaults.data(forKey: AppGroup.Keys.pendingVocabAdds)
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        pending.append(word)
+        if let data = try? JSONEncoder().encode(pending) {
+            AppGroup.defaults.set(data, forKey: AppGroup.Keys.pendingVocabAdds)
+        }
+        CrossProcessNotification.post(name: CrossProcessNotification.vocabAddRequested)
+        setStatusBanner("Added ‘\(word)’ to your dictionary")
     }
 
     private func handlePasteMenuSelection() {

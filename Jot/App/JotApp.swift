@@ -457,6 +457,21 @@ struct JotApp: App {
                         ?? "warm resume fallback requested"
                     triggerAutoStart(reason: fallbackReason)
                 }
+                .onReceive(
+                    NotificationCenter.default.publisher(for: .jotDictateFromShortcut)
+                ) { _ in
+                    // A foreground dictation App Intent's START leg fired. If Jot
+                    // is ALREADY foreground, start now — no new scene-`.active`
+                    // transition will fire to trigger the deferred path in
+                    // `handleSceneActive`. If not active yet, do nothing here:
+                    // `handleSceneActive` consumes the pending flag on the next
+                    // `.active`. (Issue #3 — start is always scene-active-gated.)
+                    guard scenePhase == .active,
+                          DictationIntentBridge.shared.pendingForegroundStart else { return }
+                    DictationIntentBridge.shared.pendingForegroundStart = false
+                    autoStartConsumed = false
+                    triggerAutoStart(reason: "app shortcut dictation (already foreground)")
+                }
                 .onChange(of: setupRerunTrigger.requestID) { _, _ in
                     setupCompleted = false
                     showSetupWizard = true
@@ -492,6 +507,16 @@ struct JotApp: App {
                     if newPhase == .active {
                         handleSceneActive()
                         startForegroundHeartbeat()
+                        // Transcribe anything shared into Jot via the share
+                        // sheet while we were away. The "Send to Jot" Share
+                        // Extension only stages the audio (it can't run
+                        // Parakeet); we turn it into a transcript here, on
+                        // foreground (Model B — the extension never opened us).
+                        PendingShareDrainer.drain()
+                        // Finalize any words the user added to vocabulary from
+                        // the keyboard's "..." popover while we were away (vocab
+                        // storage is main-app-private; the keyboard only queues).
+                        VocabularyAddInbox.drain()
                         // Apply any correction verdicts the owner gave in the
                         // keyboard quick-review while Jot was backgrounded.
                         Task { @MainActor in
@@ -718,6 +743,20 @@ struct JotApp: App {
     }
 
     private func handleSceneActive() {
+        // A foreground dictation App Intent (RecordAndTranscribeIntent /
+        // DictateIntent) requested a start. Now that the scene is confirmed
+        // `.active` (the app is genuinely foreground), run it through the
+        // scene-gated `triggerAutoStart` path — NOT inline in the intent's
+        // `perform()`, which races the foreground transition and fails with
+        // CoreAudio "engine failed to start" (GitHub issue #3). `triggerAutoStart`
+        // handles setup / mic-permission / model-not-ready (capture-first) itself.
+        if DictationIntentBridge.shared.pendingForegroundStart {
+            DictationIntentBridge.shared.pendingForegroundStart = false
+            autoStartConsumed = false
+            triggerAutoStart(reason: "app shortcut dictation (scene active)")
+            return
+        }
+
         guard SetupCompletion.isCompleted else {
             setupCompleted = false
             showSetupWizard = true
@@ -803,7 +842,7 @@ struct JotApp: App {
                 triggerAutoStart(reason: "microphone permission granted, retrying")
             } else {
                 surfaceAutoStartBanner(
-                    "Tap to grant mic access in Settings",
+                    "Turn on mic access for Jot in Settings.",
                     guardName: "mic-permission",
                     action: "deny",
                     reason: "permission denied after request; surfaced settings banner"
@@ -1014,8 +1053,14 @@ struct JotApp: App {
                 }
             } catch {
                 lifecycleLog.error("Auto-start recording failed: \(error.localizedDescription, privacy: .public)")
+                // Friendly, single-source message — the keyboard banner finally
+                // shows the REAL reason (e.g. the mic-busy "another app like a
+                // call is using it" copy) instead of the old generic
+                // "Couldn't start mic - tap again" that erased which error fired.
+                let friendlyMessage = (error as? RecordingService.RecordingError)?.userFacingMessage
+                    ?? "Couldn't start recording — try again."
                 surfaceAutoStartBanner(
-                    "Couldn't start mic - tap again",
+                    friendlyMessage,
                     guardName: "start",
                     action: "banner",
                     reason: "recording start threw: \(Self.describeAutoStartError(error))"
@@ -1024,9 +1069,9 @@ struct JotApp: App {
                 // by the keyboard extension on its next presentation; if the
                 // user is currently in the main app (e.g. dictate tap just
                 // launched us), they need their own surface. The alert in
-                // ContentView reads this and clears it on dismiss.
-                dictateAutoStartError = (error as? LocalizedError)?.errorDescription
-                    ?? "Couldn't start recording. Try again."
+                // ContentView reads this and clears it on dismiss. Same
+                // friendly message so both surfaces match.
+                dictateAutoStartError = friendlyMessage
             }
         }
     }

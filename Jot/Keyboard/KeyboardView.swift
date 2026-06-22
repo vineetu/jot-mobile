@@ -69,6 +69,7 @@ struct KeyboardView: View {
     let hasSelection: Bool
 
     let onCopy: () -> Void
+    let onAddToVocabulary: () -> Void
     let onPaste: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
@@ -287,6 +288,7 @@ struct KeyboardView: View {
                 canRedo: canRedoInsertion,
                 onPaste: onPaste,
                 onCopy: onCopy,
+                onAddToVocabulary: onAddToVocabulary,
                 onUndo: onUndoLastInsertion,
                 onRedo: onRedoInsertion,
                 onJumpToStart: onJumpToStart,

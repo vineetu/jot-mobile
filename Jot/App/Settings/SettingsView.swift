@@ -40,6 +40,20 @@ struct SettingsView: View {
     /// at Settings.
     @State private var clientAdapter: LLMClientUIAdapter?
 
+    // MARK: - TTS Lab (hidden reveal)
+
+    /// Hidden "Text-to-Speech (Lab)" opt-in. The section is revealed by tapping
+    /// the Version row 5 times (mirrors the warm-yield reveal pattern). Once
+    /// revealed for this Settings session, the section stays up; the toggle
+    /// itself is persisted in the App Group so it survives relaunch.
+    /// See `docs/tts-lab/design.md`.
+    @State private var ttsLabRevealed: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
+    @State private var ttsLabVersionTapCount: Int = 0
+    @State private var ttsLabEnabled: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
+    @State private var ttsService = TTSService.shared
+    /// Presents `VoiceCloneRecorderView` from the Lab's "Clone my voice" row.
+    @State private var showVoiceCloneSheet: Bool = false
+
 
     var body: some View {
         NavigationStack {
@@ -56,6 +70,10 @@ struct SettingsView: View {
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
                 liveTextOn = DeviceCapability.liveTextEnabled
+                ttsLabVersionTapCount = 0
+                // If the Lab was already opted in (persisted), keep it revealed.
+                ttsLabRevealed = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled) || ttsLabRevealed
+                ttsLabEnabled = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
                 vocabularyStore.load()
                 if clientAdapter == nil {
                     let client = LLMClientFactory.shared.client()
@@ -77,6 +95,17 @@ struct SettingsView: View {
                 // First touch graduates "auto" to an explicit choice —
                 // never clobbered by future capability-default changes.
                 AppGroup.liveTextSetting = newValue ? "on" : "off"
+            }
+            .onChange(of: ttsLabEnabled) { _, newValue in
+                AppGroup.defaults.set(newValue, forKey: AppGroup.Keys.ttsLabEnabled)
+                // Turning the Lab ON is the user's explicit opt-in to the
+                // model download (the deliberate sidestep of "download-first").
+                if newValue && !ttsService.isReady {
+                    Task { await ttsService.download() }
+                }
+            }
+            .sheet(isPresented: $showVoiceCloneSheet) {
+                VoiceCloneRecorderView()
             }
         }
         // Soften every card's drop shadow throughout Settings by 50% (light mode
@@ -631,17 +660,32 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    settingsIconRow(
-                        systemImage: "info.circle",
-                        tint: JotDesign.JotSemanticIcon.version,
-                        shaded: JotDesign.JotSemanticIcon.versionShaded,
-                        title: "Version",
-                        trailing: {
-                            Text(versionString)
-                                .font(.system(size: 13.5))
-                                .foregroundStyle(Color.jotPageInkSecondary)
-                        }
-                    )
+                    // Tapping the Version row 5 times reveals the hidden
+                    // "Text-to-Speech (Lab)" section (see ttsLabSection). A
+                    // plain Button keeps the row's appearance identical to the
+                    // static version row it replaces.
+                    Button {
+                        handleVersionTap()
+                    } label: {
+                        settingsIconRow(
+                            systemImage: "info.circle",
+                            tint: JotDesign.JotSemanticIcon.version,
+                            shaded: JotDesign.JotSemanticIcon.versionShaded,
+                            title: "Version",
+                            trailing: {
+                                Text(versionString)
+                                    .font(.system(size: 13.5))
+                                    .foregroundStyle(Color.jotPageInkSecondary)
+                            }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Version \(versionString)")
+
+                    if ttsLabRevealed {
+                        cardDivider
+                        ttsLabSection
+                    }
 
                     cardDivider
 
@@ -786,6 +830,182 @@ struct SettingsView: View {
         let version = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
         let build = info?["CFBundleVersion"] as? String ?? "1"
         return "\(version) (\(build))"
+    }
+
+    // MARK: - TTS Lab (hidden)
+
+    /// Count taps on the Version row; reveal the Lab section on the 5th.
+    private func handleVersionTap() {
+        guard !ttsLabRevealed else { return }
+        ttsLabVersionTapCount += 1
+        if ttsLabVersionTapCount >= 5 {
+            withAnimation { ttsLabRevealed = true }
+        }
+    }
+
+    /// Hidden experimental section: an opt-in toggle for the on-device Kokoro
+    /// TTS + Apple-Translation transcript playback, plus a "Download voices"
+    /// row that surfaces download progress. Turning the toggle on triggers the
+    /// download (wired in `.onChange(of: ttsLabEnabled)`).
+    @ViewBuilder
+    private var ttsLabSection: some View {
+        // The toggle row.
+        HStack(alignment: .top, spacing: 14) {
+            IconTile(
+                systemImage: "speaker.wave.2",
+                tint: JotDesign.JotSemanticIcon.version,
+                shaded: JotDesign.JotSemanticIcon.versionShaded
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Text-to-Speech (Lab)")
+                    .font(JotType.rowTitle)
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.jotPageInk)
+
+                Text("Experimental. Read a transcript aloud in different voices and accents, fully on-device. Non-English voices translate first using Apple Translation. Turning this on downloads the voice model.")
+                    .font(JotType.rowSub)
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .lineSpacing(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("", isOn: $ttsLabEnabled)
+                .labelsHidden()
+                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                .accessibilityLabel("Text-to-Speech Lab")
+                .accessibilityHint("Enables experimental on-device read-aloud and downloads the voice model.")
+        }
+        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+
+        // The download / status row — only meaningful once enabled.
+        if ttsLabEnabled {
+            cardDivider
+            ttsLabDownloadRow
+            cardDivider
+            cloneVoiceRow
+            ForEach(ttsService.clonedVoices) { voice in
+                cardDivider
+                clonedVoiceRow(voice)
+            }
+            if ttsService.isReady {
+                cardDivider
+                deleteModelsRow
+            }
+        }
+    }
+
+    /// "Delete downloaded voices" — frees the TTS model storage. Only the TTS
+    /// model cache is removed (never the dictation/ASR models), so transcription
+    /// is unaffected. Shown once the model has been downloaded.
+    @ViewBuilder
+    private var deleteModelsRow: some View {
+        Button(role: .destructive) {
+            ttsService.deleteDownloadedModels()
+        } label: {
+            settingsIconRow(
+                systemImage: "trash",
+                tint: JotDesign.JotSemanticIcon.version,
+                shaded: JotDesign.JotSemanticIcon.versionShaded,
+                title: "Delete downloaded voices",
+                subline: "Frees the voice-model storage. Dictation is unaffected; cloned voices are kept.",
+                trailing: { EmptyView() }
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete downloaded voices")
+        .accessibilityHint("Removes the downloaded voice models to free space; dictation is unaffected.")
+    }
+
+    /// "Clone my voice" entry — presents the recorder sheet.
+    @ViewBuilder
+    private var cloneVoiceRow: some View {
+        Button {
+            showVoiceCloneSheet = true
+        } label: {
+            settingsIconRow(
+                systemImage: "waveform.and.mic",
+                tint: JotDesign.JotSemanticIcon.version,
+                shaded: JotDesign.JotSemanticIcon.versionShaded,
+                title: "Clone my voice",
+                subline: "Record a short sample to add your own voice",
+                trailing: { RowChevron() }
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clone my voice")
+        .accessibilityHint("Record a short sample to create a read-aloud voice in your own voice.")
+    }
+
+    /// One cloned-voice row with a trailing delete control (Settings uses a
+    /// custom card layout, not a `List`, so we surface an explicit delete
+    /// button rather than swipe-to-delete).
+    @ViewBuilder
+    private func clonedVoiceRow(_ voice: TTSVoice) -> some View {
+        settingsIconRow(
+            systemImage: "person.wave.2",
+            tint: JotDesign.JotSemanticIcon.version,
+            shaded: JotDesign.JotSemanticIcon.versionShaded,
+            title: voice.label,
+            subline: "Your cloned voice",
+            trailing: {
+                Button {
+                    ttsService.deleteClonedVoice(voice)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color(.systemRed))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete voice \(voice.label)")
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var ttsLabDownloadRow: some View {
+        Button {
+            Task { await ttsService.download() }
+        } label: {
+            settingsIconRow(
+                systemImage: ttsDownloadIcon,
+                tint: JotDesign.JotSemanticIcon.version,
+                shaded: JotDesign.JotSemanticIcon.versionShaded,
+                title: "Voice model",
+                subline: ttsDownloadSubline,
+                trailing: {
+                    if ttsService.downloadState == .downloading {
+                        ProgressView()
+                    }
+                }
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(ttsService.downloadState == .downloading || ttsService.isReady)
+        .accessibilityLabel("Voice model — \(ttsDownloadSubline)")
+    }
+
+    private var ttsDownloadIcon: String {
+        switch ttsService.downloadState {
+        case .ready: return "checkmark.circle"
+        case .failed: return "exclamationmark.triangle"
+        default: return "arrow.down.circle"
+        }
+    }
+
+    private var ttsDownloadSubline: String {
+        switch ttsService.downloadState {
+        case .notStarted: return "Tap to download"
+        case .downloading: return "Downloading…"
+        case .ready: return "Ready"
+        case .failed(let message): return "Failed — tap to retry (\(message))"
+        }
     }
 }
 

@@ -8,6 +8,27 @@ import Foundation
 enum AppGroup {
     static let identifier = "group.com.vineetu.jot.mobile.shared"
 
+    /// Root of the shared App Group container (visible to the app, keyboard,
+    /// and Share Extension). `nil` only if entitlements are misconfigured.
+    static var containerURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
+    }
+
+    /// Queue directory where the Share Extension stages audio shared into Jot
+    /// (one file per shared item, named `<uuid>.<ext>`). The main app drains +
+    /// transcribes it on the next foreground (Model B — the extension never
+    /// opens the app). Creates the directory on first access. See
+    /// `PendingShareDrainer` (app side) and `ShareViewController` (extension).
+    static func pendingSharesDirectory() -> URL? {
+        guard let dir = containerURL?.appendingPathComponent("PendingShares", isDirectory: true) else {
+            return nil
+        }
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
     /// `UserDefaults` is documented as thread-safe but does not conform to
     /// `Sendable`, so Swift 6 strict concurrency flags it in a `static let`.
     /// `nonisolated(unsafe)` is the right escape hatch here: the keyboard
@@ -36,6 +57,23 @@ enum AppGroup {
         // (pendingAutoPasteFlag + pendingAutoPasteCreatedAt). See
         // `Shared/PendingPasteSession.swift` for the encoded shape.
         static let pendingPasteSession = "jot.keyboard.pendingPasteSession"
+
+        /// Queue of words the keyboard staged for "Add to Vocabulary" (its
+        /// "..." popover). The keyboard can't write the main-app-private
+        /// vocabulary file, so it appends here and the main app drains via
+        /// `VocabularyAddInbox` on its next foreground. JSON-encoded `[String]`.
+        static let pendingVocabAdds = "jot.vocab.pendingAdds"
+
+        /// Hidden "Text-to-Speech (Lab)" opt-in toggle (Settings → About reveal).
+        /// Gates the experimental on-device Kokoro TTS + Apple-Translation
+        /// transcript playback; default off, and turning it on is what triggers
+        /// the model download. See `docs/tts-lab/design.md`.
+        static let ttsLabEnabled = "jot.tts.labEnabled"
+        /// JSON-encoded registry of the user's cloned PocketTTS voices
+        /// (`[{name, fileName}]`). The `.bin` conditioning files live in
+        /// `ApplicationSupport/TTSVoices/<uuid>.bin`; this key holds only the
+        /// display-name ⇄ file mapping. See `TTSService.clonedVoices`.
+        static let ttsClonedVoices = "jot.tts.clonedVoices"
         static let recordingAmplitude = "jot.recording.amplitude"
         // v7: pipeline phase projection (single source of truth for cross-
         // process observation of the pipeline's current state). See

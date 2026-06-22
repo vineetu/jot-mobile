@@ -1,0 +1,8 @@
+# Personal-data screenshots — local only, never committed (phone #, messages, transcripts).
+inbox/
+screens/
+
+# Build/deploy artifacts — regenerated from gen/ + atlas.json.
+_deploy/
+
+# Tracked: gen/ (the mockup code), atlas.json, README.md, AGENT-BRIEF.md, .gitignore

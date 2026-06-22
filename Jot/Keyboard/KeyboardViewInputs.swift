@@ -63,6 +63,7 @@ struct KeyboardRootHostView: View {
     let feedback: KeyboardFeedback
 
     let onCopy: () -> Void
+    let onAddToVocabulary: () -> Void
     let onPaste: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
@@ -108,6 +109,7 @@ struct KeyboardRootHostView: View {
             keyboardAppearance: inputs.keyboardAppearance,
             hasSelection: inputs.hasSelection,
             onCopy: onCopy,
+            onAddToVocabulary: onAddToVocabulary,
             onPaste: onPaste,
             onUndoLastInsertion: onUndoLastInsertion,
             onRedoInsertion: onRedoInsertion,

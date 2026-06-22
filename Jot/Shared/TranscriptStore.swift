@@ -7,16 +7,19 @@ import SwiftData
 /// ## Why a singleton and not `.modelContainer(for: Transcript.self)`
 ///
 /// The scene-scoped `.modelContainer(for:)` modifier only constructs its
-/// container on scene activation. Jot has two **headless** callers that must
-/// append transcripts without foregrounding the app:
+/// container on scene activation. Jot has intent callers that may append
+/// transcripts outside the normal foreground-app lifecycle:
 ///
-/// - `TranscribeAudioFileIntent` (Shortcuts, iOS 17 path)
-/// - `RecordAndTranscribeIntent` (Action Button, iOS 18+ `AudioRecordingIntent`)
+/// - `TranscribeAudioFileIntent` (Shortcuts, file-in/text-out) — genuinely
+///   headless (`openAppWhenRun = false`); never foregrounds.
+/// - `RecordAndTranscribeIntent` (Action Button / Spotlight / Siri) —
+///   foregrounds to record (`supportedModes` foreground; mic-start deferred to
+///   scene-active, GitHub issue #3), but its append must not depend on the
+///   SwiftUI scene's container being wired.
 ///
-/// Both set `openAppWhenRun = false`. If the ledger wiring depended on a
-/// scene, a user who only ever uses the Action Button would never see their
-/// own history — the first time they opened the app, nothing would be there
-/// because the intent had been writing to a container that never existed.
+/// If the ledger wiring depended on a scene, a user who only ever uses these
+/// intents could see an empty history — the intent would have been writing to a
+/// container that never existed.
 ///
 /// A `@MainActor static let` singleton sidesteps that: the first access
 /// (whether from an intent's `perform()` or from `JotApp.body`) constructs
@@ -272,7 +275,8 @@ enum TranscriptStore {
         cleaned: String? = nil,
         duration: TimeInterval? = nil,
         derivedFrom: UUID? = nil,
-        instruction: String? = nil
+        instruction: String? = nil,
+        source: String? = nil
     ) throws -> Transcript? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -292,7 +296,8 @@ enum TranscriptStore {
             // onward — see the banner on `JotSchemaV6.Transcript.category`;
             // future classification writes go to `TranscriptCategory`.
             rewriteUserEdit: nil,
-            rewriteUpvoted: nil
+            rewriteUpvoted: nil,
+            source: source
         )
         context.insert(transcript)
         do {

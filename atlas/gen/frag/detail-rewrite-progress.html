@@ -1,0 +1,41 @@
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+<div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;opacity:0.5">‹</div>
+
+<div style="display:flex;align-items:center;gap:10px;margin:18px 2px 14px;font-size:13px;color:var(--jot-ink-cap)">
+  <span>2 hours ago</span>
+  <span>·</span>
+  <span>3784 words</span>
+  <span>·</span>
+  <span>22:22</span>
+</div>
+
+<!-- Rewriting… progress bar with Cancel -->
+<div style="display:flex;align-items:center;gap:12px;background:rgba(120,120,128,0.16);border-radius:14px;padding:14px 18px;margin-bottom:14px">
+  <svg viewBox="0 0 24 24" style="width:18px;height:18px;flex:none"><g stroke="var(--jot-ink-2)" stroke-width="2" stroke-linecap="round"><path d="M12 3v4" opacity="1"/><path d="M12 17v4" opacity="0.3"/><path d="M3 12h4" opacity="0.5"/><path d="M17 12h4" opacity="0.7"/><path d="M5.6 5.6l2.8 2.8" opacity="0.4"/><path d="M15.6 15.6l2.8 2.8" opacity="0.9"/><path d="M5.6 18.4l2.8-2.8" opacity="0.6"/><path d="M15.6 8.4l2.8-2.8" opacity="0.8"/></g></svg>
+  <span style="font-size:16px;font-weight:500;color:var(--jot-ink)">Rewriting…</span>
+  <div style="flex:1"></div>
+  <span style="font-size:16px;font-weight:600;color:var(--jot-accent)">Cancel</span>
+</div>
+
+<!-- Blank card while generating -->
+<div class="jot-card" style="height:420px"></div>
+
+<div style="flex:1"></div>
+
+<!-- Dimmed action bar -->
+<div class="jot-card" style="position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:18px;padding:12px 18px;border-radius:999px;opacity:0.45">
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M6 7h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2zM9 7V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7h16" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round"/></svg>
+  </span>
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M16 3l5 5L8 21H3v-5zM13 6l5 5" fill="none" stroke="var(--jot-ink-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+  <div class="jot-cta" style="flex:1;height:44px;font-size:16px;box-shadow:none">
+    <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#fff"><path d="M12 2l1.6 4.4L18 8l-4.4 1.6L12 14l-1.6-4.4L6 8l4.4-1.6z"/></svg>
+    Articulate
+  </div>
+  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
+    <svg viewBox="0 0 24 24"><path d="M9 9h9a2 2 0 012 2v9a2 2 0 01-2 2H9a2 2 0 01-2-2v-9a2 2 0 012-2z M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+</div>
+</div>
