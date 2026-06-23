@@ -154,6 +154,14 @@ struct TranscriptDetailView: View {
     @State private var showRewritePicker: Bool = false
     @State private var showAISettings: Bool = false
     @State private var showNewPromptHint: Bool = false
+    @State private var showTranslateSheet: Bool = false
+    /// Set by the picker's Translate row; consumed in the picker's `onDismiss`
+    /// to present the Translate sheet without a sheet-over-sheet race.
+    @State private var pendingTranslate: Bool = false
+    @State private var showAIGuide: Bool = false
+    /// Set by the guide's "Download Jot's AI" link; consumed in the guide's
+    /// `onDismiss` to open AI settings without a sheet-over-sheet race.
+    @State private var pendingAIDownload: Bool = false
     /// `nil` until `.onAppear` resolves the factory's client. Used to mirror
     /// `LLMClientStatus` synchronously so the Rewrite button can branch
     /// without a `await`.
@@ -257,9 +265,10 @@ struct TranscriptDetailView: View {
         // needed when the Lab is on; mounting it always is harmless (it does
         // nothing until TranslationGateway sets a configuration).
         .background {
-            if ttsLabEnabled {
-                TranslationTaskHost()
-            }
+            // Mounted unconditionally: it serves BOTH the TTS Lab read-aloud
+            // translation and the Translate sheet (features.md §3.9). Harmless
+            // when idle — does nothing until TranslationGateway sets a config.
+            TranslationTaskHost()
         }
         .onChange(of: transcript.text) {
             // Body text changed (a verdict edit, or a manual Edit-mode save) →
@@ -346,7 +355,15 @@ struct TranscriptDetailView: View {
         } message: {
             Text("This removes the rewrite and restores the original. The rewrite cannot be recovered.")
         }
-        .sheet(isPresented: $showRewritePicker) {
+        .sheet(isPresented: $showRewritePicker, onDismiss: {
+            // Translate is presented AFTER the picker fully dismisses (chained
+            // via onDismiss) so two sheets never race. The picker's Translate
+            // row sets `pendingTranslate`, then dismisses itself.
+            if pendingTranslate {
+                pendingTranslate = false
+                showTranslateSheet = true
+            }
+        }) {
             // Mockup 10 / plan §6.1 — bottom-sheet picker for the user's
             // saved prompts. The "+ New prompt" affordance dismisses the
             // sheet and surfaces a follow-up alert that points the user
@@ -364,8 +381,31 @@ struct TranscriptDetailView: View {
                 },
                 onNewPrompt: {
                     showNewPromptHint = true
+                },
+                onTranslate: {
+                    pendingTranslate = true
                 }
             )
+        }
+        .sheet(isPresented: $showTranslateSheet) {
+            // Ephemeral translate sheet (features.md §3.9) — Apple on-device
+            // Translation via TranslationGateway; reads the active tab's text.
+            // Nothing is saved. The TranslationTaskHost that fulfils the session
+            // lives on this view (mounted unconditionally) and stays alive while
+            // this sheet is up.
+            TranslateSheet(text: readAloudText)
+        }
+        .sheet(isPresented: $showAIGuide, onDismiss: {
+            // "Download Jot's AI" inside the guide → open settings after the guide
+            // dismisses (chained so two sheets don't race).
+            if pendingAIDownload {
+                pendingAIDownload = false
+                showAISettings = true
+            }
+        }) {
+            // features.md §7.10 — when Qwen isn't downloaded but the device has Apple
+            // Intelligence, teach the free Writing Tools path instead of the download.
+            AppleIntelligenceRewriteGuide(onDownloadJotAI: { pendingAIDownload = true })
         }
         .sheet(isPresented: $showAISettings) {
             // Single canonical setup surface for AI Rewrite. Replaces the
@@ -1150,7 +1190,7 @@ struct TranscriptDetailView: View {
             ],
             primary: ActionBarItem(
                 systemImage: "sparkles",
-                label: "Articulate",
+                label: "Rewrite",
                 accessibilityLabel: rewriteAccessibilityLabel,
                 isEnabled: isMagicEnabled
             ) {
@@ -1357,6 +1397,13 @@ struct TranscriptDetailView: View {
     ///     downloading the weights to seeding prompts.
     private func presentRewritePicker() {
         guard isMagicEnabled else { return }
+        // Engine = Apple Intelligence → teach the free system Writing Tools path
+        // (the guide) instead of Jot's prompt picker / model download. Works
+        // regardless of Qwen status or saved prompts.
+        if RewriteMode.current == .appleIntelligence {
+            showAIGuide = true
+            return
+        }
         if savedPrompts.isEmpty {
             showAISettings = true
             return

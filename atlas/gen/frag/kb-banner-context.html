@@ -1,0 +1,39 @@
+<!-- PROPOSED — the new status banner shown IN the real keyboard, in the same top slot the red bar
+     fires in today. Success case (the most-wrong-today: a success shown as a red error). -->
+<div style="height:250px"></div>
+
+<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;margin:0 -6px;padding:10px 12px 16px;position:relative">
+
+  <!-- NEW banner: success, liquid glass, sits in the keyboard's top slot -->
+  <div style="display:flex;align-items:center;gap:9px;padding:10px 13px;border-radius:12px;background:rgba(52,199,89,0.16);border:0.5px solid rgba(52,199,89,0.42);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:0 4px 14px rgba(0,0,0,0.10);margin-bottom:10px">
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;flex:none"><circle cx="12" cy="12" r="10" fill="#34C759"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span style="color:#1B8E3E;font-weight:600;font-size:13.5px">Added 'Shomagdha' to your dictionary</span>
+  </div>
+
+  <!-- recents strip -->
+  <div style="display:flex;gap:8px;overflow:hidden;margin-bottom:12px">
+    <div class="jot-card" style="flex:none;width:60%;padding:9px 12px;font-size:12.5px;color:var(--jot-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Any bugs. It has the base stuff, basic…</div>
+    <div class="jot-card" style="flex:none;width:42%;padding:9px 12px;font-size:12.5px;color:var(--jot-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Let's work on the alert…</div>
+  </div>
+
+  <!-- control row -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <span style="width:54px;height:54px;border-radius:11px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-ink)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
+    </span>
+    <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+      <span style="color:#fff;font-size:18px;font-weight:600">Jot down</span>
+    </div>
+    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.34);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><path d="M21 6H9L3 12l6 6h12a1 1 0 001-1V7a1 1 0 00-1-1z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>
+    </span>
+  </div>
+
+  <!-- system globe row -->
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:0 10px">
+    <svg viewBox="0 0 24 24" style="width:27px;height:27px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:27px;height:27px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+
+</div>

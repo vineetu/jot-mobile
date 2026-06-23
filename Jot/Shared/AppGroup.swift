@@ -124,6 +124,12 @@ enum AppGroup {
         /// bind against when a second backend is added.
         static let aiRewriteProvider = "jot.ai.rewriteProvider"
 
+        /// Which rewrite ENGINE the user has chosen: Apple Intelligence (system
+        /// Writing Tools, no Jot prompts) vs Jot's AI (Qwen + saved prompts).
+        /// Absent ⇒ default to Apple Intelligence when the device has it.
+        /// See `RewriteMode`. features.md §6.3 / §7.10.
+        static let rewriteMode = "jot.ai.rewriteMode"
+
         /// User-facing master toggle for the warm-hold feature. When `false`
         /// (default), Jot fully cools after each dictation. Users opt in via
         /// the wizard step (Phase 2) or Settings toggle (Phase 1). Duration

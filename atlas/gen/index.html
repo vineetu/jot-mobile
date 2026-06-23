@@ -27,9 +27,11 @@
   .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
 
   .stage{flex:1;min-width:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;position:relative}
-  .issuenote{position:absolute;top:0;left:0;right:0;z-index:30;display:none;background:#FBBF24;color:#3a2c00;font-size:12.5px;font-weight:600;padding:9px 14px;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+  .issuenote{position:absolute;top:0;left:0;right:0;z-index:30;display:none;background:#FBBF24;color:#3a2c00;box-shadow:0 2px 10px rgba(0,0,0,.25)}
   .issuenote.show{display:block}
   .issuenote.target{background:#2E9BFF;color:#fff}
+  .issuenote .notinner{font-size:12.5px;line-height:1.4;font-weight:600;padding:10px 42px 12px 14px;max-height:38vh;overflow-y:auto}
+  .issuenote .notx{position:absolute;top:7px;right:8px;width:24px;height:24px;border-radius:50%;border:0;background:rgba(0,0,0,.22);color:inherit;font-size:12px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2}
   .issuenote b{font-weight:800}
   .vside a .warn{margin-left:auto;color:#f5a623;font-size:13px}
   .vside a .tgt{margin-left:auto;color:#5bb4ff;font-size:13px}
@@ -111,8 +113,13 @@ async function load(id){
   scroll.scrollTop=0;
   const note=document.getElementById('issueNote'), sc=SCREENS[id];
   note.classList.remove('target');
-  if(sc&&sc.issue){ note.innerHTML='<b>⚠ Known issue:</b> '+sc.issue; note.classList.add('show'); }
-  else if(sc&&sc.target){ note.innerHTML='<b>✦ Design target:</b> '+sc.target; note.classList.add('show','target'); }
+  function showNote(label, body, isTarget){
+    note.innerHTML='<button class="notx" title="Dismiss">✕</button><div class="notinner"><b>'+label+'</b> '+body+'</div>';
+    note.classList.add('show'); if(isTarget) note.classList.add('target');
+    note.querySelector('.notx').onclick=()=>note.classList.remove('show');
+  }
+  if(sc&&sc.issue) showNote('⚠ Known issue:', sc.issue, false);
+  else if(sc&&sc.target) showNote('✦ Design target:', sc.target, true);
   else note.classList.remove('show');
 }
 function setTheme(t){document.documentElement.dataset.theme=t;

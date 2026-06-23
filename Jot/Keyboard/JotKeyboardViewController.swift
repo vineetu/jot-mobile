@@ -609,12 +609,17 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         })
     }
 
-    /// Central setter for `statusBanner`. With collapsed mode removed the
-    /// banner always renders in the (fixed-height) standard surface, so this
-    /// is now a plain store — kept as a seam so call sites don't reach into
-    /// the field directly.
+    /// Central setter for `statusBanner`. Pushes to the `@Observable`
+    /// `keyboardInputs` bag IMMEDIATELY so the banner renders the moment it's set —
+    /// not on the next interaction-driven `syncKeyboardInputs()`. Without this push,
+    /// mid-session banners that don't also call `renderRootView()` — notably
+    /// "Added '…' to your dictionary" from Add to Vocabulary — stayed invisible until
+    /// the user next touched the keyboard, because mutating the local store alone
+    /// doesn't notify SwiftUI (user-reported bug). All banner copy flows through here,
+    /// so every popup (success/warning/error/progress) now appears on time.
     private func setStatusBanner(_ message: String?) {
         statusBanner = message
+        keyboardInputs.statusBanner = message
     }
 
     private func renderRootViewIfActionAvailabilityChanged() {
@@ -717,6 +722,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         keyboardInputs.historyEntries = historyEntries
         keyboardInputs.canUndoLastInsertion = canUndoLastInsertion
         keyboardInputs.canRedoInsertion = canRedoInsertion
+        keyboardInputs.undoDepth = undoLedger.undoStackDepth
+        keyboardInputs.redoDepth = undoLedger.redoStackDepth
         keyboardInputs.lastPastedText = lastPastedText
         keyboardInputs.lastPastedAt = lastPastedAt
         keyboardInputs.isStopRequestPending = stopRequestPosted
@@ -2797,6 +2804,9 @@ private final class KeyboardUndoLedger {
 
     /// Diagnostic surface: lets the keyboard log the ledger growth.
     var undoStackDepth: Int { undoStack.count }
+
+    /// How many redo steps are queued — drives the Redo tile's count badge.
+    var redoStackDepth: Int { redoStack.count }
 
     func recordInsertion(_ text: String) {
         guard !text.isEmpty else { return }

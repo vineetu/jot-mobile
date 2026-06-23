@@ -66,6 +66,13 @@ struct RewritePickerSheet: View {
     /// and route to `AIRewriteSettingsView`.
     let onNewPrompt: () -> Void
 
+    /// Fires when the user taps the "Translate" row. The sheet dismisses itself
+    /// first (mirroring `onPick`); the host presents the ephemeral Translate
+    /// sheet (features.md §3.9) on the picker's dismissal so two sheets never
+    /// race. NOT a `SavedPrompt` and NOT an LLM rewrite — it routes to Apple's
+    /// on-device Translation, not `LLMClient.rewrite`.
+    let onTranslate: () -> Void
+
     @Environment(\.dismiss) private var dismiss
 
     // MARK: Voice prompt state
@@ -178,6 +185,7 @@ struct RewritePickerSheet: View {
                     ForEach(prompts.dropFirst()) { prompt in
                         promptRow(prompt)
                     }
+                    translateRow
                 }
             }
             .scrollIndicators(.automatic)
@@ -339,6 +347,58 @@ struct RewritePickerSheet: View {
         .opacity(busy ? 0.45 : 1)
         .accessibilityLabel("Voice prompt. Say what to change.")
         .accessibilityHint("Starts recording immediately")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    // MARK: - Translate row
+
+    /// Dedicated "Translate" row — NOT a `SavedPrompt` and NOT an LLM rewrite.
+    /// Tapping it dismisses the picker and asks the host to present the ephemeral
+    /// Translate sheet (features.md §3.9), which runs Apple's on-device
+    /// Translation. Placed last, after the saved prompts.
+    private var translateRow: some View {
+        Button {
+            onTranslate()
+            dismiss()
+        } label: {
+            HStack(alignment: .center, spacing: 14) {
+                IconBox(
+                    symbol: "globe",
+                    tint: JotDesign.JotSemanticIcon.vocabulary,
+                    size: 44
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Translate")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.jotInk)
+                        .lineLimit(1)
+                    Text("To French, Spanish, and more.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.jotMute)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.jotMuteWeak)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .background(
+                RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
+                    .strokeBorder(Self.rowHairline, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Translate. To French, Spanish, and more.")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -819,7 +879,8 @@ extension Color {
                 prompts: [SavedPrompt.defaultArticulate],
                 onPick: { _ in },
                 onVoicePrompt: { _ in },
-                onNewPrompt: {}
+                onNewPrompt: {},
+                onTranslate: {}
             )
             .environment(RecordingService.shared)
             .environment(StreamingPartial())

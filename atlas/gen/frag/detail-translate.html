@@ -1,0 +1,54 @@
+<!-- PROPOSED (not built) — Translate sheet, option B: globe in the transcript action bar opens
+     this ephemeral sheet. Apple Translation engine (already wired), quick language chips, result +
+     Copy/Share, nothing saved. Design target — the app should be built to match this. -->
+
+<!-- dimmed transcript detail peeking behind the sheet -->
+<div style="opacity:.5">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <span class="jot-donebtn" style="padding:7px 11px">‹</span>
+    <div class="jot-row-sub">2 hours ago&nbsp;&nbsp;&nbsp;22 words&nbsp;&nbsp;&nbsp;0:09</div>
+  </div>
+  <div class="jot-card" style="padding:16px;font-size:15px;line-height:1.5;color:var(--jot-ink)">
+    Let's meet tomorrow at 3 to go over the new designs and lock the launch date.
+  </div>
+</div>
+
+<!-- the sheet -->
+<div class="jot-card" style="border-radius:24px 24px 0 0;margin:18px -18px -34px;padding:10px 18px 40px;display:flex;flex-direction:column">
+  <div style="width:36px;height:5px;border-radius:3px;background:var(--jot-ink-cap);opacity:.45;margin:0 auto 14px"></div>
+
+  <div style="display:flex;align-items:center;margin-bottom:18px">
+    <span style="font-size:22px;color:var(--jot-ink);width:40px;line-height:1">✕</span>
+    <div style="flex:1;text-align:center;font-weight:700;font-size:18px;color:var(--jot-ink);margin-left:-40px">Translate</div>
+  </div>
+
+  <div class="jot-section" style="margin:0 0 10px">Translate to</div>
+  <!-- language chips (horizontal) -->
+  <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:18px">
+    <span style="flex:none;padding:8px 15px;border-radius:999px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);font-size:14px;color:var(--jot-ink)">Spanish</span>
+    <span style="flex:none;padding:8px 16px;border-radius:999px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));color:#fff;font-size:14px;font-weight:600;box-shadow:0 0 14px rgba(26,140,255,0.3)">French</span>
+    <span style="flex:none;padding:8px 15px;border-radius:999px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);font-size:14px;color:var(--jot-ink)">German</span>
+    <span style="flex:none;padding:8px 15px;border-radius:999px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);font-size:14px;color:var(--jot-ink)">Italian</span>
+    <span style="flex:none;padding:8px 15px;border-radius:999px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);font-size:14px;color:var(--jot-ink)">中文</span>
+    <span style="flex:none;padding:8px 14px;border-radius:999px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);font-size:14px;color:var(--jot-accent)">More…</span>
+  </div>
+
+  <!-- translated result -->
+  <div class="jot-card" style="padding:16px;margin-bottom:18px">
+    <div style="font-family:ui-serif,'New York',Georgia,serif;font-style:italic;font-size:19px;line-height:1.5;color:var(--jot-ink)">Retrouvons-nous demain à 15 h pour passer en revue les nouvelles maquettes et fixer la date de lancement.</div>
+  </div>
+
+  <!-- actions -->
+  <div style="display:flex;gap:12px;margin-bottom:16px">
+    <div style="flex:1;height:50px;border-radius:14px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:8px;color:#fff;font-size:16px;font-weight:600;box-shadow:0 0 18px rgba(26,140,255,0.3)">
+      <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M5.5 15.5h-.5A1.5 1.5 0 013.5 14V5A1.5 1.5 0 015 3.5h9A1.5 1.5 0 0115.5 5v.5"/></svg>
+      Copy
+    </div>
+    <div style="flex:1;height:50px;border-radius:14px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center;gap:8px;color:var(--jot-ink);font-size:16px;font-weight:600">
+      <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M12 16V4M8 8l4-4 4 4M5 14v5a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>
+      Share
+    </div>
+  </div>
+
+  <div class="jot-caption" style="text-align:center;margin:0">Translated on your iPhone — your text never leaves the device.</div>
+</div>

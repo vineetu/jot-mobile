@@ -1,0 +1,42 @@
+<!-- PROPOSED — keyboard status-banner redesign. Today: one saturated red bar + stop-sign icon for
+     everything (even success). Proposed: liquid-glass banner with a severity tint + icon + ink,
+     matching the app's StatusPill. Color now means something. -->
+
+<div class="jot-display" style="font-size:30px;margin:4px 0 4px">Status banner</div>
+<div class="jot-caption" style="margin:0 0 18px">Color should carry meaning — not blare red at every message.</div>
+
+<div class="jot-section">Today — jarring</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 15px;border-radius:11px;background:#FF3B30;margin-bottom:6px">
+  <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:#fff"><path d="M12 2l10 18H2zM11 9h2v6h-2zm0 8h2v2h-2z"/></svg>
+  <span style="color:#fff;font-weight:700;font-size:14px">Added 'Shomagdha' to your dictionary</span>
+</div>
+<div class="jot-caption" style="margin:6px 0 0">A success message wearing a red error stop-sign.</div>
+
+<div class="jot-section">Proposed — liquid glass, by meaning</div>
+
+<!-- success -->
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(52,199,89,0.15);border:0.5px solid rgba(52,199,89,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#34C759"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <span style="color:#1B8E3E;font-weight:600;font-size:14px">Added 'Shomagdha' to your dictionary</span>
+</div>
+
+<!-- warning -->
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(255,159,48,0.16);border:0.5px solid rgba(255,159,48,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#FF9F30"/><path d="M12 7v6M12 16v.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+  <span style="color:#B87314;font-weight:600;font-size:14px">'okay' is a common word — not added</span>
+</div>
+
+<!-- error (with action) -->
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(224,23,59,0.13);border:0.5px solid rgba(224,23,59,0.38);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#E0173B"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+  <span style="color:#C01433;font-weight:600;font-size:13.5px;flex:1">Couldn't paste — saved to clipboard</span>
+  <span style="color:#E0173B;font-weight:700;font-size:13.5px;flex:none">Paste</span>
+</div>
+
+<!-- progress -->
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(26,140,255,0.14);border:0.5px solid rgba(26,140,255,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none;fill:none;stroke:#1A8CFF;stroke-width:2.2;stroke-linecap:round"><path d="M12 4a8 8 0 108 8" /></svg>
+  <span style="color:#1A6FD0;font-weight:600;font-size:14px">Rewriting…</span>
+</div>
+
+<div class="jot-caption" style="margin-top:16px">Same liquid glass as your cards · a leading severity icon · tinted ink — calm, and the color tells you what happened.</div>

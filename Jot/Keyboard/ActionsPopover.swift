@@ -1,42 +1,26 @@
 import SwiftUI
+import UIKit
 
-/// 220pt-wide glass-heavy popover anchored above the bottom-right
-/// Actions button (Mockup 06 / plan §4.5).
+/// The keyboard's ••• Actions pane (features.md §5.6). Lives in the SHORT top region
+/// (~130pt) in place of the recents strip (see `KeyboardView.actionsPanel`) — so it
+/// must FIT without scrolling. A 4×2 tile grid that fills the pane:
+///   Row 1 (feature, gradient icons): Add to Vocabulary · AI Rewrite · Translate · Close
+///   Row 2 (utility, monochrome):     Copy · Paste · Undo · Redo
 ///
-/// Rows (in order):
-///   - Paste                — `insertText(UIPasteboard.general.string)`
-///   - Copy                 — copies the host app's currently-selected
-///                            text to the system clipboard via
-///                            `UITextDocumentProxy.selectedText`. The
-///                            caller composes the enabled flag from
-///                            `hasFullAccess && hasSelection` and passes
-///                            it as `hasSelection`.
-///   - Undo last insertion  — controller's undo ledger
-///   - Redo last insertion  — controller's redo ledger
-///   - Move up              — shifts the cursor backward by approximately
-///                            one host-visible window (~256-1000 chars,
-///                            host-dependent). Multiple taps accumulate.
-///                            Does NOT require Full Access. The internal
-///                            implementation attempts to reach the start
-///                            via a bounded loop but most hosts buffer
-///                            the caret-update and short-circuit after
-///                            one window; this is the honest copy.
-///   - Move down            — shifts the cursor forward by approximately
-///                            one host-visible window. Same caveat as
-///                            Move up. Does NOT require Full Access.
+/// Undo/Redo carry a count badge (`undoDepth`/`redoDepth`) so the user can see how many
+/// steps remain each way. AI Rewrite / Translate are GUIDES (no engine in the keyboard):
+/// they teach the system Writing Tools / Translate, which iOS exposes in the selection
+/// menu. The Writing Tools step shows Apple's own glyph rather than the words.
 ///
-/// NO "Clear field" row (plan §13 risk 9 — unreliable in keyboard
-/// extensions).
-///
-/// Position + animation are hand-rolled (no `UIPopoverPresentationController`
-/// — that doesn't play nicely in keyboard extensions). The popover is
-/// rendered as a SwiftUI overlay at the bottom-right of the keyboard
-/// surface with a `.scale + .opacity` transition.
+/// The init signature keeps Paste/Copy/Undo/Redo callbacks (no longer dormant) so the
+/// controller wiring doesn't change.
 struct ActionsPopover: View {
     let hasPasteboardContent: Bool
     let hasSelection: Bool
     let canUndo: Bool
     let canRedo: Bool
+    let undoDepth: Int
+    let redoDepth: Int
 
     let onPaste: () -> Void
     let onCopy: () -> Void
@@ -49,105 +33,230 @@ struct ActionsPopover: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// 220pt fixed width per Mockup 06.
-    private static let popoverWidth: CGFloat = 220
+    private enum Pane { case grid, aiRewrite, translate }
+    @State private var pane: Pane = .grid
+
+    // Icon-tile gradients (top-leading → bottom-trailing).
+    private static let vocabColors = [Color(red: 0x1F/255, green: 0xCE/255, blue: 0xD1/255),
+                                      Color(red: 0x19/255, green: 0xA9/255, blue: 0xAB/255)]
+    private static let aiColors = [Color(red: 0xFF/255, green: 0x5E/255, blue: 0x9A/255),
+                                   Color(red: 0xA3/255, green: 0x5B/255, blue: 0xFF/255),
+                                   Color(red: 0x3B/255, green: 0x9B/255, blue: 0xFF/255)]
+    private static let translateColors = [Color(red: 0x1A/255, green: 0x8C/255, blue: 0xFF/255),
+                                          Color(red: 0x15/255, green: 0x73/255, blue: 0xD1/255)]
+
+    /// Apple's Writing Tools / Apple Intelligence menu glyph. Falls back to `sparkles`
+    /// on any device that lacks the symbol so it can never render blank.
+    private static let writingToolsGlyph: String =
+        UIImage(systemName: "apple.intelligence") != nil ? "apple.intelligence" : "sparkles"
 
     var body: some View {
-        VStack(spacing: 0) {
-            row(
-                title: "Paste",
-                systemImage: "doc.on.clipboard",
-                enabled: hasPasteboardContent,
-                action: handle(onPaste)
-            )
-            divider
-            row(
-                title: "Copy",
-                systemImage: "doc.on.doc",
-                enabled: hasSelection,
-                action: handle(onCopy)
-            )
-            divider
-            row(
-                title: "Add to Vocabulary",
-                systemImage: "character.book.closed",
-                enabled: hasSelection,
-                action: handle(onAddToVocabulary)
-            )
-            divider
-            row(
-                title: "Undo last insertion",
-                systemImage: "arrow.uturn.backward",
-                enabled: canUndo,
-                action: handle(onUndo)
-            )
-            divider
-            row(
-                title: "Redo last insertion",
-                systemImage: "arrow.uturn.forward",
-                enabled: canRedo,
-                action: handle(onRedo)
-            )
-            // Move up / Move down removed for now (user request) — the
-            // `onJumpToStart` / `onJumpToEnd` plumbing is kept dormant so the two
-            // rows can be re-added later without re-wiring the controller.
+        Group {
+            switch pane {
+            case .grid:       grid
+            case .aiRewrite:  aiRewriteGuide
+            case .translate:  translateGuide
+            }
         }
-        .frame(width: Self.popoverWidth)
-        .modifier(JotDesign.Surface.heavy.modifier(cornerRadius: 16))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Actions menu")
+        .accessibilityLabel("Actions")
     }
 
-    // MARK: - Row
+    // MARK: - Grid (4×2 tiles that FILL the pane)
 
-    private func row(
-        title: String,
-        systemImage: String,
+    private var grid: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 7) {
+                denseTile("Vocab", "character.book.closed", colors: Self.vocabColors, enabled: hasSelection) {
+                    onAddToVocabulary(); onDismiss()
+                }
+                denseTile("Rewrite", "sparkles", colors: Self.aiColors, enabled: true) { pane = .aiRewrite }
+                denseTile("Translate", "globe", colors: Self.translateColors, enabled: true) { pane = .translate }
+                denseTile("Close", "xmark", colors: nil, enabled: true) { onDismiss() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 7) {
+                denseTile("Copy", "doc.on.doc", colors: nil, enabled: hasSelection) { onCopy(); onDismiss() }
+                denseTile("Paste", "doc.on.clipboard", colors: nil, enabled: hasPasteboardContent) { onPaste(); onDismiss() }
+                // Undo / Redo stay open so repeated taps work; badge shows steps remaining.
+                denseTile("Undo", "arrow.counterclockwise", colors: nil, enabled: canUndo, badge: undoDepth) { onUndo() }
+                denseTile("Redo", "arrow.clockwise", colors: nil, enabled: canRedo, badge: redoDepth) { onRedo() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// One compact grid tile. `colors != nil` → a gradient icon square (feature
+    /// actions); `colors == nil` → a monochrome glyph (utility actions). `badge > 0`
+    /// draws a count chip on the icon (Undo/Redo stack depth).
+    private func denseTile(
+        _ title: String,
+        _ systemImage: String,
+        colors: [Color]?,
         enabled: Bool,
+        badge: Int = 0,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(enabled ? Color.jotInk : Color.jotMuteWeak)
-                    .frame(width: 22, alignment: .center)
-
+            VStack(spacing: 6) {
+                ZStack(alignment: .topTrailing) {
+                    // Every icon shares the same 32pt rounded footprint so glyph-over-label
+                    // is identical across all tiles — gradient square for features, a subtle
+                    // neutral square for utilities.
+                    Image(systemName: systemImage)
+                        .font(.system(size: 16, weight: .semibold))
+                        // Enabled = full ink (readable); disabled = the muted "washed" tone (still
+                        // visible, just clearly off); white-on-gradient stays full.
+                        .foregroundStyle(colors != nil ? Color.white : (enabled ? Color.jotInk : Color.jotMute))
+                        .frame(width: 32, height: 32)
+                        .background(iconBackground(colors: colors, enabled: enabled))
+                    if badge > 0 {
+                        Text("\(badge)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 15)
+                            .padding(.horizontal, 2)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.jotAccent))
+                            .offset(x: 7, y: -5)
+                    }
+                }
                 Text(title)
-                    .font(JotType.bodyChrome)
-                    .foregroundStyle(enabled ? Color.jotInk : Color.jotMuteWeak)
+                    // Medium weight (not semibold) so it's softer than before — but FULL ink when
+                    // enabled (not washed). The muted "washed" tone is reserved for disabled tiles.
+                    .font(.system(size: 10.5, weight: .medium))
                     .lineLimit(1)
-
-                Spacer(minLength: 0)
+                    .minimumScaleFactor(0.8)
+                    .foregroundStyle(enabled ? Color.jotInk : Color.jotMute)
             }
-            .padding(.horizontal, 14)
-            // Compact rows so the 4-row popover fits the top region of the
-            // 200pt keyboard ABOVE the control row (see KeyboardView — the
-            // popover replaces the recents strip and never overlays the
-            // dictate/controls row).
-            .frame(minHeight: 38)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.vertical, 4)
+            .background(glassCard(cornerRadius: 13))
+            .opacity(enabled ? 1 : 0.85)
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityLabel(title)
-        .accessibilityHint(enabled ? "Performs \(title.lowercased())" : "\(title) is unavailable")
+        .accessibilityLabel(badge > 0 ? "\(title), \(badge) available" : title)
         .accessibilityAddTraits(.isButton)
     }
 
-    /// Wraps an action with auto-dismiss so the popover closes immediately
-    /// after a tap (matches Mockup 06's transient menu behavior).
-    private func handle(_ action: @escaping () -> Void) -> () -> Void {
-        return {
-            action()
-            onDismiss()
+    // MARK: - Guides (compact — fit the pane, no scroll)
+
+    private var aiRewriteGuide: some View {
+        guideScaffold(
+            title: "Rewrite with Apple Intelligence",
+            steps: [
+                Text("**Select** your text"),
+                Text("Tap ")
+                    + Text(Image(systemName: Self.writingToolsGlyph)).foregroundColor(Color.jotAccent)
+                    + Text(" in the menu"),
+                Text("Pick **Rewrite**, **Concise**, or **Proofread**"),
+            ]
+        )
+    }
+
+    private var translateGuide: some View {
+        guideScaffold(
+            title: "Translate, built into iPhone",
+            steps: [
+                Text("**Select** your text"),
+                Text("Tap **Translate** in the menu"),
+                Text("Pick a language — it replaces it"),
+            ]
+        )
+    }
+
+    private func guideScaffold(title: String, steps: [Text]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Button { pane = .grid } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.jotInk)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.jotKeyboardKeyFill))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back to actions")
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold, design: .serif))
+                    .foregroundStyle(Color.jotInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 1)
+
+            ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
+                HStack(alignment: .center, spacing: 9) {
+                    Text("\(idx + 1)")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 19, height: 19)
+                        .background(Circle().fill(Color.jotAccent))
+                    step
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.jotInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(glassCard(cornerRadius: 18))
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
+    }
+
+    /// Rounded icon footprint shared by every tile: a colored gradient for feature
+    /// actions, a subtle neutral fill for utility actions — so all icons read at the
+    /// same size and centering above their label.
+    @ViewBuilder
+    private func iconBackground(colors: [Color]?, enabled: Bool) -> some View {
+        if let colors {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(LinearGradient(colors: enabled ? colors : [Color.jotMute, Color.jotMute],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+        } else {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.jotKeyboardKeyFill)
         }
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.jotMuteWeak.opacity(0.35))
-            .frame(height: 0.5)
-            .padding(.leading, 48)
+    // MARK: - Liquid Glass surface (same recipe as recents / vocab cards)
+
+    private func glassCard(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.jotKeyboardGlassFill1, Color.jotKeyboardGlassFill2],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+            // Glassy top-edge sheen (same as the vocab/recents cards).
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .inset(by: 0.5)
+                    .stroke(Color.jotKeyboardGlassHighlight, lineWidth: 0.5)
+                    .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
+            )
+            // Hairline border so each tile reads as glass and separates from the chrome.
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.jotKeyboardGlassHairline, lineWidth: 0.5)
+            )
+            .shadow(color: Color.black.opacity(0.06), radius: 5, x: 0, y: 3)
     }
 }

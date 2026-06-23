@@ -33,6 +33,8 @@ final class KeyboardViewInputs {
     var historyEntries: [TranscriptHistoryMirror.Entry] = []
     var canUndoLastInsertion: Bool = false
     var canRedoInsertion: Bool = false
+    var undoDepth: Int = 0
+    var redoDepth: Int = 0
     var lastPastedText: String? = nil
     var lastPastedAt: Date? = nil
     var isStopRequestPending: Bool = false
@@ -101,6 +103,8 @@ struct KeyboardRootHostView: View {
             historyEntries: inputs.historyEntries,
             canUndoLastInsertion: inputs.canUndoLastInsertion,
             canRedoInsertion: inputs.canRedoInsertion,
+            undoDepth: inputs.undoDepth,
+            redoDepth: inputs.redoDepth,
             lastPastedText: inputs.lastPastedText,
             lastPastedAt: inputs.lastPastedAt,
             isStopRequestPending: inputs.isStopRequestPending,

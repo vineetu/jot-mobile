@@ -1,37 +1,75 @@
+<!-- §3.5 Action Bar → tapping the "Rewrite" primary opens the prompts pane (RewritePickerSheet).
+     Shown here as the real "Rewrite tapped" state: transcript + action bar behind, prompts pane up. -->
 <div style="position:absolute;inset:0;display:flex;flex-direction:column">
-<div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;margin-top:8px">‹</div>
 
-<div style="display:flex;align-items:center;gap:10px;margin:18px 2px 12px;font-size:13px;color:var(--jot-ink-cap)">
-  <span>2 hours ago</span>
-  <span>·</span>
-  <span>3764 words</span>
-  <span>·</span>
-  <span>22:22</span>
-</div>
-
-<div class="jot-card" style="padding:18px 18px 20px">
-  <div style="font-size:16px;line-height:1.5;color:var(--jot-ink)">Any bugs. It has the base stuff. Right. Basic stuff. So it's actually very cool. I think once you get like an Apple is still reviewing it, maybe today or tomorrow when you see it, you should use it. Yeah. It's fantastic, actually. It's the whole UI UX for both light, it's beautiful and it's working.</div>
-</div>
-
-<div class="jot-caption" style="text-align:center;margin-top:16px">Delete · Edit · Articulate (rewrite) · Copy</div>
-
-<div style="flex:1"></div>
-
-<!-- Action bar — Copy just tapped: icon swapped to a checkmark for ~1.3s -->
-<div class="jot-card" style="position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:18px;padding:12px 18px;border-radius:999px">
-  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
-    <svg viewBox="0 0 24 24"><path d="M6 7h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2zM9 7V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7h16" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round"/></svg>
-  </span>
-  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
-    <svg viewBox="0 0 24 24"><path d="M16 3l5 5L8 21H3v-5zM13 6l5 5" fill="none" stroke="var(--jot-ink-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-  </span>
-  <div class="jot-cta" style="flex:1;height:44px;font-size:16px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
-    <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#fff"><path d="M12 2l1.6 4.4L18 8l-4.4 1.6L12 14l-1.6-4.4L6 8l4.4-1.6zM18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>
-    Articulate
+  <!-- transcript + action bar, dimmed behind the rising pane -->
+  <div style="opacity:.4">
+    <div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;margin-top:8px">‹</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:18px 2px 12px;font-size:13px;color:var(--jot-ink-cap)">
+      <span>2 hours ago</span><span>·</span><span>22 words</span><span>·</span><span>0:09</span>
+    </div>
+    <div class="jot-card" style="padding:16px;font-size:15px;line-height:1.5;color:var(--jot-ink)">
+      Let's meet tomorrow at 3 to go over the new designs and lock the launch date.
+    </div>
+    <!-- the action bar (Rewrite highlighted — it was just tapped) -->
+    <div class="jot-card" style="display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:999px;margin-top:14px">
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:22px;height:22px"><path d="M6 7h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2zM9 7V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7h16" fill="none" stroke="var(--jot-record)" stroke-width="1.7"/></svg>
+      </span>
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:21px;height:21px"><path d="M16 3l5 5L8 21H3v-5zM13 6l5 5" fill="none" stroke="var(--jot-ink-2)" stroke-width="1.7"/></svg>
+      </span>
+      <div class="jot-cta" style="flex:1;height:42px;font-size:15px">
+        <svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:#fff"><path d="M12 2l1.6 4.4L18 8l-4.4 1.6L12 14l-1.6-4.4L6 8l4.4-1.6z"/></svg>Rewrite
+      </div>
+      <span style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" style="width:21px;height:21px"><rect x="8.5" y="8.5" width="11" height="11" rx="2" fill="none" stroke="var(--jot-ink)" stroke-width="1.7"/><path d="M5.5 15.5h-.5A1.5 1.5 0 013.5 14V5A1.5 1.5 0 015 3.5h9A1.5 1.5 0 0115.5 5v.5" fill="none" stroke="var(--jot-ink)" stroke-width="1.7"/></svg>
+      </span>
+    </div>
   </div>
-  <!-- Copy → checkmark confirmation -->
-  <span class="jot-tile" style="--c1:transparent;--c2:transparent;box-shadow:none;border:0;width:24px;height:24px">
-    <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" fill="none" stroke="var(--jot-success)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-  </span>
-</div>
+
+  <div style="flex:1"></div>
+
+  <!-- THE PROMPTS PANE (RewritePickerSheet) — what tapping Rewrite opens -->
+  <div class="jot-card" style="border-radius:24px 24px 0 0;margin:0 -18px -34px;padding:12px 16px 30px;position:relative;box-shadow:0 -8px 30px rgba(0,0,0,0.18)">
+    <div style="width:36px;height:5px;border-radius:3px;background:var(--jot-ink-cap);opacity:.45;margin:0 auto 10px"></div>
+    <div style="display:flex;align-items:center;margin-bottom:2px">
+      <span style="color:var(--jot-accent);font-size:15px">Cancel</span>
+      <div style="flex:1;text-align:center;font-weight:600;font-size:17px;color:var(--jot-ink);margin-left:-44px">Rewrite</div>
+      <div style="width:0"></div>
+    </div>
+    <div class="jot-row-sub" style="text-align:center;margin-bottom:12px">22 words · using Qwen 3.5 4B</div>
+
+    <div class="jot-card" style="margin-bottom:8px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#FF6B57;--c2:#D15847"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M16 4l4 4-2 2-4-4z"/><path d="M4 20l3-1 9-9-2-2-9 9z" fill="#fff"/></svg></span>
+      <div class="grow"><div class="jot-row-title">Cleanup</div><div class="jot-row-sub">Default · polish dictation, keep voice</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div class="jot-card" style="margin-bottom:8px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#FF6B57;--c2:#D15847"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg></span>
+      <div class="grow"><div class="jot-row-title">Voice prompt</div><div class="jot-row-sub">Say what to change.</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div class="jot-card" style="margin-bottom:8px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#1FCED1;--c2:#19A9AB"><svg viewBox="0 0 24 24"><path d="M4 5h16v10H8l-4 4z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>
+      <div class="grow"><div class="jot-row-title">AI prompt</div><div class="jot-row-sub">Default · structure for Claude or ChatGPT</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div class="jot-card" style="margin-bottom:8px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#7C5CFF;--c2:#664BD1"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="1.6"/><circle cx="6" cy="17" r="1.6"/><path d="M11 7h9M11 17h9" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></span>
+      <div class="grow"><div class="jot-row-title">Action Items</div><div class="jot-row-sub">Default · extract tasks and deadlines</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div class="jot-card" style="margin-bottom:8px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#34C759;--c2:#2BA349"><svg viewBox="0 0 24 24"><path d="M3 6h18v12H3z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M3.5 7l8.5 6 8.5-6" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>
+      <div class="grow"><div class="jot-row-title">Email</div><div class="jot-row-sub">Default · business email with subject</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div class="jot-card" style="margin-bottom:12px"><div class="jot-row" style="padding:11px 14px">
+      <span class="jot-tile" style="--c1:#1FCED1;--c2:#19A9AB"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="#fff" stroke-width="1.8"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18" fill="none" stroke="#fff" stroke-width="1.5"/></svg></span>
+      <div class="grow"><div class="jot-row-title">Translate</div><div class="jot-row-sub">To French, Spanish, and more.</div></div><span class="jot-chev">›</span>
+    </div></div>
+
+    <div style="text-align:center;color:var(--jot-record);font-size:15px;font-weight:500">+ New prompt</div>
+  </div>
 </div>

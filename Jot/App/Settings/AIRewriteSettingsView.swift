@@ -35,6 +35,9 @@ struct AIRewriteSettingsView: View {
     @State private var deletionTarget: SavedPrompt?
     @State private var showSwitchModelPicker: Bool = false
     @State private var showDeleteModelConfirm: Bool = false
+    /// Apple Intelligence (system Writing Tools) vs Jot's AI (Qwen + prompts).
+    /// Seeded from `RewriteMode.current` in `onAppear`.
+    @State private var rewriteMode: RewriteMode = .jotAI
 
     private enum SheetMode: Identifiable {
         case add
@@ -60,21 +63,31 @@ struct AIRewriteSettingsView: View {
                             .padding(.horizontal, 22)
                             .padding(.bottom, 18)
 
-                        modelStrip
+                        enginePicker
                             .padding(.horizontal, 14)
                             .padding(.bottom, 18)
 
-                        promptsHeader
-                            .padding(.horizontal, 22)
-                            .padding(.bottom, 8)
+                        if rewriteMode == .jotAI {
+                            modelStrip
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 18)
 
-                        promptsCard
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 12)
+                            promptsHeader
+                                .padding(.horizontal, 22)
+                                .padding(.bottom, 8)
 
-                        newPromptCTA
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 12)
+                            promptsCard
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 12)
+
+                            newPromptCTA
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 12)
+                        } else {
+                            appleIntelligenceExplainer
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 12)
+                        }
 
                         footerCaption
                             .padding(.horizontal, 22)
@@ -135,6 +148,7 @@ struct AIRewriteSettingsView: View {
             Text("This can't be undone.")
         }
         .onAppear {
+            rewriteMode = RewriteMode.current
             SavedPromptStore.seedIfNeeded()
             reloadPrompts()
             rebuildAdapter()
@@ -174,6 +188,113 @@ struct AIRewriteSettingsView: View {
                 .frame(maxWidth: 320, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Engine picker (Apple Intelligence vs Jot's AI)
+
+    private var enginePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("REWRITE ENGINE")
+                .font(.system(size: 11, weight: .bold))
+                .tracking(1.5)
+                .foregroundStyle(Color.jotPageInkCaption)
+                .padding(.horizontal, 8)
+
+            VStack(spacing: 0) {
+                engineRow(
+                    .appleIntelligence,
+                    title: "Apple Intelligence",
+                    subtitle: RewriteMode.appleIntelligenceAvailable
+                        ? "Built into your iPhone · no download"
+                        : "Not available on this device",
+                    enabled: RewriteMode.appleIntelligenceAvailable
+                )
+                Divider().padding(.leading, 16)
+                engineRow(
+                    .jotAI,
+                    title: "Jot's AI",
+                    subtitle: "Qwen 3.5 4B · 2.5 GB · adds your prompts",
+                    enabled: true
+                )
+            }
+            .background(
+                RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+        }
+    }
+
+    private func engineRow(
+        _ mode: RewriteMode,
+        title: String,
+        subtitle: String,
+        enabled: Bool
+    ) -> some View {
+        Button {
+            guard enabled else { return }
+            rewriteMode = mode
+            RewriteMode.set(mode)
+        } label: {
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.jotInk)
+                    Text(subtitle)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.jotMute)
+                }
+                Spacer()
+                if rewriteMode == mode {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.jotAccent)
+                }
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityLabel("\(title). \(subtitle)")
+        .accessibilityAddTraits(rewriteMode == mode ? [.isSelected, .isButton] : .isButton)
+    }
+
+    // MARK: - Apple Intelligence explainer (shown when that engine is selected)
+
+    private var appleIntelligenceExplainer: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            explainerStep(1, "**Select** the text in any transcript.")
+            explainerStep(2, "Tap **Writing Tools** → **Rewrite, Make Concise, Proofread**…")
+            explainerStep(3, "**Copy** the result — or tap **Edit** first to **save** it.")
+            Text("Your own saved prompts appear here when you switch to Jot's AI.")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.jotMute)
+                .padding(.top, 2)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: JotDesign.Spacing.cardRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+    }
+
+    private func explainerStep(_ n: Int, _ text: LocalizedStringKey) -> some View {
+        HStack(alignment: .top, spacing: 13) {
+            Text("\(n)")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.jotAccent))
+            Text(text)
+                .font(.system(size: 14.5))
+                .foregroundStyle(Color.jotInk)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 
     // MARK: - Compact model strip

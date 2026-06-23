@@ -154,7 +154,7 @@ struct HelpView: View {
                         tint: JotDesign.JotSemanticIcon.ai,
                         shaded: JotDesign.JotSemanticIcon.aiShaded,
                         title: "Polish what you said into what you meant",
-                        body: "Tap Articulate on any transcript — Cleanup, Action Items, Email, or a prompt you wrote. All on this iPhone.",
+                        body: "Tap Rewrite on any transcript — Cleanup, Translate, Action Items, Email, or a prompt you wrote. All on this iPhone.",
                         showDivider: true
                     )
                     featureRow(

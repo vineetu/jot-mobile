@@ -29,6 +29,8 @@ struct KeyboardView: View {
     let historyEntries: [TranscriptHistoryMirror.Entry]
     let canUndoLastInsertion: Bool
     let canRedoInsertion: Bool
+    let undoDepth: Int
+    let redoDepth: Int
 
     /// Source of truth for the just-now marker (plan §13 risk 7).
     /// Set by the keyboard controller at the moment a successful paste
@@ -280,24 +282,26 @@ struct KeyboardView: View {
     /// four rows stay reachable even though the 200pt keyboard's top region is
     /// short; it never grows down into the controls row.
     private func actionsPanel(metrics: KeyboardMetrics) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            ActionsPopover(
-                hasPasteboardContent: hasPasteboardContent,
-                hasSelection: hasSelection,
-                canUndo: canUndoLastInsertion,
-                canRedo: canRedoInsertion,
-                onPaste: onPaste,
-                onCopy: onCopy,
-                onAddToVocabulary: onAddToVocabulary,
-                onUndo: onUndoLastInsertion,
-                onRedo: onRedoInsertion,
-                onJumpToStart: onJumpToStart,
-                onJumpToEnd: onJumpToEnd,
-                onDismiss: { showActionsPopover = false }
-            )
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // No ScrollView — the pane is short (~130pt). The grid is three tiles that
+        // FILL this region, and the guides are compact enough to fit, so nothing
+        // ever scrolls or clips (user fix).
+        ActionsPopover(
+            hasPasteboardContent: hasPasteboardContent,
+            hasSelection: hasSelection,
+            canUndo: canUndoLastInsertion,
+            canRedo: canRedoInsertion,
+            undoDepth: undoDepth,
+            redoDepth: redoDepth,
+            onPaste: onPaste,
+            onCopy: onCopy,
+            onAddToVocabulary: onAddToVocabulary,
+            onUndo: onUndoLastInsertion,
+            onRedo: onRedoInsertion,
+            onJumpToStart: onJumpToStart,
+            onJumpToEnd: onJumpToEnd,
+            onDismiss: { showActionsPopover = false }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .transition(
             reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top))
         )
@@ -836,45 +840,113 @@ struct KeyboardView: View {
     @ViewBuilder
     private var statusBannerOverlay: some View {
         if let banner = statusBanner, !banner.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: bannerIsWarning(banner)
-                      ? "exclamationmark.triangle.fill"
-                      : "xmark.octagon.fill")
-                    .imageScale(.small)
-                Text(banner)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .minimumScaleFactor(0.8)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(bannerIsWarning(banner)
-                          ? Color.jotWarning
-                          : Color.jotRecord)
-            )
-            .transition(reduceMotion
-                        ? .opacity
-                        : .opacity.combined(with: .move(edge: .top)))
-            .accessibilityLabel(banner)
-            .accessibilityAddTraits(.isStaticText)
-            .task(id: banner) {
-                guard banner != "Rewriting…" else { return }
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                onStatusBannerRendered()
-            }
+            bannerBody(banner, bannerSeverity(banner))
         } else {
             EmptyView()
         }
     }
 
-    private func bannerIsWarning(_ message: String) -> Bool {
-        let lower = message.lowercased()
-        return lower.contains("timed") || lower.contains("timeout")
+    /// Option A — a calm liquid-glass status chip. The severity (derived from the
+    /// message) supplies a subtle tint, a leading icon, and the ink colour, so the
+    /// COLOUR carries the meaning instead of blaring red at every message — even
+    /// successes like "Added '…' to your dictionary".
+    private func bannerBody(_ banner: String, _ severity: BannerSeverity) -> some View {
+        HStack(spacing: 8) {
+            Group {
+                if severity == .progress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(severity.tint)
+                } else {
+                    Image(systemName: severity.iconName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(severity.tint)
+                }
+            }
+            .frame(width: 20)
+
+            Text(banner)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(severity.ink)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .minimumScaleFactor(0.8)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(severity.tint.opacity(0.16))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(severity.tint.opacity(0.40), lineWidth: 0.5)
+                )
+        )
+        .transition(reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .move(edge: .top)))
+        .accessibilityLabel(banner)
+        .accessibilityAddTraits(.isStaticText)
+        .task(id: banner) {
+            guard banner != "Rewriting…" else { return }
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            onStatusBannerRendered()
+        }
+    }
+
+    /// Classify a status message into a severity. The message set is small and fixed
+    /// (the keyboard's own `setStatusBanner` calls + the cross-process dictation
+    /// status), so substring matching is reliable; an unknown message defaults to a
+    /// neutral warning — never a false success, never a red alarm.
+    private func bannerSeverity(_ message: String) -> BannerSeverity {
+        let m = message.lowercased()
+        if m.contains("rewriting") { return .progress }
+        if m.contains("added") && m.contains("dictionary") { return .success }
+        if m.contains("couldn't") || m.contains("can't") || m.contains("cannot")
+            || m.contains("failed") || m.contains("error") || m.contains("no speech") {
+            return .error
+        }
+        return .warning
+    }
+
+    private enum BannerSeverity {
+        case success, warning, error, progress
+
+        /// Tint for the glass fill, hairline, and icon.
+        var tint: Color {
+            switch self {
+            case .success: return .jotSuccess
+            case .warning: return .jotWarning
+            case .error: return .jotRecord
+            case .progress: return .jotAccent
+            }
+        }
+
+        /// Readable ink for the message text on the tinted glass.
+        var ink: Color {
+            switch self {
+            case .success: return .jotSuccessInk
+            case .warning: return .jotWarningInk
+            case .error: return .jotRecord
+            case .progress: return .jotAccent
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .success: return "checkmark.circle.fill"
+            case .warning: return "exclamationmark.circle.fill"
+            case .error: return "xmark.circle.fill"
+            case .progress: return "arrow.triangle.2.circlepath"
+            }
+        }
     }
 
     // MARK: - Key rows

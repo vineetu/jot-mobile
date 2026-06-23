@@ -1,0 +1,67 @@
+<!-- PROPOSED — denser ••• Actions pane: 4×2 = 8 smaller tiles so edit actions return.
+     Row 1 (features, colored): Add to Vocabulary · AI Rewrite · Translate · Close.
+     Row 2 (edit, monochrome): Copy · Paste · Undo · Redo. Still fills the short pane, no scroll. -->
+<div style="height:300px"></div>
+
+<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;margin:0 -6px;padding:12px 12px 16px;position:relative">
+
+  <!-- 4 x 2 grid -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px">
+
+    <!-- row 1: features + close -->
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px;opacity:.55">
+      <span class="jot-tile" style="--c1:#1FCED1;--c2:#19A9AB;width:34px;height:34px"><svg viewBox="0 0 24 24" style="width:17px;height:17px"><rect x="4" y="3.5" width="16" height="17" rx="2" fill="none" stroke="#fff" stroke-width="1.8"/><text x="12" y="15.5" font-size="10" font-weight="700" text-anchor="middle" fill="#fff">A</text></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Vocab</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span class="jot-tile" style="width:34px;height:34px;background:linear-gradient(135deg,#FF5E9A,#A35BFF,#3B9BFF)"><svg viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M12 2l1.9 5.3L19 9l-5.1 1.7L12 16l-1.9-5.3L5 9l5.1-1.7z"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Rewrite</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span class="jot-tile" style="--c1:#1A8CFF;--c2:#1573D1;width:34px;height:34px"><svg viewBox="0 0 24 24" style="width:18px;height:18px"><circle cx="12" cy="12" r="9" fill="none" stroke="#fff" stroke-width="1.8"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18" fill="none" stroke="#fff" stroke-width="1.5"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Translate</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;stroke-linecap:round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Close</span>
+    </div>
+
+    <!-- row 2: edit actions (monochrome) -->
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:21px;height:21px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M5.5 15.5h-.5A1.5 1.5 0 013.5 14V5A1.5 1.5 0 015 3.5h9A1.5 1.5 0 0115.5 5v.5"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink)">Copy</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:21px;height:21px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><rect x="8" y="2.5" width="8" height="4" rx="1.2"/><path d="M9 4.5H6.5A1.5 1.5 0 005 6v13a1.5 1.5 0 001.5 1.5h11A1.5 1.5 0 0019 19V6a1.5 1.5 0 00-1.5-1.5H15"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink)">Paste</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:21px;height:21px;fill:none;stroke:var(--jot-ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink)">Undo</span>
+    </div>
+    <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
+      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:21px;height:21px;fill:none;stroke:var(--jot-ink);stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink)">Redo</span>
+    </div>
+  </div>
+
+  <!-- control row -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <span style="width:54px;height:54px;border-radius:11px;background:rgba(26,140,255,0.18);border:0.5px solid rgba(26,140,255,0.35);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-accent)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
+    </span>
+    <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+      <span style="color:#fff;font-size:18px;font-weight:600">Jot down</span>
+    </div>
+    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.34);display:flex;align-items:center;justify-content:center;flex:none">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><path d="M21 6H9L3 12l6 6h12a1 1 0 001-1V7a1 1 0 00-1-1z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>
+    </span>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:0 10px">
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+  </div>
+
+</div>
