@@ -1,0 +1,65 @@
+<!-- §3.7 + §8.8 PROPOSED: after a qualifying Replace All + Save, a gentle one-tap offer to
+     learn the term. Reuses the EXISTING transcript-pane add-to-vocabulary path
+     (TranscriptDetailView.confirmVocabAdd): adds the term, attaches the misheard form
+     "okay" as a sounds-like alias, and teaches the correction store (net +1) so the next
+     dictation self-corrects. Gated: 1-2 word term, 2+ matches replaced, not a common word.
+     Non-blocking — "Not now" dismisses; nothing is forced. -->
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+
+  <div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;margin-top:8px">‹</div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin:18px 2px 12px;font-size:13px;color:var(--jot-ink-cap)">
+    <span>2 hours ago</span><span>·</span><span>41 words</span><span>·</span><span>0:18</span>
+  </div>
+
+  <!-- Text now corrected; the just-changed words flash success-green briefly. -->
+  <div class="jot-card" style="padding:18px;font-size:16px;line-height:1.6;color:var(--jot-ink)">
+    Make sure the
+    <span style="background:rgba(52,199,89,0.18);border-radius:4px;padding:0 2px;color:var(--jot-success-ink)">Okta</span>
+    integration is set up before the demo. I'll ping the
+    <span style="background:rgba(52,199,89,0.18);border-radius:4px;padding:0 2px;color:var(--jot-success-ink)">Okta</span>
+    admin to provision the SSO app, and once
+    <span style="background:rgba(52,199,89,0.18);border-radius:4px;padding:0 2px;color:var(--jot-success-ink)">Okta</span>
+    is live we can route the whole team through it.
+  </div>
+
+  <div style="flex:1"></div>
+
+  <!-- THE GENTLE OFFER (floats above the action bar — not a blocking modal) -->
+  <div class="jot-card" style="position:absolute;left:0;right:0;bottom:84px;padding:14px 16px;border-radius:18px;box-shadow:0 -6px 24px rgba(0,0,0,0.12)">
+    <div style="display:flex;align-items:flex-start;gap:12px">
+      <span class="jot-tile" style="--c1:#1FCED1;--c2:#19A9AB;width:34px;height:34px;flex:none"><svg viewBox="0 0 24 24"><path d="M5 4h11a2 2 0 012 2v14H7a2 2 0 00-2 2z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M5 18h13" fill="none" stroke="#fff" stroke-width="2"/></svg></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:15.5px;font-weight:600;color:var(--jot-ink)">Add “Okta” to your vocabulary?</div>
+        <div style="font-size:13px;color:var(--jot-ink-2);line-height:1.4;margin-top:2px">Jot heard it as “okay” 3 times. Learn it so the next dictation gets it right by itself.</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px">
+      <span style="font-size:15px;font-weight:500;color:var(--jot-ink-2);padding:0 6px">Not now</span>
+      <div class="jot-cta" style="width:auto;padding:0 22px;height:38px;font-size:15px;box-shadow:none">
+        <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#fff"><path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>
+        Add
+      </div>
+    </div>
+  </div>
+
+  <!-- Read-mode action bar: Delete · Edit · ✦ Rewrite (sparkle circle) · 🌐 Translate · Copy
+       (matches detail-original — the giant Rewrite pill is gone). -->
+  <div class="jot-card" style="position:absolute;left:0;right:0;bottom:14px;display:flex;align-items:center;justify-content:space-around;padding:11px 22px;border-radius:999px">
+    <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:24px;height:24px"><path d="M6 7h12l-1 13a2 2 0 01-2 2H9a2 2 0 01-2-2zM9 7V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7h16" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round"/></svg>
+    </span>
+    <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:23px;height:23px"><path d="M16 3l5 5L8 21H3v-5zM13 6l5 5" fill="none" stroke="var(--jot-ink-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span style="width:44px;height:44px;border-radius:50%;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px rgba(26,140,255,0.4)">
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 2l1.6 4.4L18 8l-4.4 1.6L12 14l-1.6-4.4L6 8l4.4-1.6zM18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>
+    </span>
+    <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:25px;height:25px"><circle cx="12" cy="12" r="9" fill="none" stroke="var(--jot-ink)" stroke-width="1.7"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18" fill="none" stroke="var(--jot-ink)" stroke-width="1.5"/></svg>
+    </span>
+    <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" style="width:23px;height:23px"><path d="M9 9h9a2 2 0 012 2v9a2 2 0 01-2 2H9a2 2 0 01-2-2v-9a2 2 0 012-2zM5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none" stroke="var(--jot-ink)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+  </div>
+</div>

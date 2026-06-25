@@ -78,6 +78,7 @@ struct DiagnosticsView: View {
         }
     }
 
+
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Tap an entry for details. Copy and send to support when reporting a bug.")
@@ -277,6 +278,8 @@ struct DiagnosticsView: View {
         case .appUnresponsiveRecovery: return ("RECOVER", Color.jotWarning)
         case .vocabularyGate: return ("VOCAB", Color.jotAccent)
         case .tts: return ("TTS", Color.jotAccent)
+        case .recordingOutcome: return ("REC", Color.jotWarning)
+        case .modelLoad: return ("MODEL", Color.jotAccent)
         }
     }
 

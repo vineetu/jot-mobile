@@ -1,7 +1,7 @@
 {
   "app": "Jot",
   "generatedFrom": "Jot/features.md",
-  "note": "Join table between features.md sections and the visual mockup. Each screen lists the feature sections it demonstrates, its screenshot slot, and behavior/dimension annotations. captured:false => slot still needs a real screenshot. Dimensions come from JotDesign tokens (the real source of truth) \u2014 never hand-typed guesses.",
+  "note": "Join table between features.md sections and the visual mockup. Each screen lists the feature sections it demonstrates, its screenshot slot, and behavior/dimension annotations. captured:false => slot still needs a real screenshot. Dimensions come from JotDesign tokens (the real source of truth) — never hand-typed guesses.",
   "surfaces": [
     {
       "id": "1-home",
@@ -158,7 +158,7 @@
             "3.3"
           ],
           "image": "screens/ios/detail-original.png",
-          "captured": true
+          "captured": false
         },
         {
           "id": "detail-rewrite",
@@ -178,7 +178,7 @@
           ],
           "image": "screens/ios/detail-action-bar.png",
           "captured": false,
-          "target": "PROPOSED: the primary action is renamed **Articulate \u2192 Rewrite**. The bar = Delete \u00b7 Edit \u00b7 Rewrite \u00b7 Copy; tapping Rewrite opens the prompt picker (now incl. Translate)."
+          "target": "PROPOSED: the primary action is renamed **Articulate → Rewrite**. The bar = Delete · Edit · Rewrite · Copy; tapping Rewrite opens the prompt picker (now incl. Translate)."
         },
         {
           "id": "detail-rewrite-progress",
@@ -209,14 +209,35 @@
         },
         {
           "id": "detail-translate",
-          "title": "Translate (proposed)",
+          "title": "Translate",
           "sections": [
             "3.5",
             "3.9"
           ],
           "image": "screens/ios/detail-translate.png",
           "captured": false,
-          "target": "PROPOSED, not built. Entry: action bar **Rewrite** (renamed from Articulate) \u2192 the Rewrite picker has a **Translate** option \u2192 opens THIS ephemeral sheet: language chips / More\u2026 \u2192 instant on-device translation (Apple Translation, already wired) \u2192 Copy / Share, nothing saved. Approve this and the picker/action-bar mockups, then build."
+          "target": "PROPOSED, not built. Entry: action bar **Rewrite** (renamed from Articulate) → the Rewrite picker has a **Translate** option → opens THIS ephemeral sheet: language chips / More… → instant on-device translation (Apple Translation, already wired) → Copy / Share, nothing saved. Approve this and the picker/action-bar mockups, then build."
+        },
+        {
+          "id": "detail-find-replace",
+          "title": "Find & Replace (Next)",
+          "sections": [
+            "3.7"
+          ],
+          "image": "screens/ios/detail-find-replace.png",
+          "captured": false,
+          "behavior": "Edit-mode only. Find + replace fields, live match count, Replace All; whole-word + case-insensitive default. Operates on the tab being edited; changed text shows italic."
+        },
+        {
+          "id": "detail-vocab-offer",
+          "title": "Learn-it Offer (Next)",
+          "sections": [
+            "3.7",
+            "8.8"
+          ],
+          "image": "screens/ios/detail-vocab-offer.png",
+          "captured": false,
+          "behavior": "After a qualifying Replace All + Save, a gentle one-tap offer reuses the existing add-to-vocabulary path: adds term + 'sounds-like' alias + teaches the correction store so the next dictation self-corrects. Gated to term-like fixes (1-2 words, 2+ matches, not common). Non-blocking."
         }
       ]
     },
@@ -336,46 +357,25 @@
           "captured": false
         },
         {
-          "id": "kb-actions-popover",
-          "title": "Actions Popover",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-actions-popover.png",
-          "captured": false,
-          "issue": "The Actions popover renders INSIDE the keyboard pane (top-left) and pushes the Recents list DOWN out of view, instead of floating over it as a context menu \u2014 so you lose the recents while it\u2019s open.",
-          "bug": "keyboard-actions-popover-layout"
-        },
-        {
-          "id": "kb-actions-grid",
-          "title": "Actions grid (proposed fix)",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-actions-grid.png",
-          "captured": false,
-          "target": "PROPOSED FIX for the kb-actions-popover known issue. Tapping \u2022\u2022\u2022 fills the WHOLE keyboard pane with a GRID of actions (like the Vocabulary pane) instead of a cramped popover that pushes the recents off-screen. Tiles: Paste \u00b7 Copy \u00b7 Add to Vocabulary \u00b7 AI Rewrite (\u2192 the Apple Intelligence Writing Tools guide). Close with the X or by tapping \u2022\u2022\u2022 again."
-        },
-        {
           "id": "kb-actions-dense",
-          "title": "Actions grid \u2014 dense 8 (proposed)",
+          "title": "Actions Grid",
           "sections": [
             "5.6"
           ],
           "image": "screens/keyboard/kb-actions-dense.png",
           "captured": false,
-          "target": "Denser \u2022\u2022\u2022 grid: 4\u00d72 = 8 smaller tiles. Row 1 (colored features): Add to Vocabulary \u00b7 AI Rewrite \u00b7 Translate \u00b7 Close. Row 2 (monochrome edit): Copy \u00b7 Paste \u00b7 Undo \u00b7 Redo. Brings back the edit actions; still fills the short pane with no scroll."
+          "target": "Denser ••• grid: 4×2 = 8 smaller tiles. Row 1 (colored features): Add to Vocabulary · AI Rewrite · Translate · Close. Row 2 (monochrome edit): Copy · Paste · Undo · Redo. Brings back the edit actions; still fills the short pane with no scroll."
         },
         {
           "id": "kb-translate",
-          "title": "Keyboard Translate (proposed)",
+          "title": "Keyboard Translate",
           "sections": [
             "5.6",
             "3.9"
           ],
           "image": "screens/keyboard/kb-translate.png",
           "captured": false,
-          "target": "Keyboard \u2022\u2022\u2022 \u2192 Translate = a guide (like AI Rewrite): teaches the system Translate (select \u2192 Translate menu \u2192 replaces in place). Keyboard can't link the Translation framework, so no engine here."
+          "target": "Keyboard ••• → Translate = a guide (like AI Rewrite): teaches the system Translate (select → Translate menu → replaces in place). Keyboard can't link the Translation framework, so no engine here."
         },
         {
           "id": "kb-status-banner",
@@ -385,7 +385,7 @@
           ],
           "image": "screens/keyboard/kb-status-banner.png",
           "captured": false,
-          "issue": "Adding a word to Vocabulary shows the SUCCESS confirmation (\u201cAdded \u2018\u2026\u2019 to your dictionary\u201d) in the RED error banner with an \u2715 icon, floating over the recents pane \u2014 should be success/green. It also does not appear instantly: it only surfaces after a follow-up action (e.g. pressing Enter).",
+          "issue": "Adding a word to Vocabulary shows the SUCCESS confirmation (“Added ‘…’ to your dictionary”) in the RED error banner with an ✕ icon, floating over the recents pane — should be success/green. It also does not appear instantly: it only surfaces after a follow-up action (e.g. pressing Enter).",
           "bug": "keyboard-vocab-banner"
         },
         {
@@ -417,48 +417,8 @@
           "captured": true
         },
         {
-          "id": "kb-banner-system",
-          "title": "Status banner \u2014 severity system (proposed)",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-banner-system.png",
-          "captured": false,
-          "target": "Status-banner redesign. Today: one saturated red bar + stop-sign for every message (even successes like 'Added to dictionary'). Proposed: liquid-glass banner with 4 severities by meaning \u2014 success (green), warning (amber), error (soft red), progress (blue) \u2014 each a severity icon + tint + ink, matching the app's StatusPill. Needs code: banner carries a severity, mapped at each call site."
-        },
-        {
-          "id": "kb-banner-options",
-          "title": "Status banner \u2014 4 options (pick one)",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-banner-options.png",
-          "captured": false,
-          "target": "Four banner directions, same success message: A liquid glass (subtle), B accent edge (neutral + color marker), C soft fill (solid gentle), D bold fill (prominent, correct color). Pick a style; it applies the severity color per message (green/amber/red/blue)."
-        },
-        {
-          "id": "kb-banner-context",
-          "title": "Status banner \u2014 in the keyboard (proposed)",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-banner-context.png",
-          "captured": false,
-          "target": "The proposed banner shown in the real keyboard, in the same top slot the red bar fires today \u2014 success case (a success that today wears a red error stop-sign). Calm liquid-glass green instead of a saturated red bar."
-        },
-        {
-          "id": "kb-undo-redo-stack",
-          "title": "Undo/Redo count badges (proposed)",
-          "sections": [
-            "5.6"
-          ],
-          "image": "screens/keyboard/kb-undo-redo-stack.png",
-          "captured": false,
-          "target": "Count badge on the Undo/Redo glyphs showing stack depth (already a 20-deep stack in code). Each insert pushes; Undo pops one to redo, Redo pops it back; badges show how many steps remain each way so the user knows they can keep tapping."
-        },
-        {
           "id": "kb-rewrite-guide",
-          "title": "Rewrite guide \u2014 serif + glyph (proposed)",
+          "title": "Keyboard AI Rewrite Guide",
           "sections": [
             "5.6",
             "7.10"
@@ -558,7 +518,7 @@
           ],
           "image": "screens/ios/rewrite-prompt-picker.png",
           "captured": true,
-          "target": "PROPOSED tweaks (design target): (1) the action bar's primary is renamed **Articulate \u2192 Rewrite**, so this picker opens from a 'Rewrite' button; (2) a new **Translate** option is added here (\u2192 opens the Translate sheet, screen `detail-translate`). Cleaner layout overall is also the target."
+          "target": "PROPOSED tweaks (design target): (1) the action bar's primary is renamed **Articulate → Rewrite**, so this picker opens from a 'Rewrite' button; (2) a new **Translate** option is added here (→ opens the Translate sheet, screen `detail-translate`). Cleaner layout overall is also the target."
         },
         {
           "id": "rewrite-saved-prompts",
@@ -617,7 +577,7 @@
         },
         {
           "id": "rewrite-apple-intelligence",
-          "title": "Apple Intelligence guide (proposed)",
+          "title": "Apple Intelligence Guide",
           "sections": [
             "7.3",
             "7.10",
@@ -625,22 +585,22 @@
           ],
           "image": "screens/ios/rewrite-apple-intelligence.png",
           "captured": false,
-          "target": "PROPOSED, not built. When Jot's AI model (Qwen) isn't downloaded AND the device has Apple Intelligence, tapping Rewrite opens THIS guide instead of pushing the 2.5 GB download \u2014 it teaches the free system Writing Tools path (select text \u2192 \u2726 Writing Tools \u2192 Rewrite/Concise/Proofread \u2192 Copy, or Edit first to save). Qwen download is the secondary link. Apple-Intelligence-primary is my recommendation; flip if you'd rather show both equally."
+          "target": "PROPOSED, not built. When Jot's AI model (Qwen) isn't downloaded AND the device has Apple Intelligence, tapping Rewrite opens THIS guide instead of pushing the 2.5 GB download — it teaches the free system Writing Tools path (select text → ✦ Writing Tools → Rewrite/Concise/Proofread → Copy, or Edit first to save). Qwen download is the secondary link. Apple-Intelligence-primary is my recommendation; flip if you'd rather show both equally."
         },
         {
           "id": "ai-engine-apple",
-          "title": "AI engine \u2014 Apple Intelligence (proposed)",
+          "title": "AI Engine — Apple Intelligence",
           "sections": [
             "6.3",
             "7.3"
           ],
           "image": "screens/ios/ai-engine-apple.png",
           "captured": false,
-          "target": "PROPOSED. AI Rewrite settings gains an ENGINE choice: Apple Intelligence (default \u2014 no download, everyone has it) vs Jot's AI (Qwen). This is the Apple Intelligence state: no custom prompts (Writing Tools doesn't use them), an explainer instead. Switching here is also how you 'turn off' Qwen after downloading."
+          "target": "PROPOSED. AI Rewrite settings gains an ENGINE choice: Apple Intelligence (default — no download, everyone has it) vs Jot's AI (Qwen). This is the Apple Intelligence state: no custom prompts (Writing Tools doesn't use them), an explainer instead. Switching here is also how you 'turn off' Qwen after downloading."
         },
         {
           "id": "ai-engine-qwen",
-          "title": "AI engine \u2014 Jot's AI / Qwen (proposed)",
+          "title": "AI Engine — Jot's AI",
           "sections": [
             "6.3",
             "7.5",

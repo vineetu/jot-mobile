@@ -126,6 +126,10 @@ struct ContentView: View {
     @Environment(RecordingService.self) private var recordingService
     @Environment(KeyboardRewriteRouter.self) private var keyboardRewriteRouter
     @Environment(StreamingPartial.self) private var streamingPartial
+    /// App-owned navigation source of truth (Step 1 of the root-view
+    /// decouple). Owns the three modal sheets (Settings / Help / Ask) that
+    /// were previously loose `@State` Bools on this view.
+    @Environment(Router.self) private var router
 
     @Query(sort: \Transcript.createdAt, order: .reverse)
     private var transcripts: [Transcript]
@@ -139,8 +143,8 @@ struct ContentView: View {
     @State private var semanticSearch = SemanticSearchController()
 
     /// "Ask Jot" sheet — natural-language Q&A over transcript history
-    /// (Apple FM + MiniLM embeddings). See `docs/plans/ask-mode.md`.
-    @State private var showAskSheet = false
+    /// (Apple FM + MiniLM embeddings). Presentation now lives on the Router
+    /// (`router.showAskSheet`). See `docs/plans/ask-mode.md`.
     @State private var askController = AskController()
     /// Whether the Ask entry point (the sparkles pill) is shown. Gated on
     /// the on-board Qwen weights being *downloaded* (on disk) — not loaded
@@ -148,12 +152,11 @@ struct ContentView: View {
     /// on-device model. Re-evaluated on appear and whenever the Settings
     /// sheet (where the download happens) is dismissed.
     @State private var askAvailable = AskController.isAvailable
-    @State private var showSettings = false
-    /// Drives the modal Help sheet from the home header's "?" glass-circle
-    /// button. Help is also reachable via Settings → ABOUT → "Help & Support"
-    /// (nav-push); the sheet entry from home keeps the discovery cheap for
-    /// new users who haven't opened Settings yet.
-    @State private var showHelp = false
+    /// Settings + Help sheet presentation now lives on the Router
+    /// (`router.showSettings` / `router.showHelp`). Help is also reachable via
+    /// Settings → ABOUT → "Help & Support" (nav-push); the sheet entry from
+    /// home keeps the discovery cheap for new users who haven't opened
+    /// Settings yet.
     /// Latched by Settings' "Re-run setup wizard" row before dismissing.
     /// We defer firing `SettingsRerunTrigger.requestRerun()` until SwiftUI
     /// reports the sheet has actually torn down (via `.sheet(onDismiss:)`),
@@ -238,8 +241,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: JotDesign.Spacing.sectionGapV09) {
                         RecentsNavBar(
                             isSelectionMode: isSelectionMode,
-                            onSettings: { showSettings = true },
-                            onHelp: { showHelp = true },
+                            onSettings: { router.showSettings = true },
+                            onHelp: { router.showHelp = true },
                             onCancelSelection: exitSelectionMode
                         )
 
@@ -407,10 +410,10 @@ struct ContentView: View {
         .onChange(of: isWizardPresented) { _, wizardUp in
             updateDictateTapObserver(wizardPresented: wizardUp)
         }
-        .sheet(isPresented: $showSettings, onDismiss: handleSettingsDismissed) {
+        .sheet(isPresented: Bindable(router).showSettings, onDismiss: handleSettingsDismissed) {
             SettingsView(onRerunRequested: { pendingRerunAfterDismiss = true })
         }
-        .sheet(isPresented: $showHelp) {
+        .sheet(isPresented: Bindable(router).showHelp) {
             // Wrapped in a NavigationStack so the editorial title bar has
             // a stack to attach to and future detail pushes (e.g. troubleshooting
             // → settings deeplinks) have somewhere to land.
@@ -418,7 +421,7 @@ struct ContentView: View {
                 HelpView(isModal: true)
             }
         }
-        .sheet(isPresented: $showAskSheet) {
+        .sheet(isPresented: Bindable(router).showAskSheet) {
             // Ask-mode sheet — natural-language Q&A. Citation taps
             // dismiss this sheet and push into the same `navPath`
             // Recents uses, so Detail resolves through the existing
@@ -844,7 +847,7 @@ struct ContentView: View {
     /// stealing visual weight from search.
     private var askPill: some View {
         Button {
-            showAskSheet = true
+            router.showAskSheet = true
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 17, weight: .semibold))
@@ -1135,18 +1138,12 @@ struct ContentView: View {
     }
 
     private func delete(_ transcript: Transcript) {
-        modelContext.delete(transcript)
+        let id = transcript.id
         do {
-            try modelContext.save()
-            TranscriptHistoryMirror.refresh(from: modelContext)
-            // Notify the keyboard extension that the mirror has been
-            // rewritten so its RecentsStrip can drop the deleted row
-            // without waiting for the next presentation.
-            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
-            selectedTranscriptIDs.remove(transcript.id)
+            try TranscriptStore.delete(id: id)
+            selectedTranscriptIDs.remove(id)
             pendingDeletion = nil
         } catch {
-            modelContext.rollback()
             contentLog.error("Transcript delete save failed: \(error.localizedDescription, privacy: .public)")
             pendingDeletion = nil
         }
@@ -1160,19 +1157,12 @@ struct ContentView: View {
             return
         }
 
-        for transcript in transcriptsToDelete {
-            modelContext.delete(transcript)
-        }
-
         do {
-            try modelContext.save()
-            TranscriptHistoryMirror.refresh(from: modelContext)
-            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            try TranscriptStore.delete(ids: Set(transcriptsToDelete.map { $0.id }))
             pendingBulkDeletionIDs = []
             selectedTranscriptIDs = []
             isSelectionMode = false
         } catch {
-            modelContext.rollback()
             contentLog.error("Transcript bulk delete save failed: \(error.localizedDescription, privacy: .public)")
             pendingBulkDeletionIDs = []
         }
@@ -1216,17 +1206,15 @@ struct ContentView: View {
         do {
             _ = try TranscriptStore.append(raw: combinedText)
             if deleteOriginals {
-                for transcript in sources {
-                    modelContext.delete(transcript)
-                }
-                try modelContext.save()
-                TranscriptHistoryMirror.refresh(from: modelContext)
-                CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                // One quadruplet for the whole batch — `delete(ids:)` fires
+                // the mirror once, so combine no longer double-fires (append
+                // mirrors, then a second manual delete-originals save used to
+                // mirror again).
+                try TranscriptStore.delete(ids: Set(sources.map { $0.id }))
             }
             selectedTranscriptIDs = []
             isSelectionMode = false
         } catch {
-            if deleteOriginals { modelContext.rollback() }
             contentLog.error("Transcript combine failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -1327,5 +1315,6 @@ private struct RecordingReturnPill: View {
         .environment(KeyboardRewriteRouter())
         .environment(TranscriptionService())
         .environment(StreamingPartial())
+        .environment(Router())
         .modelContainer(for: Transcript.self, inMemory: true)
 }

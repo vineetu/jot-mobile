@@ -10,9 +10,10 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///
 /// ## What's shown
 ///
-/// - **Top toolbar**: glass back chevron (left) + glass sparkle Rewrite
-///   button (right). No native nav-bar chrome — the surface looks like the
-///   mockup, not like a stock `NavigationStack` detail.
+/// - **Top toolbar**: glass back chevron (left); optional TTS read-aloud
+///   controls (right) when the TTS Lab is on. No native nav-bar chrome — the
+///   surface looks like the mockup, not like a stock `NavigationStack` detail.
+///   (Rewrite lives on the bottom ActionBar, not up here.)
 /// - **Subline**: "11 hours ago · 52 words · 0:21" derived from `Transcript`
 ///   fields (no semantic title field exists in v1 per plan §10.1, so the
 ///   editorial title slot is intentionally hidden).
@@ -24,8 +25,9 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///   `cleanedText` is nil, the Rewrite tab shows a "Tap Rewrite to
 ///   generate" empty state with a blue CTA. `cleanedText` is reserved
 ///   for AI Rewrite output.
-/// - **Floating ActionBar**: Copy / Share / Rewrite (prominent blue pill) /
-///   More — anchored to the bottom safe area, glass-heavy.
+/// - **Floating ActionBar**: Delete / Edit / Rewrite (accent sparkle circle) /
+///   Translate (globe) / Copy — anchored to the bottom safe area, glass-heavy.
+///   The giant labelled Rewrite pill was retired for the icon-only circle.
 ///
 /// ## Tags / title intentionally absent
 ///
@@ -129,6 +131,30 @@ struct TranscriptDetailView: View {
     /// The live caret/selection in the Edit editor, bound to `InlineEditTextView`
     /// so the italic-tracking editor can report and restore the caret.
     @State private var editorSelection: TextSelection?
+
+    // MARK: - Find & Replace (edit-mode only, features.md §3.10)
+    //
+    // A find/replace bar above the EditBar that fixes a term the speech model
+    // misheard several times in one shot. Whole-word + case-insensitive matching;
+    // Replace All rewrites `editorText`, which the inline editor ingests as a
+    // programmatic change (so the swapped words render italic like any edit).
+    // On Save, a qualifying replace (term-like, 2+ matches, not a common word)
+    // offers to learn it — reusing the exact term + heard→alias + correction-store
+    // path that selection "Add to Vocabulary" already uses (see `confirmVocabAdd`).
+    @State private var showFindReplace = false
+    @State private var findText = ""
+    @State private var replaceText = ""
+    @FocusState private var findFieldFocused: Bool
+    /// The last Replace All performed this edit session; consulted on Save to
+    /// decide whether to offer the learn-it prompt. Cleared on exit.
+    @State private var pendingReplaceLearn: ReplaceLearn?
+    /// Non-nil after a qualifying Save → drives the gentle learn-it card.
+    @State private var replaceVocabOffer: ReplaceVocabOffer?
+
+    private struct ReplaceLearn { let find: String; let replace: String; let count: Int }
+    private struct ReplaceVocabOffer: Identifiable {
+        let id = UUID(); let term: String; let heard: String; let count: Int
+    }
 
     // MARK: - Phase 4 sheet state
     //
@@ -250,13 +276,24 @@ struct TranscriptDetailView: View {
 
             Group {
                 if isEditing {
-                    editBar
+                    VStack(spacing: 8) {
+                        if showFindReplace { findReplaceBar }
+                        editBar
+                    }
                 } else {
                     actionBar
                 }
             }
             .padding(.horizontal, JotDesign.Spacing.pageMargin)
             .padding(.bottom, 14)
+
+            // Gentle, non-blocking learn-it offer after a qualifying Replace All.
+            if let offer = replaceVocabOffer, !isEditing {
+                replaceVocabOfferCard(offer)
+                    .padding(.horizontal, JotDesign.Spacing.pageMargin)
+                    .padding(.bottom, 84) // floats just above the ActionBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
@@ -800,16 +837,13 @@ struct TranscriptDetailView: View {
             && ns.substring(with: sel.range) == sel.selected
         var didFix = false
         if replacement != sel.selected, rangeStillValid {
-            transcript.text = ns.replacingCharacters(in: sel.range, with: replacement)
+            let newText = ns.replacingCharacters(in: sel.range, with: replacement)
             do {
-                try modelContext.save()
-                TranscriptHistoryMirror.refresh(from: modelContext)
-                CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                try TranscriptStore.setText(id: transcript.id, newText: newText)
                 correctionModel?.flashSpan(
                     NSRange(location: sel.range.location, length: (replacement as NSString).length))
                 didFix = true
             } catch {
-                modelContext.rollback()
                 return
             }
         } else if rangeStillValid {
@@ -1197,6 +1231,16 @@ struct TranscriptDetailView: View {
                 presentRewritePicker()
             },
             trailing: [
+                // Globe peer (features.md §3.9): opens the ephemeral Translate sheet
+                // for the active tab directly — no longer buried inside the Rewrite
+                // picker. Apple on-device translation, nothing saved.
+                ActionBarItem(
+                    systemImage: "globe",
+                    label: "Translate",
+                    accessibilityLabel: "Translate transcript"
+                ) {
+                    showTranslateSheet = true
+                },
                 ActionBarItem(
                     systemImage: didCopy ? "checkmark" : "doc.on.doc",
                     label: "Copy",
@@ -1249,6 +1293,16 @@ struct TranscriptDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel edit")
 
+            Button(action: toggleFindReplace) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(showFindReplace ? Color.jotBlueTop : Color.jotInk)
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showFindReplace ? "Hide find and replace" : "Find and replace")
+
             Spacer(minLength: 6)
 
             // Center label can shrink/disappear; the side buttons must not.
@@ -1296,6 +1350,214 @@ struct TranscriptDetailView: View {
     /// Center label of the EditBar.
     private var editBarCenterLabel: String {
         editTargetTab == .original ? "Editing Original" : "Editing Rewrite"
+    }
+
+    // MARK: - Find & Replace bar
+
+    /// Whole-word, case-insensitive pattern for `findText`. Returns nil for an
+    /// empty term or an un-compilable pattern (the escaped term is always valid,
+    /// so this only nils on empty).
+    private func wholeWordRegex(_ term: String) -> NSRegularExpression? {
+        let t = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let pattern = "\\b" + NSRegularExpression.escapedPattern(for: t) + "\\b"
+        return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
+    /// Live count of whole-word matches of `findText` in the working text.
+    private var findMatchCount: Int {
+        guard let re = wholeWordRegex(findText) else { return 0 }
+        let ns = editorText as NSString
+        return re.numberOfMatches(in: editorText, range: NSRange(location: 0, length: ns.length))
+    }
+
+    /// Replaces every whole-word match of `findText` with `replaceText` in
+    /// `editorText`. The inline editor ingests the new value as a programmatic
+    /// change, so the swapped words render italic. Records the replace so Save
+    /// can offer to learn it.
+    private func performReplaceAll() {
+        guard let re = wholeWordRegex(findText) else { return }
+        let ns = editorText as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        let count = re.numberOfMatches(in: editorText, range: full)
+        guard count > 0 else { return }
+        let template = NSRegularExpression.escapedTemplate(
+            for: replaceText.trimmingCharacters(in: .whitespacesAndNewlines))
+        let newText = re.stringByReplacingMatches(in: editorText, range: full, withTemplate: template)
+        editorText = newText
+        pendingReplaceLearn = ReplaceLearn(
+            find: findText.trimmingCharacters(in: .whitespacesAndNewlines),
+            replace: replaceText.trimmingCharacters(in: .whitespacesAndNewlines),
+            count: count)
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    /// Toggles the find/replace bar, handing focus between the editor and the
+    /// find field so the two text views don't fight over first responder.
+    private func toggleFindReplace() {
+        if showFindReplace {
+            showFindReplace = false
+            findFieldFocused = false
+            editorFocused = true
+        } else {
+            // Just show the bar. Focus is taken in the find field's `.onAppear`
+            // once it's actually mounted — setting it here raced the field's
+            // mount (it didn't exist yet), so the first open landed focus nowhere
+            // and typing only worked after manually tapping a field and back.
+            showFindReplace = true
+        }
+    }
+
+    private var findReplaceBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                fieldChrome {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.jotMute)
+                    TextField("Find", text: $findText)
+                        .font(.system(size: 15))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($findFieldFocused)
+                        .submitLabel(.search)
+                        .onAppear {
+                            // Take focus once the field is actually in the
+                            // hierarchy. Grab first responder for the find field
+                            // first (the editor yields it, so the system keyboard
+                            // stays up — no flicker), THEN drop `editorFocused` so
+                            // the inline editor can't reclaim it on the next pass.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                findFieldFocused = true
+                                editorFocused = false
+                            }
+                        }
+                }
+                if !findText.isEmpty {
+                    Text(findMatchCount == 1 ? "1 match" : "\(findMatchCount) matches")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(findMatchCount == 0 ? Color.jotMute : Color.jotInk)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            HStack(spacing: 8) {
+                fieldChrome {
+                    Image(systemName: "arrow.2.squarepath")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.jotMute)
+                    TextField("Replace with", text: $replaceText)
+                        .font(.system(size: 15))
+                        .textInputAutocapitalization(.sentences)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                }
+                Button(action: performReplaceAll) {
+                    Text("Replace All")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Capsule(style: .continuous).fill(Color.jotBlueTop))
+                }
+                .buttonStyle(.plain)
+                .disabled(findText.isEmpty || findMatchCount == 0)
+                .opacity(findText.isEmpty || findMatchCount == 0 ? 0.45 : 1)
+                .accessibilityLabel("Replace all \(findMatchCount) matches")
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .modifier(JotDesign.Surface.heavy.modifier(cornerRadius: JotDesign.Spacing.sheetRadius))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// Shared pill chrome for the find/replace text fields.
+    @ViewBuilder
+    private func fieldChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 8, content: content)
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.jotInk.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(Color.jotInk.opacity(0.08), lineWidth: 0.5)
+            )
+    }
+
+    // MARK: - Learn-it offer (after a qualifying Replace All)
+
+    /// True when a Replace All looks like a term correction worth learning:
+    /// a real change (term ≠ heard), a 1–2 word term that isn't all common
+    /// words, applied to 2+ occurrences (the user's "misheard several times").
+    private func qualifiesForVocab(_ l: ReplaceLearn) -> Bool {
+        guard l.count >= 2 else { return false }
+        let term = l.replace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = l.find.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty, !heard.isEmpty else { return false }
+        guard term.compare(heard, options: .caseInsensitive) != .orderedSame else { return false }
+        let words = term.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard (1...2).contains(words.count) else { return false }
+        return words.contains {
+            !CommonWords.isCommon(
+                $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:\"'()")))
+        }
+    }
+
+    /// Learns the term: same path as selection "Add to Vocabulary"
+    /// (`confirmVocabAdd`) — adds the term, attaches the misheard form as a
+    /// sounds-like alias, and teaches the correction store (net +1) so the next
+    /// dictation self-corrects. The text fix already happened via Replace All.
+    private func confirmReplaceVocab(_ offer: ReplaceVocabOffer) {
+        if let storedTerm = VocabularyStore.shared.addTerm(offer.term, heardAs: offer.heard) {
+            let heard = offer.heard
+            Task { await CorrectionStore.shared.adjust(originalWord: heard, term: storedTerm, by: 1) }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        replaceVocabOffer = nil
+    }
+
+    private func replaceVocabOfferCard(_ offer: ReplaceVocabOffer) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            IconBox(symbol: "character.book.closed", tint: Color(red: 0x1F/255, green: 0xCE/255, blue: 0xD1/255), size: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Add “\(offer.term)” to your vocabulary?")
+                    .font(.system(size: 15.5, weight: .semibold))
+                    .foregroundStyle(Color.jotInk)
+                Text("Jot heard it as “\(offer.heard)” \(offer.count) times. Learn it so the next dictation gets it right.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.jotInk.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    Button { replaceVocabOffer = nil } label: {
+                        Text("Not now")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color.jotMute)
+                            .padding(.horizontal, 6)
+                            .frame(minHeight: 38)
+                    }
+                    .buttonStyle(.plain)
+                    Button { confirmReplaceVocab(offer) } label: {
+                        Text("Add")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 22)
+                            .frame(height: 38)
+                            .background(Capsule(style: .continuous).fill(Color.jotBlueTop))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 6)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .modifier(JotDesign.Surface.heavy.modifier(cornerRadius: JotDesign.Spacing.sheetRadius))
     }
 
     // Dictation while editing is driven by the keyboard's own Dictate tap: the
@@ -1514,6 +1776,12 @@ struct TranscriptDetailView: View {
                 ?? ""
         }
         editError = nil
+        // Fresh edit session: dismiss any prior learn-it card and reset find state.
+        replaceVocabOffer = nil
+        showFindReplace = false
+        findText = ""
+        replaceText = ""
+        pendingReplaceLearn = nil
         isEditing = true
         // New edit session → the inline editor re-baselines the just-loaded text
         // as "original" (regular) and clears italic tracking.
@@ -1541,6 +1809,12 @@ struct TranscriptDetailView: View {
     private func saveEdit() {
         let trimmed = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Resolve which field this save changes (or bail early on the no-op
+        // cases) before handing the persistence to the Repository. Exactly
+        // one of these is non-nil on a real change.
+        var newText: String? = nil
+        var newRewriteUserEdit: String?? = nil
+
         switch editTargetTab {
         case .original:
             guard !trimmed.isEmpty else {
@@ -1555,7 +1829,7 @@ struct TranscriptDetailView: View {
                 exitEditMode()
                 return
             }
-            transcript.text = trimmed
+            newText = trimmed
 
         case .rewrite:
             // Rewrite-tab Save without a model rewrite to back it would
@@ -1572,7 +1846,7 @@ struct TranscriptDetailView: View {
                     exitEditMode()
                     return
                 }
-                transcript.rewriteUserEdit = nil
+                newRewriteUserEdit = .some(nil)
             } else {
                 // Skip the write if the user typed nothing new vs. the
                 // current display value (rewriteUserEdit ?? cleanedText).
@@ -1581,19 +1855,16 @@ struct TranscriptDetailView: View {
                     exitEditMode()
                     return
                 }
-                transcript.rewriteUserEdit = trimmed
+                newRewriteUserEdit = .some(trimmed)
             }
         }
 
         do {
-            try modelContext.save()
-            TranscriptHistoryMirror.refresh(from: modelContext)
-            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            try TranscriptStore.update(id: transcript.id, text: newText, rewriteUserEdit: newRewriteUserEdit)
             detailLog.info(
                 "Transcript edit SAVED tab=\(editTargetTab.rawValue, privacy: .public) chars=\(trimmed.count)"
             )
         } catch {
-            modelContext.rollback()
             editError = "Couldn't save: \(error.localizedDescription)"
             detailLog.error(
                 "Transcript edit save FAILED tab=\(editTargetTab.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
@@ -1601,7 +1872,14 @@ struct TranscriptDetailView: View {
             return
         }
 
+        // Capture a qualifying replace before exit clears the tracking, then
+        // surface the gentle learn-it card once we're back in read mode.
+        let offer: ReplaceVocabOffer? = {
+            guard let l = pendingReplaceLearn, qualifiesForVocab(l) else { return nil }
+            return ReplaceVocabOffer(term: l.replace, heard: l.find, count: l.count)
+        }()
         exitEditMode()
+        if let offer { withAnimation { replaceVocabOffer = offer } }
     }
 
     /// Discards local edit state without persisting. The transcript fields
@@ -1618,6 +1896,13 @@ struct TranscriptDetailView: View {
         isEditing = false
         editError = nil
         editorText = ""
+        // Tear down find/replace; the post-save offer (`replaceVocabOffer`) is
+        // intentionally left alone — it shows in read mode after we exit.
+        showFindReplace = false
+        findFieldFocused = false
+        findText = ""
+        replaceText = ""
+        pendingReplaceLearn = nil
     }
 
     // MARK: - Actions
@@ -1660,20 +1945,20 @@ struct TranscriptDetailView: View {
         case (_, false):            next = false // any other tap on 👎 → down
         }
 
+        // Optimistically reflect the new rating on the live (scene-context)
+        // object so the thumb glyph updates immediately; the Repository
+        // persists on its own context (save ONLY — no mirror/notify, ratings
+        // aren't shown cross-process). On failure, revert the in-memory value
+        // so the glyph snaps back to its prior state.
         transcript.rewriteUpvoted = next
         do {
-            try modelContext.save()
+            try TranscriptStore.setRewriteRating(id: transcript.id, rating: next)
             copyHaptic.impactOccurred()
             copyHaptic.prepare()
             detailLog.info(
                 "Rewrite rating set up=\(up, privacy: .public) next=\(String(describing: next), privacy: .public) transcript=\(transcript.id, privacy: .public)"
             )
         } catch {
-            modelContext.rollback()
-            // Belt-and-suspenders: revert the in-memory mutation explicitly
-            // so the thumb glyph re-renders the prior state immediately,
-            // even if SwiftData's rollback didn't restore the managed-object
-            // property.
             transcript.rewriteUpvoted = previous
             detailLog.error(
                 "Rewrite rating save FAILED error=\(error.localizedDescription, privacy: .public)"
@@ -1685,17 +1970,12 @@ struct TranscriptDetailView: View {
         activeRewriteTask?.cancel()
         activeRewriteTask = nil
 
+        let id = transcript.id
         dismiss()
         Task { @MainActor in
-            modelContext.delete(transcript)
             do {
-                try modelContext.save()
-                TranscriptHistoryMirror.refresh(from: modelContext)
-                // Wake the keyboard so its RecentsStrip drops the row
-                // immediately rather than on next presentation.
-                CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                try TranscriptStore.delete(id: id)
             } catch {
-                modelContext.rollback()
                 detailLog.error("Transcript delete save failed: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -1714,17 +1994,12 @@ struct TranscriptDetailView: View {
         rewriteState = .idle
         lastRewriteAt = nil
 
-        transcript.cleanedText = nil
         // A user-edit OR rating against a discarded rewrite is meaningless
-        // — the training "before" half is gone. Clear all three together.
-        transcript.rewriteUserEdit = nil
-        transcript.rewriteUpvoted = nil
+        // — the training "before" half is gone. The Repository clears all
+        // three together (cleanedText, rewriteUserEdit, rewriteUpvoted).
         do {
-            try modelContext.save()
-            TranscriptHistoryMirror.refresh(from: modelContext)
-            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            try TranscriptStore.discardRewrite(id: transcript.id)
         } catch {
-            modelContext.rollback()
             detailLog.error("Discard rewrite save failed: \(error.localizedDescription, privacy: .public)")
         }
 
@@ -1802,27 +2077,17 @@ struct TranscriptDetailView: View {
                     rewriteState = .error("Rewrite returned no text.")
                     return
                 }
-                transcript.cleanedText = trimmed
-                // Stale userEdit OR rating against a fresh model output is
-                // meaningless; clear both so the new cleanedText starts
-                // unrated and any future correction pairs with this new
-                // output (not the one against the prior output).
-                transcript.rewriteUserEdit = nil
-                transcript.rewriteUpvoted = nil
                 do {
-                    try modelContext.save()
-                    TranscriptHistoryMirror.refresh(from: modelContext)
-                    // The keyboard's RecentsStrip renders displayText;
-                    // notify it that the mirror was rewritten so the new
-                    // cleaned text shows up without a presentation cycle.
-                    CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                    // Persistence core: set cleanedText + clear stale
+                    // userEdit/rating (a fresh model output makes the prior
+                    // user-edit and rating meaningless) + mirror + notify.
+                    try TranscriptStore.setCleanedText(id: transcript.id, cleanedText: trimmed)
                     lastRewriteAt = Date()
                     rewriteState = .idle
                     detailLog.info(
                         "Transcript rewrite SUCCESS prompt=\(prompt.id, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
                     )
                 } catch {
-                    modelContext.rollback()
                     rewriteState = .error("Couldn't save: \(error.localizedDescription)")
                     detailLog.error(
                         "Transcript rewrite save failed: \(error.localizedDescription, privacy: .public)"
@@ -1943,18 +2208,12 @@ struct TranscriptDetailView: View {
                     writeKeyboardError(message, sessionID: intent.sessionID)
                     return
                 }
-                transcript.cleanedText = trimmed
-                // Stale userEdit + rating against a fresh model output are
-                // meaningless; see manual-rewrite branch above for rationale.
-                transcript.rewriteUserEdit = nil
-                transcript.rewriteUpvoted = nil
                 do {
-                    try modelContext.save()
-                    TranscriptHistoryMirror.refresh(from: modelContext)
-                    // The keyboard's RecentsStrip renders displayText;
-                    // notify it that the mirror was rewritten so the new
-                    // cleaned text shows up without a presentation cycle.
-                    CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+                    // Persistence core ONLY: set cleanedText + clear stale
+                    // userEdit/rating + mirror + notify. The App-Group
+                    // rewrite-result reply below is the keyboard handshake,
+                    // NOT transcript persistence — it stays in the view.
+                    try TranscriptStore.setCleanedText(id: transcript.id, cleanedText: trimmed)
                     guard AppGroup.rewriteJobID == jobID else {
                         detailLog.notice("Keyboard-originated rewrite finished but App Group job changed; dropping terminal write.")
                         return
@@ -1970,7 +2229,6 @@ struct TranscriptDetailView: View {
                         "Keyboard-originated transcript rewrite SUCCESS prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
                     )
                 } catch {
-                    modelContext.rollback()
                     let message = "Couldn't save: \(error.localizedDescription)"
                     rewriteState = .error(message)
                     guard AppGroup.rewriteJobID == jobID else { return }

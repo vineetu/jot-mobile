@@ -1186,6 +1186,19 @@ final class RecordingService {
 
             let seconds = Double(samples.count) / Self.sampleRate
             log.info("Recording stopped — \(samples.count) samples (~\(seconds, privacy: .public)s)")
+            // One copyable line per recording (the per-tick streaming logs are
+            // filtered out). The captured AUDIO seconds here is what exposes a
+            // cold-start capture miss: a long wall-clock timer but <1s captured →
+            // the mic didn't actually deliver frames (the audioTooShort failure).
+            DiagnosticsLog.record(
+                source: "main-app",
+                category: .recordingOutcome,
+                message: "recording stopped",
+                metadata: [
+                    "capturedSec": String(format: "%.1f", seconds),
+                    "samples": "\(samples.count)",
+                ]
+            )
             if shouldEnterWarmHold {
                 enterWarmHold(duration: cooldownDuration)
             }

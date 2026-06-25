@@ -407,42 +407,21 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
     }
 
     private func saveTranscript(text: String, createdAt: Date, durationSeconds: Double?, watchOriginUUID: String) async throws {
-        let context = ModelContext(JotModelContainer.shared)
-        // Compute next ledgerIndex (mirror TranscriptStore's pattern).
-        let descriptor = FetchDescriptor<Transcript>(
-            sortBy: [SortDescriptor(\.ledgerIndex, order: .reverse)]
-        )
-        var fetched = descriptor
-        fetched.fetchLimit = 1
-        let highest = (try? context.fetch(fetched).first?.ledgerIndex) ?? 0
-
-        let transcript = Transcript(
-            text: text,
-            createdAt: createdAt,
-            durationSeconds: durationSeconds,
-            ledgerIndex: highest + 1,
+        // Route through the Repository (the sole writer of the Transcript
+        // entity + the keyboard mirror) instead of hand-reimplementing
+        // append. `append` owns the insert, ledger index, save, mirror
+        // refresh, Darwin notification, and the TranscriptIndexer embed/
+        // classify hop — so the watch path can no longer drift from the
+        // main-app path. The original recording time and the dedup key are
+        // forwarded; the `transcriptExists(watchOriginUUID:)` pre-insert
+        // check stays at the call site.
+        try TranscriptStore.append(
+            raw: text,
+            duration: durationSeconds,
             source: "watch",
+            createdAt: createdAt,
             watchOriginUUID: watchOriginUUID
         )
-        context.insert(transcript)
-        try context.save()
-
-        // Refresh the keyboard's JSON history mirror + post the Darwin
-        // cross-process notification so the keyboard extension picks up
-        // the new transcript immediately. Every other write site in the
-        // codebase does this (ContentView, TranscriptDetailView,
-        // DictationPipeline) but the watch-originated path was missing
-        // it — caused new watch recordings to take several seconds to
-        // appear in the keyboard recents (only refreshed on next app
-        // foreground / next user-initiated edit).
-        TranscriptHistoryMirror.refresh(from: context)
-        CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
-
-        // Snapshot id + text BEFORE the detached hop — same contract as
-        // `TranscriptStore.append`. TranscriptIndexer handles the kill
-        // switch, the embed, and the classify in one shared pipeline so
-        // this path and the main-app path can't drift.
-        TranscriptIndexer.index(transcriptID: transcript.id, text: text)
     }
 
     private func sendAck(uuid: String) {

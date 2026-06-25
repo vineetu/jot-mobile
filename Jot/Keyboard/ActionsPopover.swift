@@ -68,8 +68,12 @@ struct ActionsPopover: View {
     private var grid: some View {
         VStack(spacing: 7) {
             HStack(spacing: 7) {
+                // Washed tiles stay TAPPABLE: a tap on an unavailable action surfaces a
+                // status banner ("Select a word first" …) from the controller instead of
+                // doing nothing, and keeps the pane open so the user can satisfy the
+                // precondition and retry. Only a SUCCESSFUL action dismisses the pane.
                 denseTile("Vocab", "character.book.closed", colors: Self.vocabColors, enabled: hasSelection) {
-                    onAddToVocabulary(); onDismiss()
+                    if hasSelection { onAddToVocabulary(); onDismiss() } else { onAddToVocabulary() }
                 }
                 denseTile("Rewrite", "sparkles", colors: Self.aiColors, enabled: true) { pane = .aiRewrite }
                 denseTile("Translate", "globe", colors: Self.translateColors, enabled: true) { pane = .translate }
@@ -77,8 +81,13 @@ struct ActionsPopover: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 7) {
-                denseTile("Copy", "doc.on.doc", colors: nil, enabled: hasSelection) { onCopy(); onDismiss() }
-                denseTile("Paste", "doc.on.clipboard", colors: nil, enabled: hasPasteboardContent) { onPaste(); onDismiss() }
+                denseTile("Copy", "doc.on.doc", colors: nil, enabled: hasSelection) {
+                    if hasSelection { onCopy(); onDismiss() } else { onCopy() }
+                }
+                // Paste is ALWAYS offered (never washed): the clipboard isn't polled live
+                // (reading it fires iOS's paste-privacy toast), so we validate at tap time —
+                // an empty clipboard shows "Nothing to paste yet" instead of pasting.
+                denseTile("Paste", "doc.on.clipboard", colors: nil, enabled: true) { onPaste(); onDismiss() }
                 // Undo / Redo stay open so repeated taps work; badge shows steps remaining.
                 denseTile("Undo", "arrow.counterclockwise", colors: nil, enabled: canUndo, badge: undoDepth) { onUndo() }
                 denseTile("Redo", "arrow.clockwise", colors: nil, enabled: canRedo, badge: redoDepth) { onRedo() }
@@ -92,6 +101,10 @@ struct ActionsPopover: View {
     /// One compact grid tile. `colors != nil` → a gradient icon square (feature
     /// actions); `colors == nil` → a monochrome glyph (utility actions). `badge > 0`
     /// draws a count chip on the icon (Undo/Redo stack depth).
+    ///
+    /// `enabled` controls the VISUAL state only (washed when false) — the tile is
+    /// always tappable so an unavailable tap can explain itself via a status banner.
+    /// The caller's `action` closure decides what an unavailable tap does.
     private func denseTile(
         _ title: String,
         _ systemImage: String,
@@ -139,7 +152,8 @@ struct ActionsPopover: View {
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
+        // Intentionally NOT `.disabled(!enabled)`: a washed tile must still accept a
+        // tap so it can surface a "why" banner. `enabled` only drives the visuals.
         .accessibilityLabel(badge > 0 ? "\(title), \(badge) available" : title)
         .accessibilityAddTraits(.isButton)
     }
@@ -164,8 +178,12 @@ struct ActionsPopover: View {
             title: "Translate, built into iPhone",
             steps: [
                 Text("**Select** your text"),
-                Text("Tap **Translate** in the menu"),
-                Text("Pick a language — it replaces it"),
+                // Translate isn't on the first menu page — it's behind the menu's
+                // "more" arrow. Show the arrow glyph (not the word) and the real flow.
+                Text("Tap ")
+                    + Text(Image(systemName: "chevron.right")).foregroundColor(Color.jotAccent)
+                    + Text(", then **Translate**"),
+                Text("Pick a language to replace it"),
             ]
         )
     }

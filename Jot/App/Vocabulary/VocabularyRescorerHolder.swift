@@ -77,6 +77,29 @@ public actor VocabularyRescorerHolder {
     /// spinner.
     public var preparing: Bool { isPreparing }
 
+    /// Waits up to `timeoutSeconds` for `isReady`. The vocab CTC model loads
+    /// DEFERRED (after Parakeet, to avoid cold-start ANE-compiler contention), so a
+    /// dictation that stops before that load finished would otherwise fall back to
+    /// the raw transcript. The dictation's rescore awaits this so the FIRST cold
+    /// dictation still gets custom-vocabulary biasing. Returns immediately when
+    /// already ready (the warm/common case → zero cost), and bails fast (after a
+    /// ~1s grace for a just-kicked prepare) if nothing is loading — so it never
+    /// burns the full timeout when vocab is disabled or the bundle is absent.
+    public func awaitReady(timeoutSeconds: Double) async -> Bool {
+        if isReady { return true }
+        let maxPolls = max(1, Int(timeoutSeconds * 20)) // 50 ms per poll
+        var polls = 0
+        while polls < maxPolls {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if isReady { return true }
+            // ~1s grace lets a prepare kicked at the same instant set `isPreparing`;
+            // after that, no prepare in flight means it will never become ready.
+            if polls > 20 && !isPreparing { return false }
+            polls += 1
+        }
+        return isReady
+    }
+
     /// Drop every FluidAudio handle. Subsequent `rescore(...)` calls
     /// become no-ops until `prepare(...)` is called again.
     ///

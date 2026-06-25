@@ -69,6 +69,10 @@ enum AppGroup {
         /// transcript playback; default off, and turning it on is what triggers
         /// the model download. See `docs/tts-lab/design.md`.
         static let ttsLabEnabled = "jot.tts.labEnabled"
+        /// PROTOTYPE A/B (model-instant-load): load the Parakeet encoder on CPU+GPU
+        /// instead of the Neural Engine, to test whether it avoids the ~60s
+        /// post-update ANE device-specialization. Default off (= Neural Engine).
+        static let asrUseCPUGPU = "jot.asr.useCPUGPU"
         /// JSON-encoded registry of the user's cloned PocketTTS voices
         /// (`[{name, fileName}]`). The `.bin` conditioning files live in
         /// `ApplicationSupport/TTSVoices/<uuid>.bin`; this key holds only the
@@ -263,6 +267,15 @@ enum AppGroup {
     static var warmHoldEnabled: Bool {
         get { defaults.bool(forKey: Keys.warmHoldEnabled) }
         set { defaults.set(newValue, forKey: Keys.warmHoldEnabled) }
+    }
+
+    /// PROTOTYPE A/B (model-instant-load): when true, load the Parakeet encoder on
+    /// CPU+GPU instead of the Neural Engine. The ANE pays a ~60s device
+    /// specialization on first load after an app update; CPU+GPU skips that (at a
+    /// possible per-dictation speed cost). Default false (= Neural Engine).
+    static var asrUseCPUGPU: Bool {
+        get { defaults.bool(forKey: Keys.asrUseCPUGPU) }
+        set { defaults.set(newValue, forKey: Keys.asrUseCPUGPU) }
     }
 
     /// See `Keys.wizardActive`. `true` only while the wizard's W5 step is on

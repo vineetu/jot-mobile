@@ -1,63 +1,29 @@
-<!-- Keyboard status banner (§5.10/§12.6). Showcasing the CURRENT on-device look + bug:
-     a SUCCESS message ("Added '…' to your dictionary") renders in the RED error banner with
-     an ✕ icon, FLOATING over the top of the recents pane. Also it does not appear instantly —
-     it only surfaces after a follow-up action (e.g. Enter). Known issue (see atlas flag). -->
-<div style="height:300px"></div>
+<!-- §5.10 Keyboard status banner (SHIPPED 1.0.6). A liquid-glass banner whose tint, icon,
+     and ink carry SEVERITY — success (green), warning (amber), error (red), progress (blue) —
+     matching the app's StatusPill, instead of one saturated red bar for everything. Renders
+     instantly in the keyboard's top slot. -->
 
-<div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;margin:0 -6px;padding:14px 12px 18px;position:relative">
+<div class="jot-display" style="font-size:30px;margin:4px 0 4px">Status banner</div>
+<div class="jot-caption" style="margin:0 0 18px">Color carries meaning — the tint tells you what happened at a glance.</div>
 
-  <!-- recents pane -->
-  <div class="jot-card" style="margin-top:34px">
-    <div class="jot-row" style="padding:11px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;color:var(--jot-ink-cap);flex:none;width:64px">11:52 AM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Sure, mag that.</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
-    </div>
-    <div class="jot-row" style="padding:11px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;color:var(--jot-ink-cap);flex:none;width:64px">11:50 AM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">And you need to fire it.</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
-    </div>
-    <div class="jot-row" style="padding:11px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;color:var(--jot-ink-cap);flex:none;width:64px">11:50 AM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">It takes a while, but it asks you in the k…</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
-    </div>
-  </div>
-
-  <!-- RED status banner — floats over the TOP of the recents pane (overlay, not a pushed-down bar) -->
-  <div style="position:absolute;top:8px;left:8px;right:8px;background:#FF3B30;border-radius:15px;padding:13px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 6px 18px rgba(255,59,48,0.38);z-index:5">
-    <svg viewBox="0 0 24 24" style="width:24px;height:24px;flex:none"><circle cx="12" cy="12" r="11" fill="#fff"/><path d="M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8" stroke="#FF3B30" stroke-width="2.1" stroke-linecap="round"/></svg>
-    <span style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-0.1px">Added ‘Sure, mag that.’ to your dictionary</span>
-  </div>
-
-  <!-- control row -->
-  <div style="display:flex;align-items:center;gap:8px;margin:14px 0 12px">
-    <span style="width:56px;height:54px;border-radius:11px;background:var(--jot-card-top);border:0.5px solid var(--jot-card-border);display:flex;align-items:center;justify-content:center;flex:none">
-      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-ink)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
-    </span>
-    <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
-      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
-      <span style="color:#fff;font-size:18px;font-weight:600">Jot down</span>
-    </div>
-    <span style="width:72px;height:54px;border-radius:11px;background:rgba(120,120,128,0.28);display:flex;align-items:center;justify-content:center;flex:none">
-      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M20 7v4a3 3 0 01-3 3H6m0 0l4-4m-4 4l4 4"/></svg>
-    </span>
-    <span style="width:60px;height:54px;border-radius:11px;background:rgba(120,120,128,0.34);display:flex;align-items:center;justify-content:center;flex:none">
-      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:1.8"><path d="M21 6H9L3 12l6 6h12a1 1 0 001-1V7a1 1 0 00-1-1z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>
-    </span>
-  </div>
-
-  <!-- bottom system row -->
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:0 10px">
-    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:none;stroke:var(--jot-ink);stroke-width:1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
-    <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:var(--jot-ink)"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
-  </div>
-
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(52,199,89,0.15);border:0.5px solid rgba(52,199,89,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#34C759"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <span style="color:#1B8E3E;font-weight:600;font-size:14px">Added 'Shomagdha' to your dictionary</span>
 </div>
+
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(255,159,48,0.16);border:0.5px solid rgba(255,159,48,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#FF9F30"/><path d="M12 7v6M12 16v.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+  <span style="color:#B87314;font-weight:600;font-size:14px">'okay' is a common word — not added</span>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(224,23,59,0.13);border:0.5px solid rgba(224,23,59,0.38);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);margin-bottom:9px">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none"><circle cx="12" cy="12" r="10" fill="#E0173B"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
+  <span style="color:#C01433;font-weight:600;font-size:13.5px;flex:1">Nothing to paste yet</span>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(26,140,255,0.14);border:0.5px solid rgba(26,140,255,0.4);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)">
+  <svg viewBox="0 0 24 24" style="width:21px;height:21px;flex:none;fill:none;stroke:#1A8CFF;stroke-width:2.2;stroke-linecap:round"><path d="M12 4a8 8 0 108 8" /></svg>
+  <span style="color:#1A6FD0;font-weight:600;font-size:14px">Rewriting…</span>
+</div>
+
+<div class="jot-caption" style="margin-top:16px">Same liquid glass as your cards · a leading severity icon · tinted ink — calm, and the color tells you what happened.</div>

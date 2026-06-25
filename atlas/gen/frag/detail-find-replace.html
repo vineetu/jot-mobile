@@ -1,0 +1,84 @@
+<!-- §3.7 Edit Transcript → PROPOSED Find & Replace (edit-mode only). The user fixes a
+     term the speech model misheard several times ("Okta" → heard as "okay"). A find &
+     replace bar sits above the keyboard: find field, replace field, live match count,
+     Replace All. Whole-word + case-insensitive by default. Changed text shows italic
+     like any edit. See detail-vocab-offer for the learn-it offer on Save. -->
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+
+  <div class="jot-donebtn" style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;font-size:18px;font-weight:700;opacity:0.4;margin-top:8px">‹</div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin:18px 2px 12px;font-size:13px;color:var(--jot-ink-cap)">
+    <span>2 hours ago</span><span>·</span><span>41 words</span><span>·</span><span>0:18</span>
+  </div>
+
+  <!-- Editable text. Matches of the find term are highlighted; the active match is ringed. -->
+  <div class="jot-card" style="padding:18px;font-size:16px;line-height:1.6;color:var(--jot-ink)">
+    Make sure the
+    <span style="background:rgba(26,140,255,0.16);outline:1.5px solid var(--jot-accent);border-radius:4px;padding:0 2px">okay</span>
+    integration is set up before the demo. I'll ping the
+    <span style="background:rgba(26,140,255,0.16);border-radius:4px;padding:0 2px">okay</span>
+    admin to provision the SSO app, and once
+    <span style="background:rgba(26,140,255,0.16);border-radius:4px;padding:0 2px">okay</span>
+    is live we can route the whole team through it.
+  </div>
+
+  <div style="flex:1"></div>
+
+  <!-- PROPOSED: Find & Replace bar (sits above the edit bar) -->
+  <div class="jot-card" style="position:absolute;left:0;right:0;bottom:302px;padding:10px 12px;border-radius:16px;display:flex;flex-direction:column;gap:8px">
+    <!-- Find row -->
+    <div style="display:flex;align-items:center;gap:8px">
+      <div style="flex:1;display:flex;align-items:center;gap:8px;background:rgba(120,120,128,0.14);border:0.5px solid var(--jot-card-border);border-radius:10px;padding:8px 10px">
+        <svg viewBox="0 0 24 24" style="width:15px;height:15px;flex:none"><circle cx="11" cy="11" r="7" fill="none" stroke="var(--jot-ink-cap)" stroke-width="2"/><path d="M16.5 16.5L21 21" stroke="var(--jot-ink-cap)" stroke-width="2" stroke-linecap="round"/></svg>
+        <span style="font-size:15px;color:var(--jot-ink)">okay</span>
+      </div>
+      <span style="font-size:13px;font-weight:600;color:var(--jot-ink-2);min-width:30px;text-align:center">1/3</span>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:11px;color:var(--jot-ink-cap);line-height:1">▲</span>
+        <span style="font-size:11px;color:var(--jot-ink-cap);line-height:1">▼</span>
+      </div>
+    </div>
+    <!-- Replace row -->
+    <div style="display:flex;align-items:center;gap:8px">
+      <div style="flex:1;display:flex;align-items:center;gap:8px;background:rgba(120,120,128,0.14);border:0.5px solid var(--jot-card-border);border-radius:10px;padding:8px 10px">
+        <svg viewBox="0 0 24 24" style="width:15px;height:15px;flex:none"><path d="M4 7h13l-3-3M20 17H7l3 3" fill="none" stroke="var(--jot-ink-cap)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span style="font-size:15px;color:var(--jot-ink);font-style:italic">Okta</span>
+      </div>
+      <div class="jot-cta" style="width:auto;padding:0 16px;height:38px;font-size:14px;box-shadow:none">Replace All</div>
+    </div>
+  </div>
+
+  <!-- Edit bottom bar: Cancel / Editing Original / Save (magnifier = enter find mode) -->
+  <div class="jot-card" style="position:absolute;left:0;right:0;bottom:250px;display:flex;align-items:center;gap:12px;padding:11px 16px;border-radius:18px">
+    <span style="font-size:16px;font-weight:500;color:var(--jot-ink)">Cancel</span>
+    <div style="flex:1;text-align:center;font-size:14px;font-weight:600;color:var(--jot-ink-2)">Editing Original</div>
+    <svg viewBox="0 0 24 24" style="width:19px;height:19px;flex:none"><circle cx="11" cy="11" r="7" fill="none" stroke="var(--jot-accent)" stroke-width="2"/><path d="M16.5 16.5L21 21" stroke="var(--jot-accent)" stroke-width="2" stroke-linecap="round"/></svg>
+    <div class="jot-cta" style="width:auto;padding:0 18px;height:38px;font-size:15px;box-shadow:none">
+      <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round"><path d="M5 13l4 4L19 7"/></svg>
+      Save
+    </div>
+  </div>
+
+  <!-- iOS keyboard mock -->
+  <div style="position:absolute;left:0;right:0;bottom:0;height:250px;background:rgba(170,172,180,0.55);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);padding:8px 4px 4px">
+    <div style="display:flex;justify-content:space-around;padding:6px 8px;font-size:15px;color:var(--jot-ink-2)"><span>Okta</span><span>okay</span><span>OK</span></div>
+    <div style="display:flex;flex-direction:column;gap:11px;padding:6px 4px">
+      <div style="display:flex;gap:6px;justify-content:center">
+        <span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">q</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">w</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">e</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">r</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">t</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">y</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">u</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">i</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">o</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">p</span>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:center;padding:0 18px">
+        <span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">a</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">s</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">d</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">f</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">g</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">h</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">j</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">k</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">l</span>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:center">
+        <span style="width:40px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:15px;color:var(--jot-ink)">⇧</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">z</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">x</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">c</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">v</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">b</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">n</span><span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:18px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">m</span><span style="width:40px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:15px;color:var(--jot-ink)">⌫</span>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:center;align-items:center">
+        <span style="width:48px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:14px;color:var(--jot-ink)">123</span>
+        <span style="width:34px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:16px;color:var(--jot-ink)">🌐</span>
+        <span style="flex:1;text-align:center;padding:11px 0;background:#fcfcfd;border-radius:6px;font-size:15px;color:var(--jot-ink);box-shadow:0 1px 0 rgba(0,0,0,0.25)">space</span>
+        <span style="width:64px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:14px;color:var(--jot-ink)">return</span>
+        <span style="width:34px;text-align:center;padding:11px 0;background:rgba(174,179,190,0.85);border-radius:6px;font-size:16px;color:var(--jot-ink)">🎤</span>
+      </div>
+    </div>
+  </div>
+</div>

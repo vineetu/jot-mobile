@@ -24,6 +24,12 @@ struct JotApp: App {
     @State private var cleanupService: CleanupService
     @State private var setupRerunTrigger: SettingsRerunTrigger
     @State private var keyboardRewriteRouter = KeyboardRewriteRouter()
+    /// App-owned navigation source of truth (Step 1 of the root-view
+    /// decouple). Additive `@State` injected into the scene alongside the
+    /// existing services — it must NOT reorder or gate the launch-serialize
+    /// Task or the scene `.task`, and must NOT sit in front of the
+    /// `onOpenURL` early-returns. See `docs/decouple-root-view/design.md`.
+    @State private var router = Router()
     @State private var showSetupWizard = false
     @State private var setupCompleted = SetupCompletion.isCompleted
     @State private var autoStartConsumed = false
@@ -195,12 +201,32 @@ struct JotApp: App {
         // its `guard let spotter…` and returned nil, and EVERY vocab correction
         // silently no-op'd. Best-effort + detached; the rescore path falls back to
         // the raw transcript if this hasn't finished yet.
+        // SERIAL cold-load order: Parakeet → vocab CTC → EmbeddingGemma. All
+        // three are CoreML models whose loads contend in the shared ANE
+        // device-specialization compiler — running any two concurrently 4×'d
+        // the cold start (~60s vs ~16s). `.utility` priority isn't enough (the
+        // contention is in the ANE compiler, not the scheduler), so we gate each
+        // stage behind the previous one and load them strictly one at a time.
         Task { @MainActor in
-            guard VocabularyStore.shared.isEnabled,
+            // Stage 1 → 2: wait for Parakeet, then prepare the vocab rescorer IF
+            // the user has it enabled. Done as an `if` (not an early return) so
+            // the EmbeddingGemma prewarm below still runs when vocab is disabled.
+            await TranscriptionService.shared.awaitWarmSettled()
+            if VocabularyStore.shared.isEnabled,
                 CtcModelCache.shared.isCached,
-                let vocabURL = VocabularyStore.shared.fileURL
-            else { return }
-            try? await VocabularyRescorerHolder.shared.prepare(vocabularyFileURL: vocabURL)
+                let vocabURL = VocabularyStore.shared.fileURL {
+                try? await VocabularyRescorerHolder.shared.prepare(vocabularyFileURL: vocabURL)
+            }
+
+            // Stage 3 (LAST): pre-warm the MiniLM embedding model so the first
+            // dictation doesn't pay the 3–10s cold load tax inline. Kicked only
+            // after Parakeet (and vocab, when enabled) have settled, so it never
+            // contends with their ANE specialization. `.utility` so it yields to
+            // any userInitiated work; `prewarm()` coalesces concurrent callers,
+            // so a dictation that races this shares the same in-flight load.
+            Task(priority: .utility) {
+                try? await EmbeddingGemmaService.shared.prewarm()
+            }
         }
 
         // Per-launch defensive: exclude FluidAudio's downloaded speech-model
@@ -307,16 +333,9 @@ struct JotApp: App {
             warmTranscription.warmIfNeeded()
         }
 
-        // Pre-warm the MiniLM embedding model so the first dictation
-        // doesn't pay the 3-10s cold load tax inline on the detached
-        // task. `.utility` priority so this doesn't compete with the
-        // userInitiated Parakeet warm-up above. `prewarm()` coalesces
-        // concurrent callers internally, so a dictation that races this
-        // task shares the same in-flight load instead of triggering a
-        // second one.
-        Task(priority: .utility) {
-            try? await EmbeddingGemmaService.shared.prewarm()
-        }
+        // (EmbeddingGemma prewarm now runs LAST in the serial cold-load Task
+        // above — Parakeet → vocab → embeddings — so it no longer contends with
+        // Parakeet's ANE specialization at cold start.)
 
         // Reset any leftover non-terminal pipeline-phase projection from a
         // crashed previous launch. Without this reset, the keyboard would
@@ -351,6 +370,7 @@ struct JotApp: App {
                 .environment(streamingPartial)
                 .environment(cleanupService)
                 .environment(keyboardRewriteRouter)
+                .environment(router)
 .fullScreenCover(isPresented: $showSetupWizard) {
                     SetupWizardView {
                         setupCompleted = SetupCompletion.isCompleted
@@ -1300,6 +1320,19 @@ private final class CrossProcessRecordingStopCoordinator {
                 transient: transient
             )
         } catch {
+            // Transcription threw (e.g. `audioTooShort`) BEFORE the post-transcript
+            // pipeline ran, so nothing published a terminal cross-process phase —
+            // the projection stays at `.transcribing` and the keyboard sits on
+            // "working" forever, looping `pasteSkipNoPayload` (stuck-keyboard bug).
+            // Publish `.failed` (carries the session adopted at start) so the
+            // keyboard's terminal cleanup clears its pending paste session and the
+            // user can re-dictate from the keyboard instead of opening the app.
+            DiagnosticsLog.record(
+                source: "main-app", category: .recordingOutcome,
+                message: "dictation failed",
+                metadata: ["reason": error.localizedDescription]
+            )
+            recording.publishPipelinePhase(.failed, failureReason: "transcribe-throw")
             recording.markPipelineFinished()
             throw error
         }

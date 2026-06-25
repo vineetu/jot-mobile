@@ -703,18 +703,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// object instead of into a freshly-built `KeyboardView`. Called by every
     /// `renderRootView()` call site (37 of them) and once before first install.
     private func syncKeyboardInputs() {
-        // Compose the popover's Copy enabled state:
-        // Full Access is required for clipboard writes from a custom
-        // keyboard, AND there must be a non-empty selection in the host
-        // app's focused field. Read `textDocumentProxy.selectedText`
-        // directly here (rather than relying on `selectedTextSnapshot`,
-        // which fuses before/after context as a fallback) so the row's
-        // enabled state matches what `copyHostSelection()` will actually
-        // be able to read at tap time.
-        let hostHasSelection: Bool = {
-            guard let selected = textDocumentProxy.selectedText else { return false }
-            return !selected.isEmpty
-        }()
+        // Copy / Add-to-Vocabulary enabled state: Full Access is required for clipboard
+        // writes from a custom keyboard, AND there must be a non-empty selection in the
+        // host's focused field. `hostHasSelection` reads `textDocumentProxy.selectedText`
+        // directly (not `selectedTextSnapshot`, which fuses before/after context as a
+        // fallback) so the tile state matches what Copy can actually read at tap time —
+        // and the availability gate keys off the same property, so the two never diverge.
         keyboardInputs.hasFullAccess = hasFullAccess
         keyboardInputs.hasPasteboardContent = hasPasteboardContent
         keyboardInputs.needsInputModeSwitchKey = needsInputModeSwitchKey
@@ -933,11 +927,25 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private var currentActionAvailability: KeyboardActionAvailability {
         KeyboardActionAvailability(
-            hasSelection: selectedTextSnapshot != nil,
+            // Use the SAME signal the tiles display (`hostHasSelection`), not
+            // `selectedTextSnapshot`. The snapshot is non-nil whenever the field holds
+            // ANY text (it fuses before+selected+after), so it never moved when the
+            // user selected/deselected — the gate below saw "no change" and suppressed
+            // the re-sync, leaving Copy/Vocab frozen until the pane was reopened. Keying
+            // the gate off the real selection makes the tiles update live.
+            hasSelection: hasFullAccess && hostHasSelection,
             canUndoLastInsertion: canUndoLastInsertion,
             canRedoInsertion: canRedoInsertion,
             isMagicFollowUpActive: isMagicFollowUpActive
         )
+    }
+
+    /// True when the host's focused field has a non-empty selection. Single source of
+    /// truth for the selection-dependent tiles (Copy / Add to Vocabulary) AND the
+    /// availability gate — they MUST agree or the gate suppresses a sync the UI needs.
+    private var hostHasSelection: Bool {
+        guard let selected = textDocumentProxy.selectedText else { return false }
+        return !selected.isEmpty
     }
 
     private var canUndoLastInsertion: Bool {
@@ -1083,6 +1091,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         guard hasFullAccess else { return }
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
             hasPasteboardContent = false
+            // Paste is always offered, so a tap with an empty clipboard lands here —
+            // tell the user why rather than silently doing nothing.
+            setStatusBanner("Nothing to paste yet")
             renderRootView()
             return
         }
@@ -1099,7 +1110,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private func copySelectionToPasteboard() {
         guard hasFullAccess else { return }
-        guard let selected = textDocumentProxy.selectedText, !selected.isEmpty else { return }
+        guard let selected = textDocumentProxy.selectedText, !selected.isEmpty else {
+            setStatusBanner("Select text first to copy")
+            return
+        }
         UIPasteboard.general.string = selected
         selectedTextSnapshot = selected
         // Pasteboard now has fresh content — refresh Actions affordance state.
@@ -1260,6 +1274,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         guard let entry = undoLedger.popUndo(
             contextBeforeInput: textDocumentProxy.documentContextBeforeInput
         ) else {
+            setStatusBanner("Nothing to undo")
             renderRootView()
             return
         }
@@ -1282,6 +1297,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     private func redoInsertion() {
         guard let entry = undoLedger.popRedo() else {
+            setStatusBanner("Nothing to redo")
             renderRootView()
             return
         }

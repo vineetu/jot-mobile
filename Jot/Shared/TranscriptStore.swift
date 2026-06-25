@@ -276,7 +276,9 @@ enum TranscriptStore {
         duration: TimeInterval? = nil,
         derivedFrom: UUID? = nil,
         instruction: String? = nil,
-        source: String? = nil
+        source: String? = nil,
+        createdAt: Date? = nil,
+        watchOriginUUID: String? = nil
     ) throws -> Transcript? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -286,6 +288,10 @@ enum TranscriptStore {
             id: id,
             text: raw,
             cleanedText: cleaned,
+            // When the caller passes a recording time (the Watch-sync path
+            // forwards the original capture time), honor it; otherwise the
+            // model's default `createdAt = now` keeps today's behavior.
+            createdAt: createdAt ?? Date(),
             durationSeconds: duration,
             ledgerIndex: nextLedgerIndex(),
             derivedFromID: derivedFrom,
@@ -297,7 +303,12 @@ enum TranscriptStore {
             // future classification writes go to `TranscriptCategory`.
             rewriteUserEdit: nil,
             rewriteUpvoted: nil,
-            source: source
+            source: source,
+            // Idempotency / dedup key for the Watch-sync path. The caller
+            // runs the `transcriptExists(watchOriginUUID:)` pre-insert
+            // query; this only needs to persist the field so the next
+            // check sees it. `nil` for every non-Watch caller.
+            watchOriginUUID: watchOriginUUID
         )
         context.insert(transcript)
         do {
@@ -402,6 +413,163 @@ enum TranscriptStore {
             logger.error("Transcript supersede save failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
+    }
+
+    // MARK: - Repository mutation API
+    //
+    // The methods below are the SOLE writers of the `Transcript` entity and
+    // the keyboard mirror. Each mutates a fresh `ModelContext(JotModelContainer.shared)`
+    // — NOT the scene `@Environment(\.modelContext)` — exactly like `append`
+    // and `markSuperseded` above. Callers keep their own UI/protocol side
+    // effects (flashes, App-Group rewrite-result writes) in the caller, AFTER
+    // the `try`, because every method throws so existing `catch` blocks fire.
+    //
+    // The "quadruplet" each persistence write performs is
+    // `save → TranscriptHistoryMirror.refresh → post historyMirrorUpdated`
+    // (+ `TranscriptIndexer.index` for new-row appends). `setRewriteRating` is
+    // the one deliberate exception that skips mirror/notify — see its doc.
+
+    /// Fetch a single transcript by id on the given context, or `nil` if no
+    /// matching row exists. Mirrors `markSuperseded`'s fetch-by-predicate.
+    private static func fetch(id: UUID, in context: ModelContext) throws -> Transcript? {
+        var descriptor = FetchDescriptor<Transcript>(
+            predicate: #Predicate<Transcript> { $0.id == id }
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first
+    }
+
+    /// Fire the standard mirror-refresh + cross-process notification after a
+    /// successful save. Best-effort; a mirror failure never invalidates the
+    /// persisted write. Centralizes the `save`-followed-by `mirror → notify`
+    /// half of the quadruplet so every mutation site is byte-for-byte
+    /// identical to `append`.
+    private static func fanOutMirror(from context: ModelContext) {
+        TranscriptHistoryMirror.refresh(from: context)
+        CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+    }
+
+    /// Replace a transcript's raw `text`. Used by the Detail surface's
+    /// vocab in-place fix (`confirmVocabAdd`) and the cross-process
+    /// correction-inbox drain (`CorrectionReviewModel`). No-op if no matching
+    /// row exists. Quadruplet (minus the indexer — this is an edit of an
+    /// existing row, not an append).
+    static func setText(id: UUID, newText: String) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        guard let transcript = try fetch(id: id, in: context) else { return }
+        transcript.text = newText
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript setText save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        fanOutMirror(from: context)
+    }
+
+    /// Edit-save for the original/rewrite tabs. The caller resolves which
+    /// field changed (`text`, or `rewriteUserEdit` set/cleared) and passes
+    /// the resulting values; this persists them + quadruplet.
+    ///
+    /// Both parameters are `optional-of-optional`-free by design: the caller
+    /// already decides the no-op cases (unchanged text, already-cleared edit)
+    /// and only calls when there is a real change. `rewriteUserEdit` is the
+    /// final desired value — pass `nil` to clear it.
+    static func update(id: UUID, text: String? = nil, rewriteUserEdit: String?? = nil) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        guard let transcript = try fetch(id: id, in: context) else { return }
+        if let text { transcript.text = text }
+        if let rewriteUserEdit { transcript.rewriteUserEdit = rewriteUserEdit }
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript update save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        fanOutMirror(from: context)
+    }
+
+    /// Set the 👍/👎 rating on a transcript's rewrite. **Save ONLY — no
+    /// mirror/notify.** Ratings aren't shown cross-process, so waking the
+    /// keyboard would be wasted work. This deliberate asymmetry mirrors
+    /// `markSuperseded`'s sanctioned no-mirror exception — preserve it.
+    static func setRewriteRating(id: UUID, rating: Bool?) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        guard let transcript = try fetch(id: id, in: context) else { return }
+        transcript.rewriteUpvoted = rating
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript setRewriteRating save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
+    /// Persist a completed rewrite. The core, identical at both rewrite-complete
+    /// sites: set `cleanedText`, AND clear `rewriteUserEdit` + `rewriteUpvoted`
+    /// (a fresh model output makes the prior user-edit and rating meaningless),
+    /// then quadruplet. The keyboard-handshake reply (App-Group rewrite-result
+    /// writes + `postCompleted`) stays in the caller — it is not transcript
+    /// persistence.
+    static func setCleanedText(id: UUID, cleanedText: String) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        guard let transcript = try fetch(id: id, in: context) else { return }
+        transcript.cleanedText = cleanedText
+        transcript.rewriteUserEdit = nil
+        transcript.rewriteUpvoted = nil
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript setCleanedText save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        fanOutMirror(from: context)
+    }
+
+    /// Restore a transcript to its pre-rewrite state: nil `cleanedText`,
+    /// `rewriteUserEdit`, and `rewriteUpvoted` (a user-edit/rating against a
+    /// discarded rewrite is meaningless), then quadruplet.
+    static func discardRewrite(id: UUID) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        guard let transcript = try fetch(id: id, in: context) else { return }
+        transcript.cleanedText = nil
+        transcript.rewriteUserEdit = nil
+        transcript.rewriteUpvoted = nil
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript discardRewrite save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        fanOutMirror(from: context)
+    }
+
+    /// Bulk-delete transcripts by id, firing the quadruplet's mirror/notify
+    /// exactly ONCE for the whole batch. `combineSelectedTranscripts` uses
+    /// this so the mirror no longer double-fires (append + a second manual
+    /// delete-originals save). Rows not present are silently skipped.
+    static func delete(ids: Set<UUID>) throws {
+        let context = ModelContext(JotModelContainer.shared)
+        let idList = Array(ids)
+        let descriptor = FetchDescriptor<Transcript>(
+            predicate: #Predicate<Transcript> { idList.contains($0.id) }
+        )
+        let rows = try context.fetch(descriptor)
+        guard !rows.isEmpty else { return }
+        for row in rows { context.delete(row) }
+        do {
+            try context.save()
+        } catch {
+            logger.error("Transcript bulk delete save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        fanOutMirror(from: context)
+    }
+
+    /// Delete a single transcript by id. Derived from `delete(ids:)` so the
+    /// persistence sequence is shared.
+    static func delete(id: UUID) throws {
+        try delete(ids: [id])
     }
 }
 

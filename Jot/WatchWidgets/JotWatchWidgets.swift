@@ -54,11 +54,18 @@ struct JotCaptureComplication: Widget {
         }
         .configurationDisplayName("Capture")
         .description("Tap to start recording in Jot.")
-        .supportedFamilies([
-            .accessoryCorner,
-            .accessoryCircular,
-            .accessoryInline
-        ])
+        .supportedFamilies(Self.captureFamilies)
+    }
+
+    // `.accessoryCorner` is a watchOS-only widget family — exclude it on non-watch
+    // builds so this file compiles when the Jot scheme is built for the iOS
+    // Simulator (used for verification). watchOS behavior is unchanged.
+    static var captureFamilies: [WidgetFamily] {
+        #if os(watchOS)
+        [.accessoryCorner, .accessoryCircular, .accessoryInline]
+        #else
+        [.accessoryCircular, .accessoryInline]
+        #endif
     }
 }
 
@@ -78,6 +85,7 @@ struct JotCaptureComplicationView: View {
                     .foregroundStyle(JotDesignWatchSafe.jotAccent)
             }
             .widgetURL(URL(string: "jot-watch://record"))
+        #if os(watchOS)
         case .accessoryCorner:
             ZStack {
                 AccessoryWidgetBackground()
@@ -86,6 +94,7 @@ struct JotCaptureComplicationView: View {
                     .foregroundStyle(JotDesignWatchSafe.jotAccent)
             }
             .widgetURL(URL(string: "jot-watch://record"))
+        #endif
         default:
             Image(systemName: "mic.fill")
                 .widgetURL(URL(string: "jot-watch://record"))

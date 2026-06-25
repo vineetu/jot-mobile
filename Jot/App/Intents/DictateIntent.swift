@@ -447,6 +447,18 @@ final class DictationControllerImpl: DictationController {
             let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
             return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt)
         } catch {
+            // Transcription threw (e.g. `audioTooShort`) before any terminal
+            // cross-process phase was published. The in-process `defer` above
+            // resets THIS controller's phase, but the keyboard reads the
+            // cross-process projection — which is stuck at `.transcribing`. Publish
+            // `.failed` (carries the adopted session ID) so the keyboard's terminal
+            // cleanup clears its pending paste session and exits "working".
+            DiagnosticsLog.record(
+                source: "main-app", category: .recordingOutcome,
+                message: "dictation failed",
+                metadata: ["reason": error.localizedDescription]
+            )
+            recording.publishPipelinePhase(.failed, failureReason: "transcribe-throw")
             recording.markPipelineFinished()
             throw error
         }

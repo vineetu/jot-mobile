@@ -185,11 +185,16 @@ final class CorrectionReviewModel {
         // distance, or a non-BMP char (emoji) earlier in the body would shift it.
         let startUTF16 = NSRange(target, in: text).location
         let flashRange = NSRange(location: startUTF16, length: (replacement as NSString).length)
+        // Keep the live (model-context) object current so this model's own
+        // subsequent synchronous reads — `reload()`'s anchor reconcile against
+        // `transcript.text`, `marks()`, `context()` — see the new text within
+        // the same `pick()`/`undo()` call. The Repository persists the same
+        // value on its own context (sole writer of the store + mirror); the
+        // two contexts converge on identical text, so there is no conflicting
+        // double-write.
         transcript.text = newText
         do {
-            try modelContext.save()
-            TranscriptHistoryMirror.refresh(from: modelContext)
-            CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
+            try TranscriptStore.setText(id: transcript.id, newText: newText)
             flashNonce += 1
             flash = MarkedTranscriptText.Flash(range: flashRange, token: flashNonce)
             return SelfEdit(
@@ -198,7 +203,9 @@ final class CorrectionReviewModel {
                 newLength: replacement.count,
                 newText: newText)
         } catch {
-            modelContext.rollback()
+            // Revert the optimistic in-memory mutation so the model's text
+            // doesn't drift from on-disk state after a failed save.
+            transcript.text = text
             return nil
         }
     }

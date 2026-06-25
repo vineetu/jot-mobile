@@ -122,7 +122,7 @@ final class TranscriptionService {
     /// fused preprocessor+encoder), entirely separate from the *vocabulary*
     /// CTC subset (`parakeet-ctc-110m-coreml`) the rescorer uses — different
     /// FluidAudio repo, different on-disk directory.
-    private static var selectedVersion: AsrModelVersion {
+    nonisolated private static var selectedVersion: AsrModelVersion {
         DeviceCapability.is600MCapable ? .v2 : .tdtCtc110m
     }
 
@@ -240,6 +240,24 @@ final class TranscriptionService {
         case .downloading, .loading, .ready:
             break
         }
+    }
+
+    /// Awaits the in-flight Parakeet load (kicking one if idle), so other heavy
+    /// Neural-Engine model loads can be SERIALIZED behind it. Loading the vocab CTC
+    /// model and the EmbeddingGemma model CONCURRENTLY with Parakeet makes Apple's
+    /// ANE compiler service (a single shared system service) serialize all three,
+    /// ~4×-ing the cold start: measured ~60s with the three contending vs ~16s for
+    /// Parakeet alone (a standalone probe loads the identical model in ~16s). Task
+    /// priority alone does NOT fix this — the contention is in the system compiler,
+    /// not the scheduler — so the dependents must wait, not just yield. Returns
+    /// promptly if the model is already loaded or failed.
+    func awaitWarmSettled() async {
+        switch modelState {
+        case .ready, .failed: return
+        default: break
+        }
+        if prepareTask == nil { warmIfNeeded() }
+        if let task = prepareTask { _ = try? await task.value }
     }
 
     /// Called when the user flips Settings → Speech model variant.
@@ -604,6 +622,12 @@ final class TranscriptionService {
             )
             async let spotResult: CtcKeywordSpotter.SpotKeywordsResult? = {
                 guard vocabEnabledForThisRun else { return nil }
+                // 191: the vocab CTC model loads DEFERRED (after Parakeet, to keep
+                // the cold start fast). If a dictation stops before it finished,
+                // WAIT for it here (bounded) so EVERY dictation gets custom
+                // vocabulary instead of silently falling back to raw. Returns
+                // immediately once ready, so warm/normal dictations pay nothing.
+                _ = await VocabularyRescorerHolder.shared.awaitReady(timeoutSeconds: 20)
                 let spot = await withTimeout(seconds: spotTimeoutSeconds) {
                     try await VocabularyRescorerHolder.shared.spot(
                         audioSamples: audioForSpot
@@ -971,6 +995,21 @@ final class TranscriptionService {
             // FUTURE cold load uses the recurring (not first-ever) copy.
             ColdStartCopy.markLoadedOnce()
             let loadElapsedMS = Self.elapsedMilliseconds(from: loadStartedAt, to: loadEndedAt)
+            // Copyable diagnostic: WHICH directory the model loaded from + how long.
+            let loadSourceLabel: String = {
+                if directory.path.hasPrefix(Bundle.main.bundleURL.path) { return "bundle" }
+                return "download"
+            }()
+            DiagnosticsLog.record(
+                source: "main-app",
+                category: .modelLoad,
+                message: "model loaded",
+                metadata: [
+                    "from": loadSourceLabel,
+                    "loadMS": "\(loadElapsedMS)",
+                    "downloadedThisCall": "\(downloadedThisCall)",
+                ]
+            )
             let prepareEndedAt = Date()
             let prepareElapsedMS = Self.elapsedMilliseconds(from: prepareStartedAt, to: prepareEndedAt)
             signposter.endInterval("parakeet-load", loadInterval)
@@ -1044,17 +1083,20 @@ final class TranscriptionService {
     ///
     /// - **Capable devices** (`DeviceCapability.is600MCapable`) run the
     ///   bundled Parakeet 0.6B v2, vendored at
-    ///   `Resources/Models/Parakeet/parakeet-tdt-0.6b-v2-coreml/` inside the
-    ///   app bundle. First dictation is instant + offline, no download. If the
-    ///   bundle resource is ever stripped (debug builds / iOS app thinning) we
-    ///   fall through to the Application Support cache as a defensive guard.
+    ///   `Resources/Models/Parakeet/parakeet-tdt-0.6b-v2/` inside the app bundle.
+    ///   First dictation is instant + offline, no download. Loaded straight from
+    ///   the app bundle.
     /// - **Sub-6GB devices** run the smaller 110M, which is NOT bundled —
     ///   `MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetTdtCtc110m)`
-    ///   points at FluidAudio's default Application Support cache, where
-    ///   `AsrModels.download` lands the weights on first need.
+    ///   points at FluidAudio's default Application Support cache (already a
+    ///   stable, update-proof path), where `AsrModels.download` lands the weights
+    ///   on first need.
     private static func modelDirectory() -> URL {
-        if DeviceCapability.is600MCapable, let bundled = bundled600mDirectory() {
-            return bundled
+        // Capable devices run the bundled 600M straight from the app bundle.
+        if DeviceCapability.is600MCapable {
+            if let bundled = bundled600mDirectory() {
+                return bundled
+            }
         }
         return MLModelConfigurationUtils.defaultModelsDirectory(for: selectedRepo)
     }
@@ -1081,7 +1123,7 @@ final class TranscriptionService {
     /// looks one dir over (`.../Parakeet/parakeet-tdt-0.6b-v2`), finds nothing,
     /// and tries to download into the read-only bundle. Keep this in sync with
     /// the vendored dir name under `Resources/Models/Parakeet/`.
-    static func bundled600mDirectory() -> URL? {
+    nonisolated static func bundled600mDirectory() -> URL? {
         let url = Bundle.main.bundleURL
             .appendingPathComponent("Models", isDirectory: true)
             .appendingPathComponent("Parakeet", isDirectory: true)

@@ -126,6 +126,16 @@ enum DiagnosticsCategory: String, Codable {
     /// per-chunk playback, and any error. Lets a "play does nothing" report be
     /// diagnosed cable-free (Help → Diagnostics → Copy).
     case tts
+    /// A recording finished: the captured audio duration / sample count at stop,
+    /// or a terminal failure (e.g. `audioTooShort`). One line per recording, so a
+    /// "16s timer but nothing transcribed" cold-start capture miss reads straight
+    /// out of the copyable log without the per-tick streaming noise.
+    case recordingOutcome
+    /// The speech model finished loading: WHICH directory it loaded from
+    /// (stable-copy vs app bundle vs download cache) and how long it took. Lets us
+    /// see whether the survive-app-updates stable-copy actually engaged and
+    /// whether the load was cold (~tens of seconds) or warm (sub-second).
+    case modelLoad
 }
 
 struct DiagnosticsEntry: Codable, Identifiable, Equatable {
@@ -159,6 +169,14 @@ enum DiagnosticsLog {
         message: String,
         metadata: [String: String]? = nil
     ) {
+        // The streaming preview channel fires several times per second (preview
+        // tick / publish / gate). It's internal pacing debug — not user- or
+        // support-facing — and at that rate it evicts every useful lifecycle /
+        // paste / vocab event from the 100-entry ring within a single recording.
+        // Filter it out of the diagnostics card at the sink. (The emit sites are
+        // now no-ops; they can be stripped from the streaming files separately.)
+        guard category != .streamingPartialReceived else { return }
+
         let entry = DiagnosticsEntry(
             id: UUID(),
             timestamp: Date(),

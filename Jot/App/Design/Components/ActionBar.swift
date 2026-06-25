@@ -6,11 +6,10 @@
 //  See: Jot/tmp/ux-overhaul-plan.md §5.3 + §3 (Mockup 09).
 //
 //  Glass-heavy ~60pt floating dock anchored to the bottom of the transcript
-//  detail surface. Hosts Copy / Share / Rewrite (prominent blue pill) /
-//  More. Each row item is ≥44pt for HIG-compliant hit targets; the Rewrite
-//  pill is the visually loudest control (blue fill + white glyph) so it
-//  reads as the primary CTA without competing with the back / sparkle
-//  toolbar buttons up top.
+//  detail surface. Hosts Delete / Edit / Rewrite (accent CIRCLE, icon-only) /
+//  Translate / Copy. Each row item is ≥44pt for HIG-compliant hit targets; the
+//  Rewrite circle is the visually loudest control (blue fill + white sparkle) so
+//  it reads as the primary without the old giant labelled pill shouting for a tap.
 //
 
 import SwiftUI
@@ -108,38 +107,37 @@ struct ActionBar: View {
         .accessibilityLabel(item.accessibilityLabel)
     }
 
+    /// The primary action is an icon-only ACCENT CIRCLE (no text label) — the
+    /// giant "Rewrite" pill was retired so it stops shouting "call me" when, under
+    /// Apple Intelligence, tapping it just routes to the system Writing Tools guide.
+    /// The glyph alone (sparkles) reads as the primary without a wall of blue. The
+    /// `label` is retained for the accessibility label, not drawn.
     @ViewBuilder
     private func primaryButton(_ item: ActionBarItem) -> some View {
         Button(action: item.action) {
-            HStack(spacing: 8) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-                Text(item.label)
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 18)
-            .frame(minHeight: 44)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.jotBlueTop,
-                                Color.jotBlueBottom
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+            Image(systemName: item.systemImage)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.white)
+                .frame(width: 48, height: 48)
+                .background(
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.jotBlueTop,
+                                    Color.jotBlueBottom
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
-            )
-            .shadow(color: Color.jotBlueTop.opacity(0.30), radius: 8, x: 0, y: 4)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
+                )
+                .shadow(color: Color.jotBlueTop.opacity(0.35), radius: 10, x: 0, y: 4)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!item.isEnabled)
