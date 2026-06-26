@@ -221,6 +221,16 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// jetsammed app — which stamps nothing — trips it.
     private static let controlTapLivenessCeiling: TimeInterval = 5
 
+    /// B1 — the freshness window the record-based start decision uses to answer
+    /// "is the writer alive right now?" (`now − record.liveness < livenessFresh`).
+    /// Sized ≥ the old 4s warm window (the legacy `handleMicCTATap` heartbeat
+    /// check) so a healthy BACKGROUNDED warm app — which tolerates MainActor
+    /// jitter on a 1s stamp cadence — is never misclassified as dead and forced
+    /// to cold-start (§6, backgrounded-alive liveness latency). The writer stamps
+    /// `liveness` every 1s, so 4s leaves headroom for ~3 missed ticks. Consumed
+    /// LIVE by `recordStartDecision()` (and the diagnostic comparison).
+    private static let livenessFresh: TimeInterval = 4.0
+
     // MARK: - Jot affordance state
 
     /// Latest preview string from ``ClipboardHandoff`` — nil when no fresh
@@ -426,6 +436,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // immediately and clear if still no proof of life. Extension recycle
         // does not strand pending.
         rearmLaunchDeadlineIfPending()
+        // Controls-hang fix: if this presentation opens onto a still-active,
+        // still-frozen pipeline projection (a prior control tap the app never
+        // serviced — dismissed keyboard, suspended app), re-arm the dead-app
+        // watchdog so recovery happens in ~5s instead of waiting on the 30s stale
+        // path. A live app advances the heartbeat past the snapshot baseline, so
+        // this stands down harmlessly when the app is healthy.
+        rearmDeadAppWatchdogIfFrozen()
         refreshPasteState()
         // History is refreshed via `hub.refreshNow()` above (the hub owns the
         // `historyMirrorUpdated` feed + the `historyEntries` projection).
@@ -2059,19 +2076,22 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             if let p = projection,
                p.sessionID == freeze.sessionID,
                p.lastUpdatedAt <= freeze.frozenAt,
-               p.phase == .recording || p.phase == .paused {
+               p.phase.isActiveNonTerminal {
                 projection = nil
             }
         }
         armOrCancelStaleDeadline(for: projection)
         cancelLaunchDeadlineIfProofOfLife(projection)
-        // Clearing `stopRequestPosted` flips the speak button's `.disabled`
-        // back off, so we re-render the hosted view to pick up the change.
-        // Without the explicit re-render the SwiftUI tree would only refresh
-        // on the next state-derived path (next paint, next action), and the
-        // user could see a stale "disabled" appearance after the projection
-        // already moved off `.recording`.
-        if let phase = projection?.phase, phase != .recording, stopRequestPosted {
+        // B3 — resolve the "stop pending" VIEW when the RECORD advances off the
+        // live-capture set {recording, paused} — the app's ack — NOT on a local
+        // timer. `stopRequestPosted` is now a pure view of the record ("I posted a
+        // stop AND the record still shows a live capture"); the moment the record
+        // leaves {recording, paused} (→ in-flight tail / terminal) it clears.
+        // Clearing flips the speak button's `.disabled` back off, so we re-render
+        // to pick up the change live rather than on the next state-derived paint.
+        if let phase = projection?.phase,
+           phase != .recording, phase != .paused,
+           stopRequestPosted {
             stopRequestPosted = false
             renderRootView()
         }
@@ -2127,9 +2147,34 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// the projection within the 3s heartbeat (and immediately when it processes
     /// the control), so it never trips this. Tap-triggered only — no polling. A
     /// newer control tap (or a recovery) supersedes any in-flight watchdog.
+    /// Re-arm the dead-app watchdog on re-present IFF the projection is still an
+    /// active non-terminal phase (a control the app never serviced). Without this,
+    /// a keyboard that was dismissed after a control tap (cancelling the prior
+    /// watchdog Task in teardown) and re-presented onto a suspended app would only
+    /// recover via the 30s stale path. Skips a session already tombstoned by a
+    /// prior recovery (the hub's `recoveredZombieFreeze`) so we don't re-arm
+    /// against an already-handled zombie.
+    private func rearmDeadAppWatchdogIfFrozen() {
+        guard hasFullAccess else { return }
+        guard let projection = PipelinePhaseProjection.read(),
+              projection.phase.isActiveNonTerminal else { return }
+        if let freeze = hub.recoveredZombieFreeze,
+           projection.sessionID == freeze.sessionID,
+           projection.lastUpdatedAt <= freeze.frozenAt {
+            return  // already recovered this exact frozen session
+        }
+        armDeadAppWatchdog(reason: "re-present")
+    }
+
     private func armDeadAppWatchdog(reason: String) {
         deadAppWatchdogTask?.cancel()
-        let baseline = PipelinePhaseProjection.read()?.lastUpdatedAt
+        // B3 — base recovery liveness on the record's unified `liveness` stamp
+        // (1s cadence) rather than `lastUpdatedAt` (3s heartbeat). `liveness` is
+        // the single "is the writer alive right now?" stamp the start decision
+        // also uses, so the watchdog and `recordStartDecision()` share one
+        // freshness notion. `livenessOrLegacy` falls back to `lastUpdatedAt` for
+        // a pre-A2 blob (none in this build, but keeps the reader total).
+        let baseline = PipelinePhaseProjection.read()?.livenessOrLegacy
         deadAppWatchdogTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .seconds(Self.controlTapLivenessCeiling))
@@ -2138,16 +2183,24 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             }
             guard let self, !Task.isCancelled else { return }
             let latest = PipelinePhaseProjection.read()
-            // Recover ONLY on the unambiguous zombie signal: the projection is
-            // STILL an active recording/paused phase AND its timestamp has not
-            // advanced past the tap-time baseline. A live writer — even
-            // backgrounded — stamps a heartbeat within 3s, so any advance means
-            // alive; a terminal (.idle/.failed) / cleared / missing projection
+            // Recover ONLY on the unambiguous zombie signal: the record is STILL
+            // an active NON-TERMINAL phase AND its `liveness` has not advanced past
+            // the tap-time baseline. A live writer — even backgrounded — stamps
+            // `liveness` every 1s (and advances on the control ack), so any advance
+            // means alive; a terminal (.idle/.failed) / cleared / missing record
             // means the app (or the normal path) already handled it — stand down
             // and never clear a still-valid pending paste.
+            //
+            // This is the BOUNDED, after-the-fact recovery — it resets the
+            // keyboard's LOCAL UI only. The genuinely-suspended orphan (held mic /
+            // un-finalized session) is reconciled APP-side on next foreground
+            // (§2.4 M2 — `RecordingService.reconcileOrphanedSessionOnForeground`).
+            // It covers `.recording/.paused` AND the in-flight tail
+            // (`.transcribing/.processing/.cleaning/...`) so a Stop tapped while
+            // the app is suspended mid-transcription still recovers here.
             if let baseline, let latest,
-               latest.lastUpdatedAt <= baseline,
-               latest.phase == .recording || latest.phase == .paused {
+               latest.livenessOrLegacy <= baseline,
+               latest.phase.isActiveNonTerminal {
                 self.recoverFromUnresponsiveApp(reason: reason)
             } else {
                 self.deadAppWatchdogTask = nil
@@ -2172,7 +2225,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // within the 30s stale window can't resurrect it from the still-active
         // shared projection (the dead writer never goes terminal).
         if let frozen = PipelinePhaseProjection.read(),
-           frozen.phase == .recording || frozen.phase == .paused,
+           frozen.phase.isActiveNonTerminal,
            let frozenSession = frozen.sessionID {
             hub.recoveredZombieFreeze = (frozenSession, frozen.lastUpdatedAt)
         }
@@ -2368,11 +2421,119 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         guard hasFullAccess else { return .noop(reason: "no-full-access") }
         if stopRequestPosted { return .noop(reason: "stop-pending") }
         if recordingState.isInflightPostRecording { return .noop(reason: "in-flight") }
+        // `arming` is the transient start-requested-but-no-buffer-yet state (B2):
+        // tapping does nothing (the CTA is also `.disabled` while arming), so the
+        // tap resolves to neither a stop nor a fresh start. Without this, a tap
+        // mid-arm would fall to `.start` here while the record reads `.stop` — a
+        // divergence between the local mirror and the record-based start decision.
+        if recordingState.isArming { return .noop(reason: "arming") }
         if recordingState.isRecording { return .stop }
         return .start
     }
 
+    // MARK: - B1 record-based start decision (LIVE — routes the tap, §2.4a)
+
+    /// The warm-vs-cold start decision, computed from the unified
+    /// `RecordingRecord` (state + liveness + warm window) instead of the legacy
+    /// warm keys + ping/pong. **B1 promoted this from A4's log-only shadow to the
+    /// LIVE decision `handleMicCTATap` routes on**, fenced behind Build A's
+    /// device-confirmed shadow agreement.
+    ///
+    /// `.cold` is the record's verdict "the app is not alive in a resumable
+    /// state" — the LIVE router then splits `.cold` into inline (Jot is the
+    /// foreground host) vs a cold URL bounce via the ONE retained
+    /// `isJotAppForeground()` read (N3 — the record answers "alive," not
+    /// "foreground"). The shadow logger (`logShadowStartDecision`) still runs
+    /// beside this for continued diagnostics (B4 cleanup deferred).
+    private enum RecordStartDecision: String {
+        case stop        // a fresh in-flight record → request a stop
+        case warmResume  // fresh warmIdle, window open → warm-resume in background
+        case cold        // idle / nil / stale → inline (if Jot foreground) or cold URL bounce
+        case noFullAccess
+    }
+
+    /// Pure function of the record (§2.4a). Reads `PipelinePhaseProjection`
+    /// (the evolving record) and applies `decideStart(record, now)`. No
+    /// side-effects, no storage mutation.
+    private func recordStartDecision() -> RecordStartDecision {
+        guard hasFullAccess else { return .noFullAccess }
+        let now = Date()
+        // Use `read()` (which already synthesizes stale warmIdle → `.idle` and
+        // stale in-flight → `.failed`, §2.2) AND apply the explicit `fresh`
+        // liveness check below — belt-and-suspenders, so the decision reflects
+        // exactly the record state §2.4a consumes.
+        guard let record = PipelinePhaseProjection.read() else { return .cold }
+        let fresh = now.timeIntervalSince(record.livenessOrLegacy) < Self.livenessFresh
+        switch record.phase {
+        case .recording, .paused, .arming, .transcribing, .processing,
+             .cleaning, .rewriting, .publishing:
+            // Any in-flight state, fresh → a stop request; stale → the writer is
+            // dead, so a tap should cold-start.
+            return fresh ? .stop : .cold
+        case .warmIdle:
+            let windowOpen = record.warmExpiresAt.map { $0 > now } ?? false
+            return (fresh && windowOpen) ? .warmResume : .cold
+        case .idle, .failed:
+            return .cold
+        }
+    }
+
+    /// Continued diagnostic (B4 deferred) — log the record-based decision (now
+    /// LIVE) next to what the LEGACY warm-gate path WOULD have decided, with an
+    /// agree flag and enough context for the owner's device logs. Post-B1 this is
+    /// no longer the gate (B1 already flipped); it is kept as the revertible
+    /// safety net's diagnostic so a field regression can be bisected against the
+    /// legacy decision (the legacy warm keys are still written until B4).
+    private func logShadowStartDecision(warmWindowOpen: Bool, now: Date) {
+        // LEGACY (old warm-gate) decision, mapped to the same vocabulary. The old
+        // `.start` resolved async via ping/pong into inline (foreground) or cold
+        // (backgrounded); for warm-vs-cold agreement we label it `cold` here (the
+        // inline foreground case is the accepted N3 residual, logged via the
+        // `jotForeground` hint below).
+        let legacy: RecordStartDecision
+        let jotForeground = hasFullAccess && AppGroup.isJotAppForeground()
+        if !hasFullAccess {
+            legacy = .noFullAccess
+        } else if warmWindowOpen && !jotForeground {
+            legacy = .warmResume
+        } else {
+            switch decideMicTap() {
+            case .stop: legacy = .stop
+            case .start: legacy = .cold      // resolves to inline (fg) or cold (bg)
+            case .noop: legacy = .cold       // no start routed; closest bucket
+            }
+        }
+
+        let record = recordStartDecision()
+        let blob = PipelinePhaseProjection.read()
+        let livenessAge = blob.map { now.timeIntervalSince($0.livenessOrLegacy) }
+        let agree = (record == legacy)
+
+        DiagnosticsLog.record(
+            source: "keyboard",
+            category: .appUnresponsiveRecovery,
+            message: "record-vs-legacy-start \(agree ? "agree" : "DISAGREE")",
+            metadata: [
+                "record": record.rawValue,
+                "legacy": legacy.rawValue,
+                "agree": agree ? "Y" : "N",
+                "recordState": blob?.phase.rawValue ?? "nil",
+                "livenessAgeMs": livenessAge.map { String(Int($0 * 1000)) } ?? "nil",
+                "warmWindowOpen": warmWindowOpen ? "Y" : "N",
+                "jotForeground": jotForeground ? "Y" : "N"
+            ]
+        )
+    }
+
     // MARK: - Live foreground handshake (ping/pong)
+    //
+    // B1 DELETED the ping/pong USAGE on the start path: `handleMicCTATap` no
+    // longer calls `resolveForegroundThenStart` — warm-vs-cold now reads the
+    // record's `liveness`, and inline-vs-cold is the single `isJotAppForeground()`
+    // read (N3). The machinery below (observer + `resolveForegroundThenStart`) is
+    // left DEFINED but UNUSED as the revertible safety net; B4 removes it along
+    // with the legacy warm keys + shadow diagnostic. `startInlineViaDarwin` /
+    // `startColdViaURLBounce` are STILL live — the record router calls them.
 
     private func startObservingForegroundPong() {
         guard foregroundPongObserver == nil else { return }
@@ -2443,94 +2604,39 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     private func handleMicCTATap() {
-        // Warm-resume fast-path. Gated on TWO signals:
-        //   1. `warmHoldExpiresAt` still in the future (the 60s window)
-        //   2. `warmHoldHeartbeat` is fresh (≤4s old) — proof the main
-        //      app process is still alive to receive the Darwin notification
-        // Without the heartbeat check, a jetsammed main app leaves a ghost
-        // `warmHoldExpiresAt` that traps Dictate taps: the Darwin post
-        // lands on no listener, the URL bounce never fires, and the tap
-        // appears to do nothing. On stale heartbeat, clear the ghost keys
-        // opportunistically and fall through to the cold-launch URL.
-        //
-        // 4s threshold (vs 2.5s) leaves headroom for MainActor scheduling
-        // jitter on a backgrounded warm-held app — audio session restoration
-        // and ASR finalize tails can stretch the 1s heartbeat cadence past
-        // 2.5s on a healthy process. False-positive jetsam classification is
-        // worse than a slightly delayed ghost-cleanup.
-        //
-        // AppGroup reads are snapshotted into locals so we don't race a
-        // mid-cleanup interleave from the main app (`exitWarmHold` clearing
-        // both keys non-atomically) — keeps the ghost-cleanup branch from
-        // firing on a legitimate exit race.
+        // B1 — warm-vs-cold now reads the unified RecordingRecord, NOT the legacy
+        // warm keys + ping/pong. The record's `liveness` answers "is the writer
+        // alive right now?" from one atomic blob (`recordStartDecision()`), so the
+        // 120ms ping/pong round-trip and the separate warm `expiresAt`/`heartbeat`
+        // gate are no longer on the start path. A backgrounded-ALIVE app stamps
+        // `liveness` within `livenessFresh`, so "backgrounded" is never misread as
+        // "dead" — no app-wake on a start that should warm-resume in place.
         let now = Date()
+
+        // Legacy warm-gate result — computed ONLY for the continued diagnostic
+        // comparison (`logShadowStartDecision`); it no longer routes the tap. The
+        // legacy keys are still written until B4, so this stays a valid bisect
+        // reference for a field regression.
         let expiresAtSnapshot = AppGroup.warmHoldExpiresAt
         let heartbeatSnapshot = AppGroup.warmHoldHeartbeat
-        let warmWindowOpen = (expiresAtSnapshot.map { $0 > now } ?? false)
+        let legacyWarmWindowOpen = (expiresAtSnapshot.map { $0 > now } ?? false)
             && (heartbeatSnapshot.map { now.timeIntervalSince($0) < 4.0 } ?? false)
+        logShadowStartDecision(warmWindowOpen: legacyWarmWindowOpen, now: now)
 
-        if warmWindowOpen {
-            // Warm-hold is ONLY a "start faster" optimisation — it must not change
-            // WHERE a keyboard dictation goes. If Jot is FOREGROUND, the user is
-            // dictating inside the app, which must record INLINE (insert at the
-            // cursor, save NO transcript) exactly as it does without warm-hold. So
-            // do NOT take the warm-RESUME *capture* path here (it saves a transcript
-            // and was the cause of in-app dictations being saved); fall through to
-            // the normal ping/pong, which routes the tap inline. The warm engine
-            // still makes that inline start fast — so warm-hold keeps its speed
-            // benefit without changing behaviour. Only when Jot is NOT foreground do
-            // we warm-resume in the background (the no-foreground fast path). The
-            // warm-hold keys are left intact so leaving the app still resumes warm.
-            if !AppGroup.isJotAppForeground() {
-                hub.clearStreamingPartialForNewSession()
-                CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
-                keyboardLog.info("Posted warm-resume (Jot backgrounded); skipping URL bounce")
-                return
-            }
-            keyboardLog.info("Warm window open but Jot is foreground -> routing inline (no warm capture)")
-            // fall through to decideMicTap → inline
-        } else if expiresAtSnapshot != nil || heartbeatSnapshot != nil {
-            // Ghost cleanup — main app is gone (or just exited warm-hold).
-            // Log includes deltas so we can distinguish stale-jetsam from
-            // legitimate-exit-race in field reports.
-            let expiresAtDelta = expiresAtSnapshot.map { $0.timeIntervalSince(now) } ?? .infinity
-            let heartbeatAge = heartbeatSnapshot.map { now.timeIntervalSince($0) } ?? .infinity
-            AppGroup.warmHoldExpiresAt = nil
-            AppGroup.warmHoldHeartbeat = nil
-            keyboardLog.notice("Ghost warm-hold projection cleared; expiresAtDelta=\(expiresAtDelta, privacy: .public)s heartbeatAge=\(heartbeatAge, privacy: .public)s; falling through to URL bounce")
-        }
-
-        // Wizard W5 short-circuit: if the host app is Jot itself (detected
-        // via the App Group foreground heartbeat written by `JotApp` while
-        // `scenePhase == .active`), `extensionContext.open(jot://dictate)`
-        // would be silently refused by iOS (iOS will not re-launch the
-        // already-foreground app via URL scheme), making the Dictate tap
-        // appear to do nothing. Post a Darwin notification instead — the
-        // wizard's `SetupWizardView` observes this on W5 (keyboard
-        // try-it) and advances to W6 once a fresh dictation arrives.
-        //
-        // Gated by `hasFullAccess` because App Group reads require it —
-        // without Full Access, `isJotAppForeground()` always returns
-        // false, and the no-Full-Access branch below falls through to
-        // `openHostSettings()` as today.
-        //
-        // Only short-circuit on the `.start` decision — recording / stop-
-        // pending / in-flight-post-recording taps must go through the
-        // normal pipeline below so the cross-process state machine stays
-        // coherent. Gating on `!isRecording` alone wasn't enough: a tap
-        // during the transcription/cleaning tail (`isInflightPostRecording`)
-        // or while a stop is already posted (`stopRequestPosted`) would
-        // still incorrectly fire `keyboardDictateTapped`. Mirroring
-        // `decideMicTap()`'s state machine here keeps the two paths in
-        // lock-step — if the decision says "this tap should start a new
-        // recording", it's safe to delegate that to the wizard observer.
+        // Local noop / stop / start triage from the record MIRROR (`recordingState`):
+        //   • noop  — stop already posted, in-flight tail, or arming (transient)
+        //   • stop  — a live recording/paused session → request a stop
+        //   • start — nothing live locally → resolve the START routing from the
+        //             record below (warm-resume / inline / cold)
+        // This keeps the in-flight + stop-pending + arming guards intact; B1 flips
+        // only the warm-vs-cold START routing onto the record.
         switch decideMicTap() {
         case .noop(let reason):
             // The mic CTA is also `.disabled(...)` at the SwiftUI layer for
             // these states — this guard is defense-in-depth against
             // optimistic-UI lag (per design §4.6.D). On `no-full-access` the
             // SwiftUI layer routes the tap to "Unlock", so this branch is
-            // expected only for `stop-pending` / `in-flight`.
+            // expected only for `stop-pending` / `in-flight` / `arming`.
             if reason == "no-full-access" {
                 openHostSettings()
             } else {
@@ -2539,54 +2645,102 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             return
 
         case .start:
-            // Live foreground handshake (ping/pong) replaces the old stale-flag
-            // `isJotAppForeground()` read: ping the app, and on a pong within the
-            // window record INLINE (Jot is the foreground host); on silence,
-            // cold-start via the URL bounce (Jot is backgrounded / another app is
-            // foreground). See `resolveForegroundThenStart()`.
-            resolveForegroundThenStart()
+            // B1 — resolve warm-vs-cold from the RECORD. The record answers
+            // "alive in a resumable state," NOT "foreground"; the ONE retained
+            // `isJotAppForeground()` read (N3) splits the foreground-host (W5 /
+            // in-Jot inline) case from the backgrounded cold-start. This is the
+            // accepted 2.5s-stale read, scoped to the foreground-host branch only
+            // — never on the hot warm-vs-cold decision.
+            switch recordStartDecision() {
+            case .noFullAccess:
+                openHostSettings()
+
+            case .warmResume:
+                // Warm-hold is ONLY a "start faster" optimisation — it must not
+                // change WHERE a keyboard dictation goes. If Jot is FOREGROUND the
+                // user is dictating inside the app, which must record INLINE (save
+                // NO transcript) exactly as without warm-hold. So even when the
+                // record says warm-resume, route INLINE when Jot is the foreground
+                // host; only warm-resume in the background (the no-foreground fast
+                // path — the warm engine still makes the inline start fast).
+                if hasFullAccess, AppGroup.isJotAppForeground() {
+                    keyboardLog.info("Record warm-idle but Jot is foreground -> routing inline (no warm capture)")
+                    startInlineViaDarwin()
+                } else {
+                    hub.clearStreamingPartialForNewSession()
+                    CrossProcessNotification.post(name: CrossProcessNotification.warmResumeRequested)
+                    keyboardLog.info("Record warm-idle + window open + Jot backgrounded -> warm-resume; skipping URL bounce")
+                }
+
+            case .cold:
+                // The record says "not alive in a resumable state." Split inline
+                // vs cold on the SINGLE foreground-host read (N3): Jot foreground
+                // → inline Darwin tap (W5 / in-Jot dictation, no URL bounce iOS
+                // would refuse anyway); else cold-start via the URL bounce.
+                if hasFullAccess, AppGroup.isJotAppForeground() {
+                    keyboardLog.info("Record cold + Jot foreground -> inline Darwin tap (host=Jot)")
+                    startInlineViaDarwin()
+                } else {
+                    startColdViaURLBounce()
+                }
+
+            case .stop:
+                // The record reads a fresh in-flight session that the local mirror
+                // hasn't caught up to yet (it returned `.start`). Treat as a stop
+                // request so we don't cold-start over a live session. Rare race;
+                // the record is authoritative.
+                keyboardLog.notice("Record reads in-flight on a local .start -> routing stop (mirror lag)")
+                requestStop()
+            }
 
         case .stop:
-            // Arm the App Group pending-paste session BEFORE posting the
-            // stop request so the upcoming publish can match on it. The
-            // session UUID itself doesn't need to be passed anywhere — the
-            // publish path matches on the freshly-written pending session.
-            // This restores auto-paste on the normal flow (Speak → dictate
-            // → Stop → paste at cursor). The duplicate-rapid-tap race that
-            // motivated removing this call is still closed by the
-            // `.disabled` modifier on the speak button + `decideMicTap()`
-            // returning `.noop` for `stop-pending` / `in-flight` states.
-            let stopSession = beginPendingPasteSession()
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .sessionStopRequested,
-                message: "Pending session written at stop",
-                metadata: ["sessionID": stopSession.id.uuidString]
-            )
-            // Set stopRequestPosted BEFORE the post + before any further
-            // processing. Cleared inside refreshPipelinePhase when the
-            // projection reflects a non-recording phase.
-            stopRequestPosted = true
-            renderRootView()
-            CrossProcessNotification.post(name: CrossProcessNotification.stopRequested)
-            // No optimistic UI flip on `recordingState.phase` per design §4.3
-            // — `stopRequestPosted` (just set above) does the visual work via
-            // the disabled-CTA path, and the inbound `pipelinePhaseChanged`
-            // will replace `.recording` with the in-flight phase shortly.
-            keyboardLog.info("Posted cross-process recording stop request")
-            armDeadAppWatchdog(reason: "stop")
+            requestStop()
+        }
+    }
 
-            // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
-            // the case where the immediate `pipelinePhaseChanged` is dropped
-            // or arrives before our observer is wired.
-            Task { @MainActor [weak self] in
-                do {
-                    try await Task.sleep(for: .milliseconds(750))
-                } catch {
-                    return
-                }
-                self?.refreshPipelinePhaseStateAndSideEffects()
+    /// Post the cross-process stop request. Factored out of `handleMicCTATap` so
+    /// both the local `.stop` decision and the record-authoritative mirror-lag
+    /// race branch share one path.
+    private func requestStop() {
+        // Arm the App Group pending-paste session BEFORE posting the
+        // stop request so the upcoming publish can match on it. The
+        // session UUID itself doesn't need to be passed anywhere — the
+        // publish path matches on the freshly-written pending session.
+        // This restores auto-paste on the normal flow (Speak → dictate
+        // → Stop → paste at cursor). The duplicate-rapid-tap race that
+        // motivated removing this call is still closed by the
+        // `.disabled` modifier on the speak button + `decideMicTap()`
+        // returning `.noop` for `stop-pending` / `in-flight` / `arming` states.
+        let stopSession = beginPendingPasteSession()
+        DiagnosticsLog.record(
+            source: "keyboard",
+            category: .sessionStopRequested,
+            message: "Pending session written at stop",
+            metadata: ["sessionID": stopSession.id.uuidString]
+        )
+        // B3 — `stopRequestPosted` is no longer the CORRECTNESS source for "stop
+        // resolved"; that is now derived from the RECORD advancing off
+        // {recording, paused} (see `refreshPipelinePhaseSideEffects`). It is kept
+        // ONLY as a transient VIEW flag ("I posted a stop AND the record still
+        // shows recording") so the CTA stays disabled in the ms before the record
+        // advances. The inbound `pipelinePhaseChanged` clears it the moment the
+        // record leaves `.recording`.
+        stopRequestPosted = true
+        renderRootView()
+        CrossProcessNotification.post(name: CrossProcessNotification.stopRequested)
+        keyboardLog.info("Posted cross-process recording stop request")
+        armDeadAppWatchdog(reason: "stop")
+
+        // Single 750ms post-tap resync sweep: Darwin coalesces, so cover
+        // the case where the immediate `pipelinePhaseChanged` is dropped
+        // or arrives before our observer is wired.
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(750))
+            } catch {
+                return
             }
+            self?.refreshPipelinePhaseStateAndSideEffects()
         }
     }
 

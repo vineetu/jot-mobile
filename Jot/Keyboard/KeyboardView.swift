@@ -689,11 +689,14 @@ struct KeyboardView: View {
         .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .disabled(hasFullAccess
                   && (recordingState.isInflightPostRecording
+                      || recordingState.isArming
                       || isStopRequestPending))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
                    value: recordingState.isRecording)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
                    value: recordingState.isInflightPostRecording)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: recordingState.isArming)
         .accessibilityLabel(micAccessibilityLabel)
         .accessibilityHint(micAccessibilityHint)
         .accessibilityAddTraits(recordingState.isRecording
@@ -752,6 +755,22 @@ struct KeyboardView: View {
                             }
                             PulsingDot(color: .white)
                         }
+                    }
+                } else if hasFullAccess, recordingState.isArming {
+                    // B2 / N4 — the brief "starting…" gap between a start request
+                    // and the first confirmed audio buffer (`phase == .arming`,
+                    // §2.3). A spinner, NOT the live stop-pill: the mic may yet
+                    // fail to deliver a buffer, so we never show "Listening…" here.
+                    // Resolves to recording (buffer) or failed/idle (timeout), both
+                    // of which clear this branch — so it can't get stuck.
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                        Text("Starting")
+                            .font(JotType.chromeBold)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
                 } else if hasFullAccess, recordingState.isInflightPostRecording {
                     HStack(spacing: 6) {

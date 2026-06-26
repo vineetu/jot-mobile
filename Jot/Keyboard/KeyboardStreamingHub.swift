@@ -35,10 +35,27 @@ final class KeyboardRecordingState {
         switch phase {
         case .transcribing, .processing, .cleaning, .rewriting, .publishing:
             return true
-        case .idle, .recording, .paused, .failed:
+        // `warmIdle` / `arming` (and any future state the keyboard doesn't yet
+        // act on) are NOT in-flight — `arming` has its OWN affordance (see
+        // `isArming` / B2); `warmIdle` renders idle/home. `default` keeps this
+        // switch total so a new app-written state can never surface as an
+        // unhandled phase.
+        default:
             return false
         }
     }
+
+    /// True while the app has requested a start but the first real audio buffer
+    /// has NOT yet been confirmed (`phase == .arming`, §2.3). The record advertises
+    /// `recording` ONLY after a buffer routes; until then it is `arming`, which the
+    /// keyboard renders as a brief "starting…" spinner — NOT the live-mic UI and
+    /// NOT idle (B2 / N4). It resolves to `.recording` (buffer confirmed) or
+    /// `.failed` (arming-timeout); both transitions clear this, so the spinner can
+    /// never get stuck (the "failed mirror" — a timed-out arm falls straight to
+    /// home via the `.failed` → idle render). `isRecording` stays FALSE while
+    /// arming (no confirmed capture), so the mic CTA never reads "Listening…"
+    /// against an engine that may yet deliver silence.
+    var isArming: Bool { phase == .arming }
 
     /// True while the active dictation is paused (UX-overhaul round 2 §10).
     /// Derived solely from `phase == .paused`. While paused, `isRecording`
@@ -81,7 +98,26 @@ final class KeyboardRecordingState {
                 pausedElapsedSeconds = nil
             }
             update(isRecording: true, startedAt: projection.recordingStartedAt)
-        case .idle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
+        // `arming` (B2 / N4) — start requested, first buffer NOT yet confirmed.
+        // NOT recording (no confirmed capture, so `isRecording` stays false and
+        // the live-mic UI is unreachable) and NOT in-flight. `phase == .arming`
+        // is surfaced via the `isArming` computed, which the mic CTA renders as a
+        // brief "starting…" spinner. Listed explicitly (not in `default`) so its
+        // UI is a deliberate decision, not a silent fall-through.
+        case .arming:
+            isPaused = false
+            pausedElapsedSeconds = nil
+            update(isRecording: false, startedAt: nil)
+        // `warmIdle` (post-stop warm window, mic warm but NOT capturing) renders
+        // as idle/home. The in-flight tail + idle/failed are listed explicitly so
+        // a real future state addition is a compile prompt to decide its UI, not a
+        // silent fall-through. `default` keeps the switch total so an unhandled
+        // app-written state can never crash the reader.
+        case .idle, .warmIdle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
+            isPaused = false
+            pausedElapsedSeconds = nil
+            update(isRecording: false, startedAt: nil)
+        default:
             isPaused = false
             pausedElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
@@ -316,7 +352,7 @@ final class KeyboardStreamingHub {
             if let p = projection,
                p.sessionID == freeze.sessionID,
                p.lastUpdatedAt <= freeze.frozenAt,
-               p.phase == .recording || p.phase == .paused {
+               p.phase.isActiveNonTerminal {
                 projection = nil
             } else {
                 recoveredZombieFreeze = nil

@@ -16,6 +16,21 @@ import Foundation
 struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     enum Phase: String, Codable, Sendable {
         case idle
+        /// Post-stop warm-hold window: the mic engine stays warm (ready for an
+        /// instant warm-resume) but is NOT capturing. Was previously implicit —
+        /// signalled ONLY by the separate `warmHoldExpiresAt`/`warmHoldHeartbeat`
+        /// App-Group keys. A2 promotes it to a first-class state inside the
+        /// record (carrying `warmExpiresAt`), so the keyboard can eventually read
+        /// warm-vs-cold from the one blob (Build B). Until then the keyboard
+        /// renders it as idle/home (A1) and the old warm keys are STILL written.
+        case warmIdle
+        /// Start requested, engine coming up, first real audio buffer NOT yet
+        /// confirmed (the verified-recording gate state — §2.3 / A3). The record
+        /// advertises `recording` only AFTER a first buffer routes; between
+        /// "start requested" and "first buffer confirmed" it is `arming`. The
+        /// keyboard renders `arming` as idle/home until its dedicated
+        /// "starting…" affordance lands in Build B (N4).
+        case arming
         case recording
         /// Mid-dictation pause (UX-overhaul round 2, §10). The audio engine
         /// keeps running and the mic stays warm, but the slice router drops
@@ -37,6 +52,29 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         case rewriting
         case publishing
         case failed
+
+        /// True for any phase where the app still owes the keyboard a terminal
+        /// (`.idle`/`.failed`) — i.e. a recording control OR the in-flight tail.
+        /// The keyboard's dead-app watchdog recovers when ANY of these is frozen
+        /// (no heartbeat advance), so a suspended app can't hang the keyboard in
+        /// either a recording-control state or mid-transcription. Centralised here
+        /// so the controller + `KeyboardStreamingHub` agree on the set.
+        var isActiveNonTerminal: Bool {
+            switch self {
+            case .arming, .recording, .paused, .transcribing, .processing,
+                 .cleaning, .rewriting, .publishing:
+                // `arming` owes a terminal too — it resolves to `.recording`
+                // (first buffer) or `.failed` (timeout, §2.3), so a frozen
+                // `arming` writer must be recoverable like any other in-flight
+                // phase.
+                return true
+            case .idle, .warmIdle, .failed:
+                // `warmIdle` is quasi-idle: a dead warm writer is simply
+                // "not warm anymore" (reads as idle via `read()`), never a
+                // synth-`.failed`. So it is NOT active-non-terminal.
+                return false
+            }
+        }
     }
 
     let phase: Phase
@@ -44,6 +82,65 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     let recordingStartedAt: Date?
     let lastUpdatedAt: Date
     let failureReason: String?
+
+    /// Non-nil ONLY in `.warmIdle` — folds in the old `warmHoldExpiresAt` key
+    /// (which is STILL written separately through A2; nothing reads this field
+    /// for decisions until Build B). The wall-clock instant the warm window
+    /// expires.
+    let warmExpiresAt: Date?
+
+    /// Single liveness stamp, refreshed on ONE cadence (~1s) in EVERY non-idle
+    /// state — including `.warmIdle` (§2.2). The future single answer to "is the
+    /// writer alive right now?" (`now − liveness < livenessFresh`), replacing
+    /// the pipeline heartbeat (#2), the warm heartbeat (#4) and ping/pong (#7).
+    /// Optional for backward-compatibility: a blob written by a pre-A2 build (or
+    /// the legacy initializer) has no `liveness`; readers fall back to
+    /// `lastUpdatedAt`. Nothing reads this field for a decision until Build B —
+    /// A2 only WRITES it (shadow evidence is gathered in A4).
+    let liveness: Date?
+
+    init(
+        phase: Phase,
+        sessionID: UUID?,
+        recordingStartedAt: Date?,
+        lastUpdatedAt: Date,
+        failureReason: String?,
+        warmExpiresAt: Date? = nil,
+        liveness: Date? = nil
+    ) {
+        self.phase = phase
+        self.sessionID = sessionID
+        self.recordingStartedAt = recordingStartedAt
+        self.lastUpdatedAt = lastUpdatedAt
+        self.failureReason = failureReason
+        self.warmExpiresAt = warmExpiresAt
+        self.liveness = liveness
+    }
+
+    /// Decoding tolerates a pre-A2 blob that lacks `warmExpiresAt` / `liveness`
+    /// (both decoded as nil / absent). Custom so the new fields are
+    /// `decodeIfPresent` rather than required — a missing field would otherwise
+    /// fail the whole decode and the keyboard would read `nil` (idle), losing
+    /// state across the upgrade boundary.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        phase = try c.decode(Phase.self, forKey: .phase)
+        sessionID = try c.decodeIfPresent(UUID.self, forKey: .sessionID)
+        recordingStartedAt = try c.decodeIfPresent(Date.self, forKey: .recordingStartedAt)
+        lastUpdatedAt = try c.decode(Date.self, forKey: .lastUpdatedAt)
+        failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
+        warmExpiresAt = try c.decodeIfPresent(Date.self, forKey: .warmExpiresAt)
+        liveness = try c.decodeIfPresent(Date.self, forKey: .liveness)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case phase, sessionID, recordingStartedAt, lastUpdatedAt
+        case failureReason, warmExpiresAt, liveness
+    }
+
+    /// Convenience: the effective liveness instant for staleness math —
+    /// `liveness` when present (A2+), else the legacy `lastUpdatedAt`.
+    var livenessOrLegacy: Date { liveness ?? lastUpdatedAt }
 
     /// Heartbeat: every 3s while non-idle, the writer process refreshes
     /// `lastUpdatedAt`. A fast cadence (well under the keyboard's 5s
@@ -75,8 +172,27 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         switch projection.phase {
         case .idle, .failed:
             return projection
-        case .recording, .paused, .transcribing, .processing, .cleaning, .rewriting, .publishing:
-            let age = Date().timeIntervalSince(projection.lastUpdatedAt)
+        case .warmIdle:
+            // A dead warm writer is simply "not warm anymore" — synthesize
+            // `.idle` (NOT `.failed`) when the warm liveness is stale, so the
+            // ghost-warm-hold cleanup the keyboard does today becomes a property
+            // of `read()` (§2.2 / §4). Uses the unified liveness stamp when
+            // present, else the legacy `lastUpdatedAt`. Nothing reads `warmIdle`
+            // for a decision until Build B; this keeps `read()` self-consistent
+            // now that A2 writes the state.
+            let age = Date().timeIntervalSince(projection.livenessOrLegacy)
+            if age > heartbeatStaleThreshold {
+                return PipelinePhaseProjection(
+                    phase: .idle,
+                    sessionID: nil,
+                    recordingStartedAt: nil,
+                    lastUpdatedAt: projection.lastUpdatedAt,
+                    failureReason: nil
+                )
+            }
+            return projection
+        case .arming, .recording, .paused, .transcribing, .processing, .cleaning, .rewriting, .publishing:
+            let age = Date().timeIntervalSince(projection.livenessOrLegacy)
             if age > heartbeatStaleThreshold {
                 return PipelinePhaseProjection(
                     phase: .failed,
@@ -88,6 +204,21 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
             }
             return projection
         }
+    }
+
+    /// The blob AS WRITTEN, with NO staleness synthesis — preserving the real
+    /// `liveness`/`lastUpdatedAt`/`phase`. `read()` rewrites a stale non-idle
+    /// record to a synthetic `.failed`/`.idle` (and drops `liveness`), which is
+    /// what the keyboard wants. The app's own M2 next-foreground reconciliation
+    /// (`RecordingService.reconcileOrphanedSessionOnForeground`) instead needs the
+    /// UNsynthesized liveness to decide "was I suspended mid-session?" — so it
+    /// reads raw. Storage is never mutated here either.
+    static func readRaw() -> PipelinePhaseProjection? {
+        guard
+            let data = AppGroup.defaults.data(forKey: AppGroup.Keys.pipelinePhase),
+            let projection = try? decoder.decode(PipelinePhaseProjection.self, from: data)
+        else { return nil }
+        return projection
     }
 
     /// Called by the writer-process at app boot to clear any leftover from a

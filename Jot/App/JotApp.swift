@@ -527,6 +527,14 @@ struct JotApp: App {
                     if newPhase == .active {
                         handleSceneActive()
                         startForegroundHeartbeat()
+                        // M2 (§2.4) — reconcile a session iOS suspended us in the
+                        // middle of. Strictly gated on the app's OWN record being
+                        // non-idle AND its `liveness` STALE (the suspension gap),
+                        // so it can NEVER touch a healthy/just-foregrounded live
+                        // recording (those stamp liveness within the window). Same
+                        // next-foreground-drain shape as the inboxes below; finalizes
+                        // the orphan gently (never forceStop, never an app-wake).
+                        recordingService.reconcileOrphanedSessionOnForeground()
                         // Transcribe anything shared into Jot via the share
                         // sheet while we were away. The "Send to Jot" Share
                         // Extension only stages the audio (it can't run
@@ -1187,6 +1195,16 @@ private final class CrossProcessRecordingStopCoordinator {
         ClipboardHandoff.clearPendingPasteSession()
         Task { @MainActor in
             await recording.cancel()
+            // Terminal-publish backstop (controls-hang fix): `cancel()` publishes
+            // `.idle` on its happy path, but its early-return guards
+            // (`isStopInFlight`, no active slice) can return WITHOUT publishing —
+            // which would leave the keyboard waiting forever for a terminal phase.
+            // Re-publishing `.idle` here is idempotent on the happy path (already
+            // idle) and closes those no-publish holes. The keyboard observes the
+            // terminal and flips out of loading.
+            if recording.currentPipelinePhase != .idle {
+                recording.publishPipelinePhase(.idle)
+            }
         }
         log.info("Cross-process cancel: dispatched RecordingService.cancel() — samples discarded, warm-hold preserved if enabled.")
     }
@@ -1279,7 +1297,17 @@ private final class CrossProcessRecordingStopCoordinator {
             // so clear pending decisively. The user effectively sees: "tap
             // was ignored; nothing pasted; finish in-flight pipeline first."
             ClipboardHandoff.clearPendingPasteSession()
-            log.notice("Cross-process stop request mid-pipeline; keyboard pending session cleared.")
+            // Terminal-publish guarantee (controls-hang fix): we deliberately do
+            // NOT publish a terminal here. A LIVE older pipeline owns this
+            // projection (`.transcribing/.processing/.cleaning`) and will publish
+            // its own terminal (`.idle`/`.failed`) on completion — clobbering it
+            // with `.idle` now would kill a genuinely-running pipeline. The
+            // keyboard does not hang in this branch: it already cleared
+            // `stopRequestPosted` the moment it observed the non-`.recording`
+            // in-flight phase, and the live pipeline keeps stamping heartbeats so
+            // the dead-app watchdog correctly stands down. The terminal the
+            // keyboard ultimately observes is the in-flight pipeline's own.
+            log.notice("Cross-process stop request mid-pipeline; keyboard pending session cleared (live pipeline owns terminal).")
         }
     }
 

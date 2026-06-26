@@ -25,6 +25,15 @@ final class RecordingService {
         /// down and signals `start()` to cold-start instead of resuming a
         /// mis-configured session. Internal control-flow only — never surfaced.
         case warmYieldRestoreFailed
+        /// TRANSIENT (false-warm no-audio, Bug 1): the warm engine resumed with
+        /// `engine.isRunning`/`isTapInstalled` reading STALE-TRUE after a
+        /// background HAL teardown, so `.recording` would be advertised against a
+        /// dead engine that never delivers a buffer. `startFromWarmHold` confirms
+        /// the first routed buffer before publishing `.recording`; if none
+        /// arrives within the bound it tears the dead engine down and signals
+        /// `start()` to cold-start instead. Internal control-flow only — never
+        /// surfaced (the cold path that follows shows its own errors).
+        case warmNoInput
 
         /// Single source of truth for user-facing copy. EVERY surface (hero
         /// alert, foreground auto-start alert, keyboard banner, Shortcuts /
@@ -70,7 +79,7 @@ final class RecordingService {
                 return "Jot is already recording."
             case .notRunning:
                 return "No recording is in progress."
-            case .warmYieldRestoreFailed:
+            case .warmYieldRestoreFailed, .warmNoInput:
                 // Never surfaced (internal control-flow only) — a sane string
                 // exists only so the property is total.
                 return "Couldn't start recording — try again."
@@ -607,6 +616,15 @@ final class RecordingService {
                     // torn the engine down before throwing this case.
                     log.error("Warm-resume mixWithOthers restore failed — cold-starting instead")
                     exitWarmHold()
+                } catch RecordingError.warmNoInput {
+                    // The resumed warm engine reported a running tap but never
+                    // delivered a buffer (stale-true `isRunning` after a
+                    // background HAL teardown) — a false-warm dead engine
+                    // (Bug 1). `startFromWarmHold` already tore the dead engine
+                    // down; clear any residual warm state and fall through to a
+                    // full cold start so the user still gets a working recording.
+                    log.error("Warm-resume produced no audio (dead engine) — cold-starting instead")
+                    exitWarmHold()
                 }
             } else {
                 log.error("Warm-hold state had no running tapped engine; falling back to cold start.")
@@ -649,6 +667,14 @@ final class RecordingService {
         let streamingQueue = StreamingBufferQueue()
         beginSlice(capture: capture, streamingQueue: streamingQueue)
 
+        // A3 — arm the first-buffer gate BEFORE installTap/engine.start() so a
+        // buffer that arrives the instant the engine starts can't be missed
+        // (§2.3 step 1). The cold path previously published `.recording`
+        // immediately after `engine.start()` with NO buffer await, so a
+        // stale-HAL engine that the channels/sampleRate preflight couldn't catch
+        // would advertise a live "Listening…" into silence (false-warm on cold).
+        tapRouter.armFirstBuffer()
+
         installTap(on: engine, hardwareFormat: hardwareFormat)
 
         do {
@@ -665,6 +691,7 @@ final class RecordingService {
             log.error(
                 "engine.start() FAILED — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) localizedDescription=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
             )
+            tapRouter.clearFirstBufferSignal()
             _ = endActiveSlice()
             removeTapIfInstalled(from: input)
             restoreSession()
@@ -678,21 +705,47 @@ final class RecordingService {
         isRecording = true
         // Seed the pause-aware elapsed accounting (§10.4): one fresh active
         // span begins now, with no prior accumulated time. Must precede the
-        // `.recording` publish — the projection's `recordingStartedAt` is
+        // `.arming` publish — the projection's `recordingStartedAt` is
         // assembled there.
         resetActiveElapsed()
         beginActiveSpan(at: startedAt)
         // True session-start anchor for the warm-hold nudge (R16) — NOT
         // re-anchored on resume, unlike the display clock.
         nudgeSessionStartedAtValue = startedAt
-        // `setCurrentRecordingStartedAt` MUST precede `publishPipelinePhase(.recording)`
-        // — the helper reads `currentRecordingStartedAt` when assembling the
+        // `setCurrentRecordingStartedAt` MUST precede the phase publish — the
+        // helper reads `currentRecordingStartedAt` when assembling the
         // projection, and the keyboard's elapsed-time clock renders off that
         // field. No separate `publishRecordingState` call: pipeline phase is
         // the single source of truth for cross-process recording state.
         setCurrentRecordingStartedAt(startedAt)
+
+        // A3 — UNIFIED first-buffer gate on the COLD path (§2.3). Publish
+        // `.arming` (NOT `.recording`) and await the first routed buffer. On
+        // arrival → `.recording` (the keyboard's live-mic UI is reachable ONLY
+        // after a confirmed buffer, on every start path → false-warm impossible
+        // by construction). On timeout → `.failed` + GENTLE teardown (never
+        // forceStop), exactly the warm path's `warmNoInput` teardown. The
+        // keyboard renders `.arming` as idle (A1), and a healthy mic delivers
+        // the first buffer in a few ms, so the arming gap is imperceptible.
+        publishPipelinePhase(.arming)
+        let firstBufferArrived = await awaitFirstRoutedBuffer(timeout: Self.coldFirstBufferTimeout)
+        guard firstBufferArrived else {
+            log.error("Cold start produced no audio within \(Self.coldFirstBufferTimeout, privacy: .public)s — dead engine (stale HAL); failing cleanly and tearing down")
+            tapRouter.clearFirstBufferSignal()
+            isRecording = false
+            // Gentle teardown of the dead cold slice + engine (never forceStop):
+            // end the open slice so no stale capture lingers, then fully cool
+            // the engine, then surface a terminal `.failed` so the keyboard's
+            // existing cold fallback / failure UX runs instead of a live mic
+            // into silence.
+            clearActiveSliceRouting()
+            fullyTeardownEngine()
+            publishPipelinePhase(.failed, failureReason: "cold-no-input")
+            throw RecordingError.micUnavailable
+        }
+
         publishPipelinePhase(.recording)
-        log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
+        log.info("Recording started at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch; first buffer confirmed")
 
         // Fire-and-forget streaming kickoff. The engine + drain task spin
         // up against the pre-allocated queue captured by the tap closure;
@@ -703,6 +756,14 @@ final class RecordingService {
             await self?.kickOffStreamingSession()
         }
     }
+
+    /// Bound for the COLD first-buffer confirmation (A3). A healthy cold engine
+    /// delivers its first buffer within ~tens of ms of `engine.start()`; this
+    /// generous ceiling only elapses for a genuinely dead engine (stale HAL the
+    /// channels/sampleRate preflight missed). Slightly larger than the warm bound
+    /// because a cold `engine.start()` + first HAL buffer has more startup
+    /// latency than resuming an already-running warm engine.
+    private static let coldFirstBufferTimeout: TimeInterval = 1.0
 
     private func startFromWarmHold(engine: AVAudioEngine) async throws {
         guard engine.isRunning, isTapInstalled else {
@@ -739,6 +800,18 @@ final class RecordingService {
         let input = engine.inputNode
         let hardwareFormat = input.outputFormat(forBus: 0)
 
+        // Mic-availability preflight, mirrored from the cold `start()` path
+        // (Bug 1 defense-in-depth). After a backgrounded HAL teardown the input
+        // bus reports 0 channels / 0 Hz even though `engine.isRunning` reads
+        // stale-true; bail to the cold path BEFORE publishing `.recording`
+        // rather than advertise a recording into a dead engine. Cheap — this is
+        // a property read, not the first-buffer wait below.
+        guard hardwareFormat.channelCount > 0, hardwareFormat.sampleRate > 0 else {
+            log.error("Warm-resume mic unavailable — input reports channels=\(hardwareFormat.channelCount) sampleRate=\(hardwareFormat.sampleRate); cold-starting instead")
+            fullyTeardownEngine()
+            throw RecordingError.warmNoInput
+        }
+
         guard let converter = AVAudioConverter(from: hardwareFormat, to: Self.target) else {
             fullyTeardownEngine()
             throw RecordingError.converterUnavailable
@@ -753,6 +826,29 @@ final class RecordingService {
 
         self.engine = engine
         subscribeSystemObservers(engine: engine)
+
+        // First-buffer confirmation (Bug 1 core fix). `engine.isRunning` +
+        // `isTapInstalled` can read STALE-TRUE after a backgrounded HAL
+        // teardown / `mediaServicesWereReset`, so the warm engine resumes but
+        // the tap never delivers a buffer — a "recording" that captures zero
+        // audio. The slice is now routing, so wait (event-driven, NOT a fixed
+        // sleep) for the first buffer to actually reach it. The common case
+        // resolves in a few ms — well under the bound — so a healthy
+        // warm-resume is unaffected. Only a genuinely dead engine hits the
+        // timeout, in which case we tear down and signal `start()` to run the
+        // full cold path (its existing fallback for warm failures).
+        let firstBufferArrived = await awaitFirstRoutedBuffer(timeout: Self.warmFirstBufferTimeout)
+        guard firstBufferArrived else {
+            log.error("Warm-resume produced no audio within \(Self.warmFirstBufferTimeout, privacy: .public)s — dead engine; tearing down and cold-starting")
+            tapRouter.clearFirstBufferSignal()
+            // Gentle teardown of the dead warm slice + engine (never forceStop):
+            // end the open slice so no stale capture lingers, then fully cool
+            // the engine. `isRecording` was never set true, nothing published.
+            clearActiveSliceRouting()
+            fullyTeardownEngine()
+            throw RecordingError.warmNoInput
+        }
+
         let startedAt = Date()
         isRecording = true
         resetActiveElapsed()
@@ -761,10 +857,43 @@ final class RecordingService {
         setCurrentRecordingStartedAt(startedAt)
         publishPipelinePhase(.recording)
         log.info("Warm recording resumed at hardware \(Int(hardwareFormat.sampleRate))Hz/\(Int(hardwareFormat.channelCount))ch")
-        log.notice("Warm-hold resumed; restored mixWithOthers")
+        log.notice("Warm-hold resumed; restored mixWithOthers; first buffer confirmed")
 
         Task { [weak self] in
             await self?.kickOffStreamingSession()
+        }
+    }
+
+    /// Bound for the warm-resume first-buffer confirmation. A healthy AVAudio
+    /// tap delivers its first buffer within a few ms of the slice arming; this
+    /// generous ceiling only ever elapses when the resumed engine is dead
+    /// (stale-true `isRunning` after a HAL teardown). Tuned to never clip a
+    /// real warm-resume while still failing fast enough that the cold-path
+    /// fallback feels instant to the user.
+    private static let warmFirstBufferTimeout: TimeInterval = 0.6
+
+    /// Await — event-driven, no fixed sleep on the success path — the first
+    /// audio buffer that routes into the freshly-armed warm slice. Resumes the
+    /// instant the audio thread fires the router's first-buffer signal, or with
+    /// `false` if `timeout` elapses first. A `FirstBufferLatch` guarantees the
+    /// continuation resumes exactly once even though the signal and the
+    /// watchdog race. The caller must have already `beginSlice`'d so `route(_:)`
+    /// is live.
+    private func awaitFirstRoutedBuffer(timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let latch = FirstBufferLatch { arrived in
+                continuation.resume(returning: arrived)
+            }
+            // Audio-thread signal: fires the moment a real buffer reaches the
+            // slice. Wins the common (healthy) case in a few ms.
+            tapRouter.armFirstBufferSignal { latch.complete(true) }
+            // Watchdog: the ONLY timer here, and it fires only when no buffer
+            // arrived. Resolves the dead-engine case to `false`.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                self?.tapRouter.clearFirstBufferSignal()
+                latch.complete(false)
+            }
         }
     }
 
@@ -1300,6 +1429,28 @@ final class RecordingService {
             }
         }
 
+        // A2 — also write the `.warmIdle` record into the UNIFIED blob (carrying
+        // `warmExpiresAt` + a fresh `liveness`) and start the 1s liveness stamper.
+        // The OLD `warmHoldExpiresAt`/`warmHoldHeartbeat` keys above are STILL
+        // written; nothing reads the new record's warmIdle for a decision until
+        // Build B. The keyboard tolerates `.warmIdle` as idle (A1), so this is
+        // behavior-neutral. Written AFTER seeding the legacy keys so a keyboard
+        // that wakes on the record sees a consistent pair.
+        let now = Date()
+        PipelinePhaseProjection.write(
+            PipelinePhaseProjection(
+                phase: .warmIdle,
+                sessionID: nil,
+                recordingStartedAt: nil,
+                lastUpdatedAt: now,
+                failureReason: nil,
+                warmExpiresAt: warmExpiresAt,
+                liveness: now
+            )
+        )
+        CrossProcessNotification.post(name: CrossProcessNotification.pipelinePhaseChanged)
+        startLivenessStampingIfNeeded()
+
         log.notice("[WARM-HOLD-DEBUG] warm state published, expiresAt=\(warmExpiresAt.timeIntervalSince1970, privacy: .public)")
     }
 
@@ -1343,6 +1494,26 @@ final class RecordingService {
         AppGroup.warmHoldExpiresAt = nil
         AppGroup.warmHoldHeartbeat = nil
         isWarm = false
+        // A2 — reset the unified record to `.idle` when the warm window closes,
+        // mirroring the legacy key clears above, and stop the liveness stamper
+        // (self-gates: it stays alive if a pipeline phase is somehow still
+        // active). Only when we were actually warm AND no pipeline phase is
+        // in flight — otherwise an in-flight pipeline terminal owns the record.
+        if wasWarm, currentPipelinePhase == .idle || currentPipelinePhase == .failed {
+            PipelinePhaseProjection.write(
+                PipelinePhaseProjection(
+                    phase: .idle,
+                    sessionID: nil,
+                    recordingStartedAt: nil,
+                    lastUpdatedAt: Date(),
+                    failureReason: nil,
+                    warmExpiresAt: nil,
+                    liveness: nil
+                )
+            )
+            CrossProcessNotification.post(name: CrossProcessNotification.pipelinePhaseChanged)
+        }
+        stopLivenessStamping()
         // Warm-hold is post-stop idle, mutually exclusive with pause (§10.6),
         // so paused state should already be clear — but clear defensively in
         // case a cold-start fallback routed here mid-pause.
@@ -1499,6 +1670,12 @@ final class RecordingService {
 
         guard let capture = endActiveSlice() else {
             log.notice("Cancel called with no active slice; nothing to discard.")
+            // Terminal-publish backstop (controls-hang fix): even with no slice to
+            // discard, a keyboard cancel MUST see a terminal phase or it hangs in
+            // loading. Publish `.idle` unless we're already terminal (idempotent).
+            if currentPipelinePhase != .idle && currentPipelinePhase != .failed {
+                publishPipelinePhase(.idle)
+            }
             return
         }
         let discardCount = capture.drain().count
@@ -1670,6 +1847,109 @@ final class RecordingService {
         isPipelineInFlight = true
     }
 
+    // MARK: - M2 — suspended-app orphan reconciliation (§2.4)
+
+    /// Next-foreground reconciliation of a session that iOS suspended mid-flight
+    /// (§2.4 M2). Called from `JotApp`'s `scenePhase → .active` handler, beside
+    /// the `PendingShareDrainer` / `VocabularyAddInbox` next-foreground drains.
+    ///
+    /// When iOS suspends us mid-recording the mic is already lost, the in-process
+    /// `RecordingService` state is frozen at the live phase, and the 1s
+    /// `livenessTask` stopped ticking — so the record's `liveness` goes STALE. On
+    /// return we finalize that orphan (drain captured audio through the normal
+    /// pipeline / publish a terminal record) rather than leaking the orange mic
+    /// indicator + dropping captured samples. We do NOT try to resurrect the
+    /// capture (an audio-session resurrection from a suspended process is the
+    /// fragile `after-life.interrupted` zombie risk `restoreSession` guards) —
+    /// this runs only when the app is foregrounding naturally, never on an
+    /// app-wake, and never `forceStop`.
+    ///
+    /// **Strict gate — this must NEVER touch a live recording.** It acts ONLY
+    /// when BOTH:
+    ///   1. the app's OWN in-process pipeline is active (`isRecording` /
+    ///      `isPipelineInFlight` / `isWarm`) — so we never finalize against a
+    ///      foreign/already-cleared blob, AND
+    ///   2. the record's `liveness` is STALE (older than
+    ///      `heartbeatStaleThreshold`) — proof of the suspension gap.
+    /// A healthy backgrounded-alive recording stamps `liveness` every 1s, so its
+    /// record is NEVER stale and this is a no-op for it. A recording that is live
+    /// RIGHT NOW (we just foregrounded with the mic still running) likewise has a
+    /// fresh stamp and is left untouched.
+    func reconcileOrphanedSessionOnForeground() {
+        // In-process proof we own something to reconcile. If the in-process state
+        // is already idle (no recording, no pipeline, not warm) there is nothing
+        // orphaned — stand down (the most common path).
+        let inProcessActive = isRecording || isPipelineInFlight || isWarm
+        guard inProcessActive else { return }
+
+        // Raw record (un-synthesized) so we see the TRUE liveness. Without a blob
+        // there is nothing to reconcile.
+        guard let record = PipelinePhaseProjection.readRaw() else { return }
+
+        // Only the non-idle states can be orphaned; a terminal record is already
+        // finalized.
+        guard record.phase != .idle, record.phase != .failed else { return }
+
+        // The decisive gate: liveness must be STALE. A fresh stamp means the
+        // writer (this process) was alive within the window — i.e. a healthy
+        // backgrounded or just-foregrounded session — and MUST NOT be finalized.
+        let livenessAge = Date().timeIntervalSince(record.livenessOrLegacy)
+        guard livenessAge > PipelinePhaseProjection.heartbeatStaleThreshold else {
+            log.info("M2 reconcile: record fresh (livenessAge=\(livenessAge, privacy: .public)s, phase=\(record.phase.rawValue, privacy: .public)) — live session, no reconciliation")
+            return
+        }
+
+        log.notice("M2 reconcile: stale orphan detected (phase=\(record.phase.rawValue, privacy: .public), livenessAge=\(livenessAge, privacy: .public)s) — finalizing")
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .appUnresponsiveRecovery,
+            message: "M2 reconcile: finalizing suspended-app orphan",
+            metadata: [
+                "phase": record.phase.rawValue,
+                "livenessAgeMs": String(Int(livenessAge * 1000)),
+                "sessionID": record.sessionID?.uuidString ?? "<nil>"
+            ]
+        )
+
+        if isWarm, !(isRecording || isPipelineInFlight) {
+            // Stale WARM-idle orphan: the mic is "not warm anymore" — cool the
+            // engine gently (never forceStop) and publish idle. No audio to drain
+            // (warm-idle isn't capturing).
+            exitWarmHold()
+            if currentPipelinePhase != .idle {
+                publishPipelinePhase(.idle)
+            }
+            // Clear the keyboard's pending paste for this orphan, UUID-matched via
+            // the terminal log path the keyboard already consumes; warm-idle never
+            // carries a sessionID, so there is nothing further to match.
+            ClipboardHandoff.clearPendingPasteSession()
+            return
+        }
+
+        if isRecording {
+            // Stale RECORDING / PAUSED orphan with the engine still nominally up:
+            // drain whatever was captured through the SAME path the interruption
+            // handler uses. `internalStop` publishes a terminal `.failed` (→
+            // keyboard CTA clears + `TerminalSessionLog` entry written, UUID-matched)
+            // and, for an UNOWNED capture, dispatches the partial publish via
+            // `RecordingPipelineDispatch.publishAfterInterruption`. Reuses the
+            // established next-foreground-drain shape — no new channel, never
+            // `forceStop`.
+            internalStop(reason: "M2 suspended-app reconcile")
+        } else {
+            // Stale in-flight TAIL orphan (`.transcribing`/`.processing`/… frozen,
+            // `isRecording == false`): there is no engine for `internalStop` to
+            // drain — the suspended pipeline Task never finished. Publish a terminal
+            // `.failed` so the keyboard's CTA clears + a UUID-matched
+            // `TerminalSessionLog` entry lets it clean the orphaned pending paste,
+            // and release the in-flight latch. No audio to recover here (the slice
+            // was already drained into the suspended pipeline).
+            publishPipelinePhase(.failed, failureReason: "M2 suspended-app orphan (in-flight tail)")
+            markPipelineFinished()
+            ClipboardHandoff.clearPendingPasteSession()
+        }
+    }
+
     // MARK: - Pipeline phase + heartbeat (v7 auto-paste design)
     //
     // Per `tmp/research-auto-paste-best-design.md` §4.0 + §4.2: pipeline
@@ -1748,7 +2028,12 @@ final class RecordingService {
                 sessionID: nil,
                 recordingStartedAt: nil,
                 lastUpdatedAt: Date(),
-                failureReason: failureReason
+                failureReason: failureReason,
+                // Idle carries no liveness (nothing to keep alive); a `.failed`
+                // terminal likewise needs none — readers only consult liveness
+                // on non-terminal states (§2.2). Left nil on both terminals.
+                warmExpiresAt: nil,
+                liveness: nil
             )
             currentSessionID = nil
             currentRecordingStartedAt = nil
@@ -1758,7 +2043,13 @@ final class RecordingService {
                 sessionID: currentSessionID,
                 recordingStartedAt: currentRecordingStartedAt,
                 lastUpdatedAt: Date(),
-                failureReason: nil
+                failureReason: nil,
+                // A2: stamp the unified liveness on every non-idle write.
+                // `warmExpiresAt` is carried only on `.warmIdle`, which is written
+                // via its own path (`publishWarmHoldState` / `stampLiveness`), not
+                // through this helper. For pipeline phases it is always nil.
+                warmExpiresAt: nil,
+                liveness: Date()
             )
         }
 
@@ -1767,8 +2058,10 @@ final class RecordingService {
 
         if isTerminal {
             stopHeartbeat()
+            stopLivenessStamping()
         } else {
             startHeartbeatIfNeeded()
+            startLivenessStampingIfNeeded()
         }
     }
 
@@ -1830,10 +2123,106 @@ final class RecordingService {
                 sessionID: currentSessionID,
                 recordingStartedAt: currentRecordingStartedAt,
                 lastUpdatedAt: Date(),
-                failureReason: nil
+                failureReason: nil,
+                warmExpiresAt: nil,
+                // Keep the unified liveness fresh on the 3s pipeline heartbeat
+                // too (the 1s `livenessTask` is the primary stamper; this is the
+                // belt-and-suspenders write that already happens on this cadence).
+                liveness: Date()
             )
         )
         CrossProcessNotification.post(name: CrossProcessNotification.pipelinePhaseChanged)
+    }
+
+    // MARK: - Unified liveness stamping (A2 — the one heartbeat, §2.2)
+
+    /// The single 1s liveness task. While the record is in ANY non-idle state —
+    /// a non-terminal pipeline phase OR the `.warmIdle` warm window — this stamps
+    /// a fresh `liveness` into the SAME blob so the keyboard can eventually read
+    /// "is the writer alive?" from one field (Build B). A2 only WRITES it; no
+    /// reader acts on it yet, so this is behavior-neutral.
+    ///
+    /// Cost note (N1): in the warm window this exactly mirrors the existing 1s
+    /// `warmHeartbeatTask` cost — the two converge in Build B. During a pipeline
+    /// phase it adds a 1s blob re-write on top of the existing 3s heartbeat;
+    /// negligible, and it does NOT post `pipelinePhaseChanged` (no keyboard
+    /// wakeups), so there is no cross-process notification regression.
+    private var livenessTask: Task<Void, Never>?
+
+    private func startLivenessStampingIfNeeded() {
+        guard livenessTask == nil else { return }
+        livenessTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                guard self.livenessIsActive else { return }
+                self.stampLiveness()
+            }
+        }
+    }
+
+    private func stopLivenessStamping() {
+        // Only stop when neither axis is active — a pipeline terminal that
+        // happens while still warm must NOT kill the warm liveness, and vice
+        // versa. `enterWarmHold`/`exitWarmHold` and the pipeline terminals each
+        // call this; it self-gates on the combined predicate.
+        guard !livenessIsActive else { return }
+        livenessTask?.cancel()
+        livenessTask = nil
+    }
+
+    /// True whenever SOMETHING should be keeping `liveness` fresh: a non-terminal
+    /// pipeline phase or the warm-idle window.
+    private var livenessIsActive: Bool {
+        if isWarm { return true }
+        return currentPipelinePhase != .idle && currentPipelinePhase != .failed
+    }
+
+    /// Re-write the blob with a fresh `liveness`, choosing the authoritative
+    /// record shape: `.warmIdle` (carrying `warmExpiresAt`) when warm and the
+    /// pipeline is idle; otherwise the current pipeline phase. Does NOT post
+    /// `pipelinePhaseChanged` — liveness ticks must not thrash the keyboard
+    /// (the keyboard reads liveness on its OWN cadence / on a real phase change).
+    private func stampLiveness() {
+        let now = Date()
+        // Warm-idle takes the record only when no pipeline phase is in flight.
+        // (During the pipeline tail the phase is authoritative; `isWarm` may be
+        // true with a deferred warm publish — `pendingWarmHoldPublish` — but the
+        // record should still show the in-flight phase, not warmIdle.)
+        let pipelineActive = currentPipelinePhase != .idle && currentPipelinePhase != .failed
+        if isWarm, !pipelineActive, let warmExpiresAt {
+            PipelinePhaseProjection.write(
+                PipelinePhaseProjection(
+                    phase: .warmIdle,
+                    sessionID: nil,
+                    recordingStartedAt: nil,
+                    lastUpdatedAt: now,
+                    failureReason: nil,
+                    warmExpiresAt: warmExpiresAt,
+                    liveness: now
+                )
+            )
+        } else if pipelineActive {
+            var startedAt = currentRecordingStartedAt
+            if currentPipelinePhase == .paused {
+                startedAt = pausedAwareStartedAt()
+            }
+            PipelinePhaseProjection.write(
+                PipelinePhaseProjection(
+                    phase: currentPipelinePhase,
+                    sessionID: currentSessionID,
+                    recordingStartedAt: startedAt,
+                    lastUpdatedAt: now,
+                    failureReason: nil,
+                    warmExpiresAt: nil,
+                    liveness: now
+                )
+            )
+        }
     }
 
     // MARK: - System observers (best-practices §2.3, §2.4, §2.5)
@@ -1901,7 +2290,36 @@ final class RecordingService {
             }
         }
 
-        observers = [interruption, route, engineConfig, warmHoldDefaults]
+        // Media-services reset/lost: the audio HAL was torn down and rebuilt by
+        // the system (Bug 1 root cause). After this, our `AVAudioEngine` is
+        // dead, yet `engine.isRunning` / `isTapInstalled` keep reading
+        // stale-true and the warm heartbeat would keep advertising a "warm" mic
+        // that captures nothing. Invalidate ALL warm/engine state here so the
+        // heartbeat can never point the keyboard at a dead engine, and a
+        // subsequent Dictate cold-starts a fresh engine instead of false-warm
+        // resuming. `object: nil` — these notifications are posted without a
+        // sender object. (The first-buffer gate in `startFromWarmHold` is the
+        // belt to this suspenders; this closes the window at the source.)
+        let mediaReset = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleMediaServicesReset(reason: "reset")
+            }
+        }
+        let mediaLost = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereLostNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleMediaServicesReset(reason: "lost")
+            }
+        }
+
+        observers = [interruption, route, engineConfig, warmHoldDefaults, mediaReset, mediaLost]
     }
 
     private func unsubscribeSystemObservers() {
@@ -1965,6 +2383,36 @@ final class RecordingService {
         guard isWarm, warmHoldCooldownDuration() <= 0 else { return }
         log.notice("Warm hold disabled in Settings — cooling engine")
         exitWarmHold()
+    }
+
+    /// The audio HAL was reset/lost out from under us (Bug 1 root cause). Our
+    /// `AVAudioEngine` is now dead even though `engine.isRunning` /
+    /// `isTapInstalled` keep reading stale-true. Invalidate every warm/engine
+    /// state so:
+    ///   - the warm heartbeat stops advertising a mic that captures nothing, and
+    ///   - the next Dictate sees `isWarm == false` / `engine == nil` and
+    ///     cold-starts a fresh engine instead of false-warm resuming.
+    /// Mirrors the warm/active split the route- and config-change handlers use:
+    /// cool the engine when warm-held, finalize whatever was captured when
+    /// actively recording. Gentle teardown only — never `forceStop`.
+    private func handleMediaServicesReset(reason: String) {
+        if isWarm {
+            log.notice("Media services \(reason, privacy: .public) during warm hold — cooling dead engine")
+            exitWarmHold()
+            return
+        }
+        if isRecording {
+            log.notice("Media services \(reason, privacy: .public) during recording — finalizing")
+            internalStop(reason: "media services \(reason)")
+            return
+        }
+        // Idle but an engine reference may still linger (a warm window that just
+        // cooled, or a teardown mid-flight). Drop it so nothing stale survives
+        // the HAL reset and no future warm-resume trusts a dead handle.
+        if engine != nil {
+            log.notice("Media services \(reason, privacy: .public) while idle — clearing stale engine")
+            fullyTeardownEngine()
+        }
     }
 
     // MARK: - Warm-hold switching nudge (UX-overhaul round 2 §4 / R10 / R16)
@@ -2291,12 +2739,75 @@ private final class AudioTapRouter: @unchecked Sendable {
     private var isCapturingSlice: Bool = false
     private var capture: CaptureContext?
     private var streamingQueue: StreamingBufferQueue?
+    /// One-shot signal fired from the audio thread on the FIRST buffer that
+    /// successfully routes into the current slice (warm-resume first-buffer
+    /// confirmation, Bug 1). Set by `armFirstBufferSignal`, cleared the instant
+    /// it fires so it never double-fires within a slice. Runs under no lock when
+    /// invoked so the handler can hop to the MainActor without re-entering us.
+    private var firstBufferSignal: (@Sendable () -> Void)?
+
+    /// A3 cold-gate support. When `firstBufferArmed` is set (by `armFirstBuffer`
+    /// BEFORE `installTap`/`engine.start()`), the router REMEMBERS that a buffer
+    /// reached the slice even if no `firstBufferSignal` handler is installed yet.
+    /// This closes the cold-start race the warm path never had: the engine isn't
+    /// running until `engine.start()`, so a buffer that arrives the instant it
+    /// starts (before the `await` installs its handler) would otherwise be missed
+    /// and the gate would wait the full timeout. With the early arm, `route(_:)`
+    /// latches `firstBufferSeen = true`, and the later `await` resolves
+    /// immediately on that memory.
+    private var firstBufferArmed: Bool = false
+    private var firstBufferSeen: Bool = false
 
     func beginSlice(capture: CaptureContext, streamingQueue: StreamingBufferQueue) {
         lock.lock()
         self.capture = capture
         self.streamingQueue = streamingQueue
         isCapturingSlice = true
+        lock.unlock()
+    }
+
+    /// Arm a one-shot callback fired from the audio thread the next time a
+    /// buffer actually routes into the live slice. Used by `startFromWarmHold`
+    /// to prove the resumed engine truly captures before publishing
+    /// `.recording`. Idempotent: arming again replaces any prior unfired signal.
+    func armFirstBufferSignal(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        firstBufferSignal = handler
+        // If a buffer already routed since the early arm (cold-start race), fire
+        // the handler immediately so the await resolves without waiting. Consume
+        // the memory so it can't double-fire.
+        let alreadySeen = firstBufferArmed && firstBufferSeen
+        if alreadySeen {
+            firstBufferSignal = nil
+            firstBufferSeen = false
+            firstBufferArmed = false
+        }
+        lock.unlock()
+        if alreadySeen {
+            handler()
+        }
+    }
+
+    /// A3 — arm the early first-buffer memory BEFORE `installTap`/`engine.start()`
+    /// so a buffer arriving the instant the engine starts is never lost between
+    /// engine-start and the `await` installing its handler. Idempotent reset of
+    /// the memory at arm time.
+    func armFirstBuffer() {
+        lock.lock()
+        firstBufferArmed = true
+        firstBufferSeen = false
+        lock.unlock()
+    }
+
+    /// Discard a pending first-buffer signal without firing it (the watchdog
+    /// timed out, or capture ended first). Prevents a late buffer from resuming
+    /// a continuation that was already completed by the timeout path. Also clears
+    /// the early-arm memory.
+    func clearFirstBufferSignal() {
+        lock.lock()
+        firstBufferSignal = nil
+        firstBufferArmed = false
+        firstBufferSeen = false
         lock.unlock()
     }
 
@@ -2348,7 +2859,20 @@ private final class AudioTapRouter: @unchecked Sendable {
             return false
         }
         let streamingQueue = self.streamingQueue
+        // Pull (and disarm) the first-buffer signal under the same lock so it
+        // fires exactly once for the first buffer that reaches an active slice.
+        let firstBuffer = firstBufferSignal
+        firstBufferSignal = nil
+        // A3 cold-gate memory: if the gate was early-armed but no handler is
+        // installed yet (buffer beat the `await`), remember the arrival so the
+        // handler fires the moment it is armed. Disarm so this is one-shot.
+        if firstBuffer == nil, firstBufferArmed {
+            firstBufferSeen = true
+            firstBufferArmed = false
+        }
         lock.unlock()
+
+        firstBuffer?()
 
         let convertedSamples = capture.ingest(pcm)
         if let convertedSamples, let streamingQueue {
@@ -2382,6 +2906,27 @@ private final class TapOnceGate: @unchecked Sendable {
         guard !fired else { return false }
         fired = true
         return true
+    }
+}
+
+/// Single-resume guard for the warm-resume first-buffer race (Bug 1). The
+/// router fires the first-buffer signal from the audio thread while a watchdog
+/// `Task.sleep` may simultaneously time out; both call `complete(_:)` but only
+/// the first wins, so the underlying `CheckedContinuation` resumes exactly once.
+private final class FirstBufferLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resume: ((Bool) -> Void)?
+
+    init(_ resume: @escaping (Bool) -> Void) {
+        self.resume = resume
+    }
+
+    func complete(_ arrived: Bool) {
+        lock.lock()
+        let resume = self.resume
+        self.resume = nil
+        lock.unlock()
+        resume?(arrived)
     }
 }
 
@@ -2775,6 +3320,7 @@ extension RecordingService.RecordingError: CustomNSError {
     /// - 4: `engineStart(Error)`
     /// - 5: `micUnavailable`
     /// - 6: `warmYieldRestoreFailed` (TRANSIENT — internal control flow only)
+    /// - 7: `warmNoInput` (TRANSIENT — internal control flow only)
     public var errorCode: Int {
         switch self {
         case .alreadyRunning: return 0
@@ -2784,6 +3330,7 @@ extension RecordingService.RecordingError: CustomNSError {
         case .engineStart: return 4
         case .micUnavailable: return 5
         case .warmYieldRestoreFailed: return 6
+        case .warmNoInput: return 7
         }
     }
 
