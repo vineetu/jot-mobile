@@ -73,7 +73,8 @@ enum CrossProcessNotification {
     )
 
     /// Posted by the keyboard extension when the user taps Dictate AND the
-    /// warm-hold window (`AppGroup.warmHoldExpiresAt`) is in the future. The
+    /// `RecordingRecord` reads a fresh `.warmIdle` with its warm window still open
+    /// (`recordStartDecision() == .warmResume`). The
     /// main app's observer calls `RecordingService.start()` which takes the
     /// warm fast-path (`engine.start()` on the paused engine). Distinct from
     /// `keyboardDictateTapped` -- that one signals "user found the pill during
@@ -130,22 +131,11 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.vocab-add-requested"
     )
 
-    /// Live foreground handshake ("ping/pong") that decides whether a keyboard
-    /// Dictate tap records INLINE (Jot is the foreground host) or cold-starts via
-    /// the URL bounce (Jot is backgrounded / another app is foreground).
-    ///
-    /// The keyboard posts `keyboardForegroundPing`; a FOREGROUND app receives it
-    /// and immediately posts `appForegroundPong`. A suspended / backgrounded app
-    /// does NOT process Darwin notifications in real time, so it never pongs. If
-    /// the keyboard hears the pong within its short window → Jot is foreground →
-    /// inline; otherwise → cold start. A live check, immune to the stale-flag /
-    /// scenePhase fragility of `AppGroup.isJotAppForeground()`.
-    static let keyboardForegroundPing = Name(
-        rawValue: "com.vineetu.jot.mobile.keyboard-foreground-ping"
-    )
-    static let appForegroundPong = Name(
-        rawValue: "com.vineetu.jot.mobile.app-foreground-pong"
-    )
+    // NOTE: the foreground handshake ("ping/pong") `keyboardForegroundPing` /
+    // `appForegroundPong` notifications were removed in B4
+    // (docs/recording-coordination/design.md). Warm-vs-cold is now read from the
+    // unified `RecordingRecord`'s `liveness`, and inline-vs-cold from the single
+    // `AppGroup.isJotAppForeground()` read (N3) — no cross-process round-trip.
 
     static func post(name: Name) {
         CFNotificationCenterPostNotification(

@@ -158,18 +158,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     // correction-asks feed subscriptions moved to `KeyboardStreamingHub` (one
     // process-lifetime subscription set, observed by all controllers).
 
-    /// Live foreground-handshake state. On a Dictate "start", the keyboard pings
-    /// the app and waits `foregroundPongTimeout` for `appForegroundPong`: a pong
-    /// means Jot is the foreground host → record INLINE; silence means Jot is
-    /// backgrounded → cold-start via URL bounce. Replaces the stale-flag
-    /// `AppGroup.isJotAppForeground()` read with a live request/response.
-    private var foregroundPongObserver: CrossProcessNotification.Observer?
-    private var pendingForegroundPing: UUID?
-    private var foregroundPongReceived = false
-    /// 120ms: a foreground app pongs in a few ms; this leaves generous headroom
-    /// for Darwin round-trip + MainActor scheduling while staying imperceptible.
-    private static let foregroundPongTimeout: TimeInterval = 0.12
-
     // MARK: - v7 auto-paste deadline tasks
     //
     // Two bounded one-shot Tasks (§4.0 #2 of the v7 design). Both are
@@ -383,7 +371,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         installHeightConstraint()
         startObservingPipelinePhase()
         startObservingHistoryMirrorUpdated()
-        startObservingForegroundPong()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -421,7 +408,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         hub.refreshNow()
         startObservingPipelinePhase()
         startObservingHistoryMirrorUpdated()
-        startObservingForegroundPong()
         // Controller-scoped proxy side-effects for the current phase (auto-paste
         // flush / watchdog / stopRequestPosted). The hub already applied the
         // phase STATE in `refreshNow()` above.
@@ -494,7 +480,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func tearDownControllerScopedResources() {
         pipelinePhaseObserver = nil
         historyMirrorUpdatedObserver = nil
-        foregroundPongObserver = nil
         pipelineStaleDeadlineTask?.cancel()
         pipelineStaleDeadlineTask = nil
         pendingLaunchDeadlineTask?.cancel()
@@ -2478,94 +2463,14 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
     }
 
-    /// Continued diagnostic (B4 deferred) — log the record-based decision (now
-    /// LIVE) next to what the LEGACY warm-gate path WOULD have decided, with an
-    /// agree flag and enough context for the owner's device logs. Post-B1 this is
-    /// no longer the gate (B1 already flipped); it is kept as the revertible
-    /// safety net's diagnostic so a field regression can be bisected against the
-    /// legacy decision (the legacy warm keys are still written until B4).
-    private func logShadowStartDecision(warmWindowOpen: Bool, now: Date) {
-        // LEGACY (old warm-gate) decision, mapped to the same vocabulary. The old
-        // `.start` resolved async via ping/pong into inline (foreground) or cold
-        // (backgrounded); for warm-vs-cold agreement we label it `cold` here (the
-        // inline foreground case is the accepted N3 residual, logged via the
-        // `jotForeground` hint below).
-        let legacy: RecordStartDecision
-        let jotForeground = hasFullAccess && AppGroup.isJotAppForeground()
-        if !hasFullAccess {
-            legacy = .noFullAccess
-        } else if warmWindowOpen && !jotForeground {
-            legacy = .warmResume
-        } else {
-            switch decideMicTap() {
-            case .stop: legacy = .stop
-            case .start: legacy = .cold      // resolves to inline (fg) or cold (bg)
-            case .noop: legacy = .cold       // no start routed; closest bucket
-            }
-        }
-
-        let record = recordStartDecision()
-        let blob = PipelinePhaseProjection.read()
-        let livenessAge = blob.map { now.timeIntervalSince($0.livenessOrLegacy) }
-        let agree = (record == legacy)
-
-        DiagnosticsLog.record(
-            source: "keyboard",
-            category: .appUnresponsiveRecovery,
-            message: "record-vs-legacy-start \(agree ? "agree" : "DISAGREE")",
-            metadata: [
-                "record": record.rawValue,
-                "legacy": legacy.rawValue,
-                "agree": agree ? "Y" : "N",
-                "recordState": blob?.phase.rawValue ?? "nil",
-                "livenessAgeMs": livenessAge.map { String(Int($0 * 1000)) } ?? "nil",
-                "warmWindowOpen": warmWindowOpen ? "Y" : "N",
-                "jotForeground": jotForeground ? "Y" : "N"
-            ]
-        )
-    }
-
-    // MARK: - Live foreground handshake (ping/pong)
+    // MARK: - Start routing (inline vs cold)
     //
-    // B1 DELETED the ping/pong USAGE on the start path: `handleMicCTATap` no
-    // longer calls `resolveForegroundThenStart` — warm-vs-cold now reads the
-    // record's `liveness`, and inline-vs-cold is the single `isJotAppForeground()`
-    // read (N3). The machinery below (observer + `resolveForegroundThenStart`) is
-    // left DEFINED but UNUSED as the revertible safety net; B4 removes it along
-    // with the legacy warm keys + shadow diagnostic. `startInlineViaDarwin` /
-    // `startColdViaURLBounce` are STILL live — the record router calls them.
-
-    private func startObservingForegroundPong() {
-        guard foregroundPongObserver == nil else { return }
-        foregroundPongObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.appForegroundPong
-        ) { [weak self] in
-            self?.foregroundPongReceived = true
-        }
-    }
-
-    /// Ping the app, then after `foregroundPongTimeout` branch on whether a pong
-    /// arrived: pong → Jot is foreground → record INLINE; silence → Jot is
-    /// backgrounded → cold-start via the URL bounce. The `pendingForegroundPing`
-    /// nonce makes a superseding double-tap cancel the older resolution.
-    private func resolveForegroundThenStart() {
-        let ping = UUID()
-        pendingForegroundPing = ping
-        foregroundPongReceived = false
-        CrossProcessNotification.post(name: CrossProcessNotification.keyboardForegroundPing)
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(
-                nanoseconds: UInt64(Self.foregroundPongTimeout * 1_000_000_000)
-            )
-            guard let self, self.pendingForegroundPing == ping else { return }
-            self.pendingForegroundPing = nil
-            if self.foregroundPongReceived {
-                self.startInlineViaDarwin()
-            } else {
-                self.startColdViaURLBounce()
-            }
-        }
-    }
+    // Warm-vs-cold is decided by `recordStartDecision()` (the record's liveness);
+    // inline-vs-cold is the single `isJotAppForeground()` read (N3). The old
+    // ping/pong foreground handshake (`resolveForegroundThenStart` + the
+    // `appForegroundPong` observer + the `keyboardForegroundPing` post) was
+    // removed in B4 — the record + the one foreground read replace it.
+    // `startInlineViaDarwin` / `startColdViaURLBounce` are the two routed paths.
 
     /// Jot is foreground → post the Darwin Dictate tap. The app starts a normal
     /// background capture (the same path the keyboard uses in any other app) and
@@ -2574,7 +2479,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func startInlineViaDarwin() {
         hub.clearStreamingPartialForNewSession()
         CrossProcessNotification.post(name: CrossProcessNotification.keyboardDictateTapped)
-        keyboardLog.info("ping/pong: pong received -> inline tap (host=Jot)")
+        keyboardLog.info("Jot foreground -> inline Dictate tap (host=Jot)")
     }
 
     /// Jot is NOT foreground → cold-start by URL-bouncing into the app (the
@@ -2586,42 +2491,31 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         DiagnosticsLog.record(
             source: "keyboard",
             category: .sessionStarted,
-            message: "Pending session written at start (cold start, no pong)",
+            message: "Pending session written at start (cold start)",
             metadata: ["sessionID": session.id.uuidString]
         )
         let url = URL(string: "jot://dictate?session=\(session.id.uuidString)")
             ?? Self.containingAppLaunchURL
         openContainingApp(url, onFailure: { [weak self] in
-            // The pong window missed but Jot is actually foreground (iOS refuses
-            // to URL-open an already-foreground app). Don't strand the tap: drop
-            // the now-moot cold paste session and fall back to the inline Darwin
-            // path. If a field is focused it records inline; if not, the app's
-            // no-target fallback presents the hero. Either way — never dead.
+            // The foreground read said backgrounded but Jot is actually foreground
+            // (iOS refuses to URL-open an already-foreground app). Don't strand the
+            // tap: drop the now-moot cold paste session and fall back to the inline
+            // Darwin path. If a field is focused it records inline; if not, the
+            // app's no-target fallback presents the hero. Either way — never dead.
             ClipboardHandoff.clearPendingPasteSession()
             self?.startInlineViaDarwin()
         })
-        keyboardLog.info("ping/pong: no pong -> URL bounce (cold start)")
+        keyboardLog.info("Jot backgrounded -> URL bounce (cold start)")
     }
 
     private func handleMicCTATap() {
-        // B1 — warm-vs-cold now reads the unified RecordingRecord, NOT the legacy
-        // warm keys + ping/pong. The record's `liveness` answers "is the writer
-        // alive right now?" from one atomic blob (`recordStartDecision()`), so the
-        // 120ms ping/pong round-trip and the separate warm `expiresAt`/`heartbeat`
-        // gate are no longer on the start path. A backgrounded-ALIVE app stamps
-        // `liveness` within `livenessFresh`, so "backgrounded" is never misread as
-        // "dead" — no app-wake on a start that should warm-resume in place.
-        let now = Date()
-
-        // Legacy warm-gate result — computed ONLY for the continued diagnostic
-        // comparison (`logShadowStartDecision`); it no longer routes the tap. The
-        // legacy keys are still written until B4, so this stays a valid bisect
-        // reference for a field regression.
-        let expiresAtSnapshot = AppGroup.warmHoldExpiresAt
-        let heartbeatSnapshot = AppGroup.warmHoldHeartbeat
-        let legacyWarmWindowOpen = (expiresAtSnapshot.map { $0 > now } ?? false)
-            && (heartbeatSnapshot.map { now.timeIntervalSince($0) < 4.0 } ?? false)
-        logShadowStartDecision(warmWindowOpen: legacyWarmWindowOpen, now: now)
+        // Warm-vs-cold reads the unified RecordingRecord, NOT the legacy warm keys
+        // + ping/pong. The record's `liveness` answers "is the writer alive right
+        // now?" from one atomic blob (`recordStartDecision()`), so the 120ms
+        // ping/pong round-trip and the separate warm `expiresAt`/`heartbeat` gate
+        // are gone from the start path. A backgrounded-ALIVE app stamps `liveness`
+        // within `livenessFresh`, so "backgrounded" is never misread as "dead" —
+        // no app-wake on a start that should warm-resume in place.
 
         // Local noop / stop / start triage from the record MIRROR (`recordingState`):
         //   • noop  — stop already posted, in-flight tail, or arming (transient)

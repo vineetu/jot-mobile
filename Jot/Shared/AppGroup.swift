@@ -151,8 +151,6 @@ enum AppGroup {
         /// `streamingLoadingVariantLabel`), but the flag itself lives here so
         /// the gate is the single cross-process source of truth.
         static let wizardActive = "jot.setupWizard.w5Active"
-        static let warmHoldExpiresAt = "jot.warmHold.expiresAt"
-        static let warmHoldHeartbeat = "jot.warmHold.heartbeat"
 
         /// Warm-hold switching-nudge state (UX-overhaul round 2 §4 / R10).
         /// All three live in App-Group `UserDefaults` (no schema bump) so the
@@ -307,41 +305,14 @@ enum AppGroup {
         }
     }
 
-    /// Wall-clock Date when the current warm-hold window will auto-cool.
-    /// Set by RecordingService.enterWarmHold; cleared on warm exit.
-    /// Read by the keyboard extension to decide between the warm fast-path
-    /// (Darwin notification) and cold-launch (jot:// URL bounce).
-    static var warmHoldExpiresAt: Date? {
-        get { defaults.object(forKey: Keys.warmHoldExpiresAt) as? Date }
-        set {
-            if let newValue {
-                defaults.set(newValue, forKey: Keys.warmHoldExpiresAt)
-            } else {
-                defaults.removeObject(forKey: Keys.warmHoldExpiresAt)
-            }
-        }
-    }
-
-    /// Liveness heartbeat written by RecordingService every ~1s while
-    /// warm-hold is active. The keyboard gates the warm-resume fast-path
-    /// on this being fresh (≤2.5s old) — without it, a ghost expiry
-    /// from a jetsammed main app would silently swallow Dictate taps
-    /// because no listener exists for the warm-resume Darwin notification.
-    /// Stale heartbeat → fall through to URL bounce.
-    static var warmHoldHeartbeat: Date? {
-        get { defaults.object(forKey: Keys.warmHoldHeartbeat) as? Date }
-        set {
-            if let newValue {
-                defaults.set(newValue, forKey: Keys.warmHoldHeartbeat)
-            } else {
-                defaults.removeObject(forKey: Keys.warmHoldHeartbeat)
-            }
-        }
-    }
+    // NOTE: the legacy `warmHoldExpiresAt` / `warmHoldHeartbeat` keys + accessors
+    // were removed in B4 (docs/recording-coordination/design.md). Warm-vs-cold is
+    // now read from the unified `RecordingRecord`'s `.warmIdle` state + `liveness`;
+    // the keyboard no longer reads a separate warm window/heartbeat.
 
     /// Wall-clock `Date` of the most recent keyboard-active heartbeat,
     /// written by the keyboard extension every ~1s while it's on screen.
-    /// Mirror of `warmHoldHeartbeat`'s accessor shape. Read by W5 to gate
+    /// Same accessor shape as the other heartbeat slots. Read by W5 to gate
     /// the globe-switch cue via `isJotKeyboardActive()`.
     static var keyboardActiveHeartbeat: Date? {
         get { defaults.object(forKey: Keys.keyboardActiveHeartbeat) as? Date }

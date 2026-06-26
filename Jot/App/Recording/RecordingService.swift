@@ -201,12 +201,6 @@ final class RecordingService {
     private var isTapInstalled: Bool = false
     private let tapRouter = AudioTapRouter()
     private var warmCooldownTask: Task<Void, Never>?
-    /// Repeating task that refreshes `AppGroup.warmHoldHeartbeat` every
-    /// ~1s while warm-hold is active. The keyboard treats a stale
-    /// heartbeat (>2.5s old) as proof the main app was jetsammed and
-    /// falls back to the URL bounce instead of posting a Darwin
-    /// notification to a dead listener.
-    private var warmHeartbeatTask: Task<Void, Never>?
     private var pendingWarmHoldPublish: Bool = false
     // Array rather than Set because `NSObjectProtocol` isn't Hashable.
     // We only ever iterate to remove — semantics are identical.
@@ -773,8 +767,6 @@ final class RecordingService {
 
         warmCooldownTask?.cancel()
         warmCooldownTask = nil
-        warmHeartbeatTask?.cancel()
-        warmHeartbeatTask = nil
 
         // Restore `.mixWithOthers` (dropped at warm entry by
         // `dropMixWithOthersForWarmIdle`) BEFORE resuming, so the next dictation
@@ -793,8 +785,6 @@ final class RecordingService {
 
         pendingWarmHoldPublish = false
         isWarm = false
-        AppGroup.warmHoldExpiresAt = nil
-        AppGroup.warmHoldHeartbeat = nil
         warmExpiresAt = nil
 
         let input = engine.inputNode
@@ -1411,31 +1401,12 @@ final class RecordingService {
     private func publishWarmHoldState() {
         guard isWarm, let warmExpiresAt else { return }
 
-        AppGroup.warmHoldExpiresAt = warmExpiresAt
-        // Seed the heartbeat immediately so the keyboard's first liveness
-        // check after enterWarmHold doesn't see a nil/stale value.
-        AppGroup.warmHoldHeartbeat = Date()
-
-        warmHeartbeatTask?.cancel()
-        warmHeartbeatTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self, self.isWarm else { return }
-                AppGroup.warmHoldHeartbeat = Date()
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
-            }
-        }
-
-        // A2 — also write the `.warmIdle` record into the UNIFIED blob (carrying
+        // Write the `.warmIdle` record into the UNIFIED blob (carrying
         // `warmExpiresAt` + a fresh `liveness`) and start the 1s liveness stamper.
-        // The OLD `warmHoldExpiresAt`/`warmHoldHeartbeat` keys above are STILL
-        // written; nothing reads the new record's warmIdle for a decision until
-        // Build B. The keyboard tolerates `.warmIdle` as idle (A1), so this is
-        // behavior-neutral. Written AFTER seeding the legacy keys so a keyboard
-        // that wakes on the record sees a consistent pair.
+        // The keyboard reads warm-vs-cold from this record's liveness (B1); the
+        // 1s liveness stamper is the single warm-window heartbeat (the old separate
+        // `warmHoldExpiresAt`/`warmHoldHeartbeat` keys + `warmHeartbeatTask` were
+        // removed in B4 — N1: the two cadences were always identical and merge here).
         let now = Date()
         PipelinePhaseProjection.write(
             PipelinePhaseProjection(
@@ -1487,16 +1458,12 @@ final class RecordingService {
         let wasWarm = isWarm
         warmCooldownTask?.cancel()
         warmCooldownTask = nil
-        warmHeartbeatTask?.cancel()
-        warmHeartbeatTask = nil
         pendingWarmHoldPublish = false
         warmExpiresAt = nil
-        AppGroup.warmHoldExpiresAt = nil
-        AppGroup.warmHoldHeartbeat = nil
         isWarm = false
-        // A2 — reset the unified record to `.idle` when the warm window closes,
-        // mirroring the legacy key clears above, and stop the liveness stamper
-        // (self-gates: it stays alive if a pipeline phase is somehow still
+        // Reset the unified record to `.idle` when the warm window closes, and
+        // stop the liveness stamper (self-gates: it stays alive if a pipeline
+        // phase is somehow still
         // active). Only when we were actually warm AND no pipeline phase is
         // in flight — otherwise an in-flight pipeline terminal owns the record.
         if wasWarm, currentPipelinePhase == .idle || currentPipelinePhase == .failed {
@@ -2138,15 +2105,14 @@ final class RecordingService {
 
     /// The single 1s liveness task. While the record is in ANY non-idle state —
     /// a non-terminal pipeline phase OR the `.warmIdle` warm window — this stamps
-    /// a fresh `liveness` into the SAME blob so the keyboard can eventually read
-    /// "is the writer alive?" from one field (Build B). A2 only WRITES it; no
-    /// reader acts on it yet, so this is behavior-neutral.
+    /// a fresh `liveness` into the SAME blob so the keyboard reads "is the writer
+    /// alive?" from one field (the warm-vs-cold + recovery liveness, B1/B3).
     ///
-    /// Cost note (N1): in the warm window this exactly mirrors the existing 1s
-    /// `warmHeartbeatTask` cost — the two converge in Build B. During a pipeline
-    /// phase it adds a 1s blob re-write on top of the existing 3s heartbeat;
-    /// negligible, and it does NOT post `pipelinePhaseChanged` (no keyboard
-    /// wakeups), so there is no cross-process notification regression.
+    /// Cost note (N1): in the warm window this is the SINGLE warm heartbeat — it
+    /// replaced the old separate 1s `warmHeartbeatTask` (identical cadence, no new
+    /// cost; merged in B4). During a pipeline phase it adds a 1s blob re-write on
+    /// top of the existing 3s heartbeat; negligible, and it does NOT post
+    /// `pipelinePhaseChanged` (no keyboard wakeups), so no notification regression.
     private var livenessTask: Task<Void, Never>?
 
     private func startLivenessStampingIfNeeded() {

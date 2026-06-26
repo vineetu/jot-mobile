@@ -18,11 +18,10 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
         case idle
         /// Post-stop warm-hold window: the mic engine stays warm (ready for an
         /// instant warm-resume) but is NOT capturing. Was previously implicit —
-        /// signalled ONLY by the separate `warmHoldExpiresAt`/`warmHoldHeartbeat`
-        /// App-Group keys. A2 promotes it to a first-class state inside the
-        /// record (carrying `warmExpiresAt`), so the keyboard can eventually read
-        /// warm-vs-cold from the one blob (Build B). Until then the keyboard
-        /// renders it as idle/home (A1) and the old warm keys are STILL written.
+        /// signalled by the separate `warmHoldExpiresAt`/`warmHoldHeartbeat`
+        /// App-Group keys (removed in B4). Now a first-class state inside the
+        /// record (carrying `warmExpiresAt` + a fresh `liveness`); the keyboard
+        /// reads warm-vs-cold from this one blob (`recordStartDecision`).
         case warmIdle
         /// Start requested, engine coming up, first real audio buffer NOT yet
         /// confirmed (the verified-recording gate state — §2.3 / A3). The record
@@ -83,20 +82,18 @@ struct PipelinePhaseProjection: Codable, Sendable, Equatable {
     let lastUpdatedAt: Date
     let failureReason: String?
 
-    /// Non-nil ONLY in `.warmIdle` — folds in the old `warmHoldExpiresAt` key
-    /// (which is STILL written separately through A2; nothing reads this field
-    /// for decisions until Build B). The wall-clock instant the warm window
-    /// expires.
+    /// Non-nil ONLY in `.warmIdle` — folded in the old `warmHoldExpiresAt` key
+    /// (removed in B4). The wall-clock instant the warm window expires; the
+    /// keyboard's `recordStartDecision` gates `.warmResume` on it.
     let warmExpiresAt: Date?
 
     /// Single liveness stamp, refreshed on ONE cadence (~1s) in EVERY non-idle
-    /// state — including `.warmIdle` (§2.2). The future single answer to "is the
-    /// writer alive right now?" (`now − liveness < livenessFresh`), replacing
-    /// the pipeline heartbeat (#2), the warm heartbeat (#4) and ping/pong (#7).
-    /// Optional for backward-compatibility: a blob written by a pre-A2 build (or
-    /// the legacy initializer) has no `liveness`; readers fall back to
-    /// `lastUpdatedAt`. Nothing reads this field for a decision until Build B —
-    /// A2 only WRITES it (shadow evidence is gathered in A4).
+    /// state — including `.warmIdle` (§2.2). The single answer to "is the writer
+    /// alive right now?" (`now − liveness < livenessFresh`), which REPLACED the
+    /// pipeline heartbeat (#2), the warm heartbeat (#4) and ping/pong (#7) — all
+    /// removed in B4. Optional for backward-compatibility: a blob written by a
+    /// pre-liveness build (or the legacy initializer) has no `liveness`; readers
+    /// fall back to `lastUpdatedAt` via `livenessOrLegacy`.
     let liveness: Date?
 
     init(

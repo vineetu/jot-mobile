@@ -14,10 +14,6 @@ struct JotApp: App {
     private let stopRequestObserver: CrossProcessNotification.Observer
     private let cancelRequestObserver: CrossProcessNotification.Observer
     private let warmResumeObserver: CrossProcessNotification.Observer
-    /// Live foreground handshake responder: pongs the keyboard's
-    /// `keyboardForegroundPing` iff we're genuinely foreground, so the keyboard
-    /// can decide inline-vs-cold-start without trusting a stale flag.
-    private let foregroundPingObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var streamingPartial: StreamingPartial
@@ -87,19 +83,6 @@ struct JotApp: App {
             CrossProcessRecordingStopCoordinator.shared.handleCancelRequested()
         }
 
-        foregroundPingObserver = CrossProcessNotification.addObserver(
-            name: CrossProcessNotification.keyboardForegroundPing
-        ) {
-            // Live foreground handshake (ping/pong). Pong ONLY if we're genuinely
-            // foreground. Receiving the ping proves we're not suspended, but a
-            // just-backgrounded (not-yet-suspended) app can briefly receive it —
-            // the applicationState check suppresses the pong there so the keyboard
-            // correctly cold-starts to the hero instead of recording inline.
-            if UIApplication.shared.applicationState != .background {
-                CrossProcessNotification.post(name: CrossProcessNotification.appForegroundPong)
-            }
-        }
-
         warmResumeObserver = CrossProcessNotification.addObserver(
             name: CrossProcessNotification.warmResumeRequested
         ) {
@@ -134,13 +117,15 @@ struct JotApp: App {
                     lifecycleLog.info("Warm resume requested from keyboard; recording started")
                 } catch {
                     // The warm-resume fast path is fire-and-forget from the
-                    // keyboard's side. If start() throws, clear the stale
-                    // warm projection AND route back through the guarded
-                    // auto-start state machine instead of losing the tap.
-                    AppGroup.warmHoldExpiresAt = nil
-                    AppGroup.warmHoldHeartbeat = nil
+                    // keyboard's side. If start() throws, route back through the
+                    // guarded auto-start state machine instead of losing the tap.
+                    // The warm RECORD is already reconciled in-process: every
+                    // warm-resume failure path inside `start()` calls
+                    // `exitWarmHold()` (→ record `.idle`), so there is no stale
+                    // warm projection left to clear here (the legacy
+                    // `warmHoldExpiresAt`/`warmHoldHeartbeat` keys were removed in B4).
                     let fallbackReason = "warm resume failed: \(Self.describeAutoStartError(error))"
-                    lifecycleLog.notice("AUTOSTART: guard=warm-resume-start action=defer reason=\(fallbackReason, privacy: .public); cleared warm-hold cache")
+                    lifecycleLog.notice("AUTOSTART: guard=warm-resume-start action=defer reason=\(fallbackReason, privacy: .public)")
                     if case RecordingService.RecordingError.alreadyRunning = error {
                         lifecycleLog.debug("Warm resume fallback continuing after alreadyRunning")
                     } else {
@@ -345,12 +330,11 @@ struct JotApp: App {
         // unset) means "no recording in flight"; the keyboard derives
         // `isRecording` from `phase == .recording` rather than reading a
         // separate projection. Per design §4.2.
+        // Also clears any leftover warm-hold (`.warmIdle`) record from a crash
+        // mid-warm — the record is the single source of truth (warm-hold never
+        // auto-activates on cold launch), so `reset()` alone now covers the
+        // stale-clear the legacy `warmHoldExpiresAt`-on-launch did before B4.
         PipelinePhaseProjection.reset()
-        // Phase 4 stale-clear: spec §1a #13 — warm-hold never auto-activates on
-        // cold launch. If the previous process crashed mid-warm, this projection
-        // could linger for up to 60s and mislead the keyboard into posting Darwin
-        // into a dead listener. Clear on launch.
-        AppGroup.warmHoldExpiresAt = nil
         // Activate the phone-side WatchConnectivity session so the
         // paired watch can transfer audio files in + the iPhone can
         // push top-10 transcripts back. Safe to call even if no watch
