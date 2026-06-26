@@ -3,7 +3,7 @@
 //  Jot
 //
 //  Redesigned Help surface. Editorial chrome — warm-cream wallpaper (shared
-//  with the wizard), SF Pro display header, Liquid Glass cards. Presented two
+//  with the wizard), Fraunces display header, Liquid Glass cards. Presented two
 //  ways:
 //    1. As a navigation push from Settings → ABOUT → "Help & Support".
 //    2. As a modal sheet from the home header's "?" glass-circle button.
@@ -86,7 +86,7 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Help")
-                    .font(.system(size: 32, weight: .bold, design: .default))
+                    .font(.custom(JotType.frauncesSemiBold, size: 32))
                     .foregroundStyle(Color.jotInk)
                     .accessibilityAddTraits(.isHeader)
 
@@ -115,7 +115,7 @@ struct HelpView: View {
             }
 
             Text("Everything you need to know about Jot")
-                .font(.system(size: 16, weight: .regular, design: .default))
+                .font(.custom(JotType.frauncesItalicText, size: 16))
                 .foregroundStyle(Color.jotMute)
         }
         .padding(.top, 4)

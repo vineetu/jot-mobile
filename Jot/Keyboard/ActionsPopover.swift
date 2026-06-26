@@ -202,7 +202,7 @@ struct ActionsPopover: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back to actions")
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold, design: .default))
+                    .font(.system(size: 15, weight: .semibold, design: .serif))
                     .foregroundStyle(Color.jotInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)

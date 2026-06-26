@@ -87,7 +87,7 @@ Prefer reading and editing files under `Jot/`. Only touch root-level files when 
 
 ## UI And Product Tone
 
-- The app uses a native (SF Pro), glassy SwiftUI visual language. Prefer existing tokens and components before creating new styling.
+- The app uses an editorial, glassy SwiftUI visual language. Prefer existing tokens and components before creating new styling.
 - The keyboard is deliberately quieter and more system-like than the main app. Keep it compact, responsive, and memory-conscious.
 - Preserve accessibility labels, VoiceOver behavior, dynamic type considerations, haptics, and reduced-motion checks when touching user-facing flows.
 - Avoid visible instructional copy that explains implementation mechanics. Product text should describe what the user can do and what state the app is in.

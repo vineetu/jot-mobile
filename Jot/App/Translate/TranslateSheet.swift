@@ -166,7 +166,8 @@ struct TranslateSheet: View {
         } else if !result.isEmpty {
             ScrollView {
                 Text(result)
-                    .font(.system(size: 18, design: .default))
+                    .font(.system(size: 18, design: .serif))
+                    .italic()
                     .lineSpacing(3)
                     .foregroundStyle(Color.jotInk)
                     .frame(maxWidth: .infinity, alignment: .leading)

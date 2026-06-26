@@ -301,7 +301,7 @@ The sole off-device transmission is the **user-initiated feedback POST** (plus a
 - `JotDesign.swift` compiles into BOTH the main app AND the keyboard. It must not pull in app-only types: `activeRewriteModelDisplayName`/`Size` are `JOT_APP_HOST`-gated with a static fallback in the keyboard. Don't add unguarded references to app-only singletons.
 - `Surface.key` is THE single chrome-control token for every back/close/pause/trash control (dark = solid system grey, light = white-opacity glass). Never substitute ad-hoc `.ultraThinMaterial` circles. Fix the token, not the call site.
 - `Surface.regular`/`.heavy` use the real iOS 26 `.glassEffect`; `Surface.key`/`.keyDim` are HAND-ROLLED gradients on purpose (sub-44pt glass blurs to mush). Never migrate key tiers to `.glassEffect`.
-- Typography is the native system font (SF Pro) everywhere — no bundled fonts, no `UIAppFonts`. Display + body faces are `Font.system(…, design: .default)`; the editorial serif (Fraunces + system New York) was migrated out per issue #4 (`docs/plans/typography-sf-pro-migration.md`).
+- Font PostScript names in code differ from bundled filenames in `UIAppFonts` — both required, must stay aligned. Fraunces ships no Medium(500)/no 14pt opsz static; the SemiBold(600) cut is exposed as `frauncesSemiBold`; 19pt body italic uses the 9pt cut.
 - `JotDesignWatchSafe.swift` is a deliberate UIKit-free MIRROR of a narrow color subset (no dynamic providers). NOT a fork: any color change must be made identically in both. Omits keyboard-blue + semantic-icon palette by design.
 - `jotAccent` (#1A8CFF) is the single brand accent; coral survives only on Settings/AI surfaces; `jotRecord` (red) is reserved for recording state and must stay visually distinct.
 - Page backgrounds go through `WallpaperBackground`; cards through `GlassCard`/`LiquidGlassCard`, not raw `.glassEffect` at call sites.
@@ -375,7 +375,7 @@ Grep breadcrumbs that pin a behaviour to its code. Deduped across subsystems.
 - `jot.setup.completed` / `wizardCoreStepCount` / `UITextInputMode.activeInputModes` — setup wizard completion + install detection.
 - `jot.speech.modelVariant` / `jot.ask.backend` / `speechModelInstalled` / `Rebuild search index` — Settings state mirrors.
 - `transferQueuedFiles` / `pushTopTranscripts` / `watchOriginUUID` / `stageFileSync` / `helloFresh` / `watch.pendingQueue.v1` — watch connectivity.
-- `JotDesign.Surface.key` / `JotType.displayTitle` / `JotType.editorialDisplay` / `WallpaperBackground` — design tokens + typography (native SF Pro).
+- `JotDesign.Surface.key` / `frauncesSemiBold` / `Fraunces72pt-Regular` / `WallpaperBackground` — design tokens + fonts.
 - `FeedbackClient.shared` / `jot-donations.ideaflow.page/feedback` / `jot.diagnostics.entries` / `DiagnosticsLog.record` — supporting surfaces + the single outbound POST.
 - `com.apple.keyboard-service` / `RequestsOpenAccess` — keyboard extension Info.plist identity.
 

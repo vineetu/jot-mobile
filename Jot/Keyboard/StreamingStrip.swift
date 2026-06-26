@@ -11,7 +11,7 @@ import SwiftUI
 ///   header swaps to a static hollow dot + frozen clock + "mic ready, not
 ///   capturing" and the waveform hides.
 /// - Streaming pane: ~3.5-line capped Liquid Glass card with a scrollable
-///   interior. Live text renders in native SF Pro ITALIC (italic =
+///   interior. Live text renders in the bundled Fraunces ITALIC (italic =
 ///   "live" only), `#3C5A99`, line-height ~1.55.
 /// - Top-edge fade via `.mask(LinearGradient(...))` so older content
 ///   eases out as it scrolls off the top.
@@ -312,11 +312,12 @@ private struct StreamingPane: View {
                                         reduceMotion: reduceMotion
                                     )
                                 } else {
-                                    // WS-A / R15: live transcript renders in
-                                    // native SF Pro ITALIC (serif migrated per
-                                    // issue #4) — italic exclusively signals
-                                    // "live", giving hero parity with the live
-                                    // recents row. `TranscribingText` appends the stepping
+                                    // WS-A / R15: live transcript renders in the
+                                    // already-bundled Fraunces ITALIC (the
+                                    // 9pt-opsz text cut, tuned for text size) —
+                                    // italic exclusively signals "live", giving
+                                    // hero parity. NOT synthetic system italic.
+                                    // `TranscribingText` appends the stepping
                                     // ellipsis tail inline after the newest
                                     // word — the batch preview lags the voice,
                                     // and the tail keeps signalling "still
@@ -326,7 +327,7 @@ private struct StreamingPane: View {
                                     // waveform), hero parity in idiom.
                                     TranscribingText(
                                         text: partialText,
-                                        font: Font.system(size: 14, weight: .regular, design: .default).italic(),
+                                        font: Font.custom(JotType.frauncesItalicText, size: 14),
                                         textColor: Color.jotKeyboardStreamText,
                                         dotColor: Color.jotKeyboardAccent,
                                         isTranscribing: !isPaused,
@@ -800,8 +801,8 @@ struct AmplitudeMeter: View {
 /// editorial line (`ColdStartCopy`) shown while the model is doing a
 /// genuinely slow load. NO progress bar, NO breathing: the strip header's
 /// pulsing blue dot is the only motion (the design's rule). Rendered in the
-/// same native SF Pro italic as the live transcript so it reads as Jot's
-/// voice, not a system loading primitive. The deferred-reveal gate
+/// same bundled Fraunces italic as the live transcript so it reads as Jot's
+/// editorial voice, not a system loading primitive. The deferred-reveal gate
 /// (this only appears once a load passes `ColdStartCopy.revealThreshold`)
 /// lives in `StreamingPane`, so a warm load never flashes it.
 private struct KeyboardLoadingText: View {
@@ -810,7 +811,7 @@ private struct KeyboardLoadingText: View {
 
     var body: some View {
         Text(label)
-            .font(Font.system(size: 14, weight: .regular, design: .default).italic())
+            .font(Font.custom(JotType.frauncesItalicText, size: 14))
             .lineSpacing(14 * 0.55)
             .foregroundStyle(Color.jotKeyboardStreamText)
             .multilineTextAlignment(.leading)

@@ -27,7 +27,7 @@ struct WelcomeStep: View {
                     .accessibilityAddTraits(.isHeader)
 
                 Text("Voice transcription for fast messaging — dictate into any app.")
-                    .font(.system(size: 17, weight: .regular))
+                    .font(JotType.displaySerif(17))
                     .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)

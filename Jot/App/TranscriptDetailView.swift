@@ -18,10 +18,10 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 ///   fields (no semantic title field exists in v1 per plan §10.1, so the
 ///   editorial title slot is intentionally hidden).
 /// - **Original / Rewrite tab**: 2-pill segmented control. Original reads
-///   `transcript.text` in SF Pro 24pt regular — the published text
+///   `transcript.text` in Fraunces 24pt regular roman — the published text
 ///   already has the always-on regex filler sweep (um/uh) baked in by the
 ///   dictation pipeline, so no separate render-time pass is needed here.
-///   Rewrite reads `transcript.cleanedText` in SF Pro 19pt. If
+///   Rewrite reads `transcript.cleanedText` in Fraunces 19pt italic. If
 ///   `cleanedText` is nil, the Rewrite tab shows a "Tap Rewrite to
 ///   generate" empty state with a blue CTA. `cleanedText` is reserved
 ///   for AI Rewrite output.

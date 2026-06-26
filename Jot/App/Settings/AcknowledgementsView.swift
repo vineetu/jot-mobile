@@ -7,10 +7,10 @@
 //  app bundle.
 //
 //  Two sections:
-//    1. Models — the on-device speech models and the speech-recognition
-//       SDK that loads them. These have specific legal terms (CC-BY, Apache)
-//       that ship in the binary so we attribute them with the SDK + license
-//       + source link.
+//    1. Models + fonts — the on-device speech models, the speech-recognition
+//       SDK that loads them, and the Fraunces typeface. These have specific
+//       legal terms (CC-BY, OFL, Apache) that ship in the binary so we
+//       attribute them with the SDK + license + source link.
 //    2. Swift packages — the SPM dependency tree pinned in `Package.resolved`.
 //       Names + license + version + GitHub link per row. Versions are
 //       hard-coded here (kept in sync with `Package.resolved`) so the
@@ -87,6 +87,14 @@ struct AcknowledgementsView: View {
                         license: "Apache 2.0",
                         version: nil,
                         url: "https://huggingface.co/Qwen/Qwen3.5-4B",
+                        showDivider: true
+                    )
+                    AcknowledgementRow(
+                        title: "Fraunces",
+                        author: "Undercase Type",
+                        license: "SIL OFL 1.1",
+                        version: nil,
+                        url: "https://github.com/googlefonts/fraunces",
                         showDivider: false
                     )
                 }

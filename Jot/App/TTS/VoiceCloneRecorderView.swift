@@ -117,7 +117,7 @@ struct VoiceCloneRecorderView: View {
     private var scriptCard: some View {
         LiquidGlassCard {
             Text(Self.sampleScript)
-                .font(.system(size: 18, weight: .regular, design: .default))
+                .font(.system(size: 18, weight: .regular, design: .serif))
                 .lineSpacing(6)
                 .foregroundStyle(Color.jotPageInk)
                 .frame(maxWidth: .infinity, alignment: .leading)

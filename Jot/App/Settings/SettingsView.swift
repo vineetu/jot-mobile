@@ -179,7 +179,7 @@ struct SettingsView: View {
 
     private var heroTitle: some View {
         Text("Settings")
-            .font(JotType.displayTitle(44))
+            .font(JotType.displaySerif(44))
             .tracking(-1.6)
             .foregroundStyle(Color.jotPageInk)
             .accessibilityAddTraits(.isHeader)

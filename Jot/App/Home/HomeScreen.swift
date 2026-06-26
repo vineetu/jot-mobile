@@ -22,7 +22,7 @@ private let homeLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: 
 /// The earlier home centered on an inline `RecorderBar` (big red mic button,
 /// streaming preview, transcribing spinner) pinned to the bottom safe area.
 /// Phase 3 (Mockup 07) replaced that with an editorial layout:
-/// - SF Pro 38pt "Jot" headline + tiny daily-stat sub-line.
+/// - Fraunces 38pt "Jot" headline + tiny daily-stat sub-line.
 /// - Glass-circle Settings button top-right (modal `SettingsView`, unchanged).
 /// - Search bar pill, UI-shell only (disabled in v1, see plan §5.1).
 /// - Grouped transcript list (Today / Yesterday / Last 7 days / Older),
@@ -473,7 +473,7 @@ struct HomeScreen: View {
                 messages: Self.homeCTAPool,
                 dwell: 14,
                 sequenced: false,
-                font: JotType.displayTitle(34),
+                font: JotType.displaySerif(34),
                 color: .jotPageInk,
                 alignment: .leading
             )

@@ -156,14 +156,14 @@ struct CorrectionReviewSection: View {
         }
     }
 
-    /// The spoken line for a row — SF Pro (like the keyboard), with the
+    /// The spoken line for a row — Fraunces italic (like the keyboard), with the
     /// gated word emphasized + dash-underlined so it's findable in the snippet.
     private func contextLine(_ ctx: (before: String, gated: String, after: String)) -> some View {
         (Text(ctx.before).foregroundColor(Color.jotPageInkCaption)
             + Text(ctx.gated).foregroundColor(Color.jotPageInk)
                 .underline(true, pattern: .dash, color: Color.jotPageInkCaption)
             + Text(ctx.after).foregroundColor(Color.jotPageInkCaption))
-            .font(.system(size: 14, weight: .regular, design: .default))
+            .font(.custom(JotType.frauncesItalicText, size: 14))
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
     }

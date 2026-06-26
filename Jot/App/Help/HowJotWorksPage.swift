@@ -23,12 +23,12 @@ struct HowJotWorksPage: View {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("How Jot works")
-                            .font(.system(size: 32, weight: .bold, design: .default))
+                            .font(.custom(JotType.frauncesSemiBold, size: 32))
                             .foregroundStyle(Color.jotInk)
                             .accessibilityAddTraits(.isHeader)
 
                         Text("The whole loop, in 30 seconds")
-                            .font(.system(size: 16, weight: .regular, design: .default))
+                            .font(.custom(JotType.frauncesItalicText, size: 16))
                             .foregroundStyle(Color.jotMute)
                     }
                     .padding(.top, 4)
