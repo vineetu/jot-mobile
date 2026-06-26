@@ -41,12 +41,12 @@ struct SeeForYourselfPage: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("See for yourself.")
-                .font(.custom(JotType.frauncesSemiBold, size: 32))
+                .font(.system(size: 32, weight: .bold, design: .default))
                 .foregroundStyle(Color.jotInk)
                 .accessibilityAddTraits(.isHeader)
 
             Text("iOS keeps the receipts")
-                .font(.custom(JotType.frauncesItalicText, size: 16))
+                .font(.system(size: 16, weight: .regular, design: .default))
                 .foregroundStyle(Color.jotMute)
         }
         .padding(.top, 4)

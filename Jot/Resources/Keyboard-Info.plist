@@ -44,13 +44,5 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).JotKeyboardViewController</string>
 	</dict>
-	<key>UIAppFonts</key>
-	<array>
-		<string>Fraunces-Regular.ttf</string>
-		<string>Fraunces-Medium.ttf</string>
-		<string>Fraunces-Italic.ttf</string>
-		<string>Fraunces-MediumItalic.ttf</string>
-		<string>Fraunces9pt-Italic.ttf</string>
-	</array>
 </dict>
 </plist>

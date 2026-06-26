@@ -36,9 +36,9 @@ struct RotatingMessageView: View {
     /// `true` → declared order (story beats); `false` → shuffled once on appear.
     let sequenced: Bool
 
-    /// Per-line typography. Defaults to the editorial serif-italic face used by
+    /// Per-line typography. Defaults to the SF Pro display face used by
     /// the home CTA; call sites can override for the hero top-space copy.
-    var font: Font = JotType.displaySerif(20)
+    var font: Font = JotType.displayTitle(20)
     /// Line color. Defaults to the secondary page ink so the message reads as
     /// supporting copy, not a headline. Override at the call site as needed.
     var color: Color = .jotPageInkSecondary

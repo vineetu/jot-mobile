@@ -107,7 +107,7 @@ private struct LiveStreamingBody: View {
 
     /// Above this character count, the streaming text is split into a short
     /// head + truncated tail so the row stays compact in the list. At 17pt
-    /// serif italic these values fit comfortably in 3 rendered lines.
+    /// SF Pro italic these values fit comfortably in 3 rendered lines.
     private static let overflowThreshold: Int = 90
     private static let headTargetChars: Int = 25
     private static let tailTargetChars: Int = 50
@@ -120,7 +120,11 @@ private struct LiveStreamingBody: View {
 
         Text("\u{201C}\(displayBody)")
             .foregroundColor(Color.jotPageInk)
-            .font(.system(size: 17, weight: .regular, design: .serif).italic())
+            // Italic (native SF Pro) is kept as the live/streaming signal vs the
+            // upright FeaturedLatestRow saved-text quote — that contrast is the
+            // signal. Serif → SF Pro per issue #4; the italic is semantic, not
+            // editorial decoration, so it stays.
+            .font(.system(size: 17, weight: .regular, design: .default).italic())
             .tracking(-0.2)
             .lineSpacing(2)
             .lineLimit(3)

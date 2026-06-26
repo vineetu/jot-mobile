@@ -486,7 +486,7 @@ struct RecordingHeroView: View {
                 messages: Self.heroTopMessages,
                 dwell: 5,
                 sequenced: true,
-                font: JotType.displaySerif(22),
+                font: JotType.displayTitle(22),
                 color: .jotPageInk,
                 alignment: .leading
             )
@@ -530,11 +530,11 @@ struct RecordingHeroView: View {
                         // Same calm stepping ellipsis as the live-transcript
                         // tail (`TranscribingText`/`SteppingEllipsis`) so the
                         // waiting state feels alive from second one — quiet, not
-                        // a waveform. Matches the hero's 26pt serif-italic
+                        // a waveform. Matches the hero's 26pt SF Pro
                         // secondary-ink typography; dots wear the same ink.
                         SteppingEllipsis(
                             leading: "Listening",
-                            font: .system(size: 26, weight: .regular, design: .serif).italic(),
+                            font: .system(size: 26, weight: .regular, design: .default),
                             textColor: Color.jotPageInkSecondary,
                             dotColor: Color.jotPageInkSecondary,
                             reduceMotion: reduceMotion,
@@ -606,7 +606,7 @@ struct RecordingHeroView: View {
     /// usual "Listening…" / live transcript pair.
     ///
     /// Visual contract: identical typography to the "Listening…"
-    /// placeholder (26pt serif italic, `jotPageInkSecondary`) so the
+    /// placeholder (26pt SF Pro, `jotPageInkSecondary`) so the
     /// swap reads as a copy change rather than a layout shift.
     @ViewBuilder
     private var loadingPlaceholder: some View {
@@ -1055,7 +1055,7 @@ private struct StreamingDictationText: View {
                 VStack(alignment: .leading, spacing: 0) {
                     TranscribingText(
                         text: text,
-                        font: .system(size: 26, weight: .regular, design: .serif).italic(),
+                        font: .system(size: 26, weight: .regular, design: .default),
                         textColor: Color.jotPageInk,
                         // The tail is chrome, not ink — secondary keeps it a
                         // step quieter than the words (same tone the
@@ -1096,7 +1096,7 @@ private struct StreamingDictationText: View {
 /// Cold-start line placeholder — the single editorial line (`ColdStartCopy`)
 /// shown in the streaming card while the model is doing a genuinely slow load.
 /// NO progress bar, NO breathing (an earlier bar/breathing pair bobbed and read
-/// as a system primitive). Same 26pt serif-italic / `jotPageInkSecondary`
+/// as a system primitive). Same 26pt SF Pro / `jotPageInkSecondary`
 /// typography as the "Listening…" placeholder, so the swap reads as a copy
 /// change, not a layout shift. The deferred-reveal gate (this only appears once
 /// a load passes `ColdStartCopy.revealThreshold`) lives in `streamingCard`.
@@ -1106,7 +1106,7 @@ private struct LoadingPlaceholderText: View {
 
     var body: some View {
         Text(line)
-            .font(.system(size: 26, weight: .regular, design: .serif).italic())
+            .font(.system(size: 26, weight: .regular, design: .default))
             .lineSpacing(8.3)
             .tracking(-0.4)
             .foregroundStyle(Color.jotPageInkSecondary)
@@ -1309,7 +1309,7 @@ private struct SwipeBackCardCue: View {
             .frame(width: 18, height: 18)
             .overlay(
                 Text("j")
-                    .font(Font.custom(JotType.frauncesItalic, size: 12))
+                    .font(Font.system(size: 12, weight: .semibold, design: .default))
                     .foregroundStyle(.white)
             )
             .shadow(color: Color(red: 0.102, green: 0.549, blue: 1.0).opacity(0.44), radius: 3, x: 0, y: 2)

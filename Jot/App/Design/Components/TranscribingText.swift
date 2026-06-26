@@ -19,7 +19,7 @@ import SwiftUI
 /// strand, so a blank pane is structurally impossible regardless of how many
 /// throwaway/ghost controllers iOS spawns around the shared streaming state.
 ///
-/// A trailing **stepping ellipsis** (three serif dots, `SteppingEllipsis`
+/// A trailing **stepping ellipsis** (three SF Pro dots, `SteppingEllipsis`
 /// cadence) is appended INLINE after the text — exactly where the next word
 /// will land — stepping through a slow fill cycle (rest → · → ·· → ···,
 /// 0.45s/step) so the trailing edge reads "I'm still hearing you, text is

@@ -144,7 +144,7 @@ final class KeyboardRecordingState {
     /// ANE-loading the streaming graph for the active recording —
     /// e.g. "Parakeet 110M". Empty when no load is in flight. The
     /// streaming strip swaps its empty-state "Listening…" placeholder
-    /// for a "Loading [label]…" pair (spinner + serif-italic label)
+    /// for a "Loading [label]…" pair (spinner + SF Pro italic label)
     /// whenever this is non-empty. Driven by
     /// `KeyboardStreamingHub.refreshStreamingLoadingFromProjection`.
     private(set) var loadingVariantLabel: String = ""

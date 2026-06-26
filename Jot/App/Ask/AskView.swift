@@ -272,14 +272,14 @@ struct AskView: View {
     @ViewBuilder
     private var heroZone: some View {
         if typing {
-            // Typed question — same Fraunces-italic hero style as the transcript.
+            // Typed question — same SF Pro hero style as the transcript.
             TextField(
                 "",
                 text: $controller.question,
                 prompt: Text("Type your question…").foregroundStyle(Color.jotPageInkSecondary),
                 axis: .vertical
             )
-            .font(.custom(JotType.frauncesItalic, size: 30))
+            .font(.system(size: 30, weight: .regular, design: .default))
             .foregroundStyle(Color.jotPageInk)
             .multilineTextAlignment(.center)
             .textInputAutocapitalization(.sentences)
@@ -291,7 +291,7 @@ struct AskView: View {
             // Live transcript IS the hero.
             HStack(alignment: .lastTextBaseline, spacing: 3) {
                 Text(controller.question)
-                    .font(.custom(JotType.frauncesItalic, size: 30))
+                    .font(.system(size: 30, weight: .regular, design: .default))
                     .tracking(-0.4)
                     .lineSpacing(4)
                     .foregroundStyle(Color.jotPageInk)
@@ -308,7 +308,7 @@ struct AskView: View {
                         .foregroundStyle(Self.accentInk)
                 }
                 Text("What do you want to know?")
-                    .font(.custom(JotType.frauncesItalic, size: 25))
+                    .font(.system(size: 25, weight: .regular, design: .default))
                     .foregroundStyle(Color.jotPageInkSecondary)
                     .multilineTextAlignment(.center)
                 AskSuggestionLine()
@@ -1078,7 +1078,7 @@ private struct AskShimmerLine: View {
 }
 
 /// Rotating, non-interactive spoken-aloud suggestions for the empty listening
-/// hero. Phrased as things to *say*, set in editorial serif-italic. Reuses the
+/// hero. Phrased as things to *say*, set in SF Pro. Reuses the
 /// app's shared `RotatingMessageView`.
 private struct AskSuggestionLine: View {
     private static let suggestions = [
@@ -1094,7 +1094,7 @@ private struct AskSuggestionLine: View {
             messages: Self.suggestions,
             dwell: 2.8,
             sequenced: true,
-            font: Font.custom(JotType.frauncesItalicText, size: 17),
+            font: Font.system(size: 17, weight: .regular, design: .default),
             color: Color.jotPageInkCaption,
             alignment: .center,
             rise: 0
@@ -1104,7 +1104,7 @@ private struct AskSuggestionLine: View {
 }
 
 /// Question header shared by thinking / answer / edge states — "YOU ASKED"
-/// eyebrow + the question in serif-italic, with an optional right-aligned glass
+/// eyebrow + the question in SF Pro, with an optional right-aligned glass
 /// pill (e.g. "Ask another" when done, "Cancel" while in flight).
 private struct AskQuestionHeader: View {
     let question: String
@@ -1119,7 +1119,7 @@ private struct AskQuestionHeader: View {
                     .tracking(1.4)
                     .foregroundStyle(Color.jotPageInkCaption)
                 Text(question)
-                    .font(.custom(JotType.frauncesItalic, size: 22))
+                    .font(.system(size: 22, weight: .regular, design: .default))
                     .tracking(-0.3)
                     .lineSpacing(2)
                     .foregroundStyle(Color.jotPageInk)

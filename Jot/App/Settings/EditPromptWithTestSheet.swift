@@ -209,7 +209,7 @@ struct EditPromptWithTestSheet: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     TextField("Prompt name", text: $name)
-                        .font(.system(size: 19, weight: .medium, design: .serif))
+                        .font(.system(size: 19, weight: .medium, design: .default))
                         .foregroundStyle(Color.jotPageInk)
                         .textInputAutocapitalization(.words)
                         .onChange(of: name) { _, newValue in
@@ -475,7 +475,7 @@ struct EditPromptWithTestSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("\u{201C}\(testRewrittenText)\u{201D}")
-                    .font(.system(size: 15, weight: .regular, design: .serif).italic())
+                    .font(.system(size: 15, weight: .regular, design: .default))
                     .foregroundStyle(Color.jotPageInk)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)

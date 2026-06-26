@@ -298,24 +298,24 @@ struct CorrectionReviewStrip: View {
         }
     }
 
-    /// "spoken" context: Fraunces italic 15.5 muted before/after (spoken voice =
-    /// serif italic, same as the streaming strip), the gated word in key-ink.
-    /// Fraunces is bundled + linkable in the keyboard target (see StreamingStrip).
+    /// "spoken" context: SF Pro 15.5 muted before/after (same face as the
+    /// streaming strip), the gated word in key-ink. Native system font — no
+    /// bundled font needed in the keyboard target (migrated per issue #4).
     private func spokenLine(for ask: CorrectionBridge.Ask) -> Text {
         let gated = ask.outcome == "applied" ? ask.term : ask.original
-        let serif = Font.custom(JotType.frauncesItalicText, size: 15.5)
+        let face = Font.system(size: 15.5, weight: .regular, design: .default)
         let before = Text(ask.contextBefore)
-            .font(serif)
+            .font(face)
             .foregroundColor(Color.jotKeyboardStreamText)
         // Dashed underline on the gated word (handoff `.kbm-word`). `Text.underline`
         // (iOS 16+) carries a per-run dash pattern; the 1.5px weight isn't settable
         // (renders ~1px) — accepted, same as the transcript marks.
         let word = Text(gated)
-            .font(serif)
+            .font(face)
             .foregroundColor(Color.jotKeyboardKeyInk)
             .underline(true, pattern: .dash, color: Color.jotKeyboardStreamText)
         let after = Text(ask.contextAfter)
-            .font(serif)
+            .font(face)
             .foregroundColor(Color.jotKeyboardStreamText)
         return before + word + after
     }

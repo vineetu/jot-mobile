@@ -59,7 +59,7 @@ struct EmbeddingsPanelView: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("On-device indexing")
-                .font(JotType.displaySerif(28))
+                .font(JotType.displayTitle(28))
                 .foregroundStyle(Color.jotInk)
             Text("Indexes your dictations on-device for search and Ask.")
                 .font(JotType.rowSub)

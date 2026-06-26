@@ -21,10 +21,10 @@ import SwiftUI
 ///
 /// Visual changes:
 ///   - `WallpaperBackground` replaces `JotDesign.background`.
-///   - Italic serif "AI." 44pt + coral EXPERIMENTAL chip hero block.
+///   - Bold "AI." 44pt + coral EXPERIMENTAL chip hero block.
 ///   - Single compact model strip (purple `wand.and.stars` IconTile) replaces
 ///     the older MODEL card; `Change` opens `SwitchModelPicker`.
-///   - Each prompt row now renders an IconTile + serif name + DEFAULT tag
+///   - Each prompt row now renders an IconTile + name + DEFAULT tag
 ///     (for the two seeded prompts) + a mini BEFORE→AFTER sample block.
 ///   - Dashed coral "+ New prompt" card replaces the plain glass row.
 struct AIRewriteSettingsView: View {
@@ -164,7 +164,7 @@ struct AIRewriteSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("AI.")
-                    .font(JotType.displaySerif(44))
+                    .font(JotType.displayTitle(44))
                     .tracking(-1.6)
                     .foregroundStyle(Color.jotPageInk)
 
@@ -817,7 +817,7 @@ private struct PromptRowV09: View {
     private var rowNameRow: some View {
         HStack(spacing: 6) {
             Text(prompt.name)
-                .font(.system(size: 16, weight: .semibold, design: .serif))
+                .font(.system(size: 16, weight: .semibold, design: .default))
                 .tracking(-0.3)
                 .foregroundStyle(Color.jotPageInk)
                 .lineLimit(1)

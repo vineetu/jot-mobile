@@ -180,20 +180,27 @@ struct TryKeyboardStep: View {
             WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Jot down.")
         case .rise:
             if jotKeyboardActive {
-                // Jot keyboard is up — show the dictation prompt.
-                // "Say something out loud — like “I am awesome.”" — the example
-                // phrase in Fraunces italic, the rest in the body sans.
-                (
-                    Text("Say something out loud — like ")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundColor(Color.jotPageInkSecondary)
-                    + Text("“I am awesome.”")
-                        .font(.custom(JotType.frauncesItalicText, size: 16))
-                        .foregroundColor(Color.jotPageInk)
-                )
-                .multilineTextAlignment(.center)
-                .lineSpacing(1.5)
-                .fixedSize(horizontal: false, vertical: true)
+                if recordingService.isRecording {
+                    // Recording underway — show the dictation prompt.
+                    // "Say something out loud — like “I am awesome.”" — the example
+                    // phrase in SF Pro, the rest in the body sans.
+                    (
+                        Text("Say something out loud — like ")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundColor(Color.jotPageInkSecondary)
+                        + Text("“I am awesome.”")
+                            .font(.system(size: 16, weight: .regular, design: .default))
+                            .foregroundColor(Color.jotPageInk)
+                    )
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(1.5)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // Jot keyboard is up but the mic pill is still idle — the
+                    // missing step in the loop: tell them to tap Jot down to begin
+                    // (we deliberately do NOT auto-start; one explicit tap).
+                    WizardBody(text: "Tap Jot down to start.")
+                }
             } else {
                 // System keyboard still up — the in-field globe cue is the ONLY
                 // message (no double-messaging). Hold the layout with a spacer
@@ -318,13 +325,13 @@ struct TryKeyboardStep: View {
     private var helper: some View {
         switch phase {
         case .invite:
-            // "Try saying “…”" — "Try saying" muted sans, phrase Fraunces italic.
+            // "Try saying “…”" — "Try saying" muted sans, phrase in SF Pro.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Try saying")
                     .font(.system(size: 13.5, weight: .regular))
                     .foregroundStyle(Color.jotMute)
                 Text("“\(suggestion)”")
-                    .font(.custom(JotType.frauncesItalicText, size: 16))
+                    .font(.system(size: 16, weight: .regular, design: .default))
                     .foregroundStyle(Color.jotPageInkSecondary)
             }
             .frame(height: 24)

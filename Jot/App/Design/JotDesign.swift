@@ -9,20 +9,12 @@
 //  three+ glass-surface tiers used across the app + keyboard extension.
 //  Pure infrastructure: no integration into existing surfaces yet.
 //
-//  Custom font note (CODEX-CAUGHT, Phase-1 punch-list revisited):
-//  Fraunces ships only optical-size-keyed static TTFs. The Google Fonts
-//  Fraunces repo (`googlefonts/fraunces`, branch `master`,
-//  `fonts/static/ttf/`) provides three opsz cuts: 9pt, 72pt, 144pt.
-//  There is no 14pt opsz static (the plan asked for 14pt). We use:
-//    - Fraunces 72pt-opsz for the display sizes (24-38pt).
-//    - Fraunces 9pt-opsz Italic for the 19pt body italic — 9pt is the
-//      text-optimised cut and reads correctly at 19pt without the
-//      tall-x-height / tight-spacing of the 72pt display italic.
-//  Fraunces also ships no Medium (500) static cut — the lightest "above
-//  Regular" weight in the static set is SemiBold (600). We therefore
-//  expose the SemiBold cut under the honest name `frauncesSemiBold`
-//  (was previously aliased as `frauncesMedium` — fixed in Phase 1
-//  punch list FIX 2).
+//  Typography note: the editorial serif (Fraunces + system New York) was
+//  migrated to the native system font (SF Pro) — see
+//  `docs/plans/typography-sf-pro-migration.md` (issue #4). Display + body
+//  faces are now `Font.system(…, design: .default)` at the same sizes; the
+//  visual hierarchy (bold displays, regular body) is preserved, the italics
+//  dropped. No bundled font files remain.
 //
 
 import SwiftUI
@@ -299,49 +291,26 @@ extension Color {
 
 /// Editorial + chrome typography tokens (plan §2.3).
 ///
-/// Editorial faces use opsz-keyed Fraunces statics referenced by PostScript
-/// name. The 72pt-opsz cut is used for display sizes (≥24pt); the 9pt-opsz
-/// cut is used for the 19pt body italic so the strokes don't read as
-/// over-contrasted at running-text size. Chrome faces fall through to the
-/// system font (SF Pro) so they pick up Dynamic Type automatically.
+/// Display + body faces are the native system font (SF Pro): display sizes use
+/// a bold/semibold weight for hierarchy, body uses regular. The editorial serif
+/// (Fraunces + system New York) was migrated to SF Pro — see
+/// `docs/plans/typography-sf-pro-migration.md` (issue #4). Chrome faces have
+/// always been SF Pro so they pick up Dynamic Type automatically.
 enum JotType {
 
-    // MARK: Fraunces PostScript names
+    // MARK: Display + body faces (system / SF Pro)
 
-    /// PostScript name of the bundled Fraunces 72pt-opsz Regular cut.
-    static let frauncesRegular = "Fraunces72pt-Regular"
+    /// App home "Jot" — SF Pro 38pt Bold (was Fraunces SemiBold).
+    static let editorialDisplay = Font.system(size: 38, weight: .bold, design: .default)
 
-    /// PostScript name of the bundled Fraunces 72pt-opsz SemiBold cut.
-    /// Fraunces ships no Medium (500) static — SemiBold (600) is the next
-    /// weight up from Regular. Phase 1 punch-list FIX 2: renamed from
-    /// `frauncesMedium` so the token doesn't lie about its weight.
-    static let frauncesSemiBold = "Fraunces72pt-SemiBold"
+    /// Transcript detail title — SF Pro 30pt Bold (was Fraunces SemiBold).
+    static let editorialTitle = Font.system(size: 30, weight: .bold, design: .default)
 
-    /// PostScript name of the bundled Fraunces 72pt-opsz Italic cut.
-    /// Used by `editorialDisplay`/`editorialTitle`/`editorialBody` italic
-    /// runs at display sizes (≥24pt). For body italic (19pt) use
-    /// `frauncesItalicText` instead — its strokes are tuned for text size.
-    static let frauncesItalic = "Fraunces72pt-Italic"
+    /// Recording hero body — SF Pro 24pt Regular (was Fraunces Regular).
+    static let editorialBody = Font.system(size: 24, weight: .regular, design: .default)
 
-    /// PostScript name of the bundled Fraunces 9pt-opsz Italic cut.
-    /// Phase 1 punch-list FIX 1: 19pt body italic was reading wrong at the
-    /// 72pt-opsz cut (display-tuned strokes look spiky at running-text size).
-    /// 9pt opsz is the text-optimised cut and reads correctly at 19pt.
-    static let frauncesItalicText = "Fraunces9pt-Italic"
-
-    // MARK: Editorial faces
-
-    /// App home "Jot" — Fraunces 38pt SemiBold (72pt-opsz cut).
-    static let editorialDisplay = Font.custom(frauncesSemiBold, size: 38)
-
-    /// Transcript detail title — Fraunces 30pt SemiBold (72pt-opsz cut).
-    static let editorialTitle = Font.custom(frauncesSemiBold, size: 30)
-
-    /// Recording hero italic body — Fraunces 24pt Regular (72pt-opsz cut).
-    static let editorialBody = Font.custom(frauncesRegular, size: 24)
-
-    /// Rewrite output — Fraunces 19pt Italic (9pt-opsz text cut).
-    static let editorialItalic = Font.custom(frauncesItalicText, size: 19)
+    /// Rewrite output — SF Pro 19pt Regular (was Fraunces Italic text cut).
+    static let editorialItalic = Font.system(size: 19, weight: .regular, design: .default)
 
     // MARK: Chrome faces (system / SF Pro)
 
@@ -797,9 +766,11 @@ extension JotDesign {
 // MARK: - v0.9 Typography tokens
 
 extension JotType {
-    /// New York-style system serif display face for v0.9 hero titles; apply `.tracking(-1.6)` at the call site.
-    static func displaySerif(_ size: CGFloat) -> Font {
-        Font.system(size: size, weight: .regular, design: .serif).italic()
+    /// Native SF Pro display face for v0.9 hero titles (was a New York-style
+    /// system serif italic; migrated to SF Pro per issue #4). Bold for display
+    /// hierarchy; apply `.tracking(-1.6)` at the call site.
+    static func displayTitle(_ size: CGFloat) -> Font {
+        Font.system(size: size, weight: .bold, design: .default)
     }
 
     /// 11pt bold section label face for v0.9 chrome. Per spec: apply

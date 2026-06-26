@@ -33,7 +33,7 @@ struct FeaturedLatestRow: View {
                 // Roman, not italic: italic now signals "live/streaming" only;
                 // final/saved text is upright (WS-A / decision #2). The adjacent
                 // LiveStreamingRow stays italic — that contrast is the signal.
-                .font(.system(size: 17, weight: .regular, design: .serif))
+                .font(.system(size: 17, weight: .regular, design: .default))
                 .foregroundStyle(Color.jotPageInk)
                 .tracking(-0.2)
                 .lineSpacing(2)

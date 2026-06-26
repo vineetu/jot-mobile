@@ -40,12 +40,12 @@ struct DiagnosticsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Diagnostics")
-                            .font(.custom(JotType.frauncesSemiBold, size: 32))
+                            .font(.system(size: 32, weight: .bold, design: .default))
                             .foregroundStyle(Color.jotInk)
                             .accessibilityAddTraits(.isHeader)
 
                         Text("Recent events from the keyboard and main app")
-                            .font(.custom(JotType.frauncesItalicText, size: 16))
+                            .font(.system(size: 16, weight: .regular, design: .default))
                             .foregroundStyle(Color.jotMute)
                     }
                     .padding(.top, 4)

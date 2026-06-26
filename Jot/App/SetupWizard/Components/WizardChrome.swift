@@ -265,7 +265,7 @@ struct WizardHomeIndicator: View {
 
 // MARK: - Typography helpers
 
-/// Editorial title used at the top of most panels — Fraunces SemiBold
+/// Editorial title used at the top of most panels — SF Pro Bold
 /// at a tunable size (defaults to 32pt, W1 overrides to 80pt, W5/W6/W7
 /// override to 26-28pt).
 struct WizardTitle: View {
@@ -274,7 +274,7 @@ struct WizardTitle: View {
 
     var body: some View {
         Text(text)
-            .font(.custom(JotType.frauncesSemiBold, size: size))
+            .font(.system(size: size, weight: .bold, design: .default))
             .foregroundStyle(Color.jotInk)
             .tracking(-0.5)
             .multilineTextAlignment(.center)
@@ -283,14 +283,15 @@ struct WizardTitle: View {
     }
 }
 
-/// Italic system-serif hero title matching the v0.9 wizard spec.
+/// SF Pro hero title matching the v0.9 wizard spec (was system-serif italic;
+/// migrated to native SF Pro per issue #4).
 struct WizardItalicTitle: View {
     let text: String
     var size: CGFloat = 32
 
     var body: some View {
         Text(text)
-            .font(JotType.displaySerif(size))
+            .font(JotType.displayTitle(size))
             .tracking(-0.6)
             .foregroundStyle(Color.jotPageInk)
             .multilineTextAlignment(.center)
@@ -313,15 +314,15 @@ struct WizardBody: View {
     }
 }
 
-/// Italic Fraunces sub-note used for the "We'll detect when you're back"
-/// / "iOS will show a warning" copy that several panels share. The 9pt
-/// opsz italic cut is the text-tuned face that reads correctly at 13pt.
+/// SF Pro sub-note used for the "We'll detect when you're back"
+/// / "iOS will show a warning" copy that several panels share. Was an italic
+/// Fraunces text cut; migrated to native SF Pro per issue #4.
 struct WizardItalicNote: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .font(.custom(JotType.frauncesItalicText, size: 13))
+            .font(.system(size: 13, weight: .regular, design: .default))
             .foregroundStyle(Color.jotMute)
             .multilineTextAlignment(.center)
             .lineSpacing(1.4)

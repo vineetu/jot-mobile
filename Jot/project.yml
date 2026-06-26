@@ -24,8 +24,8 @@ settings:
     # is minimal — scripts can already do anything they want during a
     # build; the sandbox is defense-in-depth, not a security boundary.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    CURRENT_PROJECT_VERSION: "201"
-    MARKETING_VERSION: "1.0.6"
+    CURRENT_PROJECT_VERSION: "205"
+    MARKETING_VERSION: "1.0.7"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
     DEVELOPMENT_TEAM: "8VB2ULDN22"
@@ -175,11 +175,6 @@ targets:
       # at runtime on opt-in. Loaded via `Supertonic3VoiceStyle.load(from:)`.
       - path: Resources/SupertonicVoices
         buildPhase: resources
-      # Fraunces editorial typeface (SIL OFL). Phase 1 of the UX overhaul
-      # bundles the 72pt opsz-keyed statics; UIAppFonts in
-      # Resources/Info.plist registers them at runtime.
-      - path: Resources/Fonts
-        buildPhase: resources
       # Bundled Parakeet speech models (~530 MB):
       #   - parakeet-tdt-ctc-110m/        TDT-CTC 110M (default batch transcriber)
       #   - parakeet-ctc-110m-coreml/     CTC aux (vocabulary biasing + CtcHead.mlmodelc)
@@ -235,20 +230,6 @@ targets:
           - CFBundleURLName: com.vineetu.jot.mobile
             CFBundleURLSchemes:
               - jot
-        # Phase 1 of the UX overhaul: register Fraunces TTFs so
-        # Font.custom("Fraunces72pt-Regular", ...) resolves at runtime.
-        # Files live under Jot/Resources/Fonts/ and ship as bundle
-        # resources via the main-app target's sources list.
-        #
-        # Phase 1 punch-list FIX 1: the 9pt-opsz Italic static is the
-        # text-tuned cut used at 19pt body italic (`editorialItalic`).
-        # The 72pt-opsz Italic stays for display-sized italics (≥24pt).
-        UIAppFonts:
-          - Fraunces-Regular.ttf
-          - Fraunces-Medium.ttf
-          - Fraunces-Italic.ttf
-          - Fraunces-MediumItalic.ttf
-          - Fraunces9pt-Italic.ttf
     entitlements:
       path: Resources/Jot.entitlements
       properties:
@@ -366,12 +347,6 @@ targets:
       - path: Resources/common-words.txt
         buildPhase: resources
       - path: Resources/PrivacyInfo.xcprivacy
-      # Fraunces must also be inside the keyboard extension bundle so the
-      # streaming-strip / just-now-marker text rendered from the appex
-      # process resolves the Font.custom(...) PostScript names. Otherwise
-      # SwiftUI silently falls back to system serif inside the keyboard.
-      - path: Resources/Fonts
-        buildPhase: resources
     info:
       path: Resources/Keyboard-Info.plist
       properties:
@@ -392,19 +367,6 @@ targets:
         # extension URL opens for schemes not declared here.
         LSApplicationQueriesSchemes:
           - jot
-        # Phase 1 of the UX overhaul: register Fraunces TTFs inside the
-        # keyboard extension bundle too. The keyboard renders the streaming
-        # caption + just-now marker with Fraunces; without this UIAppFonts
-        # array the appex would silently fall back to system serif.
-        #
-        # Phase 1 punch-list FIX 1: 9pt-opsz Italic static for 19pt body
-        # italic (`editorialItalic`) shipped to the appex as well.
-        UIAppFonts:
-          - Fraunces-Regular.ttf
-          - Fraunces-Medium.ttf
-          - Fraunces-Italic.ttf
-          - Fraunces-MediumItalic.ttf
-          - Fraunces9pt-Italic.ttf
     entitlements:
       path: Resources/Keyboard.entitlements
       properties:

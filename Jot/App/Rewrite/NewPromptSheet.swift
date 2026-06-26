@@ -123,10 +123,10 @@ struct NewPromptSheet: View {
                         "",
                         text: $name,
                         prompt: Text("Name your prompt")
-                            .font(.system(size: 19, weight: .medium, design: .serif).italic())
+                            .font(.system(size: 19, weight: .medium, design: .default))
                             .foregroundColor(Color.jotPageInkSecondary.opacity(0.6))
                     )
-                    .font(.system(size: 19, weight: .medium, design: .serif))
+                    .font(.system(size: 19, weight: .medium, design: .default))
                     .foregroundStyle(Color.jotPageInk)
                     .textInputAutocapitalization(.words)
                     .onChange(of: name) { _, newValue in

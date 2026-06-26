@@ -152,7 +152,7 @@ struct FeedbackView: View {
 
     private var heading: some View {
         Text("Tell us anything.")
-            .font(.system(size: 38, weight: .regular, design: .serif).italic())
+            .font(.system(size: 38, weight: .bold, design: .default))
             .tracking(-1.4)
             .foregroundStyle(Color.jotPageInk)
             .fixedSize(horizontal: false, vertical: true)
