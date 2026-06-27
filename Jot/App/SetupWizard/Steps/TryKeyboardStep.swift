@@ -46,6 +46,7 @@ struct TryKeyboardStep: View {
     let onAdvance: () -> Void
 
     @Environment(RecordingService.self) private var recordingService
+    @Environment(StreamingPartial.self) private var streamingPartial
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Wizard-visible micro-state. The keyboard-internal `init`/`stream`/`stop`
@@ -120,10 +121,16 @@ struct TryKeyboardStep: View {
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: phase)
         } footer: {
-            WizardPrimaryButton(
-                title: phase == .done ? "Continue" : "I tried it",
-                action: onAdvance
-            )
+            // Once the user taps the field and the dictation flow is underway
+            // (`.rise`), hide the advance button so they complete the loop rather
+            // than skip — it returns as "Continue" on success (`.done`). Shown in
+            // `.invite` as the pre-try skip.
+            if phase != .rise {
+                WizardPrimaryButton(
+                    title: phase == .done ? "Continue" : "I tried it",
+                    action: onAdvance
+                )
+            }
         }
         .task {
             enteredAt = Date()
@@ -179,27 +186,10 @@ struct TryKeyboardStep: View {
         case .invite:
             WizardBody(text: "Tap the field below, switch to Jot via the globe key, then tap Jot down.")
         case .rise:
-            if jotKeyboardActive {
-                // Jot keyboard is up — show the dictation prompt.
-                // "Say something out loud — like “I am awesome.”" — the example
-                // phrase in Fraunces italic, the rest in the body sans.
-                (
-                    Text("Say something out loud — like ")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundColor(Color.jotPageInkSecondary)
-                    + Text("“I am awesome.”")
-                        .font(.custom(JotType.frauncesItalicText, size: 16))
-                        .foregroundColor(Color.jotPageInk)
-                )
-                .multilineTextAlignment(.center)
-                .lineSpacing(1.5)
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                // System keyboard still up — the in-field globe cue is the ONLY
-                // message (no double-messaging). Hold the layout with a spacer
-                // sized to the one-line instruction height.
-                Color.clear.frame(height: 22)
-            }
+            // All in-`.rise` guidance now lives INSIDE the practice field (see
+            // `inFieldCue`), so the subtitle holds layout with an empty spacer
+            // sized to the one-line instruction height — no double-messaging.
+            Color.clear.frame(height: 22)
         case .done:
             WizardBody(text: "That’s the whole loop — your words landed in the field.")
         }
@@ -232,15 +222,12 @@ struct TryKeyboardStep: View {
                     .allowsHitTesting(false)
             }
 
-            // Globe-switch cue — shown ONLY while the field is focused (`.rise`)
-            // but the Jot keyboard is NOT yet frontmost (system keyboard up).
-            // The real TextField stays underneath, keeping the keyboard raised;
-            // this is a non-interactive overlay. It is purely about switching
-            // the KEYBOARD — never implies the Jot app isn't running.
-            if phase == .rise && !jotKeyboardActive {
-                globeSwitchCue
-                    .allowsHitTesting(false)
-            }
+            // In-field progressive cue — the single guidance surface for the
+            // whole `.rise` loop (switch keyboard → tap Jot down → say
+            // something). The real TextField stays underneath, keeping the
+            // keyboard raised; this is a non-interactive overlay.
+            inFieldCue
+                .allowsHitTesting(false)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -267,6 +254,83 @@ struct TryKeyboardStep: View {
         .accessibilityHint(phase == .done
             ? "Your dictated text was pasted here."
             : "Tap to raise the Jot keyboard and try dictation.")
+    }
+
+    // MARK: - In-field progressive cue (states 2–4)
+
+    /// The guidance state shown INSIDE the practice field while in `.rise`. The
+    /// cue walks the user through the whole loop in one place rather than
+    /// scattering overlays through the ZStack. `nil` (state 1 placeholder, and
+    /// state 5 once live text is present or `.done`) renders nothing.
+    private enum CueState: Equatable {
+        case switchKeyboard   // system keyboard still up → tap the globe
+        case tapJotDown       // Jot keyboard up, not recording yet
+        case saySomething     // recording, nothing captured yet
+    }
+
+    /// Pure mapping from phase / keyboard-active / recording / captured-text to
+    /// the in-field cue. Keeping the whole progression in one switch is the
+    /// "single coherent structure" the cue is supposed to be.
+    private var cueState: CueState? {
+        guard phase == .rise else { return nil }
+        // Text is already in the field (dictated + pasted, or typed) → show the
+        // text, never a cue over it. THIS is the fix for "Tap Jot down" (and any
+        // cue) reappearing on top of the dictated result after Stop.
+        if !fieldText.isEmpty { return nil }
+        if !jotKeyboardActive { return .switchKeyboard }
+        // Actively recording: prompt to speak only until live text starts arriving.
+        // (Caveat: with live-text OFF, `streamingText` stays empty, so this cue
+        // persists until Stop — an acceptable fallback.)
+        if recordingService.isRecording {
+            return streamingPartial.streamingText.isEmpty ? .saySomething : nil
+        }
+        // Stopped, transcript still transcribing/landing → no cue, so "Tap Jot
+        // down" never flashes over the incoming result during the stop→paste gap.
+        if recordingService.isPipelineInFlight { return nil }
+        // Jot keyboard up, idle, nothing dictated yet → tap Jot down.
+        return .tapJotDown
+    }
+
+    @ViewBuilder
+    private var inFieldCue: some View {
+        switch cueState {
+        case .switchKeyboard:
+            // Purely about switching the KEYBOARD — never implies the Jot app
+            // isn't running.
+            globeSwitchCue
+        case .tapJotDown:
+            // Glyph + accent text, mirroring the globe cue's stage-1 row.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.jotAccent)
+                Text("Tap Jot down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.jotAccent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Tap Jot down")
+        case .saySomething:
+            // The phrase prompt that used to live in the subtitle — same
+            // styling, now inside the box. Example phrase in Fraunces italic,
+            // the rest in the body sans.
+            (
+                Text("Say something out loud — like ")
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundColor(Color.jotPageInkSecondary)
+                + Text("“I am awesome.”")
+                    .font(.custom(JotType.frauncesItalicText, size: 16))
+                    .foregroundColor(Color.jotPageInk)
+            )
+            .multilineTextAlignment(.leading)
+            .lineSpacing(1.5)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .none:
+            EmptyView()
+        }
     }
 
     // MARK: - Globe-switch cue (in-field, two-stage)

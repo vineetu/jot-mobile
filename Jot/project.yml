@@ -24,7 +24,7 @@ settings:
     # is minimal — scripts can already do anything they want during a
     # build; the sandbox is defense-in-depth, not a security boundary.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    CURRENT_PROJECT_VERSION: "206"
+    CURRENT_PROJECT_VERSION: "209"
     MARKETING_VERSION: "1.0.7"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
