@@ -80,7 +80,10 @@ enum PendingShareDrainer {
                         instructions: settings.instructions
                     )
                 }
-                _ = try TranscriptStore.append(raw: text, cleaned: cleaned, source: "share")
+                // Retain the shared audio (copied before the staged file is
+                // removed below) so the user can re-transcribe it — the import
+                // path is the main case where the language was a guess.
+                _ = try TranscriptStore.append(raw: text, cleaned: cleaned, source: "share", retainAudioFileURL: url)
                 log.info("saved shared transcript from \(url.lastPathComponent, privacy: .public) (\(trimmed.count) chars, cleaned=\(cleaned != nil))")
             }
             try? FileManager.default.removeItem(at: url)

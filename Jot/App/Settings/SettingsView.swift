@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// v0.9 Settings main, matched to the design handoff's `SettingsScreen`.
 struct SettingsView: View {
@@ -24,10 +25,18 @@ struct SettingsView: View {
     /// on/off; `auto` only persists until first touch.
     @State private var liveTextOn: Bool = DeviceCapability.liveTextEnabled
 
-    /// Dictation language. English is the only option today; the selector is a
-    /// native iOS pull-down menu (Apple pattern) so adding languages later is a
-    /// drop-in. Local state — there's nothing to persist while it's English-only.
-    @State private var dictationLanguage: String = "en"
+    /// Dictation language (raw `LanguageChoice`). Mirrors
+    /// `AppGroup.transcriptionLanguage`. English → bundled v2 (no download);
+    /// a European pick downloads Parakeet v3 once. Changing it persists and
+    /// re-prepares the transcription model (downloading if needed).
+    @State private var dictationLanguage: String = AppGroup.transcriptionLanguage
+
+    /// Transcript import/export (independent on-device backup, not iCloud).
+    @State private var showTranscriptExporter = false
+    @State private var transcriptExportDoc: TranscriptBackupDocument?
+    @State private var showTranscriptImporter = false
+    /// Result message shown in an alert after an import/export completes.
+    @State private var backupAlertMessage: String?
 
 
     /// Vocabulary store — the SPEECH MODEL chevron sub-screen + the
@@ -124,6 +133,7 @@ struct SettingsView: View {
             vocabularySection
             aiSection
             privacySection
+            dataSection
             aboutSection
             settingsFooter
         }
@@ -304,11 +314,58 @@ struct SettingsView: View {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     languageRow
+                    languageStatusRow
                     cardDivider
                     liveTextToggleRow
                 }
             }
         }
+    }
+
+    /// Binding that persists the chosen language and re-prepares the model
+    /// (downloading a European v3 model if it isn't on disk yet).
+    private var languageBinding: Binding<String> {
+        Binding(
+            get: { dictationLanguage },
+            set: { newValue in
+                guard newValue != dictationLanguage else { return }
+                dictationLanguage = newValue
+                AppGroup.transcriptionLanguage = newValue
+                TranscriptionService.shared.handleLanguageChange()
+            }
+        )
+    }
+
+    /// One-line status under the language row. English is bundled (no download);
+    /// a European language reflects the live download / load / ready state of its
+    /// Parakeet v3 model (observed from `TranscriptionService.shared.modelState`).
+    @ViewBuilder
+    private var languageStatusRow: some View {
+        let lang = LanguageChoice(rawValue: dictationLanguage) ?? .english
+        let (text, tint): (String, Color) = {
+            if lang.isEnglish {
+                return ("Built in — ready to use, no download.", Color.jotPageInkSecondary)
+            }
+            switch TranscriptionService.shared.modelState {
+            case .downloading(let f):
+                return ("Downloading the \(lang.englishName) model… \(Int(f * 100))%", Color.jotPageInkSecondary)
+            case .loading:
+                return ("Loading the \(lang.englishName) model…", Color.jotPageInkSecondary)
+            case .ready:
+                return ("\(lang.englishName) — ready, runs on this iPhone.", Color.green)
+            case .failed(let message):
+                return ("Download failed: \(message)", Color.red)
+            case .notLoaded:
+                return ("Downloads a model that runs on this iPhone.", Color.jotPageInkSecondary)
+            }
+        }()
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(tint)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
+            .padding(.bottom, 12)
     }
 
     /// Dictation language as a native iOS pull-down menu (the Apple selector
@@ -331,12 +388,14 @@ struct SettingsView: View {
             Spacer(minLength: 12)
 
             Menu {
-                Picker("Language", selection: $dictationLanguage) {
-                    Text("English").tag("en")
+                Picker("Language", selection: languageBinding) {
+                    ForEach(LanguageChoice.presentationOrder) { lang in
+                        Text(lang.displayName).tag(lang.rawValue)
+                    }
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text("English")
+                    Text((LanguageChoice(rawValue: dictationLanguage) ?? .english).englishName)
                         .font(.system(size: 13.5))
                         .foregroundStyle(Color.jotPageInkSecondary)
                     Image(systemName: "chevron.up.chevron.down")
@@ -350,7 +409,7 @@ struct SettingsView: View {
             // the Menu into a static element and strip the "tap to choose"
             // affordance. The leading text + this label cover the read-out.
             .accessibilityLabel("Language")
-            .accessibilityValue("English")
+            .accessibilityValue((LanguageChoice(rawValue: dictationLanguage) ?? .english).englishName)
             .accessibilityHint("Choose the dictation language")
         }
         .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
@@ -578,6 +637,110 @@ struct SettingsView: View {
     }
 
     // MARK: - ABOUT
+
+    // MARK: - Your Data (transcript import / export)
+
+    private var dataSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("YOUR DATA")
+
+            LiquidGlassCard(paddingH: 0, paddingV: 0) {
+                VStack(spacing: 0) {
+                    Button { exportTranscripts() } label: {
+                        settingsIconRow(
+                            systemImage: "square.and.arrow.up",
+                            tint: JotDesign.JotSemanticIcon.helpSupport,
+                            shaded: JotDesign.JotSemanticIcon.helpSupportShaded,
+                            title: "Export transcripts",
+                            trailing: { EmptyView() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Export transcripts")
+                    .accessibilityHint("Saves all your transcripts to a file you can keep in Files or iCloud Drive.")
+
+                    cardDivider
+
+                    Button { showTranscriptImporter = true } label: {
+                        settingsIconRow(
+                            systemImage: "square.and.arrow.down",
+                            tint: JotDesign.JotSemanticIcon.helpSupport,
+                            shaded: JotDesign.JotSemanticIcon.helpSupportShaded,
+                            title: "Import transcripts",
+                            trailing: { EmptyView() }
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Import transcripts")
+                    .accessibilityHint("Restores transcripts from a file you exported earlier. Duplicates are skipped.")
+                }
+            }
+
+            Text("A private, on-device copy of every transcript — independent of iCloud backup. Importing skips anything already in your library.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.jotPageInkCaption)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+                .padding(.top, 8)
+        }
+        .padding(.bottom, 8)
+        .fileExporter(
+            isPresented: $showTranscriptExporter,
+            document: transcriptExportDoc,
+            contentType: .json,
+            defaultFilename: "Jot-Transcripts"
+        ) { result in
+            switch result {
+            case .success:
+                backupAlertMessage = "Transcripts exported. Keep this file somewhere safe — Files or iCloud Drive."
+            case .failure(let error):
+                backupAlertMessage = "Export failed: \(error.localizedDescription)"
+            }
+        }
+        .fileImporter(
+            isPresented: $showTranscriptImporter,
+            allowedContentTypes: [.json]
+        ) { result in
+            importTranscripts(result)
+        }
+        .alert("Transcripts", isPresented: Binding(
+            get: { backupAlertMessage != nil },
+            set: { if !$0 { backupAlertMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { backupAlertMessage = nil }
+        } message: {
+            Text(backupAlertMessage ?? "")
+        }
+    }
+
+    private func exportTranscripts() {
+        do {
+            let data = try TranscriptBackup.exportData()
+            transcriptExportDoc = TranscriptBackupDocument(data: data)
+            showTranscriptExporter = true
+        } catch {
+            backupAlertMessage = "Couldn't prepare the export: \(error.localizedDescription)"
+        }
+    }
+
+    private func importTranscripts(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let outcome = try TranscriptBackup.importData(data)
+                backupAlertMessage = "Imported \(outcome.imported) transcript\(outcome.imported == 1 ? "" : "s")"
+                    + (outcome.skipped > 0 ? ", skipped \(outcome.skipped) already in your library." : ".")
+            } catch {
+                backupAlertMessage = (error as? TranscriptBackup.ImportError)?.errorDescription
+                    ?? "Import failed: \(error.localizedDescription)"
+            }
+        case .failure(let error):
+            backupAlertMessage = "Import cancelled: \(error.localizedDescription)"
+        }
+    }
 
     private var aboutSection: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1013,4 +1176,22 @@ struct SettingsView: View {
 #Preview {
     SettingsView()
         .environment(TranscriptionService())
+}
+
+/// Lightweight JSON `FileDocument` wrapper for `.fileExporter` — carries the
+/// `TranscriptBackup.exportData()` bytes out to Files / iCloud Drive.
+struct TranscriptBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
 }

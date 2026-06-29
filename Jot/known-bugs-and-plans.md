@@ -22,6 +22,15 @@ Sizes appear on the Known Bugs below and on aspirational entries that haven't sh
 
 This section tracks user-facing bugs that are reproduced but not yet fixed. Each entry is a short symptom statement + the reproducer + the current root-cause hypothesis. Entries are removed when a fix lands and ships.
 
+### First "Jot down" tap after app launch doesn't start recording (second tap works)
+**Size: S.** Reported 2026-06-28 (build 215).
+
+**Symptom:** After the app is freshly loaded (cold), the **first** time the user opens the recording hero and taps **Jot down**, recording does **not** start. Tapping **Jot down** a **second** time starts it normally.
+
+**When it happens:** Only the first record attempt from the app after a cold launch; every subsequent tap in the session works.
+
+**Hypothesis (unverified):** The first tap likely races a one-time post-launch initialization — model warm-up, audio-session arm, or recording-service readiness — and is consumed/no-ops while that is still in flight; the second tap lands once ready. Investigate the FAB/hero **Jot down** → record-start path and what gates the very first start after launch. Reproduce + trace the start path before attempting a fix (do not guess-fix).
+
 ### Keyboard "Added to Vocabulary" confirmation uses error styling and appears late
 **Size: S.** **Plan: [docs/plans/bug-keyboard-overlay-surfaces.md](../docs/plans/bug-keyboard-overlay-surfaces.md).** Mockup: atlas screen `kb-status-banner` (flagged). Relates to [§5.6](features.md#5-6-actions-popover) / [§5.10](features.md#5-10-status-banner).
 

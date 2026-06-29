@@ -198,7 +198,8 @@ struct DictateIntent: AppIntent {
             transcript: result.transcript,
             startedAt: startedAt,
             stoppedAt: result.stoppedAt,
-            controller: controller
+            controller: controller,
+            retainSamples: result.samples
         )
     }
 }
@@ -262,6 +263,10 @@ protocol DictationController: AnyObject {
 struct DictationStopResult: Sendable {
     let transcript: String
     let stoppedAt: Date
+    /// The 16 kHz mono source samples this transcript was produced from, carried
+    /// out so the end-of-recording pipeline can retain them for re-transcription
+    /// (`RetainedAudioStore`). Empty only if a caller has nothing to retain.
+    var samples: [Float] = []
 }
 
 /// The intent's view of runtime state. Lightweight `idle | in-flight`
@@ -445,7 +450,7 @@ final class DictationControllerImpl: DictationController {
         let stoppedAt = Date()
         do {
             let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
-            return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt)
+            return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt, samples: samples)
         } catch {
             // Transcription threw (e.g. `audioTooShort`) before any terminal
             // cross-process phase was published. The in-process `defer` above
@@ -484,7 +489,7 @@ final class DictationControllerImpl: DictationController {
         defer { currentPhase = .idle }
         let stoppedAt = Date()
         let transcript = try await TranscriptionService.shared.transcribe(samples: samples)
-        return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt)
+        return DictationStopResult(transcript: transcript, stoppedAt: stoppedAt, samples: samples)
     }
 
     /// Phase-only reset for the dispatch helper's short-capture (<1s discard)

@@ -143,7 +143,8 @@ enum RecordingPipelineDispatch {
                 sessionID: sessionID,
                 startedAt: startedAt,
                 stoppedAt: result.stoppedAt,
-                controller: controller
+                controller: controller,
+                retainSamples: samples
             )
         } catch {
             // Pipeline-throw path. completeEndOfRecording's defer ALREADY

@@ -154,7 +154,13 @@ enum DictationPipeline {
         startedAt: Date,
         stoppedAt: Date,
         controller: any DictationController,
-        transient: Bool = false
+        transient: Bool = false,
+        // 16 kHz mono source samples for this recording, retained (keyed to the
+        // saved transcript) so the user can re-transcribe later. nil when the
+        // caller has no samples to retain (e.g. the keyboard URL-bounce path
+        // that only forwards text). Only persisted on the non-transient
+        // (transcript-saving) branches — a transient in-Jot stop saves nothing.
+        retainSamples: [Float]? = nil
     ) async throws -> PublishedTranscriptOutcome {
         let duration = max(0, stoppedAt.timeIntervalSince(startedAt))
         // Record usage stats up-front, before any cleanup / publish branching.
@@ -427,7 +433,8 @@ enum DictationPipeline {
                         id: transcriptID,
                         raw: transcript,
                         cleaned: cleanedText,
-                        duration: duration
+                        duration: duration,
+                        retainAudioSamples: retainSamples
                     )
                     // NOTE: provenance commit + asks staging moved ABOVE the handoff
                     // (ask-before-paste needs them readable when the keyboard wakes).
@@ -492,7 +499,8 @@ enum DictationPipeline {
                             id: transcriptID,
                             raw: transcript,
                             cleaned: nil,
-                            duration: duration
+                            duration: duration,
+                            retainAudioSamples: retainSamples
                         )
                     } catch {
                         logger.error(

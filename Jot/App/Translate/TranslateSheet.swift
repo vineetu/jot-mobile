@@ -18,6 +18,12 @@ struct TranslateSheet: View {
     /// captured at present time.
     let text: String
 
+    /// ISO code of the transcript's dictation language (from `Transcript.language`,
+    /// resolved via `LanguageChoice.fromStored`). Defaults to English. Drives
+    /// (a) which chip is hidden — you never translate a note to its own language —
+    /// and (b) the source-language hint passed to Apple Translation.
+    var sourceCode: String = "en"
+
     @Environment(\.dismiss) private var dismiss
 
     @State private var selected: String?
@@ -27,23 +33,37 @@ struct TranslateSheet: View {
 
     private struct Lang: Identifiable { let code: String; let name: String; var id: String { code } }
 
-    /// Common targets shown as chips. Apple's Translation framework supports
-    /// more; this curated set covers the overwhelming majority of use and keeps
-    /// the sheet a one-tap surface. (A "More…" full picker can come later.)
-    private let languages: [Lang] = [
-        .init(code: "es", name: "Spanish"),
+    /// Every language Apple's on-device Translation framework supports (deduped
+    /// to one primary code each), alphabetical by name. English is included now
+    /// that transcripts can be non-English. The transcript's own language is
+    /// filtered out at render time (`targetLanguages`).
+    private let allLanguages: [Lang] = [
+        .init(code: "ar", name: "Arabic"),
+        .init(code: "zh", name: "Chinese"),
+        .init(code: "nl", name: "Dutch"),
+        .init(code: "en", name: "English"),
         .init(code: "fr", name: "French"),
         .init(code: "de", name: "German"),
+        .init(code: "hi", name: "Hindi"),
+        .init(code: "id", name: "Indonesian"),
         .init(code: "it", name: "Italian"),
-        .init(code: "pt", name: "Portuguese"),
-        .init(code: "zh", name: "Chinese"),
         .init(code: "ja", name: "Japanese"),
         .init(code: "ko", name: "Korean"),
-        .init(code: "hi", name: "Hindi"),
-        .init(code: "ar", name: "Arabic"),
+        .init(code: "pl", name: "Polish"),
+        .init(code: "pt", name: "Portuguese"),
         .init(code: "ru", name: "Russian"),
-        .init(code: "nl", name: "Dutch"),
+        .init(code: "es", name: "Spanish"),
+        .init(code: "th", name: "Thai"),
+        .init(code: "tr", name: "Turkish"),
+        .init(code: "uk", name: "Ukrainian"),
+        .init(code: "vi", name: "Vietnamese"),
     ]
+
+    /// Targets shown as chips: every supported language except the transcript's
+    /// own (translating a note to the language it's already in is a no-op).
+    private var languages: [Lang] {
+        allLanguages.filter { $0.code != sourceCode }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -235,7 +255,7 @@ struct TranslateSheet: View {
         didCopy = false
         let source = text
         Task {
-            let out = await TranslationGateway.shared.translate(source, to: code)
+            let out = await TranslationGateway.shared.translate(source, from: sourceCode, to: code)
             await MainActor.run {
                 result = out
                 isTranslating = false

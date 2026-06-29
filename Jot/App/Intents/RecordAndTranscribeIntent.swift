@@ -123,7 +123,8 @@ struct RecordAndTranscribeIntent: AppIntent {
             transcript: result.transcript,
             startedAt: startedAt,
             stoppedAt: result.stoppedAt,
-            controller: controller
+            controller: controller,
+            retainSamples: result.samples
         )
     }
 }

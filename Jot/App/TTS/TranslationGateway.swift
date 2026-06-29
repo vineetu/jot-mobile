@@ -48,24 +48,28 @@ final class TranslationGateway {
     /// English targets return the input unchanged. Never throws — on any
     /// failure it returns the best available text (translated, FM-translated,
     /// or the original) so Read-aloud always has *something* to speak.
-    func translate(_ text: String, to language: String) async -> String {
-        if language == "en" { return text }
+    /// `from` is the source-language ISO code (default `"en"`). With
+    /// multilingual dictation a transcript can be non-English, so the caller
+    /// passes the transcript's stored language as the source hint (more
+    /// reliable than auto-detect for short notes). Translating to the same
+    /// language is a no-op.
+    func translate(_ text: String, from sourceCode: String = "en", to language: String) async -> String {
+        if language == sourceCode { return text }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
 
-        let source = Locale.Language(identifier: "en")
+        let source = Locale.Language(identifier: sourceCode)
         let target = Locale.Language(identifier: language)
 
         // Check the pair before committing to the SwiftUI session — if Apple
-        // doesn't support it at all, go straight to the FM fallback. Transcripts
-        // are English, so the source is fixed (the `from:` param isn't optional).
+        // doesn't support it at all, go straight to the FM fallback.
         let availability = LanguageAvailability()
         let status = await availability.status(from: source, to: target)
         switch status {
         case .installed, .supported:
-            return await appleTranslate(trimmed, to: target, language: language)
+            return await appleTranslate(trimmed, from: source, to: target, language: language)
         case .unsupported:
-            logger.info("Apple Translation unsupported for \(language, privacy: .public) — FM fallback")
+            logger.info("Apple Translation unsupported for \(sourceCode, privacy: .public)→\(language, privacy: .public) — FM fallback")
             return await fallbackTranslate(trimmed, to: language)
         @unknown default:
             return await fallbackTranslate(trimmed, to: language)
@@ -78,6 +82,7 @@ final class TranslationGateway {
     /// resolves it via `fulfill(using:)` once SwiftUI hands us a live session.
     private func appleTranslate(
         _ text: String,
+        from source: Locale.Language,
         to target: Locale.Language,
         language: String
     ) async -> String {
@@ -96,8 +101,10 @@ final class TranslationGateway {
         do {
             result = try await withCheckedThrowingContinuation { continuation in
                 pending = (text, language, continuation)
-                // Source `nil` lets the framework detect the source language.
-                configuration = TranslationSession.Configuration(source: nil, target: target)
+                // Pass the explicit source language (the transcript's stored
+                // dictation language) — more reliable than auto-detect on short
+                // notes. (Pre-multilingual this was `source: nil` / auto-detect.)
+                configuration = TranslationSession.Configuration(source: source, target: target)
             }
         } catch {
             logger.info("Apple Translation failed (\(error.localizedDescription, privacy: .public)) — FM fallback")

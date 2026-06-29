@@ -184,6 +184,14 @@ struct TranscriptDetailView: View {
     /// Set by the picker's Translate row; consumed in the picker's `onDismiss`
     /// to present the Translate sheet without a sheet-over-sheet race.
     @State private var pendingTranslate: Bool = false
+
+    /// Re-transcription (multilingual): whether this transcript still has its
+    /// source audio retained (drives the "Re-transcribe" affordance), and the
+    /// in-flight / error state of a re-transcribe run. `canRetranscribe` is
+    /// refreshed on appear + after a run (a filesystem check, not in the body).
+    @State private var canRetranscribe: Bool = false
+    @State private var isRetranscribing: Bool = false
+    @State private var retranscribeError: String? = nil
     @State private var showAIGuide: Bool = false
     /// Set by the guide's "Download Jot's AI" link; consumed in the guide's
     /// `onDismiss` to open AI settings without a sheet-over-sheet race.
@@ -430,7 +438,12 @@ struct TranscriptDetailView: View {
             // Nothing is saved. The TranslationTaskHost that fulfils the session
             // lives on this view (mounted unconditionally) and stays alive while
             // this sheet is up.
-            TranslateSheet(text: readAloudText)
+            TranslateSheet(
+                text: readAloudText,
+                // Exclude the transcript's own language from the targets and
+                // pass it as the source hint. nil / unknown → English.
+                sourceCode: LanguageChoice.fromStored(transcript.language).isoCode
+            )
         }
         .sheet(isPresented: $showAIGuide, onDismiss: {
             // "Download Jot's AI" inside the guide → open settings after the guide
@@ -649,7 +662,78 @@ struct TranscriptDetailView: View {
             .monospacedDigit()
             .accessibilityElement(children: .combine)
 
+            if let languageBadgeText {
+                HStack(spacing: 3) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(languageBadgeText)
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Color.jotMute)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(.ultraThinMaterial))
+                .accessibilityLabel("Dictated in \(languageBadgeText)")
+            }
+
             Spacer(minLength: 0)
+
+            if canRetranscribe {
+                Menu {
+                    Text("Re-transcribe this audio in…")
+                    ForEach(LanguageChoice.presentationOrder) { lang in
+                        Button(lang.displayName) { retranscribe(in: lang) }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        if isRetranscribing {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: retranscribeError != nil
+                                  ? "exclamationmark.arrow.triangle.2.circlepath"
+                                  : "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        Text(isRetranscribing ? "Re-transcribing…"
+                             : (retranscribeError != nil ? "Retry re-transcribe" : "Re-transcribe"))
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(retranscribeError != nil ? Color.red : Color.jotAccent)
+                }
+                .disabled(isRetranscribing)
+                .accessibilityLabel("Re-transcribe this recording in another language")
+            }
+        }
+        .onAppear { canRetranscribe = RetainedAudioStore.hasAudio(for: transcript.id) }
+    }
+
+    /// Re-run transcription on the **retained source audio** in a chosen
+    /// language, then update the transcript's text + language stamp. The pick
+    /// becomes the active dictation language (same as choosing it in Settings),
+    /// downloading the model first if needed. No-op if the audio has expired.
+    private func retranscribe(in lang: LanguageChoice) {
+        guard !isRetranscribing,
+              let url = RetainedAudioStore.url(for: transcript.id) else { return }
+        isRetranscribing = true
+        retranscribeError = nil
+        // Switch the active language (persist + evict/reload the model so the
+        // re-transcribe runs on the right weights + script hint).
+        AppGroup.transcriptionLanguage = lang.rawValue
+        TranscriptionService.shared.handleLanguageChange()
+        Task {
+            do {
+                let text = try await TranscriptionService.shared.transcribe(audioFileURL: url)
+                try TranscriptStore.update(id: transcript.id, text: text, language: lang.rawValue)
+                await MainActor.run {
+                    isRetranscribing = false
+                    canRetranscribe = RetainedAudioStore.hasAudio(for: transcript.id)
+                }
+            } catch {
+                await MainActor.run {
+                    isRetranscribing = false
+                    retranscribeError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -1721,6 +1805,14 @@ struct TranscriptDetailView: View {
         guard let duration = transcript.durationSeconds else { return nil }
         let total = max(0, Int(duration.rounded()))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// Dictation-language badge text — the English name of the transcript's
+    /// language (`Transcript.language`), resolving `nil`/unknown to English.
+    /// Always shown (including English) so every transcript surfaces the
+    /// language it was dictated in at a glance.
+    private var languageBadgeText: String? {
+        LanguageChoice.fromStored(transcript.language).englishName
     }
 
     /// Body text the share + word-count read from — follows the currently

@@ -89,7 +89,7 @@ enum JotModelContainer {
         // as new `JotSchemaVN` files + new `MigrationStage`s — see
         // `JotMigrationPlan.swift` and `docs/schema-migrations.md`.
         do {
-            let versionedSchema = Schema(versionedSchema: JotSchemaV7.self)
+            let versionedSchema = Schema(versionedSchema: JotSchemaV8.self)
             let config = ModelConfiguration(
                 "JotTranscripts",
                 schema: versionedSchema,
@@ -278,7 +278,14 @@ enum TranscriptStore {
         instruction: String? = nil,
         source: String? = nil,
         createdAt: Date? = nil,
-        watchOriginUUID: String? = nil
+        watchOriginUUID: String? = nil,
+        language: String? = nil,
+        // Source audio to retain for re-transcription (3-day window). Pass the
+        // 16 kHz mono samples for a live recording, OR an existing audio file
+        // (share / watch / file-import) to copy. nil → nothing retained (e.g.
+        // text-only merges, keyboard selection inserts). See `RetainedAudioStore`.
+        retainAudioSamples: [Float]? = nil,
+        retainAudioFileURL: URL? = nil
     ) throws -> Transcript? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -308,7 +315,13 @@ enum TranscriptStore {
             // runs the `transcriptExists(watchOriginUUID:)` pre-insert
             // query; this only needs to persist the field so the next
             // check sees it. `nil` for every non-Watch caller.
-            watchOriginUUID: watchOriginUUID
+            watchOriginUUID: watchOriginUUID,
+            // Dictation language (V8+). Callers that don't specify one default
+            // to the active persisted language (`AppGroup.transcriptionLanguage`
+            // — the same value the transcription used). Read from App Group
+            // (a plain string), so this stays keyboard-target-safe and never
+            // pulls `LanguageChoice`/FluidAudio into the Shared module.
+            language: language ?? AppGroup.transcriptionLanguage
         )
         context.insert(transcript)
         do {
@@ -316,6 +329,16 @@ enum TranscriptStore {
         } catch {
             logger.error("Transcript append save failed: \(error.localizedDescription, privacy: .public)")
             throw error
+        }
+
+        // Retain the source audio (3-day window) keyed to this transcript so the
+        // user can re-transcribe later — e.g. in another language after
+        // downloading the multilingual model. Best-effort + AFTER the successful
+        // save, so a retention failure can never block the transcript insert.
+        if let retainAudioSamples {
+            RetainedAudioStore.save(samples: retainAudioSamples, for: id)
+        } else if let retainAudioFileURL {
+            RetainedAudioStore.save(copyingFile: retainAudioFileURL, for: id)
         }
 
         // Refresh the keyboard's JSON mirror so the next keyboard
@@ -475,11 +498,13 @@ enum TranscriptStore {
     /// already decides the no-op cases (unchanged text, already-cleared edit)
     /// and only calls when there is a real change. `rewriteUserEdit` is the
     /// final desired value — pass `nil` to clear it.
-    static func update(id: UUID, text: String? = nil, rewriteUserEdit: String?? = nil) throws {
+    static func update(id: UUID, text: String? = nil, rewriteUserEdit: String?? = nil, language: String? = nil) throws {
         let context = ModelContext(JotModelContainer.shared)
         guard let transcript = try fetch(id: id, in: context) else { return }
         if let text { transcript.text = text }
         if let rewriteUserEdit { transcript.rewriteUserEdit = rewriteUserEdit }
+        // Re-transcription updates the stored dictation language alongside the text.
+        if let language { transcript.language = language }
         do {
             try context.save()
         } catch {
@@ -563,6 +588,9 @@ enum TranscriptStore {
             logger.error("Transcript bulk delete save failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
+        // Drop any retained source audio for the deleted transcripts so it can't
+        // outlive the row (best-effort; the 3-day sweep is the backstop).
+        for id in ids { RetainedAudioStore.delete(for: id) }
         fanOutMirror(from: context)
     }
 

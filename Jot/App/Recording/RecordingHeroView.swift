@@ -944,7 +944,8 @@ struct RecordingHeroView: View {
                     transcript: result.transcript,
                     startedAt: recordingStartedAt,
                     stoppedAt: result.stoppedAt,
-                    controller: controller
+                    controller: controller,
+                    retainSamples: result.samples
                 )
                 _ = outcome
                 await MainActor.run {

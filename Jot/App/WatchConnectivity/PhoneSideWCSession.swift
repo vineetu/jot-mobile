@@ -366,7 +366,8 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
                 text: transcript,
                 createdAt: capturedAt,
                 durationSeconds: durationSeconds,
-                watchOriginUUID: uuid
+                watchOriginUUID: uuid,
+                audioFileURL: stagedURL
             )
             setStage("saveTranscript OK")
             log.info("Transcribed watch audio UUID=\(uuid, privacy: .public) chars=\(transcript.count, privacy: .public)")
@@ -406,7 +407,7 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
         return count > 0
     }
 
-    private func saveTranscript(text: String, createdAt: Date, durationSeconds: Double?, watchOriginUUID: String) async throws {
+    private func saveTranscript(text: String, createdAt: Date, durationSeconds: Double?, watchOriginUUID: String, audioFileURL: URL? = nil) async throws {
         // Route through the Repository (the sole writer of the Transcript
         // entity + the keyboard mirror) instead of hand-reimplementing
         // append. `append` owns the insert, ledger index, save, mirror
@@ -420,7 +421,10 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
             duration: durationSeconds,
             source: "watch",
             createdAt: createdAt,
-            watchOriginUUID: watchOriginUUID
+            watchOriginUUID: watchOriginUUID,
+            // Retain the watch audio (copied from the staged file before it's
+            // cleaned up) so it can be re-transcribed like any other recording.
+            retainAudioFileURL: audioFileURL
         )
     }
 

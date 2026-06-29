@@ -123,14 +123,24 @@ final class TranscriptionService {
     /// CTC subset (`parakeet-ctc-110m-coreml`) the rescorer uses — different
     /// FluidAudio repo, different on-disk directory.
     nonisolated private static var selectedVersion: AsrModelVersion {
-        DeviceCapability.is600MCapable ? .v2 : .tdtCtc110m
+        // English keeps the device-capability path (bundled v2 / 110M). Every
+        // European language resolves to int8 Parakeet v3 — one shared
+        // multilingual model, downloaded on first selection. FIRST PASS: v3 on
+        // every device (no int4 / device-RAM gating yet — design doc §4).
+        if LanguageChoice.current.isEnglish {
+            return DeviceCapability.is600MCapable ? .v2 : .tdtCtc110m
+        }
+        return .v3
     }
 
     /// FluidAudio `Repo` paired with `selectedVersion`. Used for
     /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
     /// the user-facing speech-model identifier.
     private static var selectedRepo: Repo {
-        DeviceCapability.is600MCapable ? .parakeetV2 : .parakeetTdtCtc110m
+        if LanguageChoice.current.isEnglish {
+            return DeviceCapability.is600MCapable ? .parakeetV2 : .parakeetTdtCtc110m
+        }
+        return .parakeetV3
     }
 
     private let standIn: (any TranscriptionStandIn)?
@@ -295,6 +305,40 @@ final class TranscriptionService {
         log.info(
             "Speech variant changed — variant=\(AppGroup.speechModelVariant, privacy: .public) modelState=\(Self.describe(self.modelState), privacy: .public)"
         )
+    }
+
+    /// React to a user picking a different dictation **language** in Settings.
+    /// Evicts the currently-loaded model (its weights belong to the old
+    /// language's `AsrModelVersion`), then re-prepares the new language's model —
+    /// downloading it first if it isn't on disk yet (English is bundled, so that
+    /// path is a fast no-download load; a European language downloads v3 once).
+    ///
+    /// Calling `warmUp()` here is a **deliberate, consented** user action, so it
+    /// is allowed to trigger a network fetch (unlike the launch-time
+    /// `warmIfNeeded()` gate, which never downloads silently). Download progress
+    /// and readiness surface through `modelState`, which Settings observes.
+    func handleLanguageChange() {
+        prepareTask?.cancel()
+        prepareTask = nil
+        prepareGeneration += 1
+        // Release the (possibly ANE-resident) AsrManager OFF the main thread.
+        // Deallocating a loaded CoreML model blocks for ~1s, and this runs on
+        // the MainActor from the Settings picker — so a plain `manager = nil`
+        // hangs the UI on the FIRST language change after a dictation (when a
+        // model is actually loaded). We clear the property synchronously (so the
+        // subsequent `warmUp()` loads the NEW language's model instead of reusing
+        // the old one), but hand the old instance to a utility task so its heavy
+        // deinit happens off the main thread. `AsrManager` is a Sendable actor,
+        // so this hand-off is safe.
+        if let old = manager {
+            manager = nil
+            Task.detached(priority: .utility) { _ = old }
+        }
+        modelState = .notLoaded
+        log.info(
+            "Dictation language changed — language=\(AppGroup.transcriptionLanguage, privacy: .public)"
+        )
+        warmUp()
     }
 
     func purgeAndReload() async {
@@ -537,16 +581,19 @@ final class TranscriptionService {
         // earlier — we only reach this branch on real-device transcribe.
         //
         // Capability-gated model presence:
-        // - Capable devices run the BUNDLED 600M — a missing model means iOS
-        //   app thinning stripped the IPA resources; the only recovery is a
-        //   reinstall, so throw rather than attempt a (nonexistent) download.
-        // - Sub-6GB devices run the 110M, which is download-on-first-need. A
-        //   missing model here is EXPECTED on the very first dictation: the
-        //   user invoking dictation is the consent trigger, so we fall through
-        //   to `ensurePreparing()` → `loadOrFail()`, whose download branch
-        //   fetches the weights and surfaces `.downloading` progress. We do
-        //   NOT throw on a capability-fallback device.
+        // - English on a capable device runs the BUNDLED 600M — a missing model
+        //   means iOS app thinning stripped the IPA resources; the only recovery
+        //   is a reinstall, so throw rather than attempt a (nonexistent) download.
+        // - Sub-6GB devices (110M) AND any EUROPEAN language (Parakeet v3) are
+        //   download-on-first-need. A missing model is EXPECTED on first use: the
+        //   user invoking dictation is the consent trigger, so we fall through to
+        //   `ensurePreparing()` → `loadOrFail()`, whose download branch fetches
+        //   the weights and surfaces `.downloading` progress. We do NOT throw.
+        //   (European on a capable device is NOT bundled, so the "reinstall"
+        //   error must not fire for it — only for the genuinely-bundled English
+        //   case.)
         if standIn == nil
+            && LanguageChoice.current.isEnglish
             && DeviceCapability.is600MCapable
             && !Self.modelsExistOnDiskForSelectedVariant() {
             throw TranscriptionError.loadFailed(
@@ -644,7 +691,11 @@ final class TranscriptionService {
                 return spot ?? nil
             }()
 
-            let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            let result = try await manager.transcribe(
+                samples,
+                decoderState: &decoderState,
+                language: LanguageChoice.current.fluidAudioLanguage
+            )
             let inferenceEndedAt = Date()
             let wallClockMS = Self.elapsedMilliseconds(from: inferenceStartedAt, to: inferenceEndedAt)
             let wallClockRTF = Self.realTimeFactor(elapsedMS: wallClockMS, audioDurationSeconds: result.duration)
@@ -729,14 +780,21 @@ final class TranscriptionService {
                     tokenTimings: timings
                 )
             }
-            // Strip simple filler words AFTER paragraph segmentation so the
-            // removed tokens don't change pause-measurement decisions.
-            // This is a fast regex sweep that always runs on every transcript.
-            transcriptText = FillerWordCleaner.clean(transcriptText)
-            // Normalize spelled numbers to digits (AP-style + idioms +
-            // time-of-day). Always on. Runs LAST in the pipeline so it
-            // sees the cleaned, segmented text.
-            transcriptText = NumberNormalizer.normalize(transcriptText)
+            // English-only text cleanup. FillerWordCleaner (strips English
+            // "um/uh") and NumberNormalizer (English-style inverse text
+            // normalization) are English-oriented regex/lookup passes; running
+            // them on a non-English v3 transcript would mangle it. The Mac app
+            // likewise skips this chain for v3 (it emits clean cased/punctuated
+            // text natively — `jot/features.md §30`). ParagraphSegmenter above is
+            // language-agnostic (pause-based), so it stays for every language.
+            if LanguageChoice.current.isEnglish {
+                // Strip simple filler words AFTER paragraph segmentation so the
+                // removed tokens don't change pause-measurement decisions.
+                transcriptText = FillerWordCleaner.clean(transcriptText)
+                // Normalize spelled numbers to digits (AP-style + idioms +
+                // time-of-day). Runs LAST so it sees the cleaned, segmented text.
+                transcriptText = NumberNormalizer.normalize(transcriptText)
+            }
             return transcriptText
         } catch {
             let inferenceEndedAt = Date()
@@ -802,7 +860,11 @@ final class TranscriptionService {
             var decoderState = TdtDecoderState.make(
                 decoderLayers: Self.selectedVersion.decoderLayers
             )
-            let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            let result = try await manager.transcribe(
+                samples,
+                decoderState: &decoderState,
+                language: LanguageChoice.current.fluidAudioLanguage
+            )
             var text = result.text
             // Text-only quality pipeline (cheap): paragraphs need token
             // timings; filler + number passes are regex/lookup. Vocab is
@@ -810,8 +872,12 @@ final class TranscriptionService {
             if let timings = result.tokenTimings {
                 text = ParagraphSegmenter.segment(rescoredText: text, tokenTimings: timings)
             }
-            text = FillerWordCleaner.clean(text)
-            text = NumberNormalizer.normalize(text)
+            // English-only cleanup (see batch path) — these passes are
+            // English-oriented and would mangle a non-English preview.
+            if LanguageChoice.current.isEnglish {
+                text = FillerWordCleaner.clean(text)
+                text = NumberNormalizer.normalize(text)
+            }
             return text
         } catch {
             log.debug("preview transcribe failed — \(error.localizedDescription, privacy: .public)")
@@ -1092,8 +1158,12 @@ final class TranscriptionService {
     ///   stable, update-proof path), where `AsrModels.download` lands the weights
     ///   on first need.
     private static func modelDirectory() -> URL {
-        // Capable devices run the bundled 600M straight from the app bundle.
-        if DeviceCapability.is600MCapable {
+        // Only English on a capable device runs the bundled 600M (v2) straight
+        // from the read-only app bundle. A European language resolves to v3,
+        // which is NOT bundled — it downloads into FluidAudio's default
+        // App-Support cache for `.parakeetV3` (via `selectedRepo`), exactly like
+        // the sub-6GB 110M path.
+        if LanguageChoice.current.isEnglish, DeviceCapability.is600MCapable {
             if let bundled = bundled600mDirectory() {
                 return bundled
             }

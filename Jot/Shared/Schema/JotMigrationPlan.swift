@@ -45,8 +45,8 @@ import SwiftData
 ///     the migration needs investigation before merge.
 enum JotMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [JotSchemaV1.self, JotSchemaV2.self, JotSchemaV3.self, JotSchemaV4.self, JotSchemaV5.self, JotSchemaV6.self, JotSchemaV7.self]
-        // Future: append V8.self, ... in chronological order.
+        [JotSchemaV1.self, JotSchemaV2.self, JotSchemaV3.self, JotSchemaV4.self, JotSchemaV5.self, JotSchemaV6.self, JotSchemaV7.self, JotSchemaV8.self]
+        // Future: append V9.self, ... in chronological order.
     }
 
     static var stages: [MigrationStage] {
@@ -103,6 +103,15 @@ enum JotMigrationPlan: SchemaMigrationPlan {
             .lightweight(
                 fromVersion: JotSchemaV6.self,
                 toVersion: JotSchemaV7.self
+            ),
+            // V7 → V8: ONE additive optional field on `Transcript` —
+            // `language: String?` (the raw `LanguageChoice` the recording was
+            // dictated in — sibling to `source`). `nil` for every pre-existing
+            // V7 row on first V8 read; UI / Translate treat nil as English.
+            // Lightweight inference, same shape as the V4→V5 `source` add.
+            .lightweight(
+                fromVersion: JotSchemaV7.self,
+                toVersion: JotSchemaV8.self
             )
         ]
     }

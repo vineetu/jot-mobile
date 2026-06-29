@@ -204,8 +204,19 @@ prune_old() {
     local glob="$1" label="$2" i=0 item
     while IFS= read -r item; do
       [[ -z "$item" ]] && continue
-      i=$((i+1)); (( i > keep )) && { echo "  prune old $label: $item"; rm -rf "$item"; }
+      i=$((i+1))
+      # Use `if` (not `(( … )) && { … }`): under `set -e`, a false `(( … ))`
+      # returns exit status 1, and when it is the loop's last command (i.e.
+      # the kept item, with i <= keep) it makes the while loop — and thus
+      # `_prune` — return 1, killing the whole deploy before it archives.
+      # This only triggered when exactly `keep` releases remained, so it
+      # surfaced intermittently. `if` returns 0 on a false condition.
+      if (( i > keep )); then
+        echo "  prune old $label: $item"
+        rm -rf "$item"
+      fi
     done < <(eval "ls -td $glob 2>/dev/null")
+    return 0
   }
   mkdir -p "$releases_dir"
   _prune "$releases_dir/${APP_SCHEME}-*.xcarchive" archive

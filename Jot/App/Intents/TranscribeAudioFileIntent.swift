@@ -156,7 +156,11 @@ struct TranscribeAudioFileIntent: AppIntent {
             _ = try TranscriptStore.append(
                 raw: rawForLedger,
                 cleaned: cleanedForLedger,
-                duration: nil
+                duration: nil,
+                source: "file",
+                // Retain the imported audio (copied before this intent's `defer`
+                // removes the temp file) so it can be re-transcribed.
+                retainAudioFileURL: audioURL
             )
         }
 

@@ -179,6 +179,10 @@ struct JotApp: App {
         // purges. Detached + best-effort, does not block launch.
         TranscriptionService.sweepOrphanedPurgingDirs()
 
+        // Purge source audio retained past its 3-day window (re-transcription
+        // safety net). Best-effort; does not block launch.
+        RetainedAudioStore.purgeExpired()
+
         // Vocabulary boosting: prepare the rescorer at LAUNCH if the user has it
         // enabled. It was previously prepared ONLY while the Vocabulary Settings
         // screen was open — so a cold keyboard-bounced process (which never opens
@@ -1258,7 +1262,8 @@ private final class CrossProcessRecordingStopCoordinator {
                 startedAt: startedAt,
                 stoppedAt: result.stoppedAt,
                 controller: controller,
-                transient: jotActiveAtStop
+                transient: jotActiveAtStop,
+                retainSamples: result.samples
             )
 
         case .idle:
@@ -1329,7 +1334,10 @@ private final class CrossProcessRecordingStopCoordinator {
                 startedAt: startedAt,
                 stoppedAt: stoppedAt,
                 controller: controller,
-                transient: transient
+                transient: transient,
+                // Retain this recording's 16 kHz mono audio (keyed to the saved
+                // transcript) so it can be re-transcribed within the 3-day window.
+                retainSamples: samples
             )
         } catch {
             // Transcription threw (e.g. `audioTooShort`) BEFORE the post-transcript

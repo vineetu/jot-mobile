@@ -197,6 +197,10 @@ enum AppGroup {
         /// `"nemotron0_6b"`, unset, or malformed) to the sole `"english"`
         /// model. Kept only for backward-compatible reads/writes.
         static let speechModelVariant = "jot.speech.modelVariant"
+        /// Persisted dictation **language** (raw `LanguageChoice`). The source of
+        /// truth for multilingual dictation (English → bundled v2, European →
+        /// downloaded v3). Unset → "english". See `docs/multilingual-dictation`.
+        static let transcriptionLanguage = "jot.transcription.language"
         /// "Live text while dictating" tri-state: "auto" | "on" | "off".
         static let liveTextSetting = "jot.preview.liveText"
 
@@ -424,6 +428,14 @@ enum AppGroup {
             "english"
         }
         set { defaults.set(newValue, forKey: Keys.speechModelVariant) }
+    }
+
+    /// Persisted dictation language (raw `LanguageChoice`). Unset → `"english"`.
+    /// The source of truth for multilingual model selection (English → bundled
+    /// v2, European → downloaded v3). See `docs/multilingual-dictation`.
+    static var transcriptionLanguage: String {
+        get { defaults.string(forKey: Keys.transcriptionLanguage) ?? "english" }
+        set { defaults.set(newValue, forKey: Keys.transcriptionLanguage) }
     }
 
     /// "Live text while dictating" tri-state (`"auto"` / `"on"` / `"off"`).
