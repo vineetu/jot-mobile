@@ -445,6 +445,32 @@ public actor VocabularyRescorerHolder {
         (await mergeWithProposals(transcript: transcript, tokenTimings: tokenTimings, spotResult: spotResult))?.text
     }
 
+    /// The CTC spotter's detections as `.acoustic` gate evidence — each term's
+    /// real log-prob score and audio span, never a synthesized confidence or
+    /// margin (jot-shared design R2). Aliases are the SAME enriched set the
+    /// spotter matched on (user aliases + the merged form of a multi-word term),
+    /// so the gate's plausibility guard measures against what was heard.
+    /// Placement onto the transcript happens in `VocabularyPass` via the
+    /// decoder's word timings; without them these are dropped, never placed by
+    /// proportional position.
+    func acousticDetections(
+        from spotResult: CtcKeywordSpotter.SpotKeywordsResult
+    ) -> [JotVocabCore.VocabularyGate.Detection] {
+        guard let vocabulary else { return [] }
+        var aliasMap: [String: [String]] = [:]
+        for t in vocabulary.terms {
+            aliasMap[t.text.lowercased(), default: []] += (t.aliases ?? [])
+        }
+        return spotResult.detections.map { d in
+            JotVocabCore.VocabularyGate.Detection(
+                term: d.term.text,
+                aliases: aliasMap[d.term.text.lowercased()] ?? (d.term.aliases ?? []),
+                evidence: .acoustic(score: d.score, confidence: nil),
+                startTime: d.startTime,
+                endTime: d.endTime)
+        }
+    }
+
     /// **Engine A/B Test Lab support (2026-07-05, temporary).** Same as
     /// `merge(...)` — identical behavior — but also returns the individual
     /// gate decisions (`VocabularyGate.Proposal`: original word → term,

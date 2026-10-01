@@ -1,0 +1,16 @@
+  .ds-build-meta.json: 18 components (package)
+  _ds_bundle.js: 34 KB, syntax OK
+  _ds_bundle.js header: window.JotDS, 18 components, 0 inlined externals
+  _ds_sync.json: 18 render hash(es), anchor matches the bundle
+  _ds_sync.json render hashes match disk (18 recomputed)
+  styles.css: 1 @import(s), all resolve
+  _ds_bundle.css: 15 KB
+  tokens: 194 defined, 1 referenced
+  [FONT_REMOTE] "SF Pro Text" (--font-sys), "SF Pro Display" (--font-sys) — a remote font-host @import is present; assuming it serves these at runtime
+  components/: 18 previews, 18 .prompt.md
+  all .d.ts parse cleanly
+  window.JotDS: 18 exports (18 fn + 0 compound)
+  render check: 18/18 previews render cleanly (screenshots in _screenshots/)
+  contact sheets: 2 sheet(s) → _screenshots/contact-sheet-1.png … contact-sheet-2.png
+
+✓ bundle is complete

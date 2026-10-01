@@ -25,37 +25,11 @@ typealias TranscriptEmbedding = JotSchemaV9.TranscriptEmbedding
 /// it carries no live data and may be dropped in a future migration.
 typealias TranscriptCategory = JotSchemaV9.TranscriptCategory
 
-/// Chunk-level embedding row (V7+) — the substrate for the Ask RAG pipeline.
-/// One row per ~256-token window of a transcript. Read the packed vector via
-/// the `vector: [Float]` extension below; written via `ChunkStore`.
+/// **DORMANT.** Former chunk-level embedding row (V7+) for the EmbeddingGemma
+/// Ask pipeline. Ask retrieval moved to Core Spotlight, so nothing reads or
+/// writes this table any more; the entity stays in the frozen schema (same
+/// pattern as `TranscriptEmbedding`) and may be dropped in a future migration.
 typealias TranscriptChunk = JotSchemaV9.TranscriptChunk
-
-extension TranscriptEmbedding {
-    /// Unpacks the stored `vectorData` blob into a `[Float]`. Returns an empty
-    /// array on size mismatch (defensive). Deprecated alongside the type.
-    var vector: [Float] {
-        let count = vectorData.count / MemoryLayout<Float>.size
-        guard count > 0 else { return [] }
-        return vectorData.withUnsafeBytes { raw -> [Float] in
-            let buffer = raw.bindMemory(to: Float.self)
-            return Array(buffer)
-        }
-    }
-}
-
-extension TranscriptChunk {
-    /// Unpacks the stored `vectorData` blob into a `[Float]` (length depends on
-    /// the active embedding model — 256 for EmbeddingGemma). Returns an empty
-    /// array on size mismatch (defensive — a bad write shouldn't crash a read).
-    var vector: [Float] {
-        let count = vectorData.count / MemoryLayout<Float>.size
-        guard count > 0 else { return [] }
-        return vectorData.withUnsafeBytes { raw -> [Float] in
-            let buffer = raw.bindMemory(to: Float.self)
-            return Array(buffer)
-        }
-    }
-}
 
 extension Transcript {
     /// Preferred surface text. Priority:

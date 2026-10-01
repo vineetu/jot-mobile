@@ -88,11 +88,25 @@ struct KeyboardView: View {
     /// at every render — Copy is disabled when either condition fails.
     let hasSelection: Bool
 
+    /// Automatic cleanup (§7.14) state for the actions pane's Cleanup tile.
+    let cleanupEnabled: Bool
+    let cleanupAvailable: Bool
+    /// In-keyboard rewrite of the host selection (§7.15).
+    let rewriteAvailable: Bool
+    let rewriteInFlight: Bool
+    /// In-keyboard translation of the host selection (§7.16).
+    let translateOptions: [KeyboardTranslateOption]
+    let translateInFlight: Bool
+
     let onCopy: () -> Void
     let onAddToVocabulary: () -> Void
     let onPaste: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
+    let onToggleCleanup: () -> Void
+    let onRewriteSelection: () -> Void
+    let onTranslateOpen: () -> Bool
+    let onTranslateSelection: (String) -> Void
     let onJumpToStart: () -> Void
     let onJumpToEnd: () -> Void
     let onTapToSpeak: () -> Void
@@ -225,6 +239,11 @@ struct KeyboardView: View {
     /// because the popover dismisses itself after every tap.
     @State private var showActionsPopover: Bool = false
 
+    /// True when the actions pane opened ITSELF because the host gained a
+    /// selection (§5.6). Only a self-opened pane closes itself again when the
+    /// selection goes away — a pane the user opened with ••• stays put.
+    @State private var actionsAutoOpened: Bool = false
+
     var body: some View {
         standardModeBody
         // v2 retheme: force the SwiftUI color-scheme env to the resolved
@@ -296,11 +315,6 @@ struct KeyboardView: View {
                 // Transparent chrome lets the native keyboard backdrop render
                 // through in both idle and recording.
                 .background(chromeBackground)
-                .overlay(alignment: .top) {
-                    statusBannerOverlay
-                        .padding(.horizontal, metrics.sideInset)
-                        .padding(.top, 4)
-                }
 
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -308,10 +322,31 @@ struct KeyboardView: View {
                        value: showActionsPopover)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
                        value: recordingState.isRecording)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                       value: recordingState.isInflightPostRecording)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
                        value: showWarmHoldNudge)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
                        value: showParakeetUpgradeNudge)
+            // Selection-driven actions pane (§5.6): selecting text in the host
+            // opens the pane so Rewrite / Copy / Vocab are one tap away; clearing
+            // the selection closes it again — but only when the pane opened
+            // itself. Never during a live recording or over a held review deck
+            // (the pane replaces the whole top strip).
+            .onChange(of: hasSelection) { _, selected in
+                if selected {
+                    guard !showActionsPopover,
+                          !recordingState.isRecording,
+                          !recordingState.isInflightPostRecording,
+                          askDeckSnapshot == nil else { return }
+                    onActionsTapped()
+                    actionsAutoOpened = true
+                    showActionsPopover = true
+                } else if actionsAutoOpened {
+                    actionsAutoOpened = false
+                    showActionsPopover = false
+                }
+            }
         }
     }
 
@@ -339,11 +374,23 @@ struct KeyboardView: View {
             canRedo: canRedoInsertion,
             undoDepth: undoDepth,
             redoDepth: redoDepth,
+            cleanupEnabled: cleanupEnabled,
+            cleanupAvailable: cleanupAvailable,
+            rewriteAvailable: rewriteAvailable,
+            rewriteInFlight: rewriteInFlight,
+            translateOptions: translateOptions,
+            translateInFlight: translateInFlight,
             onPaste: onPaste,
             onCopy: onCopy,
             onAddToVocabulary: onAddToVocabulary,
             onUndo: onUndoLastInsertion,
             onRedo: onRedoInsertion,
+            onToggleCleanup: onToggleCleanup,
+            onRewriteSelection: onRewriteSelection,
+            onTranslateOpen: onTranslateOpen,
+            onTranslateSelection: onTranslateSelection,
+            status: keyboardStatus,
+            onDismissStatus: onStatusBannerRendered,
             onJumpToStart: onJumpToStart,
             onJumpToEnd: onJumpToEnd,
             onDismiss: { showActionsPopover = false }
@@ -458,7 +505,11 @@ struct KeyboardView: View {
 
     @ViewBuilder
     private func topStripContent(metrics: KeyboardMetrics) -> some View {
-        if recordingState.isRecording {
+        // The strip stays mounted through the post-stop tail (§5.5) so the
+        // live text never vanishes into a bare "Working" pill: it holds still
+        // under a header that names the wait, then the recents strip returns
+        // with the new entry once the paste lands.
+        if recordingState.isRecording || recordingState.isInflightPostRecording {
             StreamingStrip(
                 partialText: recordingState.streamingPartialText,
                 startedAt: recordingState.startedAt,
@@ -481,13 +532,16 @@ struct KeyboardView: View {
                 // window (there's nothing yet to tidy up).
                 statusLine: recordingState.streamingPartialText.isEmpty
                     ? nil
-                    : "We tidy this up when you stop"
+                    : "We tidy this up when you stop",
+                isFinishing: recordingState.isInflightPostRecording,
+                finishingElapsedSeconds: recordingState.finishingElapsedSeconds,
+                finishingLine: recordingState.inflightHeaderLine
             )
-            .transition(
-                reduceMotion
-                    ? .opacity
-                    : .opacity.combined(with: .move(edge: .top))
-            )
+            // Crossfade only: the streaming and recents strips are the same
+            // glass card, so they swap in place. (A move-out transition left
+            // a translucent remnant of the outgoing card over the top recents
+            // row when the swap was interrupted mid-animation.)
+            .transition(.opacity)
         } else if !hasFullAccess {
             // Replace the (would-be-empty) recents strip with a
             // breadcrumb that teaches the user how to enable Full Access
@@ -506,13 +560,11 @@ struct KeyboardView: View {
                 entries: historyEntries,
                 onInsertEntry: onInsertHistoryEntry,
                 onOpenInApp: onOpenHistoryEntryInApp,
-                onSeeAll: onOpenHome
+                onSeeAll: onOpenHome,
+                status: keyboardStatus,
+                onDismissStatus: onStatusBannerRendered
             )
-            .transition(
-                reduceMotion
-                    ? .opacity
-                    : .opacity.combined(with: .move(edge: .top))
-            )
+            .transition(.opacity)
         }
     }
 
@@ -874,15 +926,25 @@ struct KeyboardView: View {
                             .minimumScaleFactor(0.8)
                     }
                 } else if hasFullAccess, recordingState.isInflightPostRecording {
+                    // Names the stage (Transcribing / Cleaning up / Rewriting)
+                    // rather than a generic "Working" — the Automatic cleanup
+                    // pass is the one that makes the user wait noticeably. The
+                    // strip above explains the wait; this stays one word.
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
                             .tint(.white)
-                        Text("Working")
+                        Text(recordingState.inflightStatusLabel)
                             .font(JotType.chromeBold)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
+                            .contentTransition(.opacity)
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                                       value: recordingState.inflightStatusLabel)
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(recordingState.inflightStatusLabel)
+                    .accessibilityHint("Your text pastes when this finishes")
                 } else {
                     HStack(spacing: 8) {
                         Image(systemName: hasFullAccess ? "mic.fill" : "lock.shield")
@@ -938,135 +1000,38 @@ struct KeyboardView: View {
                 onActionsTapped()
                 showActionsPopover = true
             }
+            // A ••• tap is the user's own decision either way: the pane is no
+            // longer "auto-opened", so a later deselect won't close it.
+            actionsAutoOpened = false
         } label: {
-            // Icon-only "…" (empty title) — the ellipsis glyph alone reads as
-            // the overflow/Actions affordance; the accessibilityLabel below
-            // still announces "Actions".
+            // Icon-only (empty title): "…" opens the pane; while it is open the
+            // same key wears an "×" and closes it — the pane has no Close tile,
+            // so the control that opened it is the one that closes it.
             secondaryControlLabel(
                 title: "",
-                systemImage: "ellipsis",
+                systemImage: showActionsPopover ? "xmark" : "ellipsis",
                 enabled: true,
                 lit: showActionsPopover
             )
+            .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Actions")
-        .accessibilityHint("Opens Paste, Copy, Undo, Redo, and Move up/down actions")
+        .accessibilityLabel(showActionsPopover ? "Close actions" : "Actions")
+        .accessibilityHint(showActionsPopover
+                           ? "Closes the actions pane"
+                           : "Opens Vocab, Rewrite, Translate, Cleanup, Copy, Paste, Undo and Redo")
         .accessibilityAddTraits(.isButton)
     }
 
-    // MARK: - Status banner
+    // MARK: - Status (§5.10, inside the surface it concerns)
 
-    @ViewBuilder
-    private var statusBannerOverlay: some View {
-        if let banner = statusBanner, !banner.isEmpty {
-            bannerBody(banner, bannerSeverity(banner))
-        } else {
-            EmptyView()
-        }
-    }
-
-    /// Option A — a calm liquid-glass status chip. The severity (derived from the
-    /// message) supplies a subtle tint, a leading icon, and the ink colour, so the
-    /// COLOUR carries the meaning instead of blaring red at every message — even
-    /// successes like "Added '…' to your dictionary".
-    private func bannerBody(_ banner: String, _ severity: BannerSeverity) -> some View {
-        HStack(spacing: 8) {
-            Group {
-                if severity == .progress {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(severity.tint)
-                } else {
-                    Image(systemName: severity.iconName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(severity.tint)
-                }
-            }
-            .frame(width: 20)
-
-            Text(banner)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(severity.ink)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .minimumScaleFactor(0.8)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(severity.tint.opacity(0.16))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(severity.tint.opacity(0.40), lineWidth: 0.5)
-                )
-        )
-        .transition(reduceMotion
-                    ? .opacity
-                    : .opacity.combined(with: .move(edge: .top)))
-        .accessibilityLabel(banner)
-        .accessibilityAddTraits(.isStaticText)
-        .task(id: banner) {
-            guard banner != "Rewriting…" else { return }
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            onStatusBannerRendered()
-        }
-    }
-
-    /// Classify a status message into a severity. The message set is small and fixed
-    /// (the keyboard's own `setStatusBanner` calls + the cross-process dictation
-    /// status), so substring matching is reliable; an unknown message defaults to a
-    /// neutral warning — never a false success, never a red alarm.
-    private func bannerSeverity(_ message: String) -> BannerSeverity {
-        let m = message.lowercased()
-        if m.contains("rewriting") { return .progress }
-        if m.contains("added") && m.contains("dictionary") { return .success }
-        if m.contains("couldn't") || m.contains("can't") || m.contains("cannot")
-            || m.contains("failed") || m.contains("error") || m.contains("no speech") {
-            return .error
-        }
-        return .warning
-    }
-
-    private enum BannerSeverity {
-        case success, warning, error, progress
-
-        /// Tint for the glass fill, hairline, and icon.
-        var tint: Color {
-            switch self {
-            case .success: return .jotSuccess
-            case .warning: return .jotWarning
-            case .error: return .jotRecord
-            case .progress: return .jotAccent
-            }
-        }
-
-        /// Readable ink for the message text on the tinted glass.
-        var ink: Color {
-            switch self {
-            case .success: return .jotSuccessInk
-            case .warning: return .jotWarningInk
-            case .error: return .jotRecord
-            case .progress: return .jotAccent
-            }
-        }
-
-        var iconName: String {
-            switch self {
-            case .success: return "checkmark.circle.fill"
-            case .warning: return "exclamationmark.circle.fill"
-            case .error: return "xmark.circle.fill"
-            case .progress: return "arrow.triangle.2.circlepath"
-            }
-        }
+    /// The current status as the hosts render it: a dictation outcome lands in
+    /// the Recents card, a rewrite / translate outcome in the actions pane.
+    /// Never an overlay. `onStatusBannerRendered` is the dismiss — it clears
+    /// the controller's slot (and the App Group message behind it).
+    private var keyboardStatus: KeyboardStatus? {
+        guard let statusBanner, !statusBanner.isEmpty else { return nil }
+        return KeyboardStatus(message: statusBanner)
     }
 
     // MARK: - Key rows

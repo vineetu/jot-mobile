@@ -14,18 +14,10 @@ Jot iOS depends on the following open-source packages; each remains under
 its own license:
 
 - FluidInference/FluidAudio — Apache License 2.0
-- ml-explore/mlx-swift, mlx-swift-lm — MIT
-- huggingface/swift-huggingface, swift-transformers — Apache License 2.0
-- john-rocky/CoreML-LLM — MIT
-- petrukha-ivan/swift-json-schema — Apache License 2.0
-- apple/swift-async-algorithms, swift-argument-parser — Apache License 2.0
 
-Vendored code (Vendor/):
-- Vendor/mlx-swift-structured — fork of petrukha-ivan/mlx-swift-structured,
-  Apache License 2.0 (LICENSE retained in place). It vendors the
-  mlc-ai/xgrammar source tree (Apache License 2.0; its LICENSE and NOTICE
-  are retained) including third-party components: dlpack (Apache-2.0),
-  googletest (BSD-3-Clause), cpptrace (MIT), picojson (BSD-2-Clause).
+(The MLX / Hugging Face / CoreML-LLM stack and the vendored
+mlx-swift-structured fork were removed when rewrite and Ask moved to Apple
+Foundation Models; nothing under Vendor/ remains.)
 
 Fonts:
 - Fraunces (Jot/Resources/Fonts/) — SIL Open Font License 1.1; see the
@@ -33,4 +25,4 @@ Fonts:
 
 Model weights are not distributed in this repository; weights fetched or
 bundled at build/run time are covered by their own upstream terms
-(e.g. Gemma Terms of Use, Qwen license via MLX).
+(e.g. the NVIDIA Parakeet CC-BY 4.0 terms).

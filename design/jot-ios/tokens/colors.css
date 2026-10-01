@@ -1,0 +1,109 @@
+/* ============================================================
+   Jot — color tokens
+   Brand: a single blue accent (#1A8CFF). Coral (#FF6B57 → #E0533F) marks AI
+   Rewrite surfaces ONLY — never use it on any non-AI surface.
+   Dark is the app's primary appearance and the :root default;
+   scope `[data-theme="light"]` (or class .light) for light mode.
+   ============================================================ */
+
+:root {
+  /* ---- Brand blue (the only accent) ---- */
+  --jot-blue-1: #2E9BFF;            /* gradient top */
+  --jot-blue-2: #0E7AE6;            /* gradient middle / solid accent */
+  --jot-blue-3: #0064CC;            /* gradient bottom / deepest */
+  --jot-blue-flat: #1A8CFF;         /* mono / dots / active states */
+  --jot-blue-grad: linear-gradient(180deg, #2E9BFF 0%, #0E7AE6 54%, #0064CC 100%);
+  --jot-icon-grad: linear-gradient(168deg, #3AA0FF 0%, #1483F2 48%, #0064CC 100%);
+  --jot-glow: rgba(26, 140, 255, 0.44);      /* CTA / send glow shadows */
+  --jot-blue-soft: rgba(26, 140, 255, 0.20); /* soft fills: chips, tiles */
+  --jot-blue-border: rgba(26, 140, 255, 0.32);
+
+  /* ---- Functional / destructive ---- */
+  --jot-red: #FF5B4D;               /* trash / destructive icon only */
+
+  /* ---- Semantic hero-tile gradients (onboarding only) ---- */
+  --tile-mic-from: #F6A93B;         /* mic permission tile */
+  --tile-mic-to:   #E8841C;
+  --tile-key-from: #F4EFE3;         /* parchment keyboard tile */
+  --tile-key-to:   #DBD2BE;
+  --tile-key-glyph: #3A352A;        /* dark glyph on parchment */
+  --tile-success-from: #34C759;     /* success / done tile */
+  --tile-success-to:   #27A848;
+
+  /* ---- iOS system colors (OS chrome, NOT app accents) ---- */
+  --ios-toggle-on: #34C759;         /* iOS switch "on" */
+  --ios-mic-dot: #E8841C;           /* status-bar mic privacy dot */
+  --ios-continuity: #2AD15F;        /* status-bar continuity glyph / battery */
+
+  /* ============================================================
+     THEME — DARK (default app appearance)
+     ============================================================ */
+  --ink: #FFFFFF;
+  --ink-sub: rgba(233, 238, 247, 0.66);
+  --ink-caption: rgba(233, 238, 247, 0.42);
+  --ink-italic: rgba(233, 238, 247, 0.70);
+
+  --chrome-fill: rgba(255, 255, 255, 0.08);  /* glass buttons/pills */
+  --chrome-bord: rgba(255, 255, 255, 0.16);
+  --chrome-glyph: rgba(255, 255, 255, 0.86);
+
+  --card: rgba(255, 255, 255, 0.06);
+  --card-bord: rgba(255, 255, 255, 0.11);
+  --field-fill: rgba(255, 255, 255, 0.045);
+  --field-bord: rgba(255, 255, 255, 0.14);
+  --step-card: rgba(255, 255, 255, 0.05);
+  --step-bord: rgba(255, 255, 255, 0.10);
+
+  --dot-done: rgba(255, 255, 255, 0.50);
+  --dot-todo: rgba(255, 255, 255, 0.20);
+  --glyph-soft: rgba(233, 238, 247, 0.62);
+  --rail: rgba(233, 238, 247, 0.30);          /* home-indicator bar */
+  --hairline: rgba(255, 255, 255, 0.07);      /* list dividers */
+
+  --kb-fill: #181F2C;                          /* simulated keyboard */
+  --kb-key: rgba(255, 255, 255, 0.10);
+  --kb-key-ink: #F2F5FA;
+
+  --bg-deep: #0a1019;                          /* solid floor of the bg */
+  --bg-screen:
+    radial-gradient(128% 72% at 50% -8%, rgba(64, 116, 196, 0.50) 0%, rgba(40, 74, 128, 0.16) 36%, rgba(18, 30, 52, 0) 60%),
+    radial-gradient(120% 84% at 88% 112%, rgba(120, 72, 56, 0.20) 0%, rgba(120, 72, 56, 0) 52%),
+    linear-gradient(177deg, #1b2c4f 0%, #15233c 32%, #0e1827 72%, #0a1019 100%);
+}
+
+/* ============================================================
+   THEME — LIGHT
+   ============================================================ */
+[data-theme="light"] {
+  --ink: #16181D;
+  --ink-sub: rgba(54, 62, 78, 0.70);
+  --ink-caption: rgba(54, 62, 78, 0.48);
+  --ink-italic: rgba(54, 62, 78, 0.64);
+
+  --chrome-fill: rgba(255, 255, 255, 0.72);
+  --chrome-bord: rgba(20, 30, 50, 0.08);
+  --chrome-glyph: #3A4252;
+
+  --card: rgba(255, 255, 255, 0.78);
+  --card-bord: rgba(20, 30, 50, 0.07);
+  --field-fill: rgba(255, 255, 255, 0.60);
+  --field-bord: rgba(20, 30, 50, 0.12);
+  --step-card: rgba(255, 255, 255, 0.66);
+  --step-bord: rgba(20, 30, 50, 0.07);
+
+  --dot-done: rgba(54, 62, 78, 0.42);
+  --dot-todo: rgba(54, 62, 78, 0.18);
+  --glyph-soft: rgba(54, 62, 78, 0.56);
+  --rail: rgba(22, 32, 52, 0.26);
+  --hairline: rgba(20, 30, 50, 0.08);
+
+  --kb-fill: #D2D6DE;
+  --kb-key: #FFFFFF;
+  --kb-key-ink: #1B1E25;
+
+  --bg-deep: #D0D6E0;
+  --bg-screen:
+    radial-gradient(128% 74% at 50% -8%, rgba(150, 184, 232, 0.62) 0%, rgba(150, 184, 232, 0.12) 40%, rgba(150, 184, 232, 0) 62%),
+    radial-gradient(120% 84% at 88% 112%, rgba(222, 170, 150, 0.24) 0%, rgba(222, 170, 150, 0) 52%),
+    linear-gradient(177deg, #E9EEF7 0%, #DEE4EE 44%, #D0D6E0 100%);
+}

@@ -36,39 +36,32 @@ private let detailLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category
 /// without backend persistence would be misleading. Leave them out entirely;
 /// the body reads as a clean editorial surface without them.
 ///
-/// ## AI rewrite (preserves the existing call site)
+/// ## AI rewrite
 ///
-/// The manual Transform button on the floating ActionBar drives the same
-/// in-process path the prior detail view used:
-/// `LLMClientFactory.shared.client().rewrite(...)` (see plan §13 risk 8).
-/// Keyboard-originated rewrites enter the same view with an explicit intent
-/// and mirror only their terminal result back through App Group for pasteback.
+/// The manual Transform button on the floating ActionBar runs the user's
+/// saved prompt through `RewriteClient.shared.rewrite(...)` — Apple Foundation
+/// Models on-device, with Private Cloud Compute as the iOS 27 fallback.
 /// Re-running rewrite overwrites `cleanedText` in place — there is no rewrite
 /// history slot in the SwiftData model and the plan explicitly forbids growing
 /// one (§6.2 / §14.4).
 struct TranscriptDetailView: View {
     let transcript: Transcript
-    let keyboardRewriteIntent: KeyboardRewriteRouter.KeyboardRewriteTarget?
 
     /// Arrived from the keyboard recents row's Apple Intelligence button
-    /// (`jot://transcript?id=…&ai=1`). Fires the view's own Rewrite action once
-    /// on appear, so the user lands straight on the selected-transcript /
-    /// Writing Tools state instead of having to tap ✨ again (features.md §5.2).
-    /// Unrelated to `keyboardRewriteIntent`, which is the keyboard's
-    /// prompt-already-chosen handoff waiting on a pasteback.
-    let openInRewrite: Bool
+    /// (`jot://transcript?id=…&ai=1`). If the note has no rewrite yet, a rewrite
+    /// with the Cleanup prompt starts on arrival; if it already has one, the
+    /// Rewrite tab is shown (features.md §5.2). Nothing to tap either way.
+    let autoRewrite: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     init(
         transcript: Transcript,
-        keyboardRewriteIntent: KeyboardRewriteRouter.KeyboardRewriteTarget? = nil,
-        openInRewrite: Bool = false
+        autoRewrite: Bool = false
     ) {
         self.transcript = transcript
-        self.keyboardRewriteIntent = keyboardRewriteIntent
-        self.openInRewrite = openInRewrite
+        self.autoRewrite = autoRewrite
     }
 
     enum DetailTab: String, CaseIterable {
@@ -130,12 +123,16 @@ struct TranscriptDetailView: View {
     // `editError` surfaces inline copy when Save fails validation (Original
     // text can't be empty). The editor stays open so the user can fix it.
     @State private var isEditing = false
-    // Set when the user taps the edit-bar Apple Intelligence button, so the
-    // edit bar's center label swaps to the "Tap the selection, then Writing
-    // Tools" hint (features.md §9.3 / §3.7). Reset on each edit entry.
-    @State private var editWritingToolsActive = false
+    /// True while the edit bar's AI button is rewriting the draft in place
+    /// (features.md §3.7): the button shows a spinner, the center label reads
+    /// "Rewriting…", and Save waits. Reset on each edit entry/exit.
+    @State private var isRewritingDraft = false
+    @State private var draftRewriteTask: Task<Void, Never>?
     @State private var editorText: String = ""
     @State private var editTargetTab: DetailTab = .original
+    /// The edited field's text when Edit was pressed — the "before" side of
+    /// learn-from-edits (`EditLearning`) on Save.
+    @State private var editBaseline: String = ""
 
     /// Shared correction-review state (marks + accordion + bubble). Owned HERE,
     /// above the `transcriptScrollContent` `.id(selectedTab)` boundary, so it
@@ -183,6 +180,13 @@ struct TranscriptDetailView: View {
     // offers to learn it — reusing the exact term + heard→alias + correction-store
     // path that selection "Add to Vocabulary" already uses (see `confirmVocabAdd`).
     @State private var showFindReplace = false
+    /// Proofread (iOS 27 system grammar checker — `GrammarCheckService`).
+    /// Issues found for the CURRENT `editorText`; cleared on every text change
+    /// because their offsets go stale. Never applied silently: the user accepts
+    /// each fix from `ProofreadSheet`.
+    @State private var grammarIssues: [GrammarIssue] = []
+    @State private var isProofreading = false
+    @State private var showProofread = false
     @State private var findText = ""
     @State private var replaceText = ""
     @FocusState private var findFieldFocused: Bool
@@ -246,29 +250,9 @@ struct TranscriptDetailView: View {
     @State private var transientNotice: String? = nil
     @State private var transientNoticeTask: Task<Void, Never>?
 
-    @State private var showAIGuide: Bool = false
-
-    /// One-shot guard for the `openInRewrite` arrival (the keyboard recents
+    /// One-shot guard for the `autoRewrite` arrival (the keyboard recents
     /// row's Apple Intelligence button). `.task` can re-run on this view.
     @State private var didAutoStartRewrite: Bool = false
-
-    /// Writing Tools **selection mode** (Apple Intelligence engine only). Tapping
-    /// the in-app ✨ Rewrite action swaps the read-mode text for a NON-editable
-    /// `InlineEditTextView` and pre-selects the whole transcript, so the user's
-    /// next gesture is tap-selection → Writing Tools → whatever THEY choose. It
-    /// is NOT edit mode: nothing is editable, there's no dirty state and no Save,
-    /// so the pristine Original is structurally protected (Writing Tools on a
-    /// read-only text view can only Copy its result, never replace in place).
-    /// The keyboard's ✨ arrival (`openInRewrite`) does NOT land here — it opens
-    /// edit mode instead so the rewrite can be saved; see
-    /// `enterWritingToolsEditMode`. Selection mode is still the fallback when
-    /// that transcript can't be edited right now.
-    /// See `docs/plans/speaker-notes-productization.md` Part 2.
-    @State private var selectionMode: Bool = false
-    /// `nil` until `.onAppear` resolves the factory's client. Used to mirror
-    /// `LLMClientStatus` synchronously so the Rewrite button can branch
-    /// without a `await`.
-    @State private var clientAdapter: LLMClientUIAdapter?
 
     // MARK: - AI rewrite state
     //
@@ -287,13 +271,6 @@ struct TranscriptDetailView: View {
     @State private var rewriteState: RewriteState = .idle
     @State private var activeRewriteTask: Task<Void, Never>?
     @State private var savedPrompts: [SavedPrompt] = []
-    @State private var didFireKeyboardIntent: Bool = false
-    /// Explicit lockout for manual Transform while a keyboard-originated
-    /// rewrite is mid-flight. `rewriteState == .running` already covers
-    /// the common case, but this flag survives any state-machine glitches
-    /// and is the durable answer to "no, the user can't preempt an
-    /// auto-rewrite via the Transform button."
-    @State private var keyboardRewriteInFlight: Bool = false
     /// Tracks the most recent rewrite time *for this session*. Set on a
     /// successful in-process rewrite so the attribution line can render
     /// "just now" semantics (plan §6.2). Remains nil when the Rewrite tab
@@ -318,7 +295,7 @@ struct TranscriptDetailView: View {
 
                 sublineRow
 
-                if visibleTabs.count > 1 && !isEditing && !selectionMode {
+                if visibleTabs.count > 1 && !isEditing {
                     tabSelector
                 }
 
@@ -326,6 +303,8 @@ struct TranscriptDetailView: View {
                     editErrorCard(message: editError)
                 } else if rewriteState == .running {
                     runningRewriteCard
+                } else if CleanupActivity.shared.isCleaning(transcript.id) {
+                    cleaningCard
                 } else if case .error(let message) = rewriteState {
                     errorCard(message: message)
                 }
@@ -333,7 +312,7 @@ struct TranscriptDetailView: View {
                 transcriptCard
                     .frame(maxHeight: .infinity)
 
-                if selectedTab == .rewrite, hasRewrite, !isEditing, !selectionMode {
+                if selectedTab == .rewrite, hasRewrite, !isEditing {
                     attributionLine
                         .padding(.horizontal, 4)
                 }
@@ -347,8 +326,6 @@ struct TranscriptDetailView: View {
                         if showFindReplace { findReplaceBar }
                         editBar
                     }
-                } else if selectionMode {
-                    selectionDoneBar
                 } else {
                     actionBar
                 }
@@ -522,15 +499,22 @@ struct TranscriptDetailView: View {
             // sheet and surfaces a follow-up alert that points the user
             // at Settings → AI Rewrite, since this surface intentionally
             // does NOT host inline prompt editing.
+            // ONE picker for both modes (owner, 2026-09-27: the view pane and
+            // the edit bar must offer the same prompts, not two features).
+            // Viewing → the pick becomes the transcript's Rewrite. Editing →
+            // it rewrites the draft in place (italic session edit; Save keeps
+            // it, Cancel drops it).
             RewritePickerSheet(
-                wordCount: sourceWordCount,
+                wordCount: isEditing ? draftWordCount : sourceWordCount,
                 modelDisplayName: rewriteModelDisplayName,
                 prompts: savedPrompts,
                 onPick: { prompt in
-                    startRewrite(with: prompt)
+                    if isEditing { rewriteDraft(with: prompt) } else { startRewrite(with: prompt) }
                 },
                 onVoicePrompt: { instruction in
-                    startVoiceRewrite(instruction: instruction)
+                    guard let prompt = Self.voicePrompt(for: instruction) else { return }
+                    detailLog.info("Voice-prompt rewrite — instructionChars=\(instruction.count) draft=\(isEditing)")
+                    if isEditing { rewriteDraft(with: prompt) } else { startRewrite(with: prompt) }
                 },
                 onNewPrompt: {
                     showNewPromptHint = true
@@ -547,33 +531,42 @@ struct TranscriptDetailView: View {
             // lives on this view (mounted unconditionally) and stays alive while
             // this sheet is up.
             TranslateSheet(
-                text: activeTabText,
+                text: isEditing ? editorText : activeTabText,
                 // Exclude the transcript's own language from the targets and
                 // pass it as the source hint. nil / unknown → English.
                 sourceCode: LanguageChoice.fromStored(transcript.language).isoCode
             )
         }
-        .sheet(isPresented: $showAIGuide, onDismiss: {
-            // The user is staying in selection / edit mode, so apply the
-            // full-transcript selection now that they can see the highlight.
-            if selectionMode || isEditing {
-                applyFullRangeSelection()
-            }
-        }) {
-            // features.md §7.10 — when Qwen isn't downloaded but the device has Apple
-            // Intelligence, teach the free Writing Tools path instead of the download.
-            AppleIntelligenceRewriteGuide()
-        }
         .sheet(isPresented: $showAISettings) {
-            // Single canonical setup surface for AI Rewrite. Replaces the
-            // earlier `DownloadPitchSheet` upsell — routing through
-            // Settings means the user sees the same model strip /
-            // progress UI no matter whether they tapped Transform from
-            // the action bar or arrived from Settings directly. Tapping
-            // Download inside the strip drives `LLMClientUIAdapter.warm()`.
+            // Single canonical setup surface for AI Rewrite: engine choice,
+            // Apple Intelligence status, and the saved prompts. Reached from
+            // here when there are no prompts yet or Apple Intelligence is off.
             NavigationStack {
                 AIRewriteSettingsView()
             }
+        }
+        .sheet(isPresented: $showProofread) {
+            // Suggestions from the system grammar checker (features.md §3.7).
+            // Accepting a fix edits `editorText` in place — italic like any
+            // other session edit — then re-checks so the remaining offsets are
+            // fresh. Ignoring just drops the row.
+            ProofreadSheet(
+                issues: grammarIssues,
+                onApply: { issue, suggestion in
+                    editorText = GrammarCheckService.apply(suggestion, for: issue, to: editorText)
+                    runProofread(presentSheet: false)
+                },
+                onIgnore: { issue in
+                    grammarIssues.removeAll { $0.id == issue.id }
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onChange(of: editorText) { _, _ in
+            // Any edit invalidates the underline offsets. A proofread in flight
+            // (including the re-check after an accepted fix) repopulates them.
+            if !isProofreading { grammarIssues = [] }
         }
         .alert(
             "Create a new prompt in Settings",
@@ -589,10 +582,8 @@ struct TranscriptDetailView: View {
             // Default to Rewrite tab when a rewrite already exists — the
             // user almost always cares about their latest pass once they've
             // run one. Falls back to Original when no rewrite is saved.
-            // Skipped in selection AND edit mode: SwiftUI does not guarantee
-            // this runs before the `.task` that auto-enters Writing Tools on an
-            // `openInRewrite` arrival, and both of those pin the tab to Original.
-            if hasRewrite, !selectionMode, !isEditing {
+            // Skipped in edit mode, which pins the tab it is editing.
+            if hasRewrite, !isEditing {
                 selectedTab = .rewrite
             }
             if correctionModel == nil {
@@ -605,29 +596,25 @@ struct TranscriptDetailView: View {
             copyResetTask?.cancel()
             activeRewriteTask?.cancel()
             activeRewriteTask = nil
-            // Stop the adapter's polling task so we don't keep reading
-            // `client.status` while the detail surface is off-window.
-            // Re-installed by the next `.onAppear` → `refreshRewriteAvailability`.
-            clientAdapter?.stop()
+            draftRewriteTask?.cancel()
+            draftRewriteTask = nil
         }
         .task {
             refreshRewriteAvailability()
-            if let intent = keyboardRewriteIntent, !didFireKeyboardIntent {
-                didFireKeyboardIntent = true
-                autoFireKeyboardRewrite(intent: intent)
-            }
-            // Keyboard recents row → Apple Intelligence button. Runs AFTER
-            // `refreshRewriteAvailability()` so the engine/model branch reads
-            // fresh state. On Apple Intelligence this arrival opens EDIT mode
-            // with the transcript selected — the whole point of the tap is to
-            // rewrite the transcript, so the result has to be able to land in
-            // it (`enterWritingToolsEditMode`). On Jot's AI it runs the exact
-            // same action the in-app ✨ Rewrite pill runs: the prompt picker or
-            // setup.
-            if openInRewrite, !didAutoStartRewrite {
+            // Keyboard recents row → Apple Intelligence button (§5.2). Runs
+            // AFTER `refreshRewriteAvailability()` so it reads fresh state. The
+            // whole point of the tap is to rewrite the note, so do exactly that:
+            // a note that already has a rewrite just shows it; otherwise the
+            // Cleanup prompt runs now — the same prompt Automatic cleanup uses,
+            // resolved the same way. Apple Intelligence off ⇒ the usual setup
+            // routing (`presentRewritePicker` → AI settings sheet).
+            if autoRewrite, !didAutoStartRewrite {
                 didAutoStartRewrite = true
-                if RewriteMode.current == .appleIntelligence {
-                    enterWritingToolsEditMode()
+                if hasRewrite {
+                    selectedTab = .rewrite
+                } else if RewriteClient.isAvailable,
+                          let prompt = CleanupSettings.resolvedPrompt(promptID: CleanupSettings.load().promptID) {
+                    startRewrite(with: prompt)
                 } else {
                     presentRewritePicker()
                 }
@@ -787,7 +774,7 @@ struct TranscriptDetailView: View {
         }
     }
 
-    /// Runs the offline VBx diarization pipeline against this transcript's
+    /// Runs the Nemotron 3 speaker diarizer against this transcript's
     /// retained source audio. A multi-speaker result is PERSISTED
     /// (`diarizationJSON`, schema V9) and the view switches to the Speakers tab;
     /// a single-speaker result stores nothing and shows a transient notice
@@ -817,16 +804,11 @@ struct TranscriptDetailView: View {
                 let displayText = await MainActor.run { transcript.displayText }
                 await MainActor.run {
                     isDiarizing = false
-                    guard DiarizationLabeling.isMultiSpeaker(result) else {
-                        showTransientNotice("Sounds like a single speaker.")
-                        return
-                    }
-                    let rows = DiarizationLabeling.persistedRows(
-                        for: result,
-                        transcriptText: displayText,
-                        ownerCentroid: OwnerVoiceprintStore.centroid
-                    )
-                    guard let json = PersistedSpeakerRow.encode(rows) else {
+                    guard let rows = DiarizationLabeling.persistedRows(
+                        runs: result.runs,
+                        duration: result.duration,
+                        transcriptText: displayText
+                    ), let json = PersistedSpeakerRow.encode(rows) else {
                         showTransientNotice("Sounds like a single speaker.")
                         return
                     }
@@ -846,12 +828,6 @@ struct TranscriptDetailView: View {
                     diarizeError = error.localizedDescription
                 }
             }
-            // The user just RAN diarization — that's the shared "first
-            // diarization run" voiceprint trigger, same as the auto-import
-            // path kicks after its attempt (adversarial code review MEDIUM:
-            // a manual-only user must also graduate from "Speaker N" to
-            // "You" on later runs). Presence-checked no-op once built.
-            await OwnerVoiceprintStore.kickBuildIfNeeded()
         }
     }
 
@@ -953,8 +929,6 @@ struct TranscriptDetailView: View {
             Group {
                 if isEditing {
                     transcriptEditor
-                } else if selectionMode {
-                    selectionModeEditor
                 } else {
                     switch selectedTab {
                     case .original:
@@ -1008,9 +982,9 @@ struct TranscriptDetailView: View {
 
     /// The Speakers tab body — one block per diarized turn (label + timestamp +
     /// text), ported from the retired `DiarizationResultSheet`. Text is
-    /// selectable; "You" (owner-labeled turns) is accented. Labels are the
-    /// RESOLVED display names frozen at diarization time, so this is a pure
-    /// render — no voiceprint lookup here.
+    /// selectable. Labels are the display names frozen at diarization time
+    /// ("Speaker N"); rows saved before the Nemotron switch may still say
+    /// "You", which stays accented.
     @ViewBuilder
     private func speakersTabContent(rows: [PersistedSpeakerRow]) -> some View {
         ScrollView {
@@ -1097,7 +1071,8 @@ struct TranscriptDetailView: View {
             isEditable: true,
             baseFont: .systemFont(ofSize: 17, weight: .regular),
             textColor: UIColor(Color.jotPageInk),
-            isFocused: $editorFocused
+            isFocused: $editorFocused,
+            highlightRanges: grammarIssues.map(\.range)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel(
@@ -1105,27 +1080,6 @@ struct TranscriptDetailView: View {
                 ? "Edit original transcript"
                 : "Edit rewrite"
         )
-    }
-
-    /// Read-only selection host for Writing Tools (Apple Intelligence). The SAME
-    /// `InlineEditTextView` as edit mode but `isEditable: false` — selectable, no
-    /// keyboard, no dirty state. The full-transcript selection is applied on the
-    /// guide sheet's DISMISS via the `editorSelection` binding (see
-    /// `applyFullRangeSelection`); Writing Tools on a non-editable text view can
-    /// only Copy its result, so the pristine Original can't be overwritten.
-    @ViewBuilder
-    private var selectionModeEditor: some View {
-        InlineEditTextView(
-            text: $editorText,
-            selection: $editorSelection,
-            sessionToken: editSessionToken,
-            isEditable: false,
-            baseFont: .systemFont(ofSize: 17, weight: .regular),
-            textColor: UIColor(Color.jotPageInk),
-            isFocused: $editorFocused
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityLabel("Select text for Writing Tools")
     }
 
     /// Scrollable body text styled to match Recents row typography (system
@@ -1174,28 +1128,22 @@ struct TranscriptDetailView: View {
             !CommonWords.isCommon($0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:\"'()")))
         }
 
-        // 3. Add the term (dedup), attaching the mis-heard form as an alias on a
-        //    real correction; teach the mapping so the gate can auto-apply next
-        //    time. The learning is keyed on the CANONICAL stored term (addTerm
-        //    sanitizes file-format characters) so the gate's override lookup —
-        //    which compares against the term as the rescorer proposes it —
-        //    actually matches.
-        var didLearn = false
-        if vocabWorthy {
-            let corrected = replacement.compare(sel.selected, options: .caseInsensitive) != .orderedSame
-            if let storedTerm = VocabularyStore.shared.addTerm(
-                replacement, heardAs: corrected ? sel.selected : nil) {
-                didLearn = true
-                if corrected {
-                    let heard = sel.selected
-                    Task {
-                        await CorrectionStore.shared.adjust(originalWord: heard, term: storedTerm, by: 1)
-                    }
-                }
-            }
+        // 3. "When Jot hears the selection, write the replacement" — one
+        //    correction through the one learning path (term + visible
+        //    sounds-like; nothing auto-applies). The user typed the spelling,
+        //    so its casing wins. A replacement equal to the selection (case
+        //    aside) is a plain add.
+        guard vocabWorthy else {
+            if didFix { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+            return
         }
-        if didFix || didLearn {
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        let correction = Correction.correct(heard: sel.selected, term: replacement, userCasing: true)
+        Task { @MainActor in
+            let outcome = await VocabularyLearning.shared.apply(correction).outcome
+            let didLearn: Bool = { if case .rejected = outcome { return false }; return true }()
+            if didFix || didLearn {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
         }
     }
 
@@ -1417,9 +1365,20 @@ struct TranscriptDetailView: View {
     /// to read from — so we drop the timestamp entirely rather than fall
     /// back to `transcript.createdAt`, which would lie.
     private var attributionText: String {
-        let base = "Rewritten with \(rewriteModelDisplayName)"
-        guard let lastRewriteAt else { return base }
-        let relative = lastRewriteAt.formatted(.relative(presentation: .named))
+        // Provenance sidecar (features.md §3.4): names the prompt that ran and
+        // whether it ran automatically (§7.14) or from a tap here. Older notes
+        // without a record fall back to the engine name.
+        let provenance = RewriteProvenance.lookup(transcript.id)
+        let base: String
+        if let provenance {
+            base = provenance.automatic
+                ? "Cleaned up automatically with \u{201C}\(provenance.promptName)\u{201D}"
+                : "Rewritten with \u{201C}\(provenance.promptName)\u{201D}"
+        } else {
+            base = "Rewritten with \(rewriteModelDisplayName)"
+        }
+        guard let stamp = lastRewriteAt ?? provenance?.at else { return base }
+        let relative = stamp.formatted(.relative(presentation: .named))
         return "\(base) · \(relative)"
     }
 
@@ -1488,6 +1447,30 @@ struct TranscriptDetailView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.jotMuteWeak.opacity(0.5), lineWidth: 0.5)
         )
+    }
+
+    /// Shown while Automatic cleanup (§7.14, paste-right-away mode) is still
+    /// producing this note's cleaned text. Same card as a running rewrite,
+    /// minus Cancel — it's the pipeline's pass, not a tap to undo.
+    private var cleaningCard: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Cleaning up…")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.jotInk)
+            Spacer()
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.jotMuteWeak.opacity(0.5), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .combine)
     }
 
     private func errorCard(message: String) -> some View {
@@ -1573,7 +1556,6 @@ struct TranscriptDetailView: View {
     /// `displayedRewriteText` to be non-nil.
     private var isEditEnabled: Bool {
         guard rewriteState != .running else { return false }
-        guard !keyboardRewriteInFlight else { return false }
         switch selectedTab {
         case .original: return !transcript.text.isEmpty
         case .rewrite:  return displayedRewriteText != nil
@@ -1621,19 +1603,53 @@ struct TranscriptDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(showFindReplace ? "Hide find and replace" : "Find and replace")
 
-            // Apple Intelligence: select the whole transcript and point the user
-            // at the system Writing Tools (which rewrites in place while editing).
-            // Only shown when Apple Intelligence is the active rewrite engine.
-            if showEditWritingTools {
-                Button(action: editWritingToolsTapped) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Color.jotBlueTop)
-                        .frame(width: 36, height: 44)
-                        .contentShape(Rectangle())
+            // Proofread (iOS 27): run the system grammar checker over the draft
+            // and offer each fix. Orange once issues are pending.
+            if GrammarCheckService.isAvailable {
+                Button(action: { runProofread(presentSheet: true) }) {
+                    ZStack {
+                        Image(systemName: "text.badge.checkmark")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(grammarIssues.isEmpty ? Color.jotInk : Color.orange)
+                            .opacity(isProofreading ? 0 : 1)
+                        if isProofreading {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Rewrite with Apple Intelligence")
+                .disabled(isProofreading)
+                .accessibilityLabel(grammarIssues.isEmpty
+                    ? "Proofread"
+                    : "Proofread — \(grammarIssues.count) \(grammarIssues.count == 1 ? "suggestion" : "suggestions")")
+            }
+
+            // AI rewrite of the draft (features.md §3.7): opens the SAME prompt
+            // picker as the view pane (saved prompts, Voice prompt, Translate);
+            // the chosen prompt rewrites what's in the editor in place. The
+            // result renders as a session edit (italic), like an accepted
+            // Proofread fix; Save keeps it, Cancel discards it. Shown whenever
+            // Apple Intelligence is ready.
+            if RewriteClient.isAvailable {
+                Button(action: presentRewritePicker) {
+                    ZStack {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.jotBlueTop)
+                            .opacity(isRewritingDraft ? 0 : 1)
+                        if isRewritingDraft {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRewritingDraft)
+                .accessibilityLabel("Rewrite draft with AI")
+                .accessibilityHint("Choose a prompt; the draft is rewritten in place. Save keeps it, Cancel discards it.")
             }
 
             Spacer(minLength: 6)
@@ -1667,6 +1683,7 @@ struct TranscriptDetailView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(isRewritingDraft)
             .accessibilityLabel("Save edit")
         }
         .padding(.horizontal, 14)
@@ -1680,163 +1697,66 @@ struct TranscriptDetailView: View {
         )
     }
 
-    /// Center label of the EditBar. Swaps to the Writing Tools hint once the
-    /// user taps the edit-bar Apple Intelligence button.
+    /// Center label of the EditBar. Reads "Rewriting…" while the AI button is
+    /// rewriting the draft.
     @ViewBuilder
     private var editBarCenterLabel: some View {
-        if editWritingToolsActive {
-            Self.writingToolsHint
+        if isRewritingDraft {
+            Text("Rewriting…")
         } else {
             Text(editTargetTab == .original ? "Editing Original" : "Editing Rewrite")
         }
     }
 
-    /// Shared "what to do next" line for both Writing Tools surfaces — the
-    /// reading pane's selection bar and the edit bar. The system's own
-    /// `apple.writing.tools` glyph is interpolated INTO the `Text`, so it
-    /// inherits whatever font the call site applies and the user is looking for
-    /// the identical mark that appears in the iOS edit menu.
-    private static var writingToolsHint: Text {
-        Text("Tap the selection, then \(Image(systemName: "apple.writing.tools")) Writing Tools")
-    }
-
-    /// Show the edit-bar Apple Intelligence button only when Apple Intelligence
-    /// is the active rewrite engine (features.md §3.7 / §7.10).
-    private var showEditWritingTools: Bool {
-        RewriteMode.current == .appleIntelligence
-    }
-
-    /// Edit-bar Apple Intelligence tap: select the whole transcript in the
-    /// editable editor and teach (once) / skip to the Writing Tools path. With
-    /// the text selected, the system Writing Tools rewrites it in place; Save
-    /// then persists the result (features.md §3.7 / §9.3).
-    private func editWritingToolsTapped() {
-        editWritingToolsActive = true
-        presentGuideOrSelect()
-    }
-
-    /// Keyboard recents ✨ arrival (`jot://transcript?id=…&ai=1`) while Apple
-    /// Intelligence is the engine: open the Original in EDIT mode with the whole
-    /// transcript selected and the Writing Tools hint showing. Editable is the
-    /// point — Writing Tools replaces the selection in place in an editable text
-    /// view (read-only `selectionMode` can only offer Copy), and Save then
-    /// persists it back onto the transcript.
-    ///
-    /// Falls back to read-only selection mode when `beginEdit()` declines (a
-    /// rewrite in flight, a keyboard rewrite locked on this transcript, or
-    /// empty text): the tap should still do the old thing rather than nothing.
-    ///
-    /// The fallback calls `enterSelectionMode()` DIRECTLY, not
-    /// `presentRewritePicker()`: the picker opens with an `isMagicEnabled`
-    /// guard, and `isMagicEnabled` is false under the same conditions that
-    /// make `beginEdit()` decline — so routing through it would silently do
-    /// nothing in exactly the case this fallback exists for. The engine is
-    /// already known to be Apple Intelligence on this path, so skipping the
-    /// picker's re-check loses nothing.
-    private func enterWritingToolsEditMode() {
-        // This entry point always targets the original transcript, and
-        // `beginEdit()` edits whatever tab is selected.
-        selectedTab = .original
-        beginEdit()
-        guard isEditing else {
-            enterSelectionMode()
+    /// Edit mode's pick from the shared prompt picker (features.md §3.7):
+    /// rewrite the CURRENT DRAFT in place with `prompt`. The result is assigned
+    /// to `editorText`, so `InlineEditTextView` renders it as a session edit
+    /// (italic) exactly like an accepted Proofread fix; Save persists it,
+    /// Cancel drops it. If the user kept typing while the model worked, the
+    /// result is NOT applied over their keystrokes.
+    private func rewriteDraft(with prompt: SavedPrompt) {
+        guard isEditing, !isRewritingDraft else { return }
+        let draft = editorText
+        let source = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            editError = "Nothing to rewrite yet."
             return
         }
-        // After `beginEdit()`, which clears the flag for a fresh edit session.
-        editWritingToolsTapped()
-    }
-
-    // MARK: - Selection-mode bar
-
-    /// Bottom bar shown in Writing Tools selection mode: a hint + a Done chip
-    /// that returns to read mode. Same house chrome as the EditBar so the two
-    /// read as siblings.
-    private var selectionDoneBar: some View {
-        HStack(spacing: 12) {
-            Self.writingToolsHint
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.jotMute)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .truncationMode(.tail)
-            Spacer(minLength: 6)
-            Button(action: exitSelectionMode) {
-                Text("Done")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 20)
-                    .frame(minHeight: 40)
-                    .background(Capsule(style: .continuous).fill(Color.jotBlueTop))
+        editError = nil
+        grammarIssues = []
+        isRewritingDraft = true
+        draftRewriteTask?.cancel()
+        draftRewriteTask = Task { @MainActor in
+            defer {
+                isRewritingDraft = false
+                draftRewriteTask = nil
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Done selecting")
+            do {
+                let result = try await RewriteClient.shared.rewrite(
+                    text: source,
+                    systemPrompt: prompt.systemPrompt
+                )
+                try Task.checkCancellation()
+                guard isEditing else { return }
+                guard editorText == draft else {
+                    editError = "The text changed while rewriting — try the prompt again."
+                    return
+                }
+                let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    editError = "Rewrite returned no text."
+                    return
+                }
+                editorText = trimmed
+                detailLog.info(
+                    "Draft rewrite applied prompt=\(prompt.id, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
+                )
+            } catch is CancellationError {
+                // Edit mode ended or the view went away — nothing to apply.
+            } catch {
+                editError = "Couldn't rewrite: \(error.localizedDescription)"
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(minHeight: 60)
-        .frame(maxWidth: .infinity)
-        .modifier(
-            JotDesign.Surface.heavy.modifier(
-                cornerRadius: JotDesign.Spacing.sheetRadius
-            )
-        )
-    }
-
-    // MARK: - Selection-mode lifecycle
-
-    /// Enter Writing Tools selection mode: load the Original text into the
-    /// read-only host and present the guide. The full-range selection is applied
-    /// on the guide's DISMISS (not now) — presenting races the text view's
-    /// first-responder hop, and the highlight isn't visible under the sheet
-    /// anyway (see the design's Part 2 review notes).
-    private func enterSelectionMode() {
-        selectedTab = .original
-        editorText = transcript.text
-        editorSelection = nil
-        // Fresh session so the read-only host re-baselines cleanly (no stale
-        // italic runs from a prior edit session).
-        editSessionToken += 1
-        selectionMode = true
-        presentGuideOrSelect()
-    }
-
-    /// The FIRST Apple-Intelligence use shows the one-time Writing Tools guide
-    /// (features.md §9.3); the full-transcript selection is applied on the
-    /// guide's dismiss. Every use after that skips the explainer and selects
-    /// immediately. The immediate selection is deferred one runloop so the
-    /// freshly-mounted selection/edit host can take first responder and render
-    /// the highlight (the same reason the guide path applies on dismiss).
-    /// Shared by the reading pane (selection mode) and the edit pane.
-    private func presentGuideOrSelect() {
-        if DictationStats.appleIntelligenceGuideSeen {
-            DispatchQueue.main.async { applyFullRangeSelection() }
-        } else {
-            DictationStats.appleIntelligenceGuideSeen = true
-            showAIGuide = true
-        }
-    }
-
-    /// Apply a full-transcript selection via the `editorSelection` binding —
-    /// `InlineEditTextView`'s inbound apply mirrors it onto the text view. Called
-    /// on the guide's dismiss so the highlight lands when the user can see it.
-    ///
-    /// Focus is raised HERE, not in `enterSelectionMode`: a UITextView renders
-    /// its selection highlight (and offers the Writing Tools edit menu) only
-    /// while first responder, and becoming first responder under the guide
-    /// sheet would be wasted anyway. Non-editable ⇒ no keyboard raises.
-    private func applyFullRangeSelection() {
-        let text = editorText
-        guard !text.isEmpty else { return }
-        editorFocused = true
-        editorSelection = TextSelection(range: text.startIndex..<text.endIndex)
-    }
-
-    /// Leave selection mode back to the normal read-mode ActionBar.
-    private func exitSelectionMode() {
-        selectionMode = false
-        editorFocused = false
-        editorSelection = nil
-        editorText = ""
     }
 
     // MARK: - Find & Replace bar
@@ -1995,17 +1915,17 @@ struct TranscriptDetailView: View {
         }
     }
 
-    /// Learns the term: same path as selection "Add to Vocabulary"
-    /// (`confirmVocabAdd`) — adds the term, attaches the misheard form as a
-    /// sounds-like alias, and teaches the correction store (net +1) so the next
-    /// dictation self-corrects. The text fix already happened via Replace All.
+    /// Learns the term: same correction as selection "Add to Vocabulary"
+    /// (`confirmVocabAdd`) through the one path — the term, plus the misheard
+    /// form as a visible sounds-like, so the next dictation can write it. The
+    /// text fix already happened via Replace All.
     private func confirmReplaceVocab(_ offer: ReplaceVocabOffer) {
-        if let storedTerm = VocabularyStore.shared.addTerm(offer.term, heardAs: offer.heard) {
-            let heard = offer.heard
-            Task { await CorrectionStore.shared.adjust(originalWord: heard, term: storedTerm, by: 1) }
+        replaceVocabOffer = nil
+        let correction = Correction.correct(heard: offer.heard, term: offer.term, userCasing: true)
+        Task { @MainActor in
+            if case .rejected = await VocabularyLearning.shared.apply(correction).outcome { return }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
-        replaceVocabOffer = nil
     }
 
     private func replaceVocabOfferCard(_ offer: ReplaceVocabOffer) -> some View {
@@ -2087,91 +2007,43 @@ struct TranscriptDetailView: View {
         return false
     }
 
-    /// Live LLM status mirrored from the adapter. Defaults to `.notReady`
-    /// before the adapter has been resolved (or while the master toggle
-    /// is OFF and no adapter has been built).
-    private var llmStatus: LLMClientStatus {
-        clientAdapter?.observableStatus ?? .notReady
-    }
-
-    /// Transform tap is ALWAYS clickable now — what it does depends on
-    /// state. The only hard-disabled cases are:
-    /// 1. A rewrite is already running (don't fire a second request).
-    /// 2. A keyboard-originated rewrite is in flight against this
-    ///    transcript ([§7.x of features.md] explicit-lock).
-    /// Everything else routes through `presentRewritePicker()` which
-    /// branches on `llmStatus` + prompt availability and either opens
-    /// the picker or pushes the user to AI Settings to finish setup.
+    /// Transform tap is ALWAYS clickable — what it does depends on state.
+    /// The only hard-disabled case is a rewrite already running (don't fire
+    /// a second request). Everything else routes through
+    /// `presentRewritePicker()`, which branches on Apple Intelligence
+    /// availability and prompt availability and either opens the picker or
+    /// pushes the user to AI Settings.
     private var isMagicEnabled: Bool {
-        guard rewriteState != .running else { return false }
-        guard !keyboardRewriteInFlight else { return false }
-        return true
+        rewriteState != .running
     }
 
     private var rewriteAccessibilityLabel: String {
         if rewriteState == .running { return "Rewriting" }
+        if case .unavailable = RewriteClient.availability {
+            return "Apple Intelligence is off — open Settings"
+        }
         if savedPrompts.isEmpty {
             return "Set up AI Rewrite in Settings"
         }
-        switch llmStatus {
-        case .ready:
-            return "Rewrite with AI"
-        case .notReady:
-            return "Download the AI model in Settings"
-        case .downloading:
-            return "AI model is downloading — open Settings to see progress"
-        case .loading:
-            return "AI model is loading — open Settings to see progress"
-        case .evicted:
-            // Weights are still on disk; the next tap kicks a fast warm.
-            return "Rewrite is loading the AI model — this should be quick"
-        case .error:
-            return "AI model error — open Settings to retry"
-        }
+        return "Rewrite with AI"
     }
 
     /// Called by the action-bar Transform + the top sparkle button + the
-    /// empty-state Rewrite card. Branches on the live LLM status:
-    ///   - `.ready`     → present `RewritePickerSheet` (Mockup 10).
-    ///   - `.evicted`   → kick `warm()` then present the picker. Weights
-    ///                    are still on disk, so this is a fast in-process
-    ///                    reload — NOT a re-download. The picker itself
-    ///                    is passive; the rewrite path inside
-    ///                    the LLM client's `rewrite` re-calls `warm()`
-    ///                    so picking a prompt during the warm window is
-    ///                    safe.
-    ///   - `.notReady` / `.downloading` / `.loading` / `.error` OR no
-    ///     saved prompts → present `AIRewriteSettingsView` as a sheet.
-    ///     Single canonical setup surface for everything from
-    ///     downloading the weights to seeding prompts.
+    /// empty-state Rewrite card:
+    ///   - Apple Intelligence unavailable, or no saved prompts → present
+    ///     `AIRewriteSettingsView` as a sheet (the single setup surface).
+    ///   - Otherwise → present `RewritePickerSheet` (Mockup 10).
     private func presentRewritePicker() {
         guard isMagicEnabled else { return }
-        // Engine = Apple Intelligence → pre-select the whole transcript and teach
-        // the free system Writing Tools path (the guide) instead of Jot's prompt
-        // picker / model download. Works regardless of Qwen status or saved
-        // prompts. The guide sheet presents over the read-only selection host.
-        if RewriteMode.current == .appleIntelligence {
-            enterSelectionMode()
+        guard RewriteClient.isAvailable else {
+            showAISettings = true
             return
         }
         if savedPrompts.isEmpty {
             showAISettings = true
             return
         }
-        switch llmStatus {
-        case .ready:
-            showRewritePicker = true
-        case .evicted:
-            // Kick the in-process reload so the model is warm by the time
-            // the user finishes picking a prompt. `warm()` is idempotent
-            // and the rewrite path warms again before generating, so the
-            // worst case is a brief block on the first token — never a
-            // re-download.
-            clientAdapter?.warm()
-            showRewritePicker = true
-        case .notReady, .downloading, .loading, .error:
-            showAISettings = true
-        }
+        showRewritePicker = true
     }
 
     /// Word count of the source transcript (Original tab). Surfaced in the
@@ -2237,11 +2109,10 @@ struct TranscriptDetailView: View {
         }
     }
 
-    /// Display name for the rewrite-model attribution line.
+    /// Display name for the rewrite-engine attribution line.
     ///
-    /// Routes through `JotDesign.activeRewriteModelDisplayName`, which
-    /// itself reads `LLMClientFactory.shared.currentProvider.displayName`.
-    /// Single source of truth for the model brand string across the
+    /// Routes through `JotDesign.activeRewriteModelDisplayName` — the single
+    /// source of truth for the engine brand string across the
     /// transcript-detail attribution, the rewrite-empty CTA copy, and
     /// the rewrite picker sheet's subline.
     private var rewriteModelDisplayName: String {
@@ -2275,14 +2146,18 @@ struct TranscriptDetailView: View {
         case .speakers:
             editorText = transcript.text
         }
+        editBaseline = editorText
         editError = nil
         // Fresh edit session: dismiss any prior learn-it card and reset find state.
         replaceVocabOffer = nil
-        editWritingToolsActive = false
+        draftRewriteTask?.cancel()
+        draftRewriteTask = nil
+        isRewritingDraft = false
         showFindReplace = false
         findText = ""
         replaceText = ""
         pendingReplaceLearn = nil
+        grammarIssues = []
         isEditing = true
         // New edit session → the inline editor re-baselines the just-loaded text
         // as "original" (regular) and clears italic tracking.
@@ -2392,8 +2267,35 @@ struct TranscriptDetailView: View {
             guard let l = pendingReplaceLearn, qualifiesForVocab(l) else { return nil }
             return ReplaceVocabOffer(term: l.replace, heard: l.find, count: l.count)
         }()
+
+        // Learn from the edit (Learn from Corrections): the diff of what was on
+        // screen at Edit vs. what was saved becomes corrections through the one
+        // path. Captured now — exitEditMode clears the editor state.
+        //   - Original tab: the field IS the model's text, so raw is empty
+        //     (every replaced word counts as heard); review records live in
+        //     this text, so the edit closes the pair's open ones.
+        //   - Rewrite tab: teaches NOTHING (owner, 2026-09-30). That text was
+        //     written by the AI, so an edit there fixes the AI's wording, not a
+        //     word the speech model misheard.
+        let learnBefore = editBaseline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let learnAfter: String? = newText
+        let learnRaw = ""
+        let transcriptID = transcript.id
         exitEditMode()
-        if let offer { withAnimation { replaceVocabOffer = offer } }
+        guard let learnAfter else {
+            if let offer { withAnimation { replaceVocabOffer = offer } }
+            return
+        }
+        Task { @MainActor in
+            let lessons = await EditLearning.learn(
+                transcriptID: transcriptID, before: learnBefore, after: learnAfter,
+                raw: learnRaw, reviewText: newText)
+            if newText != nil { await correctionModel?.reload() }
+            // A Replace All the edit already taught needs no second offer.
+            if let offer, !EditLearning.taught(lessons, heard: offer.heard, term: offer.term) {
+                withAnimation { replaceVocabOffer = offer }
+            }
+        }
     }
 
     /// True while edit mode holds text that `saveEdit()` would actually
@@ -2454,6 +2356,9 @@ struct TranscriptDetailView: View {
     /// Common exit path for both Save and Cancel. Drops the keyboard,
     /// clears local edit state, and brings the regular ActionBar back.
     private func exitEditMode() {
+        draftRewriteTask?.cancel()
+        draftRewriteTask = nil
+        isRewritingDraft = false
         editorSelection = nil
         editorFocused = false
         isEditing = false
@@ -2466,6 +2371,25 @@ struct TranscriptDetailView: View {
         findText = ""
         replaceText = ""
         pendingReplaceLearn = nil
+        grammarIssues = []
+        showProofread = false
+    }
+
+    /// Run the system grammar checker over the current draft. Presents the
+    /// suggestions sheet when asked (the edit-bar tap); the re-check after an
+    /// accepted fix only refreshes the underlines behind the still-open sheet.
+    private func runProofread(presentSheet: Bool) {
+        guard GrammarCheckService.isAvailable, !isProofreading else { return }
+        let draft = editorText
+        isProofreading = true
+        Task { @MainActor in
+            let issues = await GrammarCheckService.check(draft)
+            // Ignore a stale result if the user kept typing meanwhile.
+            guard draft == editorText else { isProofreading = false; return }
+            grammarIssues = issues
+            isProofreading = false
+            if presentSheet { showProofread = true }
+        }
     }
 
     // MARK: - Actions
@@ -2571,33 +2495,14 @@ struct TranscriptDetailView: View {
 
     // MARK: - Rewrite lifecycle
 
-    /// Re-syncs the saved-prompts list and the LLM client adapter.
-    ///
-    /// The adapter is built lazily on first use so a transcript-detail
-    /// surface that never taps Rewrite never pays the cost of polling.
-    /// When the master AI Rewrite toggle is off, we still resolve the
-    /// adapter — the picker / pitch sheets are gated by `isMagicEnabled`,
-    /// which respects the toggle — but we *don't* call `warm()` from
-    /// here. Auto-warm on appear is owned by `AIRewriteSettingsView`
-    /// (plan §6.4 / §10.6); the detail view stays passive.
+    /// Reloads the saved prompts so the Rewrite pill and picker reflect
+    /// edits made in Settings. Engine availability is read live from
+    /// `RewriteClient.availability` at tap time — nothing to poll.
     private func refreshRewriteAvailability() {
         savedPrompts = SavedPromptStore.all()
-        if let adapter = clientAdapter {
-            // Existing adapter — restart polling in case the previous
-            // `.onDisappear` stopped it.
-            adapter.start()
-        } else {
-            let client = LLMClientFactory.shared.client()
-            let adapter = LLMClientUIAdapter(client: client)
-            adapter.start()
-            clientAdapter = adapter
-        }
     }
 
-    /// Kicks off an in-process rewrite. Mirrors the previous detail view's
-    /// call site at the same `LLMClientFactory.shared.client().rewrite(...)`
-    /// path so the backend boundary is preserved exactly (plan §13 risk 8).
-    /// On success the rewrite is persisted to `cleanedText` immediately and
+    /// Kicks off an in-process rewrite via `RewriteClient`. On success the rewrite is persisted to `cleanedText` immediately and
     /// the Rewrite tab refreshes — there is no separate "propose / apply"
     /// modal step in v1, per the single-rewrite contract (§6.2).
     private func startRewrite(with prompt: SavedPrompt) {
@@ -2609,19 +2514,10 @@ struct TranscriptDetailView: View {
             rewriteState = .error("Transcript is empty.")
             return
         }
-        // Correctness-only guards. Do NOT re-check `isMagicEnabled` here:
-        // the picker has already been presented (so the user clearly
-        // intended a rewrite), and `isMagicEnabled` would falsely block
-        // the very first run when `presentRewritePicker`'s own
-        // `clientAdapter?.warm()` kick has flipped the live status to
-        // `.loading` between picker-open and prompt-pick. The downstream
-        // `LLMClient.rewrite(...)` call joins any in-flight warm, so a
-        // mid-load status is fine — the request just blocks briefly on
-        // the first token. (Without this fix the first tap after install
-        // silently returned and the menu closed; only the second tap,
-        // once `.ready` had been reached, would actually rewrite.)
+        // Correctness-only guard. Do NOT re-check `isMagicEnabled` here: the
+        // picker has already been presented, so the user clearly intended a
+        // rewrite.
         guard rewriteState != .running else { return }
-        guard !keyboardRewriteInFlight else { return }
 
         activeRewriteTask?.cancel()
         rewriteState = .running
@@ -2630,7 +2526,7 @@ struct TranscriptDetailView: View {
         let promptText = prompt.systemPrompt
         let task = Task { @MainActor in
             do {
-                let result = try await LLMClientFactory.shared.client().rewrite(
+                let result = try await RewriteClient.shared.rewrite(
                     text: source,
                     systemPrompt: promptText
                 )
@@ -2645,6 +2541,7 @@ struct TranscriptDetailView: View {
                     // userEdit/rating (a fresh model output makes the prior
                     // user-edit and rating meaningless) + mirror + notify.
                     try TranscriptStore.setCleanedText(id: transcript.id, cleanedText: trimmed)
+                    RewriteProvenance.record(transcriptID: transcript.id, promptName: prompt.name, automatic: false)
                     lastRewriteAt = Date()
                     rewriteState = .idle
                     detailLog.info(
@@ -2669,16 +2566,15 @@ struct TranscriptDetailView: View {
         activeRewriteTask = task
     }
 
-    /// Voice-prompt rewrite (picker row 2). Wraps the user's spoken
+    /// Voice-prompt system prompt (picker row 2). Wraps the user's spoken
     /// instruction in a system prompt phrased like the bundled defaults
     /// (`SavedPrompt.defaultArticulate` et al. — imperative, with the
     /// "do not invent" guardrail and the "Return only the rewrite."
-    /// output-format boilerplate) and runs the EXISTING rewrite path via an
-    /// ephemeral `SavedPrompt`. Nothing is persisted to `SavedPromptStore`;
-    /// `startRewrite(with:)` only reads `systemPrompt` (+ `id` for logging).
-    private func startVoiceRewrite(instruction: String) {
+    /// output-format boilerplate) as an ephemeral `SavedPrompt` that either
+    /// rewrite path runs. Nothing is persisted to `SavedPromptStore`.
+    static func voicePrompt(for instruction: String) -> SavedPrompt? {
         let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         let systemPrompt =
             "Rewrite this dictation following the speaker's spoken instruction. " +
             "Instruction: \"\(trimmed)\". " +
@@ -2686,162 +2582,20 @@ struct TranscriptDetailView: View {
             "Do not invent new ideas or details beyond what the instruction asks for. " +
             "Fix obvious dictation errors. " +
             "Return only the rewrite."
-        let voicePrompt = SavedPrompt(
+        return SavedPrompt(
             id: UUID(),
             name: "Voice prompt",
             systemPrompt: systemPrompt,
             createdAt: Date(),
             sortOrder: .max
         )
-        detailLog.info("Voice-prompt rewrite — instructionChars=\(trimmed.count)")
-        startRewrite(with: voicePrompt)
     }
 
-    private func autoFireKeyboardRewrite(intent: KeyboardRewriteRouter.KeyboardRewriteTarget) {
-        // Preflight: if a NEWER job has already taken the slot (e.g.,
-        // ContentView released a transient fetch miss and the user
-        // re-tapped from the keyboard before this view's .task fired),
-        // don't waste an MLX inference + a Transcript.cleanedText write.
-        // Terminal delivery would be dropped downstream anyway, but the
-        // compute and on-disk side effects are wasteful.
-        guard AppGroup.rewriteJobID == intent.jobID else {
-            detailLog.notice("autoFireKeyboardRewrite: jobID slot moved on; skipping")
-            return
-        }
-
-        // If the user is mid-edit, kicking a rewrite would flip the tab
-        // out from under them and clobber `cleanedText` while their local
-        // `editorText` keeps stale. Refuse the intent, surface a keyboard
-        // error so they can re-tap after Save/Cancel.
-        guard !isEditing else {
-            detailLog.notice("autoFireKeyboardRewrite: edit mode active; refusing intent")
-            writeKeyboardError("Finish editing first, then try again", sessionID: intent.sessionID)
-            return
-        }
-
-        guard let prompt = SavedPromptStore.all().first(where: { $0.id == intent.promptID }) else {
-            writeKeyboardError("Prompt not found", sessionID: intent.sessionID)
-            return
-        }
-
-        startKeyboardOriginatedRewrite(with: prompt, intent: intent)
+    /// Words in the edit draft — the picker's sub-line while editing.
+    private var draftWordCount: Int {
+        editorText.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
 
-    private func startKeyboardOriginatedRewrite(
-        with prompt: SavedPrompt,
-        intent: KeyboardRewriteRouter.KeyboardRewriteTarget
-    ) {
-        // Same "rewrite what the user sees" rule as the manual Transform
-        // path — feed the published text so the AI Rewrite input matches
-        // the Original tab.
-        let source = rewriteSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !source.isEmpty else {
-            let message = "Transcript is empty."
-            rewriteState = .error(message)
-            if AppGroup.rewriteJobID == intent.jobID {
-                writeKeyboardError(message, sessionID: intent.sessionID)
-            }
-            return
-        }
-
-        activeRewriteTask?.cancel()
-        keyboardRewriteInFlight = true
-        rewriteState = .running
-        selectedTab = .rewrite
-
-        let promptText = prompt.systemPrompt
-        let jobID: UUID? = intent.jobID
-        let task = Task { @MainActor in
-            // Defer clears the lockout on every exit path — success,
-            // .error, CancellationError, save failure, or any future
-            // catch branch. No need to remember to nil it in each leg.
-            defer { keyboardRewriteInFlight = false }
-            do {
-                try await Self.waitUntilForeground(timeout: 10)
-                let result = try await LLMClientFactory.shared.client().rewrite(
-                    text: source,
-                    systemPrompt: promptText
-                )
-                try Task.checkCancellation()
-                let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
-                    let message = "Rewrite returned no text."
-                    rewriteState = .error(message)
-                    guard AppGroup.rewriteJobID == jobID else { return }
-                    writeKeyboardError(message, sessionID: intent.sessionID)
-                    return
-                }
-                do {
-                    // Persistence core ONLY: set cleanedText + clear stale
-                    // userEdit/rating + mirror + notify. The App-Group
-                    // rewrite-result reply below is the keyboard handshake,
-                    // NOT transcript persistence — it stays in the view.
-                    try TranscriptStore.setCleanedText(id: transcript.id, cleanedText: trimmed)
-                    guard AppGroup.rewriteJobID == jobID else {
-                        detailLog.notice("Keyboard-originated rewrite finished but App Group job changed; dropping terminal write.")
-                        return
-                    }
-                    AppGroup.rewriteResult = trimmed
-                    AppGroup.rewriteError = nil
-                    AppGroup.rewriteResultSessionID = intent.sessionID
-                    AppGroup.rewriteJobID = nil
-                    RewriteNotifications.postCompleted()
-                    lastRewriteAt = Date()
-                    rewriteState = .idle
-                    detailLog.info(
-                        "Keyboard-originated transcript rewrite SUCCESS prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
-                    )
-                } catch {
-                    let message = "Couldn't save: \(error.localizedDescription)"
-                    rewriteState = .error(message)
-                    guard AppGroup.rewriteJobID == jobID else { return }
-                    writeKeyboardError(message, sessionID: intent.sessionID)
-                    detailLog.error(
-                        "Keyboard-originated transcript rewrite save failed: \(error.localizedDescription, privacy: .public)"
-                    )
-                }
-            } catch is CancellationError {
-                rewriteState = .idle
-                guard AppGroup.rewriteJobID == jobID else { return }
-                writeKeyboardError(RewriteNotifications.cancelledSentinel, sessionID: intent.sessionID)
-                detailLog.info(
-                    "Keyboard-originated transcript rewrite cancelled prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public)"
-                )
-            } catch {
-                let message = error.localizedDescription
-                rewriteState = .error(message)
-                guard AppGroup.rewriteJobID == jobID else { return }
-                writeKeyboardError(message, sessionID: intent.sessionID)
-                detailLog.error(
-                    "Keyboard-originated transcript rewrite FAILED prompt=\(prompt.id, privacy: .public) sessionID=\(intent.sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-            }
-        }
-        activeRewriteTask = task
-    }
-
-    private static func waitUntilForeground(timeout: TimeInterval) async throws {
-        if UIApplication.shared.applicationState == .active { return }
-        let deadline = Date().addingTimeInterval(timeout)
-        while UIApplication.shared.applicationState != .active {
-            if Date() >= deadline {
-                throw NSError(
-                    domain: "TranscriptDetailView",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Open Jot and try the rewrite again."]
-                )
-            }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-    }
-
-    private func writeKeyboardError(_ message: String, sessionID: UUID) {
-        AppGroup.rewriteError = message
-        AppGroup.rewriteResult = nil
-        AppGroup.rewriteResultSessionID = sessionID
-        AppGroup.rewriteJobID = nil
-        RewriteNotifications.postCompleted()
-    }
 
     private func cancelActiveRewrite() {
         activeRewriteTask?.cancel()

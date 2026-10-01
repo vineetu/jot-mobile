@@ -40,20 +40,9 @@ struct SettingsView: View {
     @State private var appleLangCodes: Set<String>?
 
     // Feature flag — HIDDEN for release (owner 2026-06-29). Flip to `true`
-    // to re-expose; all underlying code is intact. (The TTS Playground is
-    // instead revealed by tapping the Version row 5× — see `ttsLabRevealed`.)
+    // to re-expose; all underlying code is intact.
     private let showDataImportExport = false     // Settings → "Your Data" export/import
 
-    // Feature flag — PAUSED (owner 2026-07-04): "let's turn this one off...
-    // not bring it up for a while." All TTS/voice-clone code (TTSService,
-    // TTSPlaygroundView, VoiceCloneRecorderView, VoiceCloneGuard,
-    // VoiceCloneConsentStore) stays intact and untouched — this just hides
-    // the two Settings entry points, same technique as `showDataImportExport`.
-    // Diarization Lab is UNCHANGED (owner: "I like the diarization one, let
-    // that be there") — gated only by `ttsLabRevealed`, not this flag.
-    // See `known-bugs-and-plans.md`'s "TTS Lab" entry + `ARCHITECTURE.md`'s
-    // "Diarization Lab & Voice-Clone Safety" note before re-enabling.
-    private let ttsFeatureEnabled = false
 
     /// Transcript import/export (independent on-device backup, not iCloud).
     @State private var showTranscriptExporter = false
@@ -72,20 +61,13 @@ struct SettingsView: View {
     /// the same honest one-liner the downloaded languages already get.
     @State private var unifiedEnglish = UnifiedEnglishModel.shared
 
-    /// LLM adapter for the AI-row's sub-status. Resolved lazily on appear;
-    /// `nil` until then. Lives only for the lifetime of the Settings sheet
-    /// so we don't pin LLM weights in memory when the user just glanced
-    /// at Settings.
-    @State private var clientAdapter: LLMClientUIAdapter?
 
-    // MARK: - TTS Lab (hidden reveal)
+    // MARK: - Hidden rows (5-tap reveal)
 
-    /// Hidden "Text-to-Speech (Lab)" opt-in. The section is revealed by tapping
-    /// the Version row 5 times (mirrors the warm-yield reveal pattern). Once
-    /// revealed for this Settings session, the section stays up; the toggle
-    /// itself is persisted in the App Group so it survives relaunch.
-    /// See `docs/tts-lab/design.md`.
-    @State private var ttsLabRevealed: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
+    /// Hidden Settings rows (e.g. "Use Apple speech engine", the punctuation
+    /// model status), revealed by tapping the Version row 5 times. The reveal
+    /// persists in the App Group so it survives relaunch.
+    @State private var hiddenRowsRevealed: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.hiddenSettingsRevealed)
     /// Read-only status line for the punctuation-model row (5-tap reveal
     /// block). Refreshed on row appear; the fetch itself needs no controls.
     @State private var punctuationModelStatusLine: String = "Checking…"
@@ -110,15 +92,23 @@ struct SettingsView: View {
             punctuationModelStatusLine = "Waiting for Wi-Fi — downloads automatically (57 MB)"
         }
     }
-    @State private var ttsLabVersionTapCount: Int = 0
-    @State private var ttsLabEnabled: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
-    @State private var ttsService = TTSService.shared
+    @State private var versionTapCount: Int = 0
+    /// TEMPORARY owner test switch — see `MoonshineEnglishTest`.
+    @State private var moonshineEnglishTest: Bool = AppGroup.defaults.bool(forKey: AppGroup.Keys.moonshineEnglishTest)
+    private var moonshineStatusLine: String {
+        guard moonshineEnglishTest else { return "Off — English uses Jot's normal engine" }
+        switch MoonshineEnglishTest.shared.state {
+        case .idle: return "On — model loads on first use"
+        case .downloading(let f): return "Downloading model — \(Int(f * 100))%"
+        case .loading: return "Loading model…"
+        case .ready: return "On — saved text comes from Moonshine (live text is still Parakeet)"
+        case .failed(let why): return "Failed — \(why)"
+        }
+    }
     /// EXPERIMENTAL A/B spike (2026-07-04, temporary): Apple SpeechTranscriber
     /// vs FluidAudio Parakeet for English dictation, same CTC vocab boost on
     /// top either way. See `AppleDictationEngine.swift`.
     @State private var useAppleDictationForEnglish: Bool = AppGroup.useAppleDictationForEnglish
-    /// Presents `VoiceCloneRecorderView` from the Lab's "Clone my voice" row.
-    @State private var showVoiceCloneSheet: Bool = false
     /// Keeps the engine toggle honest if a background Parakeet-upgrade download
     /// auto-switches the engine while Settings is open (the toggle @State is
     /// seeded once, so it would otherwise show a stale Apple-ON).
@@ -150,10 +140,9 @@ struct SettingsView: View {
                 warmHoldDurationSeconds = AppGroup.warmHoldDurationSeconds
                 warmHoldEnabled = AppGroup.warmHoldEnabled
                 liveTextOn = DeviceCapability.liveTextEnabled
-                ttsLabVersionTapCount = 0
-                // If the Lab was already opted in (persisted), keep it revealed.
-                ttsLabRevealed = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled) || ttsLabRevealed
-                ttsLabEnabled = AppGroup.defaults.bool(forKey: AppGroup.Keys.ttsLabEnabled)
+                versionTapCount = 0
+                // Already revealed (persisted) → keep it revealed.
+                hiddenRowsRevealed = AppGroup.defaults.bool(forKey: AppGroup.Keys.hiddenSettingsRevealed) || hiddenRowsRevealed
                 // Re-seed the engine toggle from the source of truth on every
                 // appear — a background auto-switch (or the keyboard nudge path)
                 // may have flipped it since this @State was first seeded.
@@ -166,15 +155,8 @@ struct SettingsView: View {
                     }
                 }
                 vocabularyStore.load()
-                if clientAdapter == nil {
-                    let client = LLMClientFactory.shared.client()
-                    let adapter = LLMClientUIAdapter(client: client)
-                    adapter.start()
-                    clientAdapter = adapter
-                }
             }
             .onDisappear {
-                clientAdapter?.stop()
                 engineActivatedObserver = nil
             }
             .onChange(of: warmHoldEnabled) { _, newValue in
@@ -193,19 +175,6 @@ struct SettingsView: View {
                 // first time, fetches) it. Same both-edges pattern as the
                 // Apple-engine toggle below.
                 UnifiedEnglishModel.syncWithRouting()
-            }
-            .onChange(of: ttsLabEnabled) { _, newValue in
-                AppGroup.defaults.set(newValue, forKey: AppGroup.Keys.ttsLabEnabled)
-                // Turning the Lab ON is the user's explicit opt-in to the
-                // model download (the deliberate sidestep of "download-first").
-                // Skipped entirely while TTS is paused (`ttsFeatureEnabled`) —
-                // no point silently downloading a model behind a hidden row.
-                if ttsFeatureEnabled, newValue, !ttsService.isReady {
-                    Task { await ttsService.download() }
-                }
-            }
-            .sheet(isPresented: $showVoiceCloneSheet) {
-                VoiceCloneRecorderView()
             }
             .task {
                 // `resolve()` is idempotent — cheap to re-await if the app
@@ -388,7 +357,7 @@ struct SettingsView: View {
     }
 
     private var settingsFooter: some View {
-        Text("Made with care in San Francisco.\nNo accounts, no cloud, no telemetry.\nOnly feedback you send leaves your iPhone.")
+        Text("Made with care in San Francisco.\nNo accounts, no telemetry.\nYour words stay private — on your iPhone, or in Apple's private cloud.")
             .font(.system(size: 12))
             .foregroundStyle(Color(red: 60 / 255, green: 60 / 255, blue: 67 / 255).opacity(0.45))
             .multilineTextAlignment(.center)
@@ -719,7 +688,7 @@ struct SettingsView: View {
     private var aiSection: some View {
         settingsSection(
             label: "AI",
-            caption: "Titles and tags use the system's built-in AI automatically. Ask answers questions across your notes — pick which model below."
+            caption: "Rewrites and Ask run on Apple Intelligence — on your iPhone, with Private Cloud Compute for questions across your notes. Nothing to download."
         ) {
             VStack(spacing: 10) {
                 NavigationLink {
@@ -744,17 +713,14 @@ struct SettingsView: View {
     }
 
     private var aiSubline: String {
-        let modelName = JotDesign.activeRewriteModelDisplayName
-        let status: String
-        switch clientAdapter?.observableStatus ?? .notReady {
-        case .ready:               status = "Ready"
-        case .loading:             status = "Loading"
-        case .downloading(let f):  status = "Downloading \(Int((f * 100).rounded()))%"
-        case .evicted:             status = "Unloaded"
-        case .error:               status = "Error"
-        case .notReady:            status = "Tap to download"
+        switch RewriteClient.availability {
+        case .available:
+            return RewriteClient.wouldUsePrivateCloudCompute
+                ? "Apple Intelligence · Private Cloud Compute"
+                : "Apple Intelligence · Ready"
+        case .unavailable:
+            return "Apple Intelligence · Off"
         }
-        return "\(modelName) · \(status)"
     }
 
     // MARK: - PRIVACY
@@ -762,7 +728,7 @@ struct SettingsView: View {
     private var privacySection: some View {
         settingsSection(
             label: "PRIVACY",
-            caption: "Your words stay on your iPhone. No accounts, no cloud, no telemetry — only feedback you send is ever transmitted."
+            caption: "Dictation stays on your iPhone. Ask and long rewrites use Apple's Private Cloud Compute — end-to-end encrypted, never stored. No accounts, no telemetry; only feedback you send is ever transmitted."
         ) {
             LiquidGlassCard(paddingH: 0, paddingV: 0) {
                 VStack(spacing: 0) {
@@ -1003,12 +969,6 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    // HIDDEN 2026-06-17 per owner — the "Indexing" row (opens
-                    // `EmbeddingsPanelView`) is no longer surfaced in Settings.
-                    // The screen + the on-device indexing feature are unchanged;
-                    // only this entry point is hidden. Restore the NavigationLink
-                    // to bring it back.
-
                     NavigationLink {
                         DiagnosticsWatchView()
                     } label: {
@@ -1054,57 +1014,11 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
 
-                    // "Text to Speech" — the on-device TTS Playground. Hidden by
-                    // default; REVEALED by tapping the Version row 5× (the reveal
-                    // persists via `ttsLabEnabled`). See `handleVersionTap`.
-                    // PAUSED (owner 2026-07-04, `ttsFeatureEnabled`) — see that
-                    // flag's comment. Diarization Lab below is unaffected.
-                    if ttsLabRevealed && ttsFeatureEnabled {
-                        cardDivider
-
-                        NavigationLink {
-                            TTSPlaygroundView()
-                        } label: {
-                            settingsIconRow(
-                                systemImage: "speaker.wave.2",
-                                tint: JotDesign.JotSemanticIcon.version,
-                                shaded: JotDesign.JotSemanticIcon.versionShaded,
-                                title: "Text to Speech",
-                                subline: "Type, pick a voice, and generate speech on-device",
-                                trailing: { RowChevron() }
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Text to Speech")
-                        .accessibilityHint("Generate and export speech on this iPhone.")
-
-                        cardDivider
-
-                        // Read-only, on-device record of accepted voice-clone
-                        // disclaimers — a legal/transparency record, not a
-                        // toggle. See `VoiceCloneConsentStore`.
-                        NavigationLink {
-                            VoiceCloneConsentView()
-                        } label: {
-                            settingsIconRow(
-                                systemImage: "checkmark.shield",
-                                tint: JotDesign.JotSemanticIcon.version,
-                                shaded: JotDesign.JotSemanticIcon.versionShaded,
-                                title: "Voice Clone Consent",
-                                subline: "Record of accepted voice-clone disclaimers",
-                                trailing: { RowChevron() }
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Voice Clone Consent")
-                        .accessibilityHint("View the on-device record of accepted voice-clone disclaimers.")
-                    }
-
-                    // "Use Apple speech engine" toggle — revealed by the same
-                    // 5-tap gesture (kept in this reveal-gated block). The
+                    // "Use Apple speech engine" toggle — revealed by the
+                    // 5-tap Version gesture. The
                     // Diarization Lab that formerly led this block graduated to
                     // the shipped Speaker Notes feature, so its row is gone.
-                    if ttsLabRevealed {
+                    if hiddenRowsRevealed {
                         cardDivider
 
                         settingsIconRow(
@@ -1173,6 +1087,27 @@ struct SettingsView: View {
                             trailing: { EmptyView() }
                         )
                         .onAppear { refreshPunctuationModelStatus() }
+
+                        cardDivider
+
+                        // TEMPORARY owner test: English final transcript from
+                        // Moonshine v2 (Medium Streaming). See MoonshineEnglishTest.
+                        settingsIconRow(
+                            systemImage: "moon.stars",
+                            tint: JotDesign.JotSemanticIcon.version,
+                            shaded: JotDesign.JotSemanticIcon.versionShaded,
+                            title: "Moonshine v2 for English (test)",
+                            subline: moonshineStatusLine,
+                            trailing: {
+                                Toggle("", isOn: $moonshineEnglishTest)
+                                    .labelsHidden()
+                                    .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
+                                    .onChange(of: moonshineEnglishTest) { _, on in
+                                        AppGroup.defaults.set(on, forKey: AppGroup.Keys.moonshineEnglishTest)
+                                        if on { MoonshineEnglishTest.shared.prepareIfNeeded() }
+                                    }
+                            }
+                        )
 
                         cardDivider
 
@@ -1331,10 +1266,6 @@ struct SettingsView: View {
         return "\(mins) min today · \(RecentsFormatting.dictationCountText(DictationStats.totalCount))"
     }
 
-    // (Lab section removed in build 48 — the embeddings kill-switch and
-    // the hand-seeding UI now live behind Settings → About → Classification
-    // via `EmbeddingsPanelView`.)
-
     // MARK: - Misc
 
     /// Re-run setup wizard tap handler. Order is load-bearing: SwiftUI
@@ -1361,182 +1292,16 @@ struct SettingsView: View {
         return "\(version) (\(build))"
     }
 
-    // MARK: - TTS Lab (hidden)
+    // MARK: - Hidden rows (5-tap reveal)
 
-    /// Count taps on the Version row; reveal the Lab section on the 5th.
+    /// Count taps on the Version row; reveal the hidden rows on the 5th.
     private func handleVersionTap() {
-        guard !ttsLabRevealed else { return }
-        ttsLabVersionTapCount += 1
-        if ttsLabVersionTapCount >= 5 {
-            withAnimation { ttsLabRevealed = true }
-            // Persist the reveal so the Text-to-Speech row stays visible across
-            // launches (read back on appear).
-            AppGroup.defaults.set(true, forKey: AppGroup.Keys.ttsLabEnabled)
-        }
-    }
-
-    /// Hidden experimental section: an opt-in toggle for the on-device Kokoro
-    /// TTS + Apple-Translation transcript playback, plus a "Download voices"
-    /// row that surfaces download progress. Turning the toggle on triggers the
-    /// download (wired in `.onChange(of: ttsLabEnabled)`).
-    @ViewBuilder
-    private var ttsLabSection: some View {
-        // The toggle row.
-        HStack(alignment: .top, spacing: 14) {
-            IconTile(
-                systemImage: "speaker.wave.2",
-                tint: JotDesign.JotSemanticIcon.version,
-                shaded: JotDesign.JotSemanticIcon.versionShaded
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Text-to-Speech (Lab)")
-                    .font(JotType.rowTitle)
-                    .tracking(-0.2)
-                    .foregroundStyle(Color.jotPageInk)
-
-                Text("Experimental. Read a transcript aloud in different voices and accents, fully on-device. Non-English voices translate first using Apple Translation. Turning this on downloads the voice model.")
-                    .font(JotType.rowSub)
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                    .lineSpacing(2)
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle("", isOn: $ttsLabEnabled)
-                .labelsHidden()
-                .tint(Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x59 / 255))
-                .accessibilityLabel("Text-to-Speech Lab")
-                .accessibilityHint("Enables experimental on-device read-aloud and downloads the voice model.")
-        }
-        .padding(.horizontal, JotDesign.Spacing.cardPaddingH)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .contentShape(Rectangle())
-
-        // The download / status row — only meaningful once enabled.
-        if ttsLabEnabled {
-            cardDivider
-            ttsLabDownloadRow
-            cardDivider
-            cloneVoiceRow
-            ForEach(ttsService.clonedVoices) { voice in
-                cardDivider
-                clonedVoiceRow(voice)
-            }
-            if ttsService.isReady {
-                cardDivider
-                deleteModelsRow
-            }
-        }
-    }
-
-    /// "Delete downloaded voices" — frees the TTS model storage. Only the TTS
-    /// model cache is removed (never the dictation/ASR models), so transcription
-    /// is unaffected. Shown once the model has been downloaded.
-    @ViewBuilder
-    private var deleteModelsRow: some View {
-        Button(role: .destructive) {
-            ttsService.deleteDownloadedModels()
-        } label: {
-            settingsIconRow(
-                systemImage: "trash",
-                tint: JotDesign.JotSemanticIcon.version,
-                shaded: JotDesign.JotSemanticIcon.versionShaded,
-                title: "Delete downloaded voices",
-                subline: "Frees the voice-model storage. Dictation is unaffected; cloned voices are kept.",
-                trailing: { EmptyView() }
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Delete downloaded voices")
-        .accessibilityHint("Removes the downloaded voice models to free space; dictation is unaffected.")
-    }
-
-    /// "Clone my voice" entry — presents the recorder sheet.
-    @ViewBuilder
-    private var cloneVoiceRow: some View {
-        Button {
-            showVoiceCloneSheet = true
-        } label: {
-            settingsIconRow(
-                systemImage: "waveform.and.mic",
-                tint: JotDesign.JotSemanticIcon.version,
-                shaded: JotDesign.JotSemanticIcon.versionShaded,
-                title: "Clone my voice",
-                subline: "Record a short sample to add your own voice",
-                trailing: { RowChevron() }
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Clone my voice")
-        .accessibilityHint("Record a short sample to create a read-aloud voice in your own voice.")
-    }
-
-    /// One cloned-voice row with a trailing delete control (Settings uses a
-    /// custom card layout, not a `List`, so we surface an explicit delete
-    /// button rather than swipe-to-delete).
-    @ViewBuilder
-    private func clonedVoiceRow(_ voice: TTSVoice) -> some View {
-        settingsIconRow(
-            systemImage: "person.wave.2",
-            tint: JotDesign.JotSemanticIcon.version,
-            shaded: JotDesign.JotSemanticIcon.versionShaded,
-            title: voice.label,
-            subline: "Your cloned voice",
-            trailing: {
-                Button {
-                    ttsService.deleteClonedVoice(voice)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color(.systemRed))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete voice \(voice.label)")
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var ttsLabDownloadRow: some View {
-        Button {
-            Task { await ttsService.download() }
-        } label: {
-            settingsIconRow(
-                systemImage: ttsDownloadIcon,
-                tint: JotDesign.JotSemanticIcon.version,
-                shaded: JotDesign.JotSemanticIcon.versionShaded,
-                title: "Voice model",
-                subline: ttsDownloadSubline,
-                trailing: {
-                    if ttsService.downloadState == .downloading {
-                        ProgressView()
-                    }
-                }
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(ttsService.downloadState == .downloading || ttsService.isReady)
-        .accessibilityLabel("Voice model — \(ttsDownloadSubline)")
-    }
-
-    private var ttsDownloadIcon: String {
-        switch ttsService.downloadState {
-        case .ready: return "checkmark.circle"
-        case .failed: return "exclamationmark.triangle"
-        default: return "arrow.down.circle"
-        }
-    }
-
-    private var ttsDownloadSubline: String {
-        switch ttsService.downloadState {
-        case .notStarted: return "Tap to download"
-        case .downloading: return "Downloading…"
-        case .ready: return "Ready"
-        case .failed(let message): return "Failed — tap to retry (\(message))"
+        guard !hiddenRowsRevealed else { return }
+        versionTapCount += 1
+        if versionTapCount >= 5 {
+            withAnimation { hiddenRowsRevealed = true }
+            // Persist the reveal across launches (read back on appear).
+            AppGroup.defaults.set(true, forKey: AppGroup.Keys.hiddenSettingsRevealed)
         }
     }
 }

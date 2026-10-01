@@ -1,0 +1,58 @@
+{
+  "persona": "journalist",
+  "display_name": "Journalist / writer",
+  "transcripts": [
+    {
+      "text": "Interview note. Maria said the warehouse closed in March, not April like the press release claimed. Need to double-check the date against the county filing before I run with it.",
+      "source": "keyboard", "duration": 14.2, "days_ago": 0, "time": "09:12",
+      "label": "Interview note"
+    },
+    {
+      "text": "Lede idea. For three years the city promised the bridge would reopen by spring. This is the story of why it never did.",
+      "source": "app", "duration": 9.6, "days_ago": 0, "time": "08:40",
+      "label": "Lede idea"
+    },
+    {
+      "text": "Quote from councilman Reyes. We were told the funding was secured. It was not secured. We found out the same week the contractor walked.",
+      "source": "keyboard", "duration": 11.1, "days_ago": 0, "time": "08:05"
+    },
+    {
+      "text": "so the draft i have right now is way too long and kind of rambling it opens with all this background about the budget committee and then buries the actual news which is that two members resigned i need to flip it so the resignations come first and the budget stuff becomes context further down",
+      "cleaned": "The draft runs long and buries the news. It opens with budget-committee background, then hides the real story — two members resigned. Flip it: lead with the resignations, move the budget context further down.",
+      "instruction": "Articulate",
+      "source": "app", "duration": 31.4, "days_ago": 1, "time": "17:25",
+      "feature": true, "label": "Draft restructure (rewrite)"
+    },
+    {
+      "text": "Voicemail transcription. Hi, this is Dana returning your call. I can talk on the record about the layoffs but not about the merger. Call me back after four.",
+      "source": "shortcut", "duration": 8.3, "days_ago": 1, "time": "14:02"
+    },
+    {
+      "text": "Fact check list. Confirm spelling of the plaintiff's name. Confirm the settlement figure, I have two different numbers. Confirm whether the hearing is public.",
+      "source": "keyboard", "duration": 12.7, "days_ago": 1, "time": "11:18"
+    },
+    {
+      "text": "Scene detail for the feature. Rain on the loading dock, forklifts idle, a single security guard who would not give his name. Use this near the top to set the mood.",
+      "source": "app", "duration": 13.9, "days_ago": 2, "time": "16:44"
+    },
+    {
+      "text": "pull these into a tight list of follow up questions for the mayor tomorrow what did she know about the contractor when did she know it who signed off on the second payment and why was the council not told",
+      "cleaned": "Follow-up questions for the mayor:\n\n1. What did she know about the contractor, and when?\n2. Who signed off on the second payment?\n3. Why was the council not informed?",
+      "instruction": "Action Items",
+      "source": "app", "duration": 19.2, "days_ago": 3, "time": "20:10",
+      "feature": true, "label": "Mayor questions (action items)"
+    },
+    {
+      "text": "Headline options. The Bridge to Nowhere, Three Years and Counting. Or maybe, A Promise the City Could Not Keep. Run both past the editor.",
+      "source": "keyboard", "duration": 10.5, "days_ago": 4, "time": "13:30"
+    },
+    {
+      "text": "Reminder to myself, file the public records request for the inspection reports before Friday or it slips another two weeks.",
+      "source": "watch", "duration": 6.8, "days_ago": 5, "time": "07:55"
+    },
+    {
+      "text": "Background read. The 2019 audit flagged the same drainage problem. Nobody acted on it. That is the thread that ties the whole piece together.",
+      "source": "app", "duration": 11.6, "days_ago": 6, "time": "15:20"
+    }
+  ]
+}

@@ -3,8 +3,9 @@ import Foundation
 
 /// Headless "ask your notes" Q&A: take a spoken/typed question, answer it from
 /// the user's own notes (and the bundled product-help corpus) via the
-/// view-free `AskEngine`, and read the answer back — **no mic, no recording,
-/// no app foregrounding.**
+/// view-free `AskEngine` (Private Cloud Compute + the Spotlight and help
+/// tools, iOS 27), and read the answer back — **no mic, no recording, no app
+/// foregrounding.**
 ///
 /// ## Why this is NOT a recording intent
 ///
@@ -12,16 +13,16 @@ import Foundation
 /// (the voice runtime did the STT, or a prior Shortcut step produced it), so
 /// there is no mic and no foreground-gate to fight: it runs headless in the
 /// Shortcuts/voice runtime exactly like `CaptureTextIntent`. The answer is
-/// synthesized on-device by `AskEngine`, which reuses `AskController`'s exact
-/// retrieval + prompt construction — only the delivery differs (non-streaming,
-/// view-free, concise `.spoken` style suited to read-aloud).
+/// synthesized by `AskEngine`, which runs the same `AskPipeline` as the in-app
+/// Ask — only the delivery differs (non-streaming, view-free, concise
+/// `.spoken` style suited to read-aloud).
 ///
 /// ## Availability is RETURNED, not thrown
 ///
 /// `AskEngine.answer` never throws for unavailability — it returns
 /// `.unavailable(reason)`. We map each `AskController.UnavailableReason` to a
-/// friendly spoken line that guides the user to finish setting up on-device AI,
-/// rather than surfacing a raw error. `.failed(_)` carries an internal message
+/// friendly spoken line that guides the user to what unblocks Ask, rather than
+/// surfacing a raw error. `.failed(_)` carries an internal message
 /// we deliberately do NOT read aloud (it isn't user-facing copy); we speak a
 /// generic "try again" instead.
 ///
@@ -46,7 +47,8 @@ import Foundation
 ///
 /// An App Intent's `title`/`description` must NOT contain the word "Siri" — the
 /// App Store rejects it with ITMS-90626 / "Invalid Siri Support" (build 155 was
-/// rejected for exactly this). All copy below is deliberately Siri-free.
+/// rejected for exactly this) — nor the word "Apple" (build 300 was rejected for
+/// "Apple's Private Cloud Compute"). All copy below is deliberately free of both.
 ///
 /// Lives in the main-app target: `AskEngine` is `#if JOT_APP_HOST`-gated and
 /// AppIntents without a separate extension run in the app process.
@@ -54,12 +56,13 @@ struct AskJotIntent: AppIntent {
     static let title: LocalizedStringResource = "Ask your notes"
 
     static let description = IntentDescription(
-        // NOTE: an App Intent description must NOT contain the word "Siri"
-        // (App Store rejects with ITMS-90626 / "Invalid Siri Support"). Keep
-        // this copy free of that word.
+        // NOTE: an App Intent description must NOT contain the words "Siri"
+        // OR "Apple" (App Store rejects with ITMS-90626 / "Invalid Siri
+        // Support" — build 300 was bounced for "Apple's Private Cloud
+        // Compute"). Keep this copy free of both.
         """
         Ask a question and get an answer drawn from your notes in Jot. \
-        Fully local — your notes never leave your device.
+        Answered by the private cloud built into iOS — never stored.
         """,
         categoryName: "Ask"
     )
@@ -119,16 +122,18 @@ struct AskJotIntent: AppIntent {
     /// user at the one thing that unblocks Ask, without surfacing internals.
     private static func dialog(for reason: AskController.UnavailableReason) -> String {
         switch reason {
-        case .appleIntelligenceOff:
-            return "Ask needs on-device AI turned on. Open Jot to finish setting it up."
+        case .needsIOS27:
+            return "Ask needs iOS 27. Update your iPhone to use it."
+        case .awaitingAccess:
+            return "Ask isn't available in this version of Jot yet."
         case .deviceNotEligible:
-            return "This device can't run Ask's on-device AI yet."
-        case .modelDownloading:
-            return "Ask's AI is still downloading. Try again in a little while."
-        case .qwenNotDownloaded:
-            return "Ask isn't available right now — open Jot to finish setting up AI."
+            return "This device can't use Ask's AI."
+        case .systemNotReady:
+            return "Ask needs the iPhone's built-in intelligence turned on. Open Settings to finish setting it up."
+        case .quotaReached:
+            return "You've used today's Ask limit. Try again tomorrow."
         case .unknown:
-            return "Ask isn't available right now — open Jot to finish setting up AI."
+            return "Ask isn't available right now. Try again in a moment."
         }
     }
 }

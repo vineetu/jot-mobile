@@ -37,7 +37,7 @@
 			<key>Title</key>
 			<string>Your privacy is protected</string>
 			<key>FooterText</key>
-			<string>Nothing you say or type ever leaves your iPhone.*
+			<string>Nothing you say is ever sent anywhere Apple or Jot can read it.*
 
 Full keyboard access lets Jot use your microphone to turn your speech into text in real time — that's all it's used for. It never reads or sends what you type.
 
@@ -47,7 +47,7 @@ You can confirm all of this yourself in Apple's App Privacy Report (Settings →
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>FooterText</key>
-			<string>*The one exception is the Send Feedback form in the Jot app's Settings: if you deliberately open it and send feedback, only that feedback leaves your device — nothing else, ever. Nothing is sent automatically.</string>
+			<string>*Two things do travel. The Send Feedback form in the Jot app's Settings sends feedback only when you deliberately open it and send — never automatically. And on iOS 27, Ask (and a rewrite too long for the on-device model) uses Apple's Private Cloud Compute: end-to-end encrypted, processed on Apple's servers that keep nothing, readable by neither Apple nor Jot. Dictation itself never leaves your iPhone.</string>
 		</dict>
 	</array>
 </dict>

@@ -249,7 +249,7 @@ actor DictationStreamingSession: StreamingSession {
         // `Mutex` (not a plain `var`) because `AVAudioConverterInputBlock` is
         // annotated `@Sendable` — same reasoning as `AppleStreamingSession.feed`
         // and `CaptureContext.ingest`.
-        let suppliedSource = Mutex<Bool>(false)
+        let suppliedSource = OSAllocatedUnfairLock<Bool>(initialState: false)
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
             let firstCall = suppliedSource.withLock { supplied -> Bool in

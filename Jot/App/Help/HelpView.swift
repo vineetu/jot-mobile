@@ -265,7 +265,7 @@ struct HelpView: View {
                     questionRow(
                         .model,
                         question: "The speech model didn't download",
-                        answer: "On most iPhones the speech model ships with the app — no download needed. On older iPhones a smaller speech model downloads on first use, and the AI rewriter (~\(JotDesign.activeRewriteModelSize)) downloads too — both need Wi-Fi, so check your connection if a tap doesn't start.",
+                        answer: "On most iPhones the speech model ships with the app — no download needed. On older iPhones a smaller speech model downloads on first use over Wi-Fi, so check your connection if a tap doesn't start. AI rewrite and Ask use Apple Intelligence — nothing to download.",
                         showDivider: true
                     )
                     questionRow(
@@ -331,12 +331,12 @@ struct HelpView: View {
                         systemImage: "checkmark.shield",
                         tint: JotDesign.JotSemanticIcon.privacyOnDevice,
                         shaded: JotDesign.JotSemanticIcon.privacyOnDeviceShaded,
-                        title: "Everything happens on your iPhone",
+                        title: "Your words stay private",
                         subtitle: "See the proof in your App Privacy Report"
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Everything happens on your iPhone")
+                .accessibilityLabel("Your words stay private")
                 .accessibilityHint("Opens the privacy verification page")
             }
         }

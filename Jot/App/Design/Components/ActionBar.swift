@@ -108,9 +108,8 @@ struct ActionBar: View {
     }
 
     /// The primary action is an icon-only ACCENT CIRCLE (no text label) — the
-    /// giant "Rewrite" pill was retired so it stops shouting "call me" when, under
-    /// Apple Intelligence, tapping it just routes to the system Writing Tools guide.
-    /// The glyph alone (sparkles) reads as the primary without a wall of blue. The
+    /// giant "Rewrite" pill was retired because it dominated the bar. The glyph
+    /// alone (sparkles) reads as the primary without a wall of blue. The
     /// `label` is retained for the accessibility label, not drawn.
     @ViewBuilder
     private func primaryButton(_ item: ActionBarItem) -> some View {

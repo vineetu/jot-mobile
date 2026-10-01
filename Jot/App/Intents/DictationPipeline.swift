@@ -149,6 +149,127 @@ enum DictationPipeline {
     ///   field → paste, no save"). Defaults to `false` so the hero, cold-from-
     ///   another-app, Action Button, DictateIntent and warm-resume callers keep
     ///   saving exactly as before.
+    /// Background half of Automatic cleanup (features.md §7.14): the raw text
+    /// has already been pasted and appended; run the user's cleanup prompt
+    /// now and attach the result to the note's Rewrite tab. Best-effort — a
+    /// failure leaves the note as raw, exactly like a failed manual rewrite.
+    private static func cleanUpInBackground(transcriptID: UUID, transcript: String, settings: CleanupSettings) {
+        let pending = Task { @MainActor in
+            try await RewriteClient.shared.rewrite(text: transcript, systemPrompt: settings.instructions)
+        }
+        attachCleanup(pending, to: transcriptID, promptName: settings.promptName)
+    }
+
+    /// Wait for a still-running cleanup and land it on the saved note: the
+    /// Rewrite tab gets the text, the attribution line learns which prompt
+    /// ran, and the home row / open note stop showing "Cleaning up". Used by
+    /// the paste-right-away mode AND by the paste-wait mode when the model ran
+    /// past the paste-wait cap. Best-effort — a failure leaves the note raw,
+    /// exactly like a failed manual rewrite.
+    private static func attachCleanup(_ pending: Task<String, Error>, to transcriptID: UUID, promptName: String) {
+        Task { @MainActor in
+            CleanupActivity.shared.begin(transcriptID)
+            defer { CleanupActivity.shared.end(transcriptID) }
+            do {
+                let cleaned = try await pending.value
+                try TranscriptStore.setCleanedText(id: transcriptID, cleanedText: cleaned)
+                RewriteProvenance.record(transcriptID: transcriptID, promptName: promptName, automatic: true)
+                logger.info("background cleanup attached to \(transcriptID, privacy: .public) (\(cleaned.count) chars)")
+            } catch where RewriteClient.isRateLimited(error) {
+                // The background rate limit, not a real failure: the note is
+                // saved raw and the cleanup is owed — it runs on the next
+                // foreground (`drainDeferredCleanups`).
+                Self.deferCleanup(transcriptID: transcriptID, reason: "background")
+            } catch {
+                logger.error("background cleanup skipped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Queue a cleanup that the background rate limit blocked (§7.14) and log
+    /// it so Help → Diagnostics shows why the note is still raw.
+    private static func deferCleanup(transcriptID: UUID, reason: String) {
+        DeferredCleanupQueue.enqueue(transcriptID)
+        DiagnosticsLog.record(
+            source: "main-app",
+            category: .cleanupDeferred,
+            message: "Cleanup deferred to the next foreground (rate-limited in the background)",
+            metadata: ["transcriptID": transcriptID.uuidString, "path": reason]
+        )
+        logger.notice("cleanup deferred for \(transcriptID, privacy: .public) (\(reason, privacy: .public))")
+    }
+
+    /// One drain at a time.
+    private static var deferredDrainInFlight = false
+
+    /// Run the cleanups owed by `DeferredCleanupQueue` — called when Jot comes
+    /// to the foreground, where the on-device model is not rate-limited. One
+    /// note at a time, oldest first. A note that is gone or already has a
+    /// rewrite is simply dropped from the queue; a genuine failure is dropped
+    /// too (a failed cleanup is a failed cleanup, as everywhere else); being
+    /// rate-limited AGAIN stops the drain and keeps the rest for next time.
+    static func drainDeferredCleanups() {
+        guard !deferredDrainInFlight else { return }
+        let ids = DeferredCleanupQueue.pending
+        guard !ids.isEmpty else { return }
+        let settings = CleanupSettings.load()
+        guard settings.enabled else {
+            // The user turned the feature off since: nothing is owed any more.
+            DeferredCleanupQueue.removeAll()
+            return
+        }
+        deferredDrainInFlight = true
+        Task { @MainActor in
+            defer { deferredDrainInFlight = false }
+            for id in ids {
+                guard let transcript = TranscriptSpotlightIndex.fetchTranscripts(ids: [id]).first else {
+                    DeferredCleanupQueue.remove(id)
+                    continue
+                }
+                if let existing = transcript.cleanedText, !existing.isEmpty {
+                    DeferredCleanupQueue.remove(id)
+                    continue
+                }
+                let source = transcript.text
+                CleanupActivity.shared.begin(id)
+                defer { CleanupActivity.shared.end(id) }
+                do {
+                    let cleaned = try await RewriteClient.shared.rewrite(text: source, systemPrompt: settings.instructions)
+                    try TranscriptStore.setCleanedText(id: id, cleanedText: cleaned)
+                    RewriteProvenance.record(transcriptID: id, promptName: settings.promptName, automatic: true)
+                    DeferredCleanupQueue.remove(id)
+                    DiagnosticsLog.record(
+                        source: "main-app",
+                        category: .cleanupDeferredRan,
+                        message: "Deferred cleanup landed on the note",
+                        metadata: ["transcriptID": id.uuidString, "outcome": "cleaned", "chars": String(cleaned.count)]
+                    )
+                    logger.info("deferred cleanup landed on \(id, privacy: .public) (\(cleaned.count) chars)")
+                } catch where RewriteClient.isRateLimited(error) {
+                    // Still rate-limited (foregrounding raced the limit): keep
+                    // this and everything behind it for the next foreground.
+                    DiagnosticsLog.record(
+                        source: "main-app",
+                        category: .cleanupDeferredRan,
+                        message: "Deferred cleanup still rate-limited — kept for next foreground",
+                        metadata: ["transcriptID": id.uuidString, "outcome": "still-rate-limited"]
+                    )
+                    logger.notice("deferred cleanup still rate-limited; keeping the queue")
+                    return
+                } catch {
+                    DeferredCleanupQueue.remove(id)
+                    DiagnosticsLog.record(
+                        source: "main-app",
+                        category: .cleanupDeferredRan,
+                        message: "Deferred cleanup failed — note stays as spoken",
+                        metadata: ["transcriptID": id.uuidString, "outcome": "failed", "error": String(String(describing: error).prefix(200))]
+                    )
+                    logger.error("deferred cleanup failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
     static func completeEndOfRecording(
         transcript: String,
         sessionID: UUID? = nil,
@@ -318,7 +439,19 @@ enum DictationPipeline {
             // we never silently drop the user's transcript.
             let finalText: String
             let cleanedText: String?
-            if cleanup.enabled && !postProcessing.isCancellationRequested {
+            // Automatic cleanup (features.md §7.14). "Paste the cleaned-up text"
+            // ON ⇒ wait for the model here so the keyboard pastes the cleaned
+            // text. OFF ⇒ paste the raw transcript immediately and run the
+            // cleanup in the background after the ledger append (below), so it
+            // lands in the note's Rewrite tab without delaying the paste.
+            let cleanupInBackground = cleanup.enabled && !cleanup.pasteCleanedText && !transient
+            // A cleanup that ran past the paste-wait cap: the raw text pastes
+            // now and this task's result lands on the note when it finishes.
+            var overdueCleanup: Task<String, Error>?
+            // A cleanup the background rate limit refused: the raw text pastes
+            // now and the cleanup is queued for the next foreground (§7.14).
+            var cleanupDeferred = false
+            if cleanup.enabled && cleanup.pasteCleanedText && !postProcessing.isCancellationRequested {
                 await DictationActivityCoordinator.shared.update(phase: .cleaning)
                 recording.publishPipelinePhase(.cleaning)
                 do {
@@ -337,6 +470,29 @@ enum DictationPipeline {
                         finalText = cleaned
                         cleanedText = cleaned
                     }
+                } catch let overdue as DictationPostProcessingCoordinator.CleanupTimedOut {
+                    // Past the paste-wait cap (§7.14): don't hold the user's
+                    // words hostage to a slow model. Paste as spoken; the
+                    // cleanup keeps running and lands on the note's Rewrite
+                    // tab when it finishes (attached after the append below).
+                    logger.notice("cleanup ran past the paste wait; pasting as spoken, cleanup continues in the background")
+                    finalText = transcript
+                    cleanedText = nil
+                    overdueCleanup = transient ? nil : overdue.pending
+                    if transient { overdue.pending.cancel() }
+                } catch where RewriteClient.isRateLimited(error) {
+                    // Apple's on-device model rate-limits apps in the background
+                    // (its documented behaviour) — Jot runs this cleanup while
+                    // the keyboard has the foreground. Not a real failure: paste
+                    // as spoken right away, and owe the cleanup to the next
+                    // foreground, where it lands on the note's Rewrite tab.
+                    logger.notice("cleanup rate-limited in the background; pasting as spoken, cleanup deferred to foreground")
+                    finalText = transcript
+                    cleanedText = nil
+                    cleanupDeferred = !transient
+                    if !postProcessing.isCancellationRequested {
+                        AppGroup.lastDictationStatusMessage = "Pasted as spoken — cleanup will finish when you open Jot"
+                    }
                 } catch {
                     // ANY throw — cancellation, model-unavailable, generation-
                     // failure. Degrade to raw. Do not skip publish. The AI
@@ -348,6 +504,11 @@ enum DictationPipeline {
                     )
                     finalText = transcript
                     cleanedText = nil
+                    // Tell the keyboard the paste is the raw text (§5.10 banner,
+                    // amber). Cancellation is the user's own choice — no banner.
+                    if !(error is CancellationError), !postProcessing.isCancellationRequested {
+                        AppGroup.lastDictationStatusMessage = "Cleanup didn't run — pasted as spoken"
+                    }
                 }
             } else {
                 // No AI Rewrite cleanup ran — the published text IS the raw
@@ -458,7 +619,28 @@ enum DictationPipeline {
                     // throws, the paste already landed and the asks already published
                     // — a verdict on an ask whose row failed to append is dropped on
                     // drain (CorrectionInbox skips a missing transcript; rare, accepted).
+                    if cleanedText != nil {
+                        // The cleaned text pasted and saved together (§7.14):
+                        // the note's attribution names the prompt that ran.
+                        RewriteProvenance.record(
+                            transcriptID: transcriptID,
+                            promptName: cleanup.promptName,
+                            automatic: true
+                        )
+                    }
+                    if cleanupInBackground {
+                        Self.cleanUpInBackground(
+                            transcriptID: transcriptID,
+                            transcript: transcript,
+                            settings: cleanup
+                        )
+                    } else if let overdueCleanup {
+                        Self.attachCleanup(overdueCleanup, to: transcriptID, promptName: cleanup.promptName)
+                    } else if cleanupDeferred {
+                        Self.deferCleanup(transcriptID: transcriptID, reason: "paste-wait")
+                    }
                 } catch {
+                    overdueCleanup?.cancel()
                     logger.error(
                         "ledger append failed; clipboard publish already succeeded: \(error.localizedDescription, privacy: .public)"
                     )

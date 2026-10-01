@@ -1,0 +1,177 @@
+» @jot/design-system@1.0.0 → /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle (window.JotDS)
+[DETECT] searched /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios (depth 4), found .storybook at [] → shape=package
+  source shape: package (from cfg.shape)
+  [DTS] parsed 1 .d.ts files from /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/dist
+  package: 18 components (0 src-matched)
+  bundle: 29 KB
+  inlined npm packages: 0
+  (decorator auto-detect skipped — no .storybook/ dir found)
+  css: dist/jot.css (15 KB, copied)
+  exported PascalCase symbols: 18
+  components: 18
+  (excluded 0 enum/type/context/hook exports; 18 components)
+  docs: 18/18 components matched (cfg.docsDir=docs)
+  (preview override: BodyText)
+  (preview override: CapsLabel)
+  (preview override: CitationChip)
+  (preview override: CtaPill)
+  (preview override: GlassButton)
+  (preview override: GlassCard)
+  (preview override: GlassPill)
+  (preview override: HeroTile)
+  (preview override: IosToggle)
+  (preview override: JotAppIcon)
+  (preview override: JotGlyph)
+  (preview override: JotMark)
+  (preview override: ProgressDots)
+  (preview override: SerifTitle)
+  (preview override: SourceRow)
+  (preview override: StopPill)
+  (preview override: TextLink)
+  (preview override: Waveform)
+  previews: 0 generated → .design-sync/.cache/previews/ (18 user-owned)
+  [DTS] 18/18 components
+  styles.css: 1 @import(s) (incl. _ds_bundle.css — component styles ship to designs via this closure)
+  readmeHeader: stitching .design-sync/conventions.md
+  _ds_sync.json: 18 render hash(es) + source key(s) (verification anchor)
+✓ wrote /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle: _ds_bundle.js + styles.css + 18 component previews
+no remote anchor — full scope (18 component(s) verify + upload)
+→ /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle/.sync-diff.json
+  .ds-build-meta.json: 18 components (package)
+  _ds_bundle.js: 34 KB, syntax OK
+  _ds_bundle.js header: window.JotDS, 18 components, 0 inlined externals
+  _ds_sync.json: 18 render hash(es), anchor matches the bundle
+  _ds_sync.json render hashes match disk (18 recomputed)
+  styles.css: 1 @import(s), all resolve
+  _ds_bundle.css: 15 KB
+  tokens: 194 defined, 1 referenced
+  [FONT_REMOTE] "SF Pro Text" (--font-sys), "SF Pro Display" (--font-sys) — a remote font-host @import is present; assuming it serves these at runtime
+  components/: 18 previews, 18 .prompt.md
+  all .d.ts parse cleanly
+  window.JotDS: 18 exports (18 fn + 0 compound)
+! [GRID_OVERFLOW] components/actions/CtaPill/CtaPill.html: stories render wider than their grid cells (Disabled, Primary, WithSecondary) — the product card crops them. Merge into cfg.overrides.CtaPill in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/actions/GlassButton/GlassButton.html: stories render wider than their grid cells (Chrome46, HiddenSlot, Transport56) — the product card crops them. Merge into cfg.overrides.GlassButton in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/actions/GlassPill/GlassPill.html: stories render wider than their grid cells (AskAnother, Done, Sizes) — the product card crops them. Merge into cfg.overrides.GlassPill in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/actions/IosToggle/IosToggle.html: stories render wider than their grid cells (SettingsRow, States) — the product card crops them. Merge into cfg.overrides.IosToggle in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/actions/TextLink/TextLink.html: stories render wider than their grid cells (Plain, UnderCta, WithGlyph) — the product card crops them. Merge into cfg.overrides.TextLink in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/brand/HeroTile/HeroTile.html: stories render wider than their grid cells (CustomGradient, Variants, WizardHero) — the product card crops them. Merge into cfg.overrides.HeroTile in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/brand/JotAppIcon/JotAppIcon.html: stories render wider than their grid cells (Hero, Sizes) — the product card crops them. Merge into cfg.overrides.JotAppIcon in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/brand/JotGlyph/JotGlyph.html: stories render wider than their grid cells (AllGlyphs, SizesAndColors) — the product card crops them. Merge into cfg.overrides.JotGlyph in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/brand/JotMark/JotMark.html: stories render wider than their grid cells (BrandBlue, OnDark) — the product card crops them. Merge into cfg.overrides.JotMark in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/CitationChip/CitationChip.html: stories render wider than their grid cells (ChipRow, InAnswer) — the product card crops them. Merge into cfg.overrides.CitationChip in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/GlassCard/GlassCard.html: stories render wider than their grid cells (SettingsCard, Stacked, TranscriptCard) — the product card crops them. Merge into cfg.overrides.GlassCard in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/ProgressDots/ProgressDots.html: stories render wider than their grid cells (Ends, StepThree) — the product card crops them. Merge into cfg.overrides.ProgressDots in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/SourceRow/SourceRow.html: stories render wider than their grid cells (Single, Sources) — the product card crops them. Merge into cfg.overrides.SourceRow in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/StopPill/StopPill.html: stories render wider than their grid cells (RecordingRow, Sizes) — the product card crops them. Merge into cfg.overrides.StopPill in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/display/Waveform/Waveform.html: stories render wider than their grid cells (Animated, Listening, Tall) — the product card crops them. Merge into cfg.overrides.Waveform in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/typography/BodyText/BodyText.html: stories render wider than their grid cells (Body, Footnote, Secondary) — the product card crops them. Merge into cfg.overrides.BodyText in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/typography/CapsLabel/CapsLabel.html: stories render wider than their grid cells (BetaTag, Captions) — the product card crops them. Merge into cfg.overrides.CapsLabel in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+! [GRID_OVERFLOW] components/typography/SerifTitle/SerifTitle.html: stories render wider than their grid cells (Question, Sizes, Welcome) — the product card crops them. Merge into cfg.overrides.SerifTitle in .design-sync/config.json: {"cardMode": "column"} (full card width per story, all stories kept), then batch ALL flagged components into one targeted rebuild (preview-rebuild.mjs --components A,B,...). Grades carry and the targeted loop accepts presentation-only edits; no confirming re-validate needed — column cards can't re-flag wide by construction (escape stays monitored).
+  render check: 18/18 previews render cleanly (screenshots in _screenshots/)
+  contact sheets: 2 sheet(s) → _screenshots/contact-sheet-1.png … contact-sheet-2.png
+
+✓ bundle is complete (18 warning(s) — review above, non-blocking)
+○ [CAPTURE] BodyText: carried forward
+○ [CAPTURE] CapsLabel: carried forward
+○ [CAPTURE] CitationChip: carried forward
+○ [CAPTURE] CtaPill: carried forward
+○ [CAPTURE] GlassButton: carried forward
+○ [CAPTURE] GlassCard: carried forward
+○ [CAPTURE] GlassPill: carried forward
+○ [CAPTURE] HeroTile: carried forward
+○ [CAPTURE] IosToggle: carried forward
+○ [CAPTURE] JotAppIcon: carried forward
+○ [CAPTURE] JotGlyph: carried forward
+○ [CAPTURE] JotMark: carried forward
+○ [CAPTURE] ProgressDots: carried forward
+○ [CAPTURE] SerifTitle: carried forward
+○ [CAPTURE] SourceRow: carried forward
+○ [CAPTURE] StopPill: carried forward
+○ [CAPTURE] TextLink: carried forward
+○ [CAPTURE] Waveform: carried forward
+
+package-capture: 18 component(s) — 18 carried forward, 0 captured, 0 with errors
+Grade from the sheets: Read each _screenshots/review/<group>__<Name>.png, then Write verdicts to .design-sync/.cache/review/<Name>.grade.json (keys must equal the cell labels exactly).
+{
+  "version": 2,
+  "ok": true,
+  "shape": "package",
+  "anchor": "not_provided",
+  "learningsUnmerged": [],
+  "stages": {
+    "build": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "diff": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "validate": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "capture": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    }
+  },
+  "verification": {
+    "unchanged": [],
+    "changed": [],
+    "added": [
+      "BodyText",
+      "CapsLabel",
+      "CitationChip",
+      "CtaPill",
+      "GlassButton",
+      "GlassCard",
+      "GlassPill",
+      "HeroTile",
+      "IosToggle",
+      "JotAppIcon",
+      "JotGlyph",
+      "JotMark",
+      "ProgressDots",
+      "SerifTitle",
+      "SourceRow",
+      "StopPill",
+      "TextLink",
+      "Waveform"
+    ],
+    "removed": [],
+    "pendingGrade": [],
+    "canary": null
+  },
+  "upload": {
+    "any": true,
+    "components": [
+      "BodyText",
+      "CapsLabel",
+      "CitationChip",
+      "CtaPill",
+      "GlassButton",
+      "GlassCard",
+      "GlassPill",
+      "HeroTile",
+      "IosToggle",
+      "JotAppIcon",
+      "JotGlyph",
+      "JotMark",
+      "ProgressDots",
+      "SerifTitle",
+      "SourceRow",
+      "StopPill",
+      "TextLink",
+      "Waveform"
+    ],
+    "deletePaths": [],
+    "bundle": true,
+    "styling": true,
+    "aux": true
+  }
+}

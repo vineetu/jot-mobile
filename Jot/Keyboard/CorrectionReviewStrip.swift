@@ -101,22 +101,14 @@ struct CorrectionReviewStrip: View {
     @State private var localHasEngaged = false
     @State private var appeared = false
 
-    /// The transient "you picked X" consequence line, and the card it belongs to.
-    /// Purely presentational (a ~950ms dwell), so it stays view-local in BOTH
-    /// modes — but it carries its card index, because in hold mode the hub has
-    /// already advanced to the next card by the time this renders and the line
-    /// must keep describing the card the owner just tapped.
-    @State private var resolvedFeedback: (cardIndex: Int, strong: String, rest: String)?
-
     private var holdMode: Bool { deck != nil }
 
     /// The card the deck is waiting on: hub-owned in hold mode (so a remount
     /// RESUMES here), view-local in teach mode.
     private var currentIndex: Int { deck?.index ?? localIndex }
 
-    /// The card being DRAWN — the one under the consequence line while it dwells,
-    /// otherwise the one the deck is waiting on.
-    private var displayIndex: Int { resolvedFeedback?.cardIndex ?? currentIndex }
+    /// The card being drawn: the one the deck is waiting on.
+    private var displayIndex: Int { currentIndex }
 
     private var hasEngaged: Bool { deck?.hasEngaged ?? localHasEngaged }
 
@@ -124,11 +116,9 @@ struct CorrectionReviewStrip: View {
 
     /// Hold mode derives its stage from deck progress (no `.nudge` stage, and no
     /// stored `stage` that could disagree with the answers); teach mode keeps its
-    /// own. The dwelling consequence line pins us to `.review` so the last card's
-    /// feedback isn't cut off by the deck completing underneath it.
+    /// own.
     private var stage: Stage {
         guard deck != nil else { return localStage }
-        if resolvedFeedback != nil { return .review }
         return currentIndex >= asks.count ? .done : .review
     }
 
@@ -283,87 +273,72 @@ struct CorrectionReviewStrip: View {
 
                 Spacer(minLength: 0)
 
-                if let resolvedFeedback {
-                    // Resolved consequence line (bold lead + rest), matching the
-                    // app's resolved copy. Base dwell 950ms (see `runVerdictDwell`).
-                    let strongPart = Text(resolvedFeedback.strong)
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundColor(Color.jotKeyboardKeyInk)
-                    let restPart = Text(resolvedFeedback.rest)
-                        .font(.system(size: 13.5))
-                        .foregroundColor(Color.jotKeyboardStreamText)
-                    Text("\(strongPart)\(restPart)")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .transition(.opacity)
-                } else {
-                    HStack(spacing: 8) {
-                        // Original first, then term, then (3-option ask) the
-                        // alternate longer term when one fits the span —
-                        // "cloud code" · "Claude" · "Claude Code".
+                HStack(spacing: 8) {
+                    // Original first, then term, then (3-option ask) the
+                    // alternate longer term when one fits the span —
+                    // "cloud code" · "Claude" · "Claude Code".
+                    wordChip(
+                        word: ask.original,
+                        inText: ask.outcome == "kept",
+                        verdict: "original",
+                        ask: ask
+                    )
+                    wordChip(
+                        word: ask.term,
+                        inText: ask.outcome == "applied",
+                        verdict: "term",
+                        ask: ask
+                    )
+                    if let altTerm = ask.altTerm {
                         wordChip(
-                            word: ask.original,
-                            inText: ask.outcome == "kept",
-                            verdict: "original",
+                            word: altTerm,
+                            inText: false,
+                            verdict: "alt0",
                             ask: ask
                         )
-                        wordChip(
-                            word: ask.term,
-                            inText: ask.outcome == "applied",
-                            verdict: "term",
-                            ask: ask
-                        )
-                        if let altTerm = ask.altTerm {
-                            wordChip(
-                                word: altTerm,
-                                inText: false,
-                                verdict: "alt0",
-                                ask: ask
-                            )
-                        }
-
-                        Spacer(minLength: 0)
-
-                        // Hold mode: "Stop asking" replaces "Skip" (UX review §e).
-                        // Teach mode keeps "Skip" exactly as before.
-                        if let deck {
-                            PressButton(reduceMotion: reduceMotion) {
-                                feedback.systemClick()
-                                // "Stop asking" keeps the ORIGINAL word in the paste
-                                // and teaches the app to stop offering this pair on
-                                // the keyboard. One answer, two meanings — recorded
-                                // once in the deck, so the paste and the app can't
-                                // end up with different ideas of what was chosen.
-                                deck.stopAsking(deck.token, ask.recordKey)
-                            } label: {
-                                Text("Stop asking")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(Color.jotKeyboardStreamText)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                            }
-                            .accessibilityLabel("Stop asking about this word")
-                            .accessibilityHint("Jot won't ask about \"\(ask.original)\" again. You can still review it on the transcript in Jot.")
-                        } else {
-                            PressButton(reduceMotion: reduceMotion) {
-                                feedback.systemClick()
-                                advanceTeach()
-                            } label: {
-                                Text("Skip")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(Color.jotKeyboardStreamText)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                            }
-                            .accessibilityLabel("Skip this word")
-                        }
-
-                        Text("\(displayIndex + 1) of \(asks.count)")
-                            .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                            .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.7))
                     }
+
+                    Spacer(minLength: 0)
+
+                    // Hold mode: "Stop asking" replaces "Skip" (UX review §e).
+                    // Teach mode keeps "Skip" exactly as before.
+                    if let deck {
+                        PressButton(reduceMotion: reduceMotion) {
+                            feedback.systemClick()
+                            // "Stop asking" keeps the ORIGINAL word in the paste
+                            // and teaches the app to stop offering this pair on
+                            // the keyboard. One answer, two meanings — recorded
+                            // once in the deck, so the paste and the app can't
+                            // end up with different ideas of what was chosen.
+                            deck.stopAsking(deck.token, ask.recordKey)
+                        } label: {
+                            Text("Stop asking")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(Color.jotKeyboardStreamText)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Stop asking about this word")
+                        .accessibilityHint("Jot won't ask about \"\(ask.original)\" again. You can still review it on the transcript in Jot.")
+                    } else {
+                        PressButton(reduceMotion: reduceMotion) {
+                            feedback.systemClick()
+                            advanceTeach()
+                        } label: {
+                            Text("Skip")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(Color.jotKeyboardStreamText)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Skip this word")
+                    }
+
+                    Text("\(displayIndex + 1) of \(asks.count)")
+                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Color.jotKeyboardStreamText.opacity(0.7))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -376,8 +351,6 @@ struct CorrectionReviewStrip: View {
             // carries the deck GENERATION, so a countdown armed for a superseded
             // deck can never advance the live one.
             .task(id: cardCountdownKey) { await runCardCountdown() }
-            // The ~950ms consequence dwell, likewise cancellable.
-            .task(id: dwellKey) { await runVerdictDwell() }
         } else {
             Color.clear
         }
@@ -409,7 +382,6 @@ struct CorrectionReviewStrip: View {
         PressButton(reduceMotion: reduceMotion) {
             feedback.systemClick()
             feedback.selectionTick()
-            let card = displayIndex
             if let deck {
                 // The hub records the answer (and advances) synchronously; a
                 // record it has already answered is refused there, so a strip
@@ -420,9 +392,13 @@ struct CorrectionReviewStrip: View {
                 localVerdictsGiven += 1
                 localHasEngaged = true
             }
-            let parts = Self.resolvedParts(ask, verdict: verdict, holdMode: holdMode)
-            withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .easeOut(duration: 0.2)) {
-                resolvedFeedback = (cardIndex: card, strong: parts.strong, rest: parts.rest)
+            // No "you picked X" dwell (owner, 2026-09-30: with three or four
+            // questions it paused a second on each to repeat what was just
+            // tapped). The next card — or the paste — follows the tap at once.
+            if !holdMode {
+                withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .easeOut(duration: 0.2)) {
+                    advanceTeach()
+                }
             }
         } label: {
             HStack(spacing: 6) {
@@ -492,9 +468,12 @@ struct CorrectionReviewStrip: View {
         // Cancellable (`.task`, not a detached `Task`): a done-dwell that outlived
         // this stage would finish a deck that something else already resolved.
         .task {
-            // Hold mode gates the paste — don't make the user stare at a
-            // checkmark; finish fast so the (resolved) text lands.
-            try? await Task.sleep(for: .seconds(holdMode ? 0.9 : 2.2))
+            // Hold mode gates the paste — no dwell at all; the text lands the
+            // moment the last card is answered. Teach mode (post-paste) keeps a
+            // short "All reviewed." beat before the strip goes away.
+            if !holdMode {
+                try? await Task.sleep(for: .seconds(2.2))
+            }
             guard !Task.isCancelled else { return }
             if let deck {
                 deck.finished(deck.token)
@@ -508,7 +487,6 @@ struct CorrectionReviewStrip: View {
 
     /// TEACH mode only — hold mode's progress is the hub's (`ActiveDeck.index`).
     private func advanceTeach() {
-        resolvedFeedback = nil
         localIndex += 1
         if localIndex >= asks.count {
             localStage = .done
@@ -516,12 +494,12 @@ struct CorrectionReviewStrip: View {
     }
 
     /// Identity of the countdown currently armed. Changing it cancels the old
-    /// task and starts a fresh one: a new card, a new deck generation, or the
-    /// consequence dwell starting/ending. Constant in teach mode, which has no
+    /// task and starts a fresh one: a new card or a new deck generation.
+    /// Constant in teach mode, which has no
     /// per-card timeout (the countdown body returns immediately there).
     private var cardCountdownKey: String {
         guard let deck else { return "teach" }
-        return "\(deck.token.generation)#\(currentIndex)#\(resolvedFeedback != nil)"
+        return "\(deck.token.generation)#\(currentIndex)"
     }
 
     /// Hold mode: the per-card 10s idle timeout. Drives the auto-skip independently
@@ -530,7 +508,7 @@ struct CorrectionReviewStrip: View {
     /// just this card. The hub re-checks the token, so a countdown that survives
     /// one run-loop too long still can't touch a deck that has moved on.
     private func runCardCountdown() async {
-        guard let deck, resolvedFeedback == nil,
+        guard let deck,
               currentIndex >= 0, currentIndex < asks.count else { return }
         let card = currentIndex
         let recordKey = asks[card].recordKey
@@ -541,66 +519,6 @@ struct CorrectionReviewStrip: View {
         } else {
             deck.skipCard(deck.token, recordKey)
         }
-    }
-
-    /// Identity of the consequence dwell in flight — the card it describes.
-    private var dwellKey: String { resolvedFeedback.map { "\($0.cardIndex)" } ?? "none" }
-
-    /// Hold the "you picked X" line for ~950ms, then hand the flow on. In hold
-    /// mode the hub already advanced when the answer was recorded, so this only
-    /// clears the line; teach mode advances its own index here.
-    private func runVerdictDwell() async {
-        guard resolvedFeedback != nil else { return }
-        try? await Task.sleep(for: .milliseconds(950))
-        guard !Task.isCancelled else { return }
-        if holdMode {
-            resolvedFeedback = nil
-        } else {
-            advanceTeach()
-        }
-    }
-
-    /// Resolved consequence copy.
-    ///
-    /// **HOLD mode** is VERBATIM the app's terse `CorrectionCopy.resolvedParts`
-    /// (duplicated because `CorrectionCopy` lives in the App target and can't link
-    /// into the keyboard; keep the two in lockstep — see
-    /// docs/plans/correction-review-surface-parity.md). One deliberate word swap:
-    /// the pane says "applied here." because it edits the text on the spot; the
-    /// keyboard's edit lands in Jot later, so "here" is dropped. The words are
-    /// TRUE here — the hold deck splices the pick into the text before it pastes.
-    ///
-    /// **POST-PASTE mode deliberately diverges** (F5, review finding 11). That
-    /// strip is teach-only: the text is already in the host app and this keyboard
-    /// cannot retro-edit it, so "applied"/"restored" claimed a change that never
-    /// happened. A tap only enqueues a verdict for the app to replay
-    /// (`CorrectionBridge.enqueueVerdict` → `CorrectionInbox`), and even the
-    /// learning it feeds is not a guarantee — a `term` pick writes a sounds-like
-    /// alias only when it doesn't collide with another term, and an `original`
-    /// pick contributes keep/suppression rather than a future replacement. So the
-    /// copy names the CHOICE and promises exactly what is certain: the preference
-    /// was recorded. Nothing about the current text, nothing about a guaranteed
-    /// future correction.
-    private static func resolvedParts(_ ask: CorrectionBridge.Ask, verdict: String,
-                                      holdMode: Bool) -> (strong: String, rest: String) {
-        let applied = (ask.outcome == "applied")
-        let chosen: String = {
-            if verdict == "alt0", let alt = ask.altTerm { return alt }
-            return verdict == "term" ? ask.term : ask.original
-        }()
-        guard holdMode else { return (chosen, " — preference recorded for next time.") }
-        if verdict == "term" {
-            return applied
-                ? (ask.term, " confirmed.")
-                : (ask.term, " applied.")
-        }
-        // 3-option ask: the alternate longer term was chosen.
-        if verdict == "alt0", let alt = ask.altTerm {
-            return (alt, " applied.")
-        }
-        return applied
-            ? (ask.original, " restored.")
-            : (ask.original, " kept.")
     }
 
     // MARK: - Chrome

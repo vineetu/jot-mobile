@@ -32,6 +32,11 @@ struct InlineEditTextView: UIViewRepresentable {
     /// `TextEditor` used: the host sets it true on edit-start to raise the
     /// keyboard, and the text view reports begin/end editing back through it.
     @Binding var isFocused: Bool
+    /// UTF-16 ranges to underline (grammar / spelling issues from
+    /// `GrammarCheckService`). Purely visual, session-only like the italics —
+    /// the bound `text` is never touched. The host clears them whenever the
+    /// text changes, since the offsets go stale.
+    var highlightRanges: [NSRange] = []
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
@@ -60,11 +65,12 @@ struct InlineEditTextView: UIViewRepresentable {
         // mutate responder state mid view-update). NOT gated on editability:
         // UIKit only raises the keyboard for EDITABLE text views, so focusing a
         // selectable read-only host is keyboard-safe — and required, because a
-        // UITextView renders its selection highlight (and offers the edit menu
-        // with Writing Tools) only while it is first responder. Without this,
-        // selection mode's pre-selected full transcript would be invisible
-        // (adversarial code review HIGH). The mid-dictation disabled-field case
-        // this gate used to protect can't raise a keyboard while non-editable.
+        // UITextView renders its selection highlight (and offers the edit menu)
+        // only while it is first responder. (The former read-only "selection
+        // mode" host that relied on this was retired 2026-09-15; the gate stays
+        // because it is correct for any read-only use.) The mid-dictation
+        // disabled-field case this gate used to protect can't raise a keyboard
+        // while non-editable.
         if isFocused, !tv.isFirstResponder {
             DispatchQueue.main.async { _ = tv.becomeFirstResponder() }
         } else if !isFocused, tv.isFirstResponder {
@@ -89,11 +95,21 @@ struct InlineEditTextView: UIViewRepresentable {
             coord.ingest(newText: text as NSString, in: tv, fromUser: false)
         }
 
-        // INBOUND selection apply (selection mode): when the host sets the
-        // `selection` binding — e.g. pre-selecting the whole transcript so the
-        // user's next gesture is tap-selection → Writing Tools — mirror it onto
-        // the text view's UTF-16 `selectedRange`. The outbound direction
-        // (`syncSelection`) has always existed; this is the missing inbound half.
+        // Grammar underlines changed (a proofread ran, or the host cleared them
+        // after an edit) → repaint. Skipped mid-IME-composition for the same
+        // reason `textViewDidChange` skips (reassigning `attributedText` tears
+        // the composition down); the next repaint picks the ranges up.
+        if coord.highlightRanges != highlightRanges, tv.markedTextRange == nil {
+            coord.highlightRanges = highlightRanges
+            coord.applyAttributed(tv, coord.makeAttributed(tv.text as NSString),
+                                  fromUser: false, caretAfterInsert: nil)
+        }
+
+        // INBOUND selection apply: when the host sets the `selection` binding
+        // (e.g. restoring the caret after Find & Replace or an accepted
+        // Proofread fix) mirror it onto the text view's UTF-16 `selectedRange`.
+        // The outbound direction (`syncSelection`) has always existed; this is
+        // the inbound half.
         coord.applyInboundSelection(to: tv)
     }
 
@@ -105,6 +121,9 @@ struct InlineEditTextView: UIViewRepresentable {
         var lastText: NSString = ""
         /// Spans added/changed this session, as UTF-16 `NSRange`s.
         var newRanges: [NSRange] = []
+        /// Grammar / spelling underlines currently painted (mirror of the
+        /// representable's `highlightRanges`).
+        var highlightRanges: [NSRange] = []
         var sessionToken: Int = .min
         /// Re-entrancy latch: true while WE mutate the text view, so our own
         /// delegate callbacks don't recurse.
@@ -240,6 +259,15 @@ struct InlineEditTextView: UIViewRepresentable {
                     attr.addAttribute(.font, value: italic, range: clipped)
                 }
             }
+            for r in highlightRanges {
+                let clipped = NSIntersectionRange(r, full)
+                if clipped.length > 0 {
+                    attr.addAttributes([
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .underlineColor: UIColor.systemOrange,
+                    ], range: clipped)
+                }
+            }
             return attr
         }
 
@@ -290,9 +318,9 @@ struct InlineEditTextView: UIViewRepresentable {
 
         // MARK: Selection bridge
 
-        /// Apply an INBOUND `selection` binding onto the text view — the missing
-        /// half that lets the host DRIVE the selection (selection mode's
-        /// select-the-whole-transcript for Writing Tools), not just read it.
+        /// Apply an INBOUND `selection` binding onto the text view — the half
+        /// that lets the host DRIVE the selection (caret restore after edits),
+        /// not just read it.
         /// Converts the SwiftUI `TextSelection` to a UTF-16 `NSRange` and sets
         /// `selectedRange` under the `isApplying` latch so the resulting
         /// `textViewDidChangeSelection` doesn't echo it straight back into the
@@ -313,17 +341,33 @@ struct InlineEditTextView: UIViewRepresentable {
         /// Convert a `TextSelection` to a UTF-16 `NSRange` in `text`. A
         /// multi-selection (never produced by our full-range apply) collapses to
         /// its enclosing span.
+        ///
+        /// A `TextSelection` holds `String.Index`es, which are only meaningful
+        /// in the string they were taken from. When the text is replaced
+        /// programmatically (an AI rewrite, Find & Replace, a voice edit) the
+        /// binding can still carry the OLD text's indices; converting those
+        /// against the new text trapped in `NSRange(_:in:)` (build 316 crash,
+        /// "Rewrite" on the transcript page). So an index that is out of bounds
+        /// or not a character boundary in `text` makes the selection stale:
+        /// return nil and leave the text view's own selection alone.
         private static func nsRange(from selection: TextSelection, in text: String) -> NSRange? {
+            let range: Range<String.Index>
             switch selection.indices {
-            case .selection(let range):
-                return NSRange(range, in: text)
+            case .selection(let r):
+                range = r
             case .multiSelection(let rangeSet):
                 guard let lower = rangeSet.ranges.first?.lowerBound,
                       let upper = rangeSet.ranges.last?.upperBound else { return nil }
-                return NSRange(lower..<upper, in: text)
+                range = lower..<upper
             @unknown default:
                 return nil
             }
+            guard range.upperBound <= text.endIndex,
+                  let lower = String.Index(range.lowerBound, within: text),
+                  let upper = String.Index(range.upperBound, within: text),
+                  lower <= upper
+            else { return nil }
+            return NSRange(lower..<upper, in: text)
         }
 
         /// Mirror the UTF-16 `selectedRange` into the SwiftUI `TextSelection?`

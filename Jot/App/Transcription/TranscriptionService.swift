@@ -138,16 +138,19 @@ final class TranscriptionService {
     nonisolated private static var selectedVersion: AsrModelVersion {
         // English is always the bundled Parakeet 0.6B v2 (official support is
         // iPhone 14 Pro+, all ≥6GB / 600M-capable; sub-6GB is unsupported).
-        // Every European language resolves to int8 Parakeet v3 — one shared
-        // multilingual model, downloaded on first selection.
-        LanguageChoice.current.isEnglish ? .v2 : .v3
+        // Every European language resolves to Parakeet Ultra — moondream's
+        // post-training of v3 (same 25 languages, tokenizer, decode path and
+        // speed; FLEURS 24-language mean WER 14.81 → 11.67 %, better in every
+        // language). One shared multilingual model, downloaded on first
+        // selection. Replaced v3 on 2026-09-27 (FluidAudio 0.17.4).
+        LanguageChoice.current.isEnglish ? .v2 : .ultra
     }
 
     /// FluidAudio `Repo` paired with `selectedVersion`. Used for
     /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
     /// the user-facing speech-model identifier.
     private static var selectedRepo: Repo {
-        LanguageChoice.current.isEnglish ? .parakeetV2 : .parakeetV3
+        LanguageChoice.current.isEnglish ? .parakeetV2 : .parakeetUltra
     }
 
     /// Whether Parakeet can actually run on THIS device — the owner's
@@ -174,10 +177,9 @@ final class TranscriptionService {
 
     private var isTranscribing: Bool = false
 
-    /// Read-only cross-feature visibility into `isTranscribing`. Diarization
-    /// (Settings → About → Diarization Lab) checks this before starting an
-    /// offline VBx pass, since FluidAudio's shared CoreML/BNNS state is not
-    /// safe under two concurrently-running graphs.
+    /// Read-only cross-feature visibility into `isTranscribing`. Speaker
+    /// detection checks this before starting a Nemotron 3 pass, since two
+    /// concurrently-running CoreML graphs from different pipelines are unsafe.
     var isBusy: Bool { isTranscribing }
 
     // `deinit` is always nonisolated in Swift 6, so it can't touch
@@ -370,7 +372,7 @@ final class TranscriptionService {
     /// next `transcribe` reuse the OLD language's model (`loadOrFail` early-
     /// returns on a non-nil manager). Pass `eagerWarm: false` for an UNATTENDED
     /// trigger (e.g. a language arriving from the watch over WCSession) where an
-    /// un-downloaded European model must NOT silently start a ~461 MB network
+    /// un-downloaded European model must NOT silently start a ~632 MB network
     /// fetch with no consent: the preference is adopted and the stale model
     /// evicted, but the new model loads lazily on the next ACTUAL transcribe
     /// (the file path fails fast asking for a download; the in-app record path
@@ -970,6 +972,18 @@ final class TranscriptionService {
         // is now false whenever the language routes to Apple, so this branch
         // cannot steal a dictation the user asked Apple for. Kept first because
         // it is the cheapest check and reads as the primary path it now is.
+        // TEMPORARY owner test: English on Jot's engine → Moonshine v2's final
+        // transcript (hidden Settings switch). Nil while it isn't ready → the
+        // normal engine below runs.
+        if MoonshineEnglishTest.isEnabled, LanguageChoice.current.isEnglish, !useAppleEngine {
+            let started = Date()
+            if let text = await MoonshineEnglishTest.shared.transcribeIfReady(samples) {
+                return ASRResult(
+                    text: text, confidence: 1,
+                    duration: Double(samples.count) / 16_000,
+                    processingTime: Date().timeIntervalSince(started))
+            }
+        }
         if UnifiedEnglishModel.shared.isActive, let promoted = unifiedEnglishPromote(samples: samples) {
             return promoted
         }
@@ -1208,104 +1222,95 @@ final class TranscriptionService {
             // runs only when both vocab is enabled AND timings are present —
             // byte-identical gating to the old serial `rescore` call.
             let resolvedSpot = await spotResult
-            // Did the ACOUSTIC path engage at all? Drives the model-free
-            // corrector fallback below — it must never second-guess a run the
-            // CTC spotter already had an opinion about.
-            var acousticProposals = 0
-            if VocabularyStore.shared.isEnabled,
-                let timings = result.tokenTimings,
-                resolvedSpot != nil {
-                // The merge is cheap CPU (~14–20 ms) plus a couple of actor
-                // hops, but it is still bounded + non-fatal: a hung
-                // CorrectionStore/Provenance actor or a wedged rescorer can
-                // never block the publish. On timeout/skip we keep the raw
-                // TDT text — byte-identical to the old "rescore returned nil"
-                // fall-back. (Skip entirely when the spot produced nothing.)
-                let textForMerge = result.text
-                let merged = await withTimeout(seconds: Self.vocabMergeTimeoutSeconds) {
-                    await VocabularyRescorerHolder.shared.mergeWithProposals(
-                        transcript: textForMerge,
-                        tokenTimings: timings,
-                        spotResult: resolvedSpot
-                    )
-                }
-                // Outer nil = merge timed out; inner nil = rescorer not ready.
-                if let merged, let rescored = merged {
-                    transcriptText = rescored.text
-                    acousticProposals = rescored.proposals.count
-                    gatedText = rescored.text
-                    gateProposals = rescored.proposals
-                } else if merged == nil {
-                    self.log.error(
-                        "vocabulary merge timed out after \(Self.vocabMergeTimeoutSeconds, privacy: .public)s; publishing raw transcript"
-                    )
-                }
-            }
-
-            // ── Model-free vocabulary corrector (jot-shared §1) — FALLBACK ONLY.
+            // ── Vocabulary pass (jot-shared `VocabularyPass`, design A5 / R10) ──
             //
-            // The acoustic scorer is `parakeet-ctc-110m`, which is
-            // English/Latin-trained (see `LanguageChoice.isVocabEligible`), and
-            // it is a ~99 MB on-demand download. So for most languages, and for
-            // EVERY user who hasn't fetched the model yet, the acoustic path
-            // above contributes nothing and the user's terms are silently inert.
+            // ONE gate call over two kinds of evidence, on every dictation:
+            //   • textual — the model-free corrector's spelling matches, each on
+            //     its exact word window (no model, no download; the only evidence
+            //     for split words, misspelled entries, and languages the CTC
+            //     scorer can't hear);
+            //   • acoustic — the CTC spotter's detections with their REAL scores,
+            //     placed on the word Parakeet wrote at that moment via the
+            //     decoder's own token timings (`WordTimeline`). Unalignable timings
+            //     drop them; nothing is ever placed by proportional position.
+            // Spelling matches claim their words first (measured on the owner's
+            // Mac recordings: 35/48 right, 1 wrong, vs 34–35 with 1–2 wrong the
+            // other way round). Every detection then runs the gate's full guard
+            // set. This replaces the old CTC token-rescore + a corrector that ran
+            // only when the acoustic path found nothing.
             //
-            // This pass fuzzy-matches the decoded text against those terms
-            // instead — no model, no download. Measured: recovers 34.1% of the
-            // terms the engine got wrong at 0.27 false applies/1000 words, and
-            // for a language with no acoustic checkpoint that is 0% → ~35%.
-            //
-            // It runs ONLY when the acoustic path produced no proposals at all.
-            // The spec is explicit that the acoustic path is preferred wherever
-            // the checkpoint is present, so English-with-the-model keeps exactly
-            // today's behaviour and this can only add where there was nothing.
-            //
-            // Gating, all four required: the master toggle, the existing
-            // per-language eligibility flag (CJK/LatAm-Spanish stay off — not
-            // silently flipped here), a frequency list for the language, and the
-            // corrector's OWN measured table, which fails closed on anything it
-            // has no measurement for.
-            if acousticProposals == 0,
-                VocabularyStore.shared.isEnabled,
-                LanguageChoice.current.isVocabEligible,
-                let correctorLanguage = LanguageChoice.current.correctorLanguageCode,
-                JotVocabCore.VocabularyCorrector.isServed(correctorLanguage) {
+            // Gating: the master toggle and the per-language eligibility flag
+            // (CJK / LatAm-Spanish stay off). The corrector additionally needs a
+            // common-word list AND its own measured table (`isServed`) — it fails
+            // closed on anything unmeasured.
+            let language = LanguageChoice.current
+            if VocabularyStore.shared.isEnabled, language.isVocabEligible {
                 let terms = VocabularyStore.shared.terms
-                if !terms.isEmpty {
-                    let textForCorrector = transcriptText
+                let acoustic: [JotVocabCore.VocabularyGate.Detection]
+                if let resolvedSpot {
+                    acoustic = await VocabularyRescorerHolder.shared.acousticDetections(from: resolvedSpot)
+                } else {
+                    acoustic = []
+                }
+                if !terms.isEmpty || !acoustic.isEmpty {
+                    let decodedText = result.text
+                    let wordTimes = result.tokenTimings.flatMap { timings in
+                        JotVocabCore.WordTimeline.wordTimes(
+                            for: decodedText,
+                            pieces: timings.map {
+                                JotVocabCore.TimedPiece(token: $0.token, startTime: $0.startTime, endTime: $0.endTime)
+                            })
+                    }
+                    let correctorLanguage = language.correctorLanguageCode.flatMap {
+                        JotVocabCore.VocabularyCorrector.isServed($0) ? $0 : nil
+                    }
+                    let resource = language.commonWordsResource
                     let overrides = await JotVocabCore.CorrectionStore.shared.snapshot()
-                    // Bounded + non-fatal, exactly like the merge above: a wedged
-                    // store actor can never block the publish.
-                    let corrected = await withTimeout(seconds: Self.vocabMergeTimeoutSeconds) {
-                        JotVocabCore.VocabularyCorrector.correct(
-                            transcript: textForCorrector,
+                    // Bounded + non-fatal: the pass is pure CPU, but a pathological
+                    // input can never block the publish — on timeout the decoded
+                    // text publishes unchanged.
+                    let gated = await withTimeout(seconds: Self.vocabMergeTimeoutSeconds) {
+                        JotVocabCore.VocabularyPass.run(
+                            transcript: decodedText,
+                            acoustic: acoustic,
+                            wordTimes: wordTimes,
                             terms: terms,
-                            language: correctorLanguage,
+                            correctorLanguage: correctorLanguage,
                             commonWords: AppVocabCore.commonWords,
+                            commonWordsResource: resource,
                             overrides: overrides,
                             diagnostics: AppVocabCore.diagnostics)
                     }
-                    if let corrected, !corrected.proposals.isEmpty {
-                        transcriptText = corrected.text
-                        gatedText = corrected.text
-                        gateProposals = corrected.proposals
-                        DiagnosticsLog.record(
-                            source: "main-app",
-                            category: .vocabularyGate,
-                            message: "model-free corrector ran",
-                            metadata: [
-                                "language": correctorLanguage,
-                                "applied": "\(corrected.applied)",
-                                "proposals": "\(corrected.proposals.count)",
-                            ]
+                    if let gated {
+                        transcriptText = gated.text
+                        gatedText = gated.text
+                        gateProposals = gated.proposals
+                        if !gated.proposals.isEmpty || !acoustic.isEmpty {
+                            DiagnosticsLog.record(
+                                source: "main-app",
+                                category: .vocabularyGate,
+                                message: "vocabulary pass ran",
+                                metadata: [
+                                    "acoustic": "\(acoustic.count)",
+                                    "wordTimes": wordTimes == nil ? "unaligned" : "aligned",
+                                    "corrector": correctorLanguage ?? "off",
+                                    "applied": "\(gated.applied)",
+                                    "proposals": "\(gated.proposals.count)",
+                                ]
+                            )
+                        }
+                        // Provenance: the gated text is the anchor baseline the
+                        // proposals' offsets are valid for; downstream transforms
+                        // are absorbed by the provenance reconcile. This is what
+                        // feeds the keyboard's review cards and transcript review.
+                        if !gated.proposals.isEmpty {
+                            await JotVocabCore.CorrectionProvenance.shared.record(
+                                gated.proposals, gatedText: gated.text)
+                        }
+                    } else {
+                        self.log.error(
+                            "vocabulary pass timed out after \(Self.vocabMergeTimeoutSeconds, privacy: .public)s; publishing decoded text"
                         )
-                        // Same provenance contract as the acoustic path: the
-                        // corrector's output text is the anchor baseline its
-                        // publishedStart offsets are valid for, and recording
-                        // here is what lets the keyboard's review cards and the
-                        // transcript review surface these corrections.
-                        await JotVocabCore.CorrectionProvenance.shared.record(
-                            corrected.proposals, gatedText: corrected.text)
                     }
                 }
             }
@@ -1784,7 +1789,7 @@ final class TranscriptionService {
         if !modelsOnDisk {
             modelState = .downloading(0)
             downloadedThisCall = true
-            let progress: DownloadUtils.ProgressHandler = { [weak self, generation] snapshot in
+            let progress: ProgressHandler = { [weak self, generation] snapshot in
                 let fraction = max(0.0, min(1.0, snapshot.fractionCompleted))
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -1979,13 +1984,13 @@ final class TranscriptionService {
     ///   `Resources/Models/Parakeet/parakeet-tdt-0.6b-v2/` inside the app bundle.
     ///   First dictation is instant + offline, no download. Loaded straight from
     ///   the app bundle.
-    /// - **European languages** resolve to v3, which is NOT bundled — it
-    ///   downloads into FluidAudio's default Application Support cache for
-    ///   `.parakeetV3` (via `selectedRepo`) on first selection.
+    /// - **European languages** resolve to Parakeet Ultra, which is NOT
+    ///   bundled — it downloads into FluidAudio's default Application Support
+    ///   cache for `.parakeetUltra` (via `selectedRepo`) on first selection.
     private static func modelDirectory() -> URL {
         // English runs the bundled 600M (v2) straight from the read-only app
-        // bundle. A European language resolves to v3, which downloads into
-        // FluidAudio's default App-Support cache for `.parakeetV3`.
+        // bundle. A European language resolves to Parakeet Ultra, which
+        // downloads into FluidAudio's default App-Support cache for `.parakeetUltra`.
         if LanguageChoice.current.isEnglish {
             if let bundled = bundled600mDirectory() {
                 return bundled
@@ -2081,13 +2086,13 @@ final class TranscriptionService {
                 ?? MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV2)
             targets.append((.v2, v2Directory))
         }
-        // European dictation = Parakeet v3 (warmed only if already downloaded).
+        // European dictation = Parakeet Ultra (warmed only if already downloaded).
         // Gated on `parakeetUsable` too — a device that can't run Parakeet at
         // all (e.g. the A12Z iPad) must never warm v3 either, and must not
         // emit "not downloaded, skipped" diagnostics for an engine it can
         // never use.
         if Self.parakeetUsable {
-            targets.append((.v3, MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV3)))
+            targets.append((.ultra, MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetUltra)))
         }
         return targets
     }
@@ -2177,6 +2182,7 @@ final class TranscriptionService {
         switch version {
         case .v2: return "Parakeet v2 (English)"
         case .v3: return "Parakeet v3 (European)"
+        case .ultra: return "Parakeet Ultra (European)"
         default: return String(describing: version)
         }
     }
@@ -2557,10 +2563,10 @@ final class TranscriptionService {
         }
     }
 
-    /// Proactively drop the Parakeet manager. Used by the foreground
-    /// classifier ("Classify now" in the Lab dashboard) before it kicks
-    /// off Qwen — co-resident Parakeet + Qwen peak around 5 GB and
-    /// trip iOS jetsam. Honors the same `!isTranscribing` guard as
+    /// Proactively drop the Parakeet manager. Originally used by the
+    /// (retired) foreground classifier before it kicked off a co-resident
+    /// LLM; kept for any caller that needs the ~2 GB freed on demand.
+    /// Honors the same `!isTranscribing` guard as
     /// `handleMemoryWarning` so we never evict during an active dictation.
     ///
     /// Re-warms automatically on the next `transcribe()` / `warmUp()`.

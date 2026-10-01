@@ -1,0 +1,25 @@
+<!-- @dsCard group="Colors" viewport="700x150" subtitle="The only accent — gradient ramp + flat" name="Brand blue" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: #fff; color: #16181D; }
+  .row { display: flex; gap: 10px; padding: 14px; }
+  .sw { flex: 1; height: 122px; border-radius: 14px; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px 12px; box-sizing: border-box; color: #fff; }
+  .sw b { font-size: 12.5px; font-weight: 600; }
+  .sw span { font-size: 11px; opacity: 0.75; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sw" style="background: var(--jot-blue-1);"><b>blue-1</b><span>#2E9BFF · gradient top</span></div>
+    <div class="sw" style="background: var(--jot-blue-2);"><b>blue-2</b><span>#0E7AE6 · solid accent</span></div>
+    <div class="sw" style="background: var(--jot-blue-3);"><b>blue-3</b><span>#0064CC · deepest</span></div>
+    <div class="sw" style="background: var(--jot-blue-flat);"><b>blue-flat</b><span>#1A8CFF · dots/active</span></div>
+    <div class="sw" style="background: var(--jot-blue-grad);"><b>blue-grad</b><span>CTA / stop / fab fill</span></div>
+    <div class="sw" style="background: var(--jot-icon-grad);"><b>icon-grad</b><span>168° app-icon tile</span></div>
+  </div>
+</body>
+</html>

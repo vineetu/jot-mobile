@@ -182,7 +182,7 @@ fi
 
 archive() {
   # Models are NOT shipped in the app bundle. Since build 258 the on-device
-  # models (Parakeet 600M v2, CTC 110M scorer, EmbeddingGemma) live in shared
+  # models (Parakeet 600M v2, CTC 110M scorer) live in shared
   # Application Support — put there by the one-time carry-forward build
   # (256/257) for existing users, downloaded on demand for fresh installs — so
   # bundling them would add ~870 MB of dead weight to the IPA.

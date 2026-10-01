@@ -139,15 +139,6 @@ struct CorrectionReviewSection: View {
                 CorrectionCopy.resolvedText(r, verdict: verdict)
                     .font(.system(size: 13.5)).lineSpacing(2)
                 Spacer(minLength: 8)
-                // V2-4 explicit grant: once the owner has confirmed this pair
-                // twice, offer to end the asking for good. Auto-applies from
-                // then on (visible here; one Undo/revert revokes the grant).
-                if verdict == "term", model.grantOfferEligible(r) {
-                    Button("Always replace") { Task { await model.grantAlwaysReplace(r) } }
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundStyle(Color.jotAccent).buttonStyle(.plain)
-                        .accessibilityHint("Always replace \"\(r.originalWord)\" with \"\(r.term)\" without asking")
-                }
                 Button("Undo") { Task { await model.undo(r) } }
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(Color.jotAccent).buttonStyle(.plain)

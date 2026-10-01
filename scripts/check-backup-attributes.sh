@@ -4,11 +4,12 @@
 # What this checks:
 #   1. The SwiftData store config in code points to the App Group container
 #      (cross-process access for keyboard + any future extension).
-#   2. The Qwen rewrite weight cache path is under `Library/Caches/` — iOS
-#      unconditionally excludes Caches/ from backup, so this is how we
-#      avoid bloating the user's iCloud backup by ~2.5 GB.
-#   3. No surprise `isExcludedFromBackup` calls have been added to the
+#   2. No surprise `isExcludedFromBackup` calls have been added to the
 #      transcript / prompt / vocab persistence paths.
+#   3. The FluidAudio speech-model weights ARE explicitly excluded.
+#
+# (There is no rewrite-model weight cache to audit any more: rewrites run on
+# Apple Foundation Models, which keep nothing in Jot's container.)
 #
 # This is a static-source audit, not a runtime check. Run it before each
 # release and as part of CI.
@@ -40,21 +41,8 @@ else
     fails=$((fails + 1))
 fi
 
-# ---- 2. Qwen weight cache path under Library/Caches/ ----------------------
-echo "[2/3] Qwen weight cache path…"
-if grep -q "URL\.cachesDirectory" Jot/App/LLM/Qwen35Client.swift; then
-    green "  OK — Qwen weights live under Library/Caches/ (auto-excluded by iOS)."
-else
-    red   "  FAIL — Qwen weight cache path no longer uses URL.cachesDirectory."
-    red   "  iOS only auto-excludes Library/Caches/. If we moved the weights"
-    red   "  somewhere else (Documents/, App Group, etc.), they will start"
-    red   "  bloating user backups by ~2.5 GB. Restore or explicitly set"
-    red   "  isExcludedFromBackup."
-    fails=$((fails + 1))
-fi
-
-# ---- 3. No surprise backup exclusions on user data paths ------------------
-echo "[3/4] No surprise isExcludedFromBackup calls on user data…"
+# ---- 2. No surprise backup exclusions on user data paths ------------------
+echo "[2/3] No surprise isExcludedFromBackup calls on user data…"
 # We do NOT want anyone setting isExcludedFromBackup on the SwiftData store,
 # saved prompts, vocab, or the mirror — those need to be in the backup.
 surprise=$(grep -rln "isExcludedFromBackup" \
@@ -70,8 +58,8 @@ else
     fails=$((fails + 1))
 fi
 
-# ---- 4. FluidAudio model weights ARE explicitly excluded ------------------
-echo "[4/4] FluidAudio speech-model weights backup exclusion…"
+# ---- 3. FluidAudio model weights ARE explicitly excluded ------------------
+echo "[3/3] FluidAudio speech-model weights backup exclusion…"
 # Parakeet weights live at Library/Application Support/FluidAudio/Models/
 # — INCLUDED in iOS Device Backup by default. Without an explicit
 # exclusion, the ~2 GB of 600M v2 weights bloat the user's iCloud backup.

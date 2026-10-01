@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import UIKit
 import os.log
 import Synchronization
 
@@ -136,6 +137,11 @@ final class RecordingService {
     private(set) var isStopInFlight: Bool = false
     private(set) var isPipelineInFlight: Bool = false
     private(set) var isWarm: Bool = false
+    /// The active session is in `sharedSessionConfig` (mixable
+    /// `.playAndRecord`) — the one configuration used for BOTH capture and
+    /// warm idle, so nothing ever has to change category while Jot is in the
+    /// background. Cleared when the session is restored.
+    private var sessionIsShared = false
     private(set) var warmExpiresAt: Date?
 
     /// True while a recording is PAUSED (UX-overhaul round 2 §10). Observable
@@ -167,6 +173,24 @@ final class RecordingService {
     /// the Darwin notification, and the heartbeat task lifecycle stay in lock-
     /// step with the in-process value.
     private(set) var currentPipelinePhase: PipelinePhaseProjection.Phase = .idle
+
+    /// The last *named* post-stop stage (`.transcribing` / `.cleaning` /
+    /// `.rewriting`). `.processing` and `.publishing` are internal beats the
+    /// user never needs a word for, so the surfaces that label the wait (hero
+    /// stop capsule, home return pill, note rows) keep showing the previous
+    /// named stage through them instead of flashing back to "Transcribing".
+    /// Reset to `.transcribing` whenever a session starts or ends.
+    private(set) var lastNamedPipelineStage: PipelinePhaseProjection.Phase = .transcribing
+
+    /// One-word label for the post-stop wait: "Transcribing" / "Cleaning up" /
+    /// "Rewriting". Never a generic "Working" (features.md §2.5, §5.5).
+    var postStopStageLabel: String {
+        switch lastNamedPipelineStage {
+        case .cleaning: return "Cleaning up"
+        case .rewriting: return "Rewriting"
+        default: return "Transcribing"
+        }
+    }
 
     /// UUID identifying the current dictation session. Set on transition
     /// AWAY from `.idle` (typically by `adoptSession(_:)` from the URL handler
@@ -657,12 +681,6 @@ final class RecordingService {
     func start() async throws {
         guard !isRecording else { throw RecordingError.alreadyRunning }
 
-        // Make any in-flight TTS read-aloud yield the shared audio session BEFORE
-        // we (cold OR warm) touch `.record`, so its `.playback` engine can't
-        // collide with the mic. No-op when nothing is playing — the arbiter never
-        // touches the session itself, so a warm-held session is untouched here.
-        AudioSessionArbiter.shared.yieldForRecording()
-
         // Ensure the keyboard Pause/Resume Darwin observers exist before this
         // recording can be paused from the keyboard (§10.2). Idempotent.
         installCrossProcessPauseResumeObservers()
@@ -875,26 +893,32 @@ final class RecordingService {
         // Mark BEFORE the swap so its async config-change echo is treated as
         // ours (see `handleEngineConfigChange`) and doesn't `internalStop` the
         // recording we're resuming.
-        lastDeliberateSessionSwapAt = Date()
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.mixWithOthers])
-            // Re-activate, then WAIT for the hardware — the same two steps the
-            // cold path takes, and for the same reason. This swap previously set
-            // the category and resumed straight into capture, but
-            // `makeWarmIdleSessionMixable` (which performs the INVERSE swap)
-            // already establishes that "a category change alone isn't always
-            // applied to the hardware route until re-activation". Without the
-            // re-activation the session can still be running the mixable route,
-            // leaving the other app on the input; without the wait, the
-            // exclusive interruption hasn't landed yet. Either way the resumed
-            // engine records silence while the user is speaking.
-            try AVAudioSession.sharedInstance().setActive(true, options: [])
-            await awaitExclusiveInput(timeout: Self.exclusiveInputTimeout)
-        } catch {
-            let ns = error as NSError
-            log.error("Warm-resume mixWithOthers restore failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public)")
-            fullyTeardownEngine()
-            throw RecordingError.warmYieldRestoreFailed
+        // Shared session (the normal case): capture and idle use the SAME
+        // mixable configuration, so there is nothing to swap — the tap simply
+        // starts routing. Only a legacy exclusive session (a cold start that
+        // began in the background) still swaps back to `.record`.
+        if !sessionIsShared {
+            lastDeliberateSessionSwapAt = Date()
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.mixWithOthers])
+                // Re-activate, then WAIT for the hardware — the same two steps the
+                // cold path takes, and for the same reason. This swap previously set
+                // the category and resumed straight into capture, but
+                // `makeWarmIdleSessionMixable` (which performs the INVERSE swap)
+                // already establishes that "a category change alone isn't always
+                // applied to the hardware route until re-activation". Without the
+                // re-activation the session can still be running the mixable route,
+                // leaving the other app on the input; without the wait, the
+                // exclusive interruption hasn't landed yet. Either way the resumed
+                // engine records silence while the user is speaking.
+                try AVAudioSession.sharedInstance().setActive(true, options: [])
+                await awaitExclusiveInput(timeout: Self.exclusiveInputTimeout)
+            } catch {
+                let ns = error as NSError
+                log.error("Warm-resume mixWithOthers restore failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public)")
+                fullyTeardownEngine()
+                throw RecordingError.warmYieldRestoreFailed
+            }
         }
 
         pendingWarmHoldPublish = false
@@ -1433,6 +1457,9 @@ final class RecordingService {
                     "peak": String(format: "%.5f", Self.peakAmplitude(samples)),
                     "otherAudioPlaying": "\(session.isOtherAudioPlaying)",
                     "inputRoute": inputPort.map { "\($0.portType.rawValue)/\($0.portName)" } ?? "none",
+                    // shared = other apps' audio can play while Jot holds
+                    // the mic; false = exclusive (the Reddit bug's mode).
+                    "sharedAudio": "\(sessionIsShared)",
                 ]
             )
             if shouldEnterWarmHold {
@@ -1477,6 +1504,23 @@ final class RecordingService {
             return
         }
 
+        // NEVER hold the mic in an exclusive session. A capture that started
+        // exclusive (`.record` — a cold start that ran in the background, or a
+        // shared-config failure) must become shared before it can idle; iOS
+        // refuses that switch while Jot is in the background ('!int'). If it
+        // can't, release the mic now: other apps' audio is back at once, and
+        // the next keyboard dictation opens Jot and starts shared. (Review
+        // 2026-09-30, docs/research/warmhold-reddit-coexistence.md: one rule
+        // instead of patching each path that can start exclusive.)
+        if !sessionIsShared, !makeWarmIdleSessionMixable() {
+            DiagnosticsLog.record(
+                source: "main-app", category: .recordingOutcome,
+                message: "Mic released after dictation — couldn't share audio with other apps from the background",
+                metadata: ["appState": "\(UIApplication.shared.applicationState.rawValue)"])
+            fullyTeardownEngine()
+            return
+        }
+
         // Snapshot the configured duration once at entry; subsequent Settings
         // changes must NOT resize this in-flight warm window.
         warmCooldownTask?.cancel()
@@ -1501,7 +1545,7 @@ final class RecordingService {
         // exclusive `.record` capture on warm-resume by `startFromWarmHold`.
         // Idle-only — never during active capture (`enterWarmHold` already
         // guards `!isCapturingSlice`).
-        makeWarmIdleSessionMixable()
+        // The session is shared here (checked at the top of this function).
 
         if isPipelineInFlight {
             pendingWarmHoldPublish = true
@@ -1563,30 +1607,29 @@ final class RecordingService {
     /// !isCapturingSlice`), not an engine start. The cold `start()` path is
     /// untouched and still uses `.record`.
     ///
-    /// On throw, fall back to the prior non-mixable `.record` idle behavior
-    /// (strictly no worse than before this change) rather than leave the
-    /// session indeterminate.
-    private func makeWarmIdleSessionMixable() {
+    /// Returns whether the session is now shared. On failure it does NOT fall
+    /// back to an exclusive `.record` idle: `enterWarmHold` then declines to
+    /// hold the mic at all (an exclusive warm window silences other apps'
+    /// video for up to 30 minutes — the Reddit bug).
+    @discardableResult
+    private func makeWarmIdleSessionMixable() -> Bool {
         let session = AVAudioSession.sharedInstance()
         // Mark BEFORE the swap so the async config-change echo is inside the
         // grace window (see `handleEngineConfigChange`).
         lastDeliberateSessionSwapAt = Date()
         do {
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
+            try Self.applySharedSessionConfig(session)
             // Re-activate so the mixable route/policy actually takes effect on
             // the live session (a category change alone isn't always applied to
             // the hardware route until re-activation). Mixable activation does
             // not interrupt other apps.
             try session.setActive(true, options: [])
+            sessionIsShared = true
+            return true
         } catch {
             let ns = error as NSError
-            log.error("Warm-hold mixable (.playAndRecord) failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public). Falling back to non-mixable .record for this window.")
-            do {
-                try session.setCategory(.record, mode: .measurement, options: [])
-            } catch {
-                let ns2 = error as NSError
-                log.error("Warm-hold .record fallback also failed — domain=\(ns2.domain, privacy: .public) code=\(ns2.code, privacy: .public). Leaving session as-is.")
-            }
+            log.error("Warm-hold mixable (.playAndRecord) failed — domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) desc=\(ns.localizedDescription, privacy: .public). Not holding the mic.")
+            return false
         }
     }
 
@@ -1749,6 +1792,39 @@ final class RecordingService {
         priorMode = session.mode
         priorOptions = session.categoryOptions
 
+        // Foreground start (the normal case — the keyboard bounces into Jot,
+        // or the user taps Record): configure the SHARED mixable session once
+        // and keep it for capture AND warm idle. iOS refuses to change an
+        // active session's category while the app is in the background
+        // ('!int', cannotInterruptOthers), so the old exclusive-capture →
+        // mixable-idle swap failed after every keyboard dictation and left an
+        // exclusive `.record` session holding the device for the whole warm
+        // window — the reason other apps' video (Reddit) went silent. Willow,
+        // Wispr and the open-source keyboards all hold one mixable
+        // `.playAndRecord` session and never swap; so does Jot now.
+        //
+        // "Foreground" means NOT `.background`: the keyboard's URL bounce starts
+        // the recording while the scene is still activating, so iOS reports
+        // `.inactive` at this moment (device log, build 320: "Deactivation
+        // reasons" still pending at 12:36:24.068, `.record` set at .135). The
+        // build-310 gate required `.active`, so every keyboard-started
+        // recording took the exclusive path and Reddit went silent again.
+        // audiomxd only refuses the category change for a BACKGROUND app.
+        if UIApplication.shared.applicationState != .background {
+            do {
+                lastDeliberateSessionSwapAt = Date()
+                try Self.applySharedSessionConfig(session)
+                try session.setActive(true, options: [])
+                sessionIsShared = true
+                log.info("configureSession — shared mixable .playAndRecord session active")
+                return
+            } catch {
+                let ns = error as NSError
+                log.error("configureSession — shared session failed (domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public)); falling back to exclusive .record")
+                sessionIsShared = false
+            }
+        }
+
         do {
             // 2026-04-21 approved fix for the Action Button `AURemoteIO`
             // invalid-state failure: stop asking the background path to bring
@@ -1795,8 +1871,26 @@ final class RecordingService {
         }
     }
 
+    /// The one session configuration Jot records AND warm-idles in.
+    /// - `.playAndRecord` + `.mixWithOthers`: other apps' audio plays alongside
+    ///   Jot; Jot neither interrupts nor is interrupted by ordinary playback.
+    /// - `.measurement`: the least system signal processing on the mic, as the
+    ///   exclusive `.record` path always used.
+    /// - `.defaultToSpeaker`: without it `.playAndRecord` routes output to the
+    ///   earpiece, so other apps' sound would come out nearly inaudible.
+    /// - `.allowBluetoothA2DP`: AirPods keep high-quality playback; the mic
+    ///   stays the built-in one (no HFP), exactly as `.record` did.
+    static func applySharedSessionConfig(_ session: AVAudioSession) throws {
+        try session.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
+        )
+    }
+
     private func restoreSession() {
         let session = AVAudioSession.sharedInstance()
+        sessionIsShared = false
 
         // Deactivation and category-restore are logged independently because
         // they have very different severity. `setActive(false)` is the prime
@@ -2208,6 +2302,14 @@ final class RecordingService {
         let priorPhase = currentPipelinePhase
         let priorSessionID = currentSessionID
         currentPipelinePhase = phase
+        switch phase {
+        case .transcribing, .cleaning, .rewriting:
+            lastNamedPipelineStage = phase
+        case .processing, .publishing:
+            break // internal beats — keep the last named stage on screen
+        case .idle, .failed, .recording, .paused, .arming, .warmIdle:
+            lastNamedPipelineStage = .transcribing
+        }
 
         let isTerminal = (phase == .idle || phase == .failed)
         let projection: PipelinePhaseProjection
@@ -2369,7 +2471,19 @@ final class RecordingService {
                     return
                 }
                 guard let self else { return }
-                guard self.livenessIsActive else { return }
+                // Nothing to keep fresh: END the task and clear the handle. Just
+                // returning left `livenessTask` non-nil, so the next
+                // `startLivenessStampingIfNeeded` (e.g. `publishWarmHoldState`
+                // after a warm dictation) saw a task "already running" and never
+                // started one — the record kept `.warmIdle` with a frozen stamp,
+                // and every Dictate tap after the keyboard's 4 s freshness window
+                // opened the app while the mic stayed held. A tick lands in that
+                // state whenever it falls inside a warm resume's first-buffer wait
+                // (`isWarm` already false, phase not yet `.recording`).
+                guard self.livenessIsActive else {
+                    self.livenessTask = nil
+                    return
+                }
                 self.stampLiveness()
             }
         }
@@ -3387,7 +3501,7 @@ private final class CaptureContext: @unchecked Sendable {
             return nil
         }
 
-        let supplied = Mutex<Bool>(false)
+        let supplied = OSAllocatedUnfairLock<Bool>(initialState: false)
         var err: NSError?
         let status = converter.convert(to: outBuffer, error: &err) { _, inputStatus in
             let firstCall = supplied.withLock { value -> Bool in

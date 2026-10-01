@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jot DS — Production Screenshot Audit</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: #F2F4F8; color: #16181D; }
+  .page { max-width: 880px; margin: 0 auto; padding: 44px 32px 80px; }
+  h1 { font-family: var(--font-serif); font-weight: 600; font-size: 38px; margin: 0 0 6px; letter-spacing: -0.5px; }
+  .sub { font-family: var(--font-serif); font-style: italic; font-size: 18px; color: rgba(54,62,78,0.62); margin: 0 0 30px; }
+  h2 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(54,62,78,0.5); margin: 38px 0 12px; }
+  .card { background: #fff; border: 0.5px solid rgba(20,30,50,0.10); border-radius: 16px; padding: 18px 20px; margin-bottom: 12px; }
+  .row { display: flex; gap: 12px; align-items: baseline; margin-bottom: 9px; }
+  .row:last-child { margin-bottom: 0; }
+  .tag { flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: 0.8px; border-radius: 6px; padding: 2px 8px; }
+  .ok { background: rgba(52,199,89,0.16); color: #1B8E3E; }
+  .fix { background: rgba(255,159,48,0.18); color: #B87314; }
+  .miss { background: rgba(255,59,48,0.14); color: #C0362C; }
+  .row p { margin: 0; font-size: 14.5px; line-height: 1.5; }
+  .row p b { font-weight: 600; }
+  code { background: rgba(20,30,50,0.06); border-radius: 5px; padding: 1px 6px; font-size: 12.5px; }
+  .copy { font-family: var(--font-serif); font-style: italic; font-size: 16px; color: #2B3447; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+  li { font-size: 14px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Production audit.</h1>
+  <p class="sub">30 screenshots (light mode, June 2026) checked against the design system — what matched, what didn't, what I fixed.</p>
+
+  <h2>Verified correct — no change needed</h2>
+  <div class="card">
+    <div class="row"><span class="tag ok">MATCH</span><p><b>Ask Jot</b> — Done glass pill, "Ask Jot / BETA" lockup, Fraunces-italic transcript hero, "Listening" + blue waveform, blue send circle, "Type instead", YOU ASKED caps, "Searching your notes…", shimmer skeleton, inline blue citation chips ("Jun 9" + doc glyph). The handoff spec is the shipped design.</p></div>
+    <div class="row"><span class="tag ok">MATCH</span><p><b>Onboarding</b> — italic serif titles, app-icon hero, orange mic tile, parchment "Keyboard ready" tile, green success tile, blue progress dots, full-width blue CTA, the honest "We'd skip this step if we could" footnote, the watch card.</p></div>
+    <div class="row"><span class="tag ok">MATCH</span><p><b>Brand</b> — app icon (j + waveform on blue squircle), the tiny "j" badge, BETA tag, blue accent everywhere, status-bar amber mic dot while recording.</p></div>
+    <div class="row"><span class="tag ok">MATCH</span><p><b>Settings icon tiles</b> — the 14 semantic pairs in <code>tokens/production.css</code> are exactly what ships (speech blue, vocab teal, AI coral, full-access purple, donations green, acknowledgements pink…).</p></div>
+  </div>
+
+  <h2>Discrepancies found — design system updated</h2>
+  <div class="card">
+    <div class="row"><span class="tag fix">FIXED</span><p><b>Coral is the shipped AI accent, not just two tiles.</b> Cleanup tile, the ✦ sparkle on AI-rewritten recents, "+ New prompt" button text — all coral. Documented as <code>--jot-ai-accent</code>: current shipped AI identity, hated, never to be expanded.</p></div>
+    <div class="row"><span class="tag fix">FIXED</span><p><b>Serif has two modes.</b> In-app page titles ("Settings.", "Help") are <b>upright Fraunces SemiBold with a period</b> — italic is reserved for onboarding titles, subtitles, and anything spoken (transcripts, questions, streaming text). The guide previously said italic everywhere.</p></div>
+    <div class="row"><span class="tag fix">FIXED</span><p><b>Transcript detail body is SF, not serif.</b> Plain SF body on a big white card; the serif-italic transcript treatment belongs to live/streaming states (keyboard preview, recording, Ask hero) only.</p></div>
+    <div class="row"><span class="tag fix">FIXED</span><p><b>Transport order is pause · Stop · trash</b> (Stop pill centered, trash right with red glyph on white circle) — the swipe-cue handoff had trash · pause · Stop. Recording reassurance copy also differs (see new strings).</p></div>
+    <div class="row"><span class="tag fix">FIXED</span><p><b>Light background is flatter and cooler</b> than the prototype gradient — blue-grey wash, no visible warm corner. Noted that <code>--jot-page-*</code> (production) wins for in-app surfaces.</p></div>
+    <div class="row"><span class="tag fix">FIXED</span><p><b>New UI vocabulary captured:</b> green caps badges (READY, ALWAYS), grey EXPERIMENTAL pill, event chips (PASTE/PUBLISH green, VOCAB blue), segmented Original/Rewrite control, "Articulate" ✦ CTA, keyboard RECENT panel ("Opens in Jot" / "Pastes here").</p></div>
+  </div>
+
+  <h2>Verified copy strings (added to the guide)</h2>
+  <div class="card">
+    <ul>
+      <li><span class="copy">"You don't have to watch this — looking away helps you find the words."</span> (recording)</li>
+      <li><span class="copy">"We tidy this up when you stop"</span> (keyboard live panel)</li>
+      <li><span class="copy">"Start jotting."</span> (final onboarding CTA — not "Start dictating")</li>
+      <li><span class="copy">"Now try the keyboard"</span> · <span class="copy">"Listening for your text…"</span> (W5)</li>
+      <li><span class="copy">"Made with care in San Francisco. No accounts, no cloud, no telemetry."</span> (settings footer)</li>
+      <li><b>Articulate</b> · <b>Jot down</b> · <b>I tried it</b> · <b>Got it</b> · <b>Continue</b> (button verbs)</li>
+    </ul>
+  </div>
+
+  <h2>Still missing from the system</h2>
+  <div class="card">
+    <div class="row"><span class="tag miss">TODO</span><p><b>Home/library screen</b> — no screenshot in this batch (the serif headline behind the Ask sheet hints at it). Send one when you can.</p></div>
+    <div class="row"><span class="tag miss">TODO</span><p><b>Apple Watch</b> — you said it's coming later.</p></div>
+    <div class="row"><span class="tag miss">TODO</span><p><b>Dark mode set</b> — this batch is light-only; dark tokens remain from the handoffs + codebase values.</p></div>
+  </div>
+
+  <p style="font-size: 13px; color: rgba(54,62,78,0.55); margin-top: 26px;">Source screenshots live in <code>uploads/</code> (latest screenshots light + IMG_7469–7476). The full written rules are in <code>readme.md</code>.</p>
+</div>
+</body>
+</html>

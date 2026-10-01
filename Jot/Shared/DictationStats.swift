@@ -32,7 +32,6 @@ enum DictationStats {
     private static let perDayCountKey = "jot.stats.perDayCount"
     private static let appleDictationCountKey = "jot.stats.appleDictationCount"
     private static let macAppPromoSeenKey = "jot.stats.macAppPromoSeen"
-    private static let appleIntelligenceGuideSeenKey = "jot.stats.appleIntelligenceGuideSeen"
 
     // MARK: - Tuning constants
 
@@ -246,16 +245,6 @@ enum DictationStats {
     /// never fires again.
     static func acknowledgeMacAppPromo() {
         macAppPromoSeen = true
-    }
-
-    /// True once the user has seen the one-time Apple Intelligence / Writing
-    /// Tools explainer (features.md §9.3). After this, tapping Apple
-    /// Intelligence in the transcript detail or edit view skips the explainer
-    /// and selects the whole transcript directly. Shared across both surfaces
-    /// (reading + edit) — the guide is taught exactly once.
-    static var appleIntelligenceGuideSeen: Bool {
-        get { AppGroup.defaults.bool(forKey: appleIntelligenceGuideSeenKey) }
-        set { AppGroup.defaults.set(newValue, forKey: appleIntelligenceGuideSeenKey) }
     }
 
     // MARK: - Donation prompt gating (incremental milestones)

@@ -325,7 +325,7 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
     /// WCSession callback, not a consented tap. So we pass `eagerWarm:` only
     /// when the new language's model is already on disk — adopting a not-yet-
     /// downloaded European language sets the preference and evicts the stale
-    /// model but does NOT kick a ~461 MB background fetch; that model downloads
+    /// model but does NOT kick a ~632 MB background fetch; that model downloads
     /// later via the consented phone-side Settings path (or fails fast on the
     /// next transcribe asking for it). On disk → reload is local + instant.
     func applyWatchLanguage(_ code: String?) {
@@ -463,8 +463,8 @@ final class PhoneSideWCSession: NSObject, WCSessionDelegate {
         // Route through the Repository (the sole writer of the Transcript
         // entity + the keyboard mirror) instead of hand-reimplementing
         // append. `append` owns the insert, ledger index, save, mirror
-        // refresh, Darwin notification, and the TranscriptIndexer embed/
-        // classify hop — so the watch path can no longer drift from the
+        // refresh, Darwin notification, and the Core Spotlight index
+        // update — so the watch path can no longer drift from the
         // main-app path. The original recording time and the dedup key are
         // forwarded; the `transcriptExists(watchOriginUUID:)` pre-insert
         // check stays at the call site.

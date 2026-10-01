@@ -6,9 +6,9 @@ import Foundation
 /// the transcript (see `docs/plans/speaker-notes-productization.md`).
 ///
 /// The `label` is the RESOLVED display name frozen at diarization time
-/// ("You" / "Speaker 2"): the owner voiceprint is consulted when the rows are
-/// produced, not when they're rendered, so a later voiceprint change never
-/// silently relabels an existing transcript. `text` is the proportional-by-time
+/// ("Speaker 2"; rows saved before the 2026-09-27 Nemotron 3 switch may say
+/// "You" — the retired pyannote owner voiceprint). Stored rows are never
+/// relabeled. `text` is the proportional-by-time
 /// slice of the transcript assigned to this turn (`DiarizationLabeling.distributeText`),
 /// so the whole result is invalidated (`updateDiarization(id:, nil)`) whenever the
 /// underlying text changes — the stored slices can't be cheaply re-derived.
@@ -21,7 +21,7 @@ struct PersistedSpeakerRow: Codable, Identifiable, Equatable {
     /// individually across launches).
     var id = UUID()
 
-    /// Resolved display label frozen at diarization time ("You" / "Speaker 2").
+    /// Display label frozen at diarization time ("Speaker 2").
     let label: String
     /// Turn start, seconds from the recording's origin.
     let start: Float

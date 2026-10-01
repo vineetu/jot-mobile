@@ -23,7 +23,7 @@ import Foundation
 ///   for these, so there is no fallback engine and no vocabulary rescore.
 ///
 /// ## FIRST PASS scope
-/// European resolves to **int8 v3 (`AsrModelVersion.v3`) on every device** — no
+/// European resolves to **Parakeet Ultra (`AsrModelVersion.ultra`, post-trained v3, int8 encoder) on every device** — no
 /// int4 variant, no device-RAM gating yet (both tracked in the design doc §4,
 /// pending an on-device memory measurement). The persisted raw value lives in
 /// `AppGroup.transcriptionLanguage`; any unknown/unset tag resolves to

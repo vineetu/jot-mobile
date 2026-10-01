@@ -3,8 +3,8 @@ import Foundation
 import os.log
 
 /// **Generalized carry-forward engine** — the safe first step toward stripping
-/// the three bundled ML models (Parakeet 600M v2, the CTC 110M vocabulary
-/// scorer, and EmbeddingGemma-300M) from the app binary.
+/// the two bundled ML models (Parakeet 600M v2 and the CTC 110M vocabulary
+/// scorer) from the app binary.
 ///
 /// See `docs/plans/model-externalization-sub-50mb.md`. This is the §A1
 /// generalization of the proven, adversarially-reviewed
@@ -18,9 +18,9 @@ import os.log
 /// temp-sibling + **atomic rename** install, abandoned-temp sweep, **free-space
 /// preflight**, per-launch idempotent no-op re-check, **iCloud backup
 /// exclusion**, and DiagnosticsLog breadcrumbs — lives once in `carry(...)` and
-/// is driven for all three assets serially from one detached launch task.
+/// is driven for both assets serially from one detached launch task.
 ///
-/// This build still **bundles** all three — it is NOT the strip (Build B). It
+/// This build still **bundles** both — it is NOT the strip (Build B). It
 /// only makes the future strip safe. `V2CarryForwardMigration` retains the
 /// separate §D existing-vs-new-user English-engine-default resolution.
 enum ModelCarryForward {
@@ -33,25 +33,23 @@ enum ModelCarryForward {
     // MARK: - Per-asset free-space preflights
 
     /// Transient footprint is the temp copy alongside the still-present bundle.
-    /// v2 keeps its proven ~900 MB headroom; CTC (~99 MB) needs ~250 MB and
-    /// EmbeddingGemma (~330 MB) needs ~700 MB, both including the temp sibling.
+    /// v2 keeps its proven ~900 MB headroom; CTC (~99 MB) needs ~250 MB,
+    /// including the temp sibling.
     private static let v2RequiredFreeBytes: Int64 = 900 * 1024 * 1024
     private static let ctcRequiredFreeBytes: Int64 = 250 * 1024 * 1024
-    private static let gemmaRequiredFreeBytes: Int64 = 700 * 1024 * 1024
 
     // MARK: - Launch entry point
 
-    /// Idempotent per-launch carry-forward for ALL THREE assets, serially, off
+    /// Idempotent per-launch carry-forward for BOTH assets, serially, off
     /// the main thread, best-effort, self-healing. One detached `.utility` task
     /// drives them one after another — a cheap presence+verify check each
     /// launch, a no-op once each copy is complete (§A "no stuck-flag"). Serial
-    /// (not concurrent) so three big `copyItem`s don't thrash the filesystem or
+    /// (not concurrent) so two big `copyItem`s don't thrash the filesystem or
     /// spike transient disk use all at once.
     static func runAllIfNeeded() {
         Task.detached(priority: .utility) {
             carryV2IfNeeded()
             carryCTCIfNeeded()
-            carryEmbeddingGemmaIfNeeded()
         }
     }
 
@@ -96,22 +94,6 @@ enum ModelCarryForward {
         )
     }
 
-    private static func carryEmbeddingGemmaIfNeeded() {
-        // EmbeddingGemma copies on every device (Ask/search work everywhere).
-        guard let bundleLeaf = EmbeddingGemmaService.bundledModelDirectory() else { return }
-
-        // Destination LEAF-RENAMES `EmbeddingGemma` → `embeddinggemma-300m`
-        // (⚠️REVIEW M2). The engine's signature verify compares the source
-        // tree to the renamed-dest tree (file-count + total bytes), which is
-        // rename-agnostic — so the v2 "leaf must equal bundle name" invariant
-        // does not apply here.
-        carry(
-            bundleLeaf: bundleLeaf,
-            to: EmbeddingGemmaService.applicationSupportModelDirectory,
-            requiredFreeBytes: gemmaRequiredFreeBytes,
-            label: "embeddinggemma"
-        )
-    }
 
     // MARK: - §A — the generic carry-forward engine
 
@@ -175,7 +157,7 @@ enum ModelCarryForward {
         // Copy into a TEMP sibling, verify, then atomically install. Never copy
         // in place. `copyItem` on the whole leaf brings the entire package tree
         // across in one shot; the temp's leaf is our own name, so this handles
-        // the EmbeddingGemma leaf-rename for free.
+        // any future leaf-rename for free.
         let temp = parent.appendingPathComponent(
             "\(dest.lastPathComponent).carry-tmp-\(UUID().uuidString)",
             isDirectory: true
@@ -215,7 +197,7 @@ enum ModelCarryForward {
 
         // Backup-exclude the carried weights the moment they land, so a
         // multi-hundred-MB model doesn't bloat iCloud backups. The per-launch
-        // sweeps (FluidAudio for v2/CTC, CoreMLLLM for EmbeddingGemma) also
+        // sweeps (FluidAudio for v2/CTC) also
         // cover this, but exclude explicitly now so the copy is excluded from
         // the moment it lands, not only after the next launch (⚠️REVIEW-2 — the
         // v2 fix that established install-time exclusion is load-bearing).

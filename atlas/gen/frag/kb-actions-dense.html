@@ -1,6 +1,6 @@
 <!-- SHIPPED (features.md §5.6 / Keyboard/ActionsPopover.swift) — ••• Actions pane: 4×2 = 8 tiles.
-     Row 1 (features, colored): Add to Vocabulary · AI Rewrite · Translate · Close.
-     Row 2 (edit, monochrome): Copy · Paste · Undo · Redo. Fills the short pane, no scroll. -->
+     Row 1 (features, colored): Add to Vocabulary · AI Rewrite · Translate · Cleanup (the toggle, §7.14).
+     Row 2 (edit, monochrome): Copy · Paste · Undo · Redo. No Close tile — the ••• key shows × while open. -->
 <div style="height:300px"></div>
 
 <div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;margin:0 -6px;padding:12px 12px 16px;position:relative">
@@ -22,8 +22,11 @@
       <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Translate</span>
     </div>
     <div class="jot-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:9px 4px">
-      <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:var(--jot-ink);stroke-width:2;stroke-linecap:round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Close</span>
+      <span style="position:relative;display:inline-flex">
+        <span class="jot-tile" style="width:34px;height:34px;background:linear-gradient(135deg,#7C5CFF,#664BD1)"><svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:#fff;stroke-width:1.9;stroke-linecap:round"><path d="M4 20l10-10M13 5l1.2 2.6L17 8.8l-2.8 1.2L13 12.6l-1.2-2.6L9 8.8l2.8-1.2zM19 3l.6 1.4L21 5l-1.4.6L19 7l-.6-1.4L17 5l1.4-.6z"/></svg></span>
+        <span style="position:absolute;top:-6px;right:-9px;font-size:8.5px;font-weight:700;color:#fff;background:#33C759;border-radius:999px;padding:1.5px 4px;line-height:1">On</span>
+      </span>
+      <span style="font-size:10.5px;font-weight:600;color:var(--jot-ink);text-align:center;line-height:1.05">Cleanup</span>
     </div>
 
     <!-- row 2: edit actions (monochrome) -->
@@ -48,7 +51,8 @@
   <!-- control row -->
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
     <span style="width:54px;height:54px;border-radius:11px;background:rgba(26,140,255,0.18);border:0.5px solid rgba(26,140,255,0.35);display:flex;align-items:center;justify-content:center;flex:none">
-      <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--jot-accent)"><circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/></svg>
+      <!-- the ••• key wears an × while the pane is open — it is the Close control -->
+      <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:var(--jot-accent);stroke-width:2.2;stroke-linecap:round"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </span>
     <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 18px rgba(26,140,255,0.35)">
       <svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:#fff"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>

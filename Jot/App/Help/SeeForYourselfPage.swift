@@ -56,10 +56,10 @@ struct SeeForYourselfPage: View {
     /// interpolation (not the deprecated `+` concatenation) so "No accounts,
     /// no cloud, no telemetry." renders bold inline.
     private var lead: some View {
-        let strong = Text("No accounts, no cloud, no telemetry.")
+        let strong = Text("No accounts, no telemetry.")
             .font(.system(size: 15.5, weight: .semibold))
             .foregroundColor(Color.jotInk)
-        let rest = Text(" Your words never leave this iPhone — and you don't have to trust us on that. iOS logs every domain every app contacts, and Jot's list is short.")
+        let rest = Text(" Dictation never leaves this iPhone. Ask and long rewrites use Apple's Private Cloud Compute — end-to-end encrypted, never stored, readable by neither Apple nor Jot — and you don't have to trust us on any of it. iOS logs every domain every app contacts, and Jot's list is short.")
             .font(.system(size: 15.5))
             .foregroundColor(Color.jotPageInkSecondary)
         return Text("\(strong)\(rest)")
@@ -75,7 +75,7 @@ struct SeeForYourselfPage: View {
 
             PrivacyReportPreview()
 
-            Text("Anything from apple.com is iOS itself — the App Store handles donation receipts. That's the whole list.")
+            Text("Anything from apple.com is iOS itself — the App Store handles donation receipts, and on iOS 27 Apple Intelligence's Private Cloud Compute serves Ask. That's the whole list.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Color.jotMute)
                 .lineSpacing(2)

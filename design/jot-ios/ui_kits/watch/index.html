@@ -1,0 +1,43 @@
+<!-- @dsCard group="Watch" viewport="700x600" subtitle="watchOS companion — dictate, sync states, recents" name="Apple Watch" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot — Apple Watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500;1,9..144,600&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #060708; overflow: hidden; }
+  #root { height: 100%; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.035); }
+  }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="watch-ui.jsx"></script>
+<script type="text/babel" src="watch-screens.jsx"></script>
+<script type="text/babel" src="watch-app.jsx"></script>
+
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100" height="100" rx="22" fill="#0a0b0e"/>
+    <rect x="30" y="20" width="40" height="60" rx="18" fill="#16171a" stroke="#2a2c30" stroke-width="1.5"/>
+    <rect x="38" y="44" width="24" height="16" rx="8" fill="#1483F2"/>
+    <path d="M50 33 L50 41 Q50 45 46 45" stroke="#1A8CFF" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+    <g transform="translate(50 28)" stroke="#1A8CFF" stroke-width="1.6" stroke-linecap="round">
+      <line x1="-4" y1="-2.5" x2="-4" y2="2.5"/><line x1="0" y1="-5" x2="0" y2="5"/><line x1="4" y1="-2.5" x2="4" y2="2.5"/>
+    </g>
+  </svg>
+</template>
+</body>
+</html>

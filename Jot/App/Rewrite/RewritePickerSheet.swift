@@ -5,8 +5,8 @@ import os.log
 /// Bottom-sheet rewrite picker (Mockup 10 / plan §6.1).
 ///
 /// Presented from `TranscriptDetailView`'s Rewrite button when the AI rewrite
-/// model is `.ready`. Lists the user's saved prompts as tappable rows; tap
-/// fires the existing `LLMClient.rewrite(text:systemPrompt:)` path and
+/// engine is available. Lists the user's saved prompts as tappable rows; tap
+/// fires the `RewriteClient.rewrite(text:systemPrompt:)` path and
 /// dismisses the sheet. The result-handling lifecycle (running / success /
 /// error) is owned by the host detail view — this sheet is a picker only.
 ///
@@ -51,7 +51,7 @@ struct RewritePickerSheet: View {
     let prompts: [SavedPrompt]
 
     /// Fires when the user picks a prompt. Caller starts the in-process
-    /// rewrite via `LLMClient.rewrite(...)`.
+    /// rewrite via `RewriteClient.rewrite(...)`.
     let onPick: (SavedPrompt) -> Void
 
     /// Fires when the "Voice prompt" row's dictation finishes with non-empty
@@ -70,7 +70,7 @@ struct RewritePickerSheet: View {
     /// first (mirroring `onPick`); the host presents the ephemeral Translate
     /// sheet (features.md §3.9) on the picker's dismissal so two sheets never
     /// race. NOT a `SavedPrompt` and NOT an LLM rewrite — it routes to Apple's
-    /// on-device Translation, not `LLMClient.rewrite`.
+    /// on-device Translation, not `RewriteClient.rewrite`.
     let onTranslate: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -875,7 +875,7 @@ extension Color {
         .sheet(isPresented: .constant(true)) {
             RewritePickerSheet(
                 wordCount: 52,
-                modelDisplayName: "Qwen 3.5 4B",
+                modelDisplayName: "Apple Intelligence",
                 prompts: [SavedPrompt.defaultArticulate],
                 onPick: { _ in },
                 onVoicePrompt: { _ in },

@@ -1,20 +1,23 @@
 import Foundation
+import JotVocabCore
 import os
 
-/// Drains words the keyboard queued for "Add to Vocabulary".
+/// Drains the vocabulary corrections the keyboard queued ("Add to Vocabulary"
+/// on a selection) into `VocabularyLearning.apply` — the one correction path
+/// every surface takes (Learn from Corrections).
 ///
-/// The keyboard's "..." popover lets the user add the selected word to their
-/// vocabulary, but `VocabularyStore`'s file lives in the main app's private
-/// Application Support (not the App Group), so the keyboard can't write it.
-/// Instead the keyboard stages the word into `AppGroup.Keys.pendingVocabAdds`
-/// and posts `vocabAddRequested`; the main app runs the authoritative add here.
+/// `VocabularyStore`'s file lives in the main app's private Application Support
+/// (not the App Group), so the keyboard can't write it. It queues Codable
+/// `Correction`s into `AppGroup.Keys.pendingVocabCorrections` and posts
+/// `vocabAddRequested`; the app drains here on that ping and on foreground.
+/// A selection is queued as `.correct(heard: "", term:)` — a term with no
+/// misheard form, which adds it without re-casing an existing term (the
+/// selection may be sentence-start capitalized). Words an older keyboard build
+/// queued as plain strings (`AppGroup.Keys.pendingVocabAdds`) drain the same way.
 ///
-/// This is the *exact* `VocabularyStore.addTerm` the transcript pane uses, minus
-/// the "what should this say?" alias step — the keyboard selects an
-/// already-correct word, so there's no mis-transcription to map. The keyboard
-/// already applied the common-word guard for its own immediate feedback; we
-/// re-apply it here as defense in depth (a common word can only be added with an
-/// alias, which this path never has).
+/// The keyboard already applied the (English) common-word guard for its own
+/// immediate feedback; a plain add is re-checked here in the dictation
+/// language as defense in depth.
 @MainActor
 enum VocabularyAddInbox {
     private static let log = Logger(
@@ -22,28 +25,44 @@ enum VocabularyAddInbox {
         category: "VocabularyAddInbox"
     )
 
-    static func drain() {
-        let key = AppGroup.Keys.pendingVocabAdds
-        guard let data = AppGroup.defaults.data(forKey: key),
-              let words = try? JSONDecoder().decode([String].self, from: data),
-              !words.isEmpty
-        else { return }
-        // Clear first so a crash mid-add can't replay the whole queue forever.
-        AppGroup.defaults.removeObject(forKey: key)
+    private static var isDraining = false
 
-        // Common-word check in the dictation language so we don't add an
-        // everyday foreign word (keyboard applied the English guard for its own
-        // feedback; this is defense-in-depth in the right language).
+    static func drain() async {
+        // The ping and the foreground drain can overlap; the queue is cleared
+        // before applying, so a second pass would find it empty anyway — this
+        // just keeps one pass at a time.
+        guard !isDraining else { return }
+        isDraining = true
+        defer { isDraining = false }
+
+        // Clear first so a crash mid-apply can't replay the queue forever
+        // (apply is idempotent on the list, but not on the store's counters).
+        let queued = take([Correction].self, key: AppGroup.Keys.pendingVocabCorrections) ?? []
+        let legacy = (take([String].self, key: AppGroup.Keys.pendingVocabAdds) ?? [])
+            .map { Correction.correct(heard: "", term: $0) }
+        let corrections = legacy + queued
+        guard !corrections.isEmpty else { return }
+
         let resource = LanguageChoice.current.commonWordsResource
         var added = 0
-        for word in words {
-            let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            if CommonWords.isCommon(trimmed.lowercased(), resource: resource) { continue }
-            if VocabularyStore.shared.addTerm(trimmed) != nil { added += 1 }
+        for correction in corrections {
+            // A plain add (no heard form) of an everyday word is noise.
+            if case .correct(let heard, let word, _, _, _) = correction,
+               heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty,
+                      !CommonWords.isCommon(trimmed.lowercased(), resource: resource) else { continue }
+            }
+            if case .added = await VocabularyLearning.shared.apply(correction).outcome { added += 1 }
         }
         if added > 0 {
-            log.info("added \(added, privacy: .public) keyboard-shared vocabulary term(s)")
+            log.info("added \(added, privacy: .public) keyboard-queued vocabulary term(s)")
         }
+    }
+
+    private static func take<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = AppGroup.defaults.data(forKey: key) else { return nil }
+        AppGroup.defaults.removeObject(forKey: key)
+        return try? JSONDecoder().decode(type, from: data)
     }
 }

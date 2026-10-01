@@ -97,7 +97,7 @@ struct TranscribeAudioFileIntent: AppIntent {
 
     @Parameter(
         title: "Clean Up Transcript",
-        description: "Apply Apple Foundation Models cleanup (removes filler words, false starts) using your configured cleanup preferences.",
+        description: "Apply on-device intelligence cleanup (removes filler words, false starts) using your configured cleanup preferences.",
         default: false
     )
     var cleanup: Bool
@@ -241,11 +241,10 @@ struct TranscribeAudioFileIntent: AppIntent {
     @MainActor
     private func runCleanupTolerantly(on transcript: String) async -> String {
         let settings = CleanupSettings.load()
-        let service = CleanupService()
         do {
-            return try await service.clean(
-                transcript: transcript,
-                instructions: settings.instructions
+            return try await RewriteClient.shared.rewrite(
+                text: transcript,
+                systemPrompt: settings.instructions
             )
         } catch {
             return transcript

@@ -1,0 +1,23 @@
+{
+  "name": "@jot/design-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Jot design system \u2014 the HTML/React design source of truth for the iOS app (pulled from the jot-ios Claude Design project).",
+  "type": "module",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --platform=browser --jsx=transform --loader:.jsx=jsx --external:react --external:react-dom --outfile=dist/index.js && node scripts/assemble-dts.mjs && node scripts/assemble-css.mjs"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@types/react": "^18.3.0"
+  }
+}

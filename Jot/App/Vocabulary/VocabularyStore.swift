@@ -83,13 +83,29 @@ final class VocabularyStore {
 
     // MARK: - Load / save
 
+    /// The file exists but could not be read. Saving would replace the user's
+    /// list with whatever is in memory (nothing), so no write lands until a
+    /// load works — the `VocabularyListWriting.isWritable` contract.
+    @ObservationIgnored
+    private(set) var loadFailed = false
+
     func load() {
         guard let url = fileURL,
               let data = try? String(contentsOf: url, encoding: .utf8)
         else {
+            loadFailed = fileURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            if loadFailed {
+                lastSaveError = "Your vocabulary file couldn't be read, so changes aren't being saved."
+                DiagnosticsLog.record(
+                    source: "main-app",
+                    category: .vocabularySaveFailed,
+                    message: "Vocabulary load failed: file exists but is unreadable; writes disabled"
+                )
+            }
             terms = []
             return
         }
+        loadFailed = false
         terms = VocabularyFile.parse(data)
     }
 
@@ -165,7 +181,7 @@ final class VocabularyStore {
     /// would only re-install what is already loaded.
     @discardableResult
     private func writeToDisk() -> URL? {
-        guard let url = fileURL else { return nil }
+        guard let url = fileURL, !loadFailed else { return nil }
         let body = VocabularyFile.serialize(terms)
         do {
             try body.write(to: url, atomically: true, encoding: .utf8)
@@ -197,55 +213,13 @@ final class VocabularyStore {
         return new
     }
 
-    /// Add `text` as a term (dedup, case-insensitive), optionally attaching the
-    /// mis-transcription it was `heardAs` as a "sounds like" alias — the alias
-    /// feeds the rescorer's string matching directly, so the same mis-hear gets
-    /// caught acoustically next time. If the term already exists, only the alias
-    /// is merged in. Returns the CANONICAL stored term text (post file-format
-    /// sanitizing — callers recording learning mappings must key on this, not on
-    /// what was typed), or nil when nothing valid was stored. Drives the
-    /// transcript pane's selection-menu "Add to Vocabulary" (the mobile
-    /// Vocabulary UI has no aliases field — currently the only alias writer).
-    @discardableResult
-    func addTerm(_ text: String, heardAs: String? = nil) -> String? {
-        // The plain-text simple format has structural characters — ":" splits
-        // term from aliases, "," splits aliases, leading "#" comments the line
-        // out. A typed term carrying them would corrupt the file on the next
-        // parse (silently mutating or DELETING entries), so they're stripped
-        // here at the single write choke point.
-        let trimmed = Self.fileSafe(text, isAlias: false)
-        guard !trimmed.isEmpty else { return nil }
-        let alias: String? = heardAs.map { Self.fileSafe($0, isAlias: true) }
-
-        var changed = false
-        if let idx = terms.firstIndex(where: {
-            !$0.isBlank && $0.text.compare(trimmed, options: .caseInsensitive) == .orderedSame
-        }) {
-            if let alias, !alias.isEmpty,
-               alias.compare(trimmed, options: .caseInsensitive) != .orderedSame,
-               !terms[idx].aliases.contains(where: { $0.compare(alias, options: .caseInsensitive) == .orderedSame }) {
-                terms[idx].aliases.append(alias)
-                changed = true
-            }
-        } else {
-            let aliases: [String] = {
-                guard let alias, !alias.isEmpty,
-                      alias.compare(trimmed, options: .caseInsensitive) != .orderedSame else { return [] }
-                return [alias]
-            }()
-            terms.append(VocabTerm(text: trimmed, aliases: aliases))
-            changed = true
-        }
-        if changed { save() }
-        return trimmed
-    }
-
     /// Strip the simple format's structural characters from a term/alias value:
     /// ":" always (term/alias delimiter), "," for aliases (alias separator),
     /// leading "#" (comment marker), then collapse whitespace. NOTE: the
     /// Settings rows' free-text editing (`update(id:text:)`) predates this and
     /// is NOT yet routed through here — tracked with the vocabulary-section
     /// overhaul (plan §12).
+    ///
     /// Alias-only form of the existing persistence guard. Voice teaching keeps
     /// the recognizer's raw text for review, but candidates entering the simple
     /// file must not be allowed to change its line/field structure.
@@ -276,6 +250,11 @@ final class VocabularyStore {
         save()
     }
 
+    /// Plain row write (the Settings term field fires this per keystroke;
+    /// voice teaching's provisional test list). A learned sounds-like never
+    /// comes through here: every correction surface calls
+    /// `VocabularyLearning.shared.apply`, which writes through the
+    /// `VocabularyListWriting` seam below.
     func update(id: VocabTerm.ID, text: String? = nil, aliases: [String]? = nil) {
         guard let idx = terms.firstIndex(where: { $0.id == id }) else { return }
         if let text { terms[idx].text = text }
@@ -286,4 +265,47 @@ final class VocabularyStore {
     // The simple-format parser/serializer moved verbatim into the package as
     // `JotVocabCore.VocabularyFile` (byte-identical across apps and to
     // FluidAudio's `loadFromSimpleFormat`); `load()`/`save()` call it directly.
+}
+
+/// The list seam of `JotVocabCore.VocabularyLearning` (Learn from Corrections):
+/// plain row writes by id. Matching, dedupe and casing rules live in the shared
+/// code; every correction surface goes through `VocabularyLearning.shared.apply`,
+/// never these.
+extension VocabularyStore: VocabularyListWriting {
+    /// Longest term / sounds-like (whitespace tokens) the list accepts — the
+    /// shared edit learner's term cap. A sounds-like re-spells the term, so the
+    /// same ceiling applies; a longer selection is a mis-drag, not a term.
+    static let maxTermWords = EditLearner.maxTermWords
+
+    var isWritable: Bool { !loadFailed }
+
+    /// The store's own file-safe scrub (":" / "," / leading "#" stripped,
+    /// whitespace collapsed), capped at `maxTermWords`. Serves a term and a
+    /// sounds-like alike.
+    func cleanEntry(_ raw: String) -> String? {
+        let cleaned = Self.fileSafeAlias(raw)
+        guard !cleaned.isEmpty,
+              cleaned.split(whereSeparator: { $0 == " " }).count <= Self.maxTermWords
+        else { return nil }
+        return cleaned
+    }
+
+    func addTerm(_ text: String) -> VocabTerm.ID {
+        let term = VocabTerm(text: text)
+        terms.append(term)
+        save()
+        return term.id
+    }
+
+    func removeTerm(id: VocabTerm.ID) {
+        delete(id: id)
+    }
+
+    func setText(_ text: String, id: VocabTerm.ID) {
+        update(id: id, text: text)
+    }
+
+    func setSoundsLikes(_ soundsLikes: [String], id: VocabTerm.ID) {
+        update(id: id, aliases: soundsLikes)
+    }
 }

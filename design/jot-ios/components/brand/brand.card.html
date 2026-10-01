@@ -1,0 +1,48 @@
+<!-- @dsCard group="Components" viewport="700x320" subtitle="JotMark · JotAppIcon · HeroTile · JotGlyph" name="Brand" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../card-runtime.js"></script>
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: var(--bg-screen); }
+  .wrap { display: flex; align-items: center; gap: 26px; padding: 20px 24px 14px; }
+  .lbl { font-size: 10.5px; color: var(--ink-caption); text-align: center; margin-top: 8px; }
+  .glyphs { display: flex; align-items: center; gap: 16px; padding: 0 24px 18px; color: var(--ink-sub); flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+(async () => {
+  const C = await loadJotComponents([
+    "components/brand/JotMark.jsx",
+    "components/brand/JotGlyph.jsx",
+    "components/brand/JotAppIcon.jsx",
+    "components/brand/HeroTile.jsx",
+  ]);
+  const { JotMark, JotGlyph, JotAppIcon, HeroTile } = C;
+  const names = ["mic", "keyboard", "check", "sparkle", "chevron-left", "close", "arrow-up", "doc", "copy", "trash", "pause", "globe", "search", "keyboard-mini", "watch"];
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <div>
+      <div className="wrap">
+        <div><JotAppIcon size={110} /><div className="lbl">JotAppIcon</div></div>
+        <div style={{ textAlign: "center" }}><JotMark size={54} color="#fff" /><div className="lbl">JotMark</div></div>
+        <div><HeroTile variant="mic" size={96}><JotGlyph name="mic" size={44} color="#fff" /></HeroTile><div className="lbl">HeroTile mic</div></div>
+        <div><HeroTile variant="keyboard" size={96}><JotGlyph name="keyboard" size={44} color="var(--tile-key-glyph)" /></HeroTile><div className="lbl">keyboard</div></div>
+        <div><HeroTile variant="success" size={96}><JotGlyph name="check" size={44} color="#fff" /></HeroTile><div className="lbl">success</div></div>
+      </div>
+      <div className="glyphs">
+        {names.map((n) => <JotGlyph key={n} name={n} size={24} />)}
+        <span style={{ fontSize: 10.5, color: "var(--ink-caption)" }}>JotGlyph × {names.length}</span>
+      </div>
+    </div>
+  );
+})();
+</script>
+</body>
+</html>

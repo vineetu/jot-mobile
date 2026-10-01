@@ -6,7 +6,7 @@ Apple's [product page guidance](https://developer.apple.com/app-store/product-pa
 
 The 2025 ASO consensus ([ASOMobile](https://asomobile.net/en/blog/lesson-3-text-optimization-for-the-app-store/), [Apptweak](https://www.apptweak.com/en/aso-blog/app-store-description-best-practices), [SplitMetrics](https://splitmetrics.com/blog/app-store-description-guide/), [Adapty](https://adapty.io/blog/app-store-description/)) agrees: on iOS the description is **not indexed**, so write it for humans and conversion, not keywords. The recurring structure: hook (1–2 sentences) → 1–3-sentence paragraphs → ALL-CAPS section anchors → text-based bullets.
 
-Real indie descriptions confirm it. [Drafts](https://apps.apple.com/us/app/drafts/id1236254471) opens with the tagline "Where text starts" then one promise sentence, then ALL-CAPS headers (CAPTURE EVERYWHERE / USE YOUR WORDS). [Bear](https://apps.apple.com/us/app/bear-markdown-notes/id1016366447) leads with audience naming. [Superwhisper](https://apps.apple.com/us/app/superwhisper/id6471464415) — the closest dictation competitor — opens with the core mechanic ("Hold to record. Release to paste."). None lead with adjectives; all lead with what the app physically *is*. Two patterns Jot should avoid: Superwhisper's "5x faster" headline (gives up the ground we own — privacy + system-wide keyboard) and Wispr Flow's AI-polish lead (Jot's AI is opt-in, 2.5 GB).
+Real indie descriptions confirm it. [Drafts](https://apps.apple.com/us/app/drafts/id1236254471) opens with the tagline "Where text starts" then one promise sentence, then ALL-CAPS headers (CAPTURE EVERYWHERE / USE YOUR WORDS). [Bear](https://apps.apple.com/us/app/bear-markdown-notes/id1016366447) leads with audience naming. [Superwhisper](https://apps.apple.com/us/app/superwhisper/id6471464415) — the closest dictation competitor — opens with the core mechanic ("Hold to record. Release to paste."). None lead with adjectives; all lead with what the app physically *is*. Two patterns Jot should avoid: Superwhisper's "5x faster" headline (gives up the ground we own — privacy + system-wide keyboard) and Wispr Flow's AI-polish lead (Jot's AI is Apple Intelligence — no download, and Ask runs on Apple's private cloud).
 
 ## Recommended structure rationale
 
@@ -54,22 +54,24 @@ WHAT'S INSIDE
 · Recents strip — last 10 dictations one tap away to re-insert
 · Five-minute warm microphone across app switches and calls
 · On-device transcription using Apple's speech models, plus optional Parakeet 600M
-· On-device AI rewrite (optional 2.5 GB download)
+· AI rewrite on Apple Intelligence — your own prompts, nothing to download
 · Custom rewrite prompts you write once and reuse
 · Vocabulary list for names and technical terms
+· Ask — questions across all your notes, answered by Apple's Private Cloud Compute (iOS 27)
+· Proofread — the iPhone's own grammar checker on any transcript (iOS 27)
 · Action Button support and a "Transcribe Audio with Jot" Shortcuts action
 
 YOUR DATA
 
 · Transcription runs on device. Audio never leaves your iPhone.
-· AI rewrites run on device too.
-· No account. No sign-in. No cloud sync. No analytics. No third-party SDKs.
+· AI rewrites run on device. Ask — and a rewrite too long for the on-device model — uses Apple's Private Cloud Compute: end-to-end encrypted, never stored, readable by neither Apple nor Jot.
+· No account. No sign-in. No cloud sync. No analytics. No third-party SDKs. Jot runs no servers.
 · Transcripts live in the app, on your phone, until you delete them.
 
 REQUIREMENTS
 
 · iOS 26 or later. iPhone with A14 chip or newer.
-· Optional AI rewrite: iPhone 15 Pro and later, 2.5 GB download.
+· AI rewrite and Ask: an iPhone with Apple Intelligence. Ask needs iOS 27.
 · English at launch. More languages to follow.
 
 Free to download. No subscription. No ads. No upsell.

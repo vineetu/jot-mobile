@@ -1,0 +1,41 @@
+/* ============================================================
+   Jot — typography tokens
+   Two voices:
+   · Fraunces, ITALIC — the editorial voice (titles, live transcript,
+     questions, anything "spoken"). Weight 500–600.
+   · SF Pro / system — the chrome voice (body, labels, buttons).
+   ============================================================ */
+
+:root {
+  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sys: -apple-system, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", sans-serif;
+
+  /* ---- Editorial (Fraunces italic) sizes ---- */
+  --ts-welcome: 41px;        /* W1 "Welcome to Jot." */
+  --ts-title: 30px;          /* screen titles, reassurance h1, hero transcript */
+  --ts-transcript: 27px;     /* live transcription card */
+  --ts-prompt: 25px;         /* Ask Jot empty prompt */
+  --ts-question: 22px;       /* Ask Jot question header */
+  --ts-subtitle: 20px;       /* welcome subtitle */
+  --ts-suggestion: 17px;     /* rotating spoken suggestions */
+
+  /* ---- System (SF) sizes ---- */
+  --ts-cta: 18.5px;          /* CTA pill label, w600 */
+  --ts-body: 17.5px;         /* body copy / answer text, lh 1.42–1.56 */
+  --ts-label: 16.5px;        /* glass-pill labels, w500–600 */
+  --ts-row: 16px;            /* list rows */
+  --ts-status: 15.5px;       /* status rows ("Listening") */
+  --ts-meta: 13.5px;         /* timestamps, meta */
+  --ts-footnote: 12.5px;     /* footnotes, honest disclaimers */
+  --ts-caption: 11px;        /* uppercase caps labels */
+  --ts-beta: 9.5px;          /* BETA tag */
+
+  /* ---- Tracking / line-height ---- */
+  --track-title: -0.5px;
+  --track-body: -0.1px;
+  --track-caps: 1.4px;       /* uppercase caption labels */
+  --track-beta: 2px;
+  --lh-title: 1.1;
+  --lh-body: 1.42;
+  --lh-answer: 1.56;
+}

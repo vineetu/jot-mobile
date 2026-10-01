@@ -31,6 +31,41 @@ final class KeyboardRecordingState {
     /// `.paused` is NOT in-flight — it is a live-but-not-capturing sub-state
     /// of recording (§10.2), so the mic CTA stays interactive (Stop) and the
     /// Resume control is offered separately.
+    /// The last *named* post-stop stage (`.transcribing` / `.cleaning` /
+    /// `.rewriting`). `.processing` and `.publishing` are internal beats, so
+    /// the label holds the previous named stage through them — the pill never
+    /// flashes back to "Transcribing" between "Cleaning up" and the paste.
+    /// Reset whenever the session leaves the post-stop tail.
+    private(set) var lastNamedStage: PipelinePhaseProjection.Phase = .transcribing
+
+    /// The word the mic CTA shows while `isInflightPostRecording`. Names the
+    /// stage the user is actually waiting on — most usefully the Automatic
+    /// cleanup pass (features.md §7.14), which can take a few seconds and
+    /// otherwise reads as an unexplained wait. Never a generic "Working".
+    var inflightStatusLabel: String {
+        switch lastNamedStage {
+        case .cleaning: return "Cleaning up"
+        case .rewriting: return "Rewriting"
+        default: return "Transcribing"
+        }
+    }
+
+    /// Strip-header line while the post-stop tail runs (§5.5): says what the
+    /// wait is *for*, in plain words, above the held live text.
+    var inflightHeaderLine: String {
+        switch lastNamedStage {
+        case .cleaning: return "AI is tidying this before it pastes"
+        case .rewriting: return "Applying your follow-up"
+        default: return "Finishing the transcript"
+        }
+    }
+
+    /// Elapsed seconds frozen at the moment the recording stopped. Shown in
+    /// the strip header (large widths) through the post-stop tail so the clock
+    /// reads as the recording's length, not a still-ticking timer. Nil outside
+    /// the tail.
+    private(set) var finishingElapsedSeconds: TimeInterval?
+
     var isInflightPostRecording: Bool {
         switch phase {
         case .transcribing, .processing, .cleaning, .rewriting, .publishing:
@@ -79,14 +114,22 @@ final class KeyboardRecordingState {
             phase = .idle
             isPaused = false
             pausedElapsedSeconds = nil
+            lastNamedStage = .transcribing
+            finishingElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
             return
         }
+        // Snapshot the live/paused clock BEFORE the projection overwrites it,
+        // so the first in-flight tick can freeze the elapsed time at stop.
+        let priorStartedAt = startedAt
+        let priorPausedElapsed = pausedElapsedSeconds
         phase = projection.phase
         switch projection.phase {
         case .recording:
             isPaused = false
             pausedElapsedSeconds = nil
+            lastNamedStage = .transcribing
+            finishingElapsedSeconds = nil
             update(isRecording: true, startedAt: projection.recordingStartedAt)
         case .paused:
             // Stay "recording" so the chrome persists; freeze the clock by
@@ -107,15 +150,38 @@ final class KeyboardRecordingState {
         case .arming:
             isPaused = false
             pausedElapsedSeconds = nil
+            lastNamedStage = .transcribing
+            finishingElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
         // `warmIdle` (post-stop warm window, mic warm but NOT capturing) renders
         // as idle/home. The in-flight tail + idle/failed are listed explicitly so
         // a real future state addition is a compile prompt to decide its UI, not a
         // silent fall-through — the switch is already exhaustive over `Phase`, so
         // there is no `default` (it would be provably dead code).
-        case .idle, .warmIdle, .transcribing, .processing, .cleaning, .rewriting, .publishing, .failed:
+        case .transcribing, .processing, .cleaning, .rewriting, .publishing:
+            // The post-stop tail (§5.5): the strip stays mounted, holding the
+            // last live text still under a header that names the wait. The
+            // clock freezes at whatever it read when the recording stopped
+            // (or at the paused value if the user stopped from Pause).
+            switch projection.phase {
+            case .transcribing, .cleaning, .rewriting: lastNamedStage = projection.phase
+            default: break
+            }
+            if finishingElapsedSeconds == nil {
+                if let frozen = priorPausedElapsed {
+                    finishingElapsedSeconds = frozen
+                } else if let anchor = priorStartedAt ?? projection.recordingStartedAt {
+                    finishingElapsedSeconds = max(0, projection.lastUpdatedAt.timeIntervalSince(anchor))
+                }
+            }
             isPaused = false
             pausedElapsedSeconds = nil
+            update(isRecording: false, startedAt: nil)
+        case .idle, .warmIdle, .failed:
+            isPaused = false
+            pausedElapsedSeconds = nil
+            lastNamedStage = .transcribing
+            finishingElapsedSeconds = nil
             update(isRecording: false, startedAt: nil)
         }
     }

@@ -1,4 +1,4 @@
-# Warm Hold vs. Reddit — why Reddit's player dies while YouTube/Music survive, and what Willow proves is possible
+# [CLOSED 2026-09-26, build 310 — owner-verified] Warm Hold vs. Reddit — why Reddit's player dies while YouTube/Music survive, and what Willow proves is possible
 
 **Status:** Research only. No code changed. 2026-08-30.
 
@@ -280,3 +280,57 @@ Web (key): [Willow: why taken back to app](https://help.willowvoice.com/en/artic
 ## Status update (2026-08-31)
 
 Both experiment artifacts are BUILT (uncommitted): the probe app at `~/code/AudioCoexistProbe` (reads `isOtherAudioPlaying` + silence hint 1/sec without activating its own session) and the hidden Settings toggle "Pause engine while warm (debug)" (5-tap Version reveal, key `debug.warmHoldEnginePause`, applies from the NEXT warm window) wired through `RecordingService.enterWarmHold`/`startFromWarmHold`. The matrix is runnable end-to-end on the owner's phone.
+
+## Status update (2026-09-26, build 309)
+
+In-app test switch shipped: Settings → Privacy → Keep mic ready → **Idle mode (test)** (`AppGroup.warmIdleVariant`,
+`WarmIdleVariant` in `Shared/AppGroup.swift`). Variants: A current · B `.default` mode · C input muted
+(`AVAudioApplication.setInputMuted`) · D default+muted · E engine paused · F default+paused. Applied in
+`RecordingService.enterWarmHold` / `makeWarmIdleSessionMixable` / `applyWarmIdleVariant`; paused engines restart in
+`startFromWarmHold` (early first-buffer arm), mutes are cleared on resume, teardown and cold `configureSession`.
+Help → Diagnostics **WARM** lines: entered, resume OK (ms), resume FAILED → cold, ended (reason — "interrupted by
+another app" is the Reddit signal), and "Jot was frozen Ns" (1 s liveness tick gap > 5 s = iOS suspended the app,
+the risk for E/F). The standalone WarmMicLab probe (scratchpad) also exists. Research round: iOS 27 SDK adds no
+background-mic or keyboard-mic path; competitors (Wispr, Willow, open-source keyboards) all idle a running
+`.playAndRecord` engine, mostly in `.default` mode.
+
+## ROOT CAUSE (2026-09-26, from the device's audiomxd log) — fixed in build 310
+
+The 309 idle variants all failed for one reason: **the idle swap never happened.** After a keyboard dictation Jot
+is in the background, and iOS refuses to change an active session's category there:
+`Warm-hold mixable (.playAndRecord) failed — OSStatus 560557684` (`'!int'`, cannotInterruptOthers); audiomxd:
+`Re-setting audioCategory to 'Record' ... because BeginInterruption returned an error`. The fallback left an
+**exclusive `.record` session** (`[Record/Measurement] [NonMixable]`) for the whole warm window; Reddit's player
+(`MediaPlayback/Default [Mixable]`) goes silent next to it. H1 in §2 was wrong: nothing was ever mixable in the
+background. Willow's session in the same log: `PlayAndRecord_NoBluetooth_DefaultToSpeaker / Default [Mixable]`,
+set once in the foreground, never swapped.
+
+Fix (310): one shared session for capture AND idle — `RecordingService.applySharedSessionConfig`
+(`.playAndRecord` / `.measurement` / `[.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]`), applied by
+`configureSession` whenever the start is in the foreground; warm entry and warm resume then change nothing.
+A start that begins in the background (Action Button) keeps the legacy exclusive `.record` path (2026-04-21
+AURemoteIO fix) and its warm window logs "EXCLUSIVE". The 309 test switch was removed. Behaviour change:
+other apps' audio keeps playing during dictation (it used to be interrupted).
+
+How the log was obtained: `sudo log collect --device-udid <udid> --last 45m` over the CoreDevice (Wi-Fi) pairing,
+then `log show … | grep audiomxd | grep -E "cmsSetIsActive|cmsSetAudioCategory|BeginInterruption"`.
+
+## Regression + fix (2026-09-30, build 321)
+Owner: Reddit silent again on 320. Device log: the keyboard's URL-bounce cold start ran `configureSession` while the
+scene was still activating (UIKit "Deactivation reasons" pending at 12:36:24.068) → `applicationState == .inactive`
+→ the 310 gate (`== .active`) took the legacy exclusive `.record` path (audiomxd: `set audioCategory to 'Record'` at
+.135), and every warm entry's mixable swap then failed '!int' as before. Fix: shared session whenever
+`applicationState != .background`. Lesson: 310 was verified only with a recording started while Jot was already open.
+
+## Independent review + structural fix (2026-09-30, build 322)
+Review (Opus agent) enumerated every recording start path. Remaining ways to hold an EXCLUSIVE warm window after 321:
+H1 warm-resume failure → cold `configureSession` while backgrounded → legacy `.record`; H2 cold-launch mic-race retries
+(75 ms × 2 s) crossing into background after a quick swipe-back; M2 `.inactive` on the way to background; M3 a
+foreground shared-config throw. Also found: the "held mode" was logged nowhere readable (H3).
+Fix (one rule, not per-path patches): `enterWarmHold` never holds an exclusive session — if `!sessionIsShared` and the
+shared swap fails, it releases the mic (`fullyTeardownEngine`) and logs "Mic released after dictation — couldn't share
+audio…" to Diagnostics; `makeWarmIdleSessionMixable` no longer falls back to `.record`. Cost: the next keyboard tap
+after such a dictation opens Jot (foreground → shared). "recording stopped" Diagnostics now carries `sharedAudio`.
+Per-build check: after a keyboard cold start + warm resume, Help → Diagnostics "recording stopped" must show
+sharedAudio=true; device-log grep for "Re-setting audioCategory to 'Record'" / "[Record/Measurement] [NonMixable]"
+must be empty during a warm window.

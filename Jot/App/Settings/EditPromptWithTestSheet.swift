@@ -616,9 +616,8 @@ struct EditPromptWithTestSheet: View {
         let systemInstruction = trimmedSystemPrompt
         let startDate = Date()
         Task { @MainActor in
-            let client = LLMClientFactory.shared.client()
             do {
-                let output = try await client.rewrite(text: textToRewrite, systemPrompt: systemInstruction)
+                let output = try await RewriteClient.shared.rewrite(text: textToRewrite, systemPrompt: systemInstruction)
                 testRewrittenText = output
             } catch {
                 testErrorMessage = "Rewrite failed — \(error.localizedDescription)"

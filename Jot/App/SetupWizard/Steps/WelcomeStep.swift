@@ -33,7 +33,7 @@ struct WelcomeStep: View {
                     .lineSpacing(2)
                     .padding(.top, 4)
 
-                Text("Free, private, and fully on-device — your words never leave your iPhone.")
+                Text("Free and private — dictation runs on your iPhone, and nothing is stored anywhere else.")
                     .font(.system(size: 13.5, weight: .regular))
                     .foregroundStyle(Color.jotMute)
                     .multilineTextAlignment(.center)

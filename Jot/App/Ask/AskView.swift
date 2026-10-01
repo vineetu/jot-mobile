@@ -102,8 +102,6 @@ struct AskView: View {
         }
         .onAppear {
             controller.refreshAvailability()
-            controller.refreshIndexStatus()
-            controller.refreshEmbeddingModelAvailability()
             // Voice-first: do NOT auto-raise the keyboard. On a fresh, available
             // Ask, start listening immediately so the default action is "just
             // talk". The user taps `Type instead` to switch to typing.
@@ -223,21 +221,6 @@ struct AskView: View {
 
     private var listeningCanvas: some View {
         VStack(spacing: 0) {
-            // Search-model setup offer — shown only on a stripped build whose
-            // EmbeddingGemma hasn't landed yet (or an iCloud restore). Ask still
-            // works lexically meanwhile; this is a calm inline offer, not a
-            // block. Sits above the index banner.
-            if controller.embeddingModelMissing || controller.isDownloadingEmbeddingModel {
-                searchModelBanner
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 4)
-            }
-            if controller.isIndexing || controller.unindexedCount > 0 {
-                indexBanner
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 4)
-            }
-
             // Hero — empty prompt + rotating suggestion, or the live transcript.
             VStack { heroZone }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -384,7 +367,7 @@ struct AskView: View {
     /// backend, so we show the warming copy instead).
     private var thinkingSteps: [String] {
         if controller.isModelWarming {
-            return ["Waking the on-device model…"]
+            return ["Connecting to Private Cloud Compute…"]
         }
         let n = controller.retrievedTranscripts.count
         var steps = ["Searching your notes…"]
@@ -544,18 +527,13 @@ struct AskView: View {
     private var attributionLine: String {
         // Product-help answers searched the bundled help corpus, not the user's
         // notes — never claim "N notes searched" for them.
+        let model = controller.answerBackend?.displayName ?? "Private Cloud Compute"
         if controller.answerCorpus == .help {
-            if let model = controller.answerBackend?.displayName {
-                return "Answered from Jot's Help with \(model) · on-device"
-            }
-            return "Answered from Jot's Help · on-device"
+            return "Answered from Jot's Help · \(model)"
         }
         let n = controller.retrievedTranscripts.count
-        let searched = "\(n) \(n == 1 ? "note" : "notes") searched · on-device"
-        if let model = controller.answerBackend?.displayName {
-            return "Answered with \(model) · \(searched)"
-        }
-        return "Answered on-device · \(searched)"
+        let searched = "\(n) \(n == 1 ? "note" : "notes") read"
+        return "\(searched) · \(model) · private, never stored"
     }
 
     private static func sourceDateString(_ date: Date) -> String {
@@ -598,99 +576,6 @@ struct AskView: View {
         .padding(.top, 10)
         .padding(.bottom, 28)
         .transition(.opacity)
-    }
-
-    // MARK: - Index prompt (offered inside Ask when notes aren't indexed)
-
-    private var indexBanner: some View {
-        HStack(spacing: 10) {
-            if controller.isIndexing {
-                ProgressView().controlSize(.small)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Indexing your notes…")
-                        .font(.system(.callout, weight: .semibold))
-                        .foregroundStyle(Color.jotPageInk)
-                    if controller.indexTotal > 0 {
-                        Text("\(controller.indexDone) / \(controller.indexTotal)")
-                            .font(.caption2)
-                            .foregroundStyle(Color.jotPageInkSecondary)
-                    }
-                }
-                Spacer()
-            } else {
-                Image(systemName: "sparkles.rectangle.stack")
-                    .foregroundStyle(Self.accentInk)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("\(controller.unindexedCount) \(controller.unindexedCount == 1 ? "note isn’t" : "notes aren’t") indexed yet")
-                        .font(.system(.callout, weight: .semibold))
-                        .foregroundStyle(Color.jotPageInk)
-                    Text("Ask already searches them — indexing sharpens results.")
-                        .font(.caption2)
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                }
-                Spacer(minLength: 8)
-                Button("Index") { controller.indexUnindexed() }
-                    .font(.system(.callout, weight: .semibold))
-                    .foregroundStyle(Self.accentInk)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Self.accentSoft.opacity(0.5))
-        )
-    }
-
-    // MARK: - Search-model setup offer (EmbeddingGemma foreground promote)
-
-    /// Inline offer to finish downloading the ~330 MB search model on a stripped
-    /// build. NOT an error dialog — Ask keeps working lexically; this sharpens
-    /// retrieval. While downloading it shows a determinate progress bar with the
-    /// honest "keep Jot open" caveat. See docs/plans/model-externalization-sub-50mb.md.
-    private var searchModelBanner: some View {
-        HStack(spacing: 10) {
-            if controller.isDownloadingEmbeddingModel {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        ProgressView(value: controller.embeddingDownloadFraction)
-                            .frame(maxWidth: .infinity)
-                        Text("\(Int((controller.embeddingDownloadFraction * 100).rounded()))%")
-                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(Color.jotPageInkSecondary)
-                            .frame(minWidth: 36, alignment: .trailing)
-                    }
-                    Text("Finishing setup — downloading the search model (~330 MB). Keep Jot open.")
-                        .font(.caption2)
-                        .foregroundStyle(Color.jotPageInkSecondary)
-                }
-            } else {
-                Image(systemName: "arrow.down.circle")
-                    .foregroundStyle(Self.accentInk)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Finish search setup")
-                        .font(.system(.callout, weight: .semibold))
-                        .foregroundStyle(Color.jotPageInk)
-                    Text(
-                        controller.embeddingDownloadFailed == nil
-                            ? "Ask already works — a one-time ~330 MB download sharpens results."
-                            : "Download failed — tap to retry."
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(Color.jotPageInkSecondary)
-                }
-                Spacer(minLength: 8)
-                Button("Download") { controller.downloadEmbeddingModel() }
-                    .font(.system(.callout, weight: .semibold))
-                    .foregroundStyle(Self.accentInk)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Self.accentSoft.opacity(0.5))
-        )
     }
 
     // MARK: - Edge states (vague / error / unavailable)
@@ -737,20 +622,24 @@ struct AskView: View {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(Color.jotPageInkSecondary)
-                Text(reason == .qwenNotDownloaded
-                     ? "Ask needs the on-board model"
-                     : "Ask uses Apple Intelligence")
+                Text(reason == .quotaReached
+                     ? "You've used today's Ask limit"
+                     : "Ask uses Private Cloud Compute")
                     .font(.headline)
                     .foregroundStyle(Color.jotPageInk)
             }
             Text(unavailableMessage(reason))
                 .font(.system(.callout))
                 .foregroundStyle(Color.jotPageInkSecondary)
-            if reason == .appleIntelligenceOff {
+            if reason == .systemNotReady || reason == .quotaReached {
                 Button {
-                    openSystemSettings()
+                    if reason == .quotaReached {
+                        controller.showQuotaOptions()
+                    } else {
+                        openSystemSettings()
+                    }
                 } label: {
-                    Text("Open Settings")
+                    Text(reason == .quotaReached ? "See options" : "Open Settings")
                         .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
@@ -766,14 +655,16 @@ struct AskView: View {
 
     private func unavailableMessage(_ reason: AskController.UnavailableReason) -> String {
         switch reason {
-        case .appleIntelligenceOff:
-            return "Apple Intelligence is turned off. Turn it on in Settings, or switch Ask to on-board Qwen in Settings → AI."
+        case .needsIOS27:
+            return "Ask answers questions across your notes with Apple's Private Cloud Compute, which needs iOS 27. Update your iPhone to use it."
+        case .awaitingAccess:
+            return "Ask isn't available in this version of Jot yet."
         case .deviceNotEligible:
-            return "This device doesn't support Apple Intelligence. Switch Ask to on-board Qwen in Settings → AI."
-        case .modelDownloading:
-            return "Apple Intelligence is still downloading. Try again in a few minutes, or switch Ask to on-board Qwen in Settings → AI."
-        case .qwenNotDownloaded:
-            return "On-board Qwen isn't downloaded. Download it in Settings → AI → Rewrite & prompts, or switch Ask to Apple Intelligence in Settings → AI."
+            return "This iPhone doesn't support Apple Intelligence, which Ask uses."
+        case .systemNotReady:
+            return "Apple Intelligence is off or still setting up. Turn it on in Settings → Apple Intelligence & Siri, then try again."
+        case .quotaReached:
+            return "Apple gives every iCloud account a daily allowance for Private Cloud Compute, and today's is used up. It resets tomorrow — iCloud+ raises the limit."
         case .unknown:
             return "Ask isn't available right now. Try again in a moment."
         }

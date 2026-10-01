@@ -1,0 +1,30 @@
+<!-- @dsCard group="Colors" viewport="700x190" subtitle="Ink, chrome, card tokens on the dark screen bg" name="Dark theme (default)" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: var(--bg-screen); }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 14px; }
+  .tk { border-radius: 12px; padding: 9px 10px; background: var(--card); border: 0.5px solid var(--card-bord); }
+  .chip { width: 100%; height: 26px; border-radius: 7px; margin-bottom: 7px; border: 0.5px solid rgba(255,255,255,0.14); box-sizing: border-box; }
+  .tk b { display: block; font-size: 11px; font-weight: 600; color: var(--ink); }
+  .tk span { font-size: 10px; color: var(--ink-caption); }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="tk"><div class="chip" style="background: var(--ink);"></div><b>--ink</b><span>#FFFFFF</span></div>
+    <div class="tk"><div class="chip" style="background: var(--ink-sub);"></div><b>--ink-sub</b><span>66% cool white</span></div>
+    <div class="tk"><div class="chip" style="background: var(--ink-caption);"></div><b>--ink-caption</b><span>42%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--chrome-fill);"></div><b>--chrome-fill</b><span>glass 8%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--chrome-bord);"></div><b>--chrome-bord</b><span>hairline 16%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--card);"></div><b>--card</b><span>6%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--card-bord);"></div><b>--card-bord</b><span>11%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--field-fill);"></div><b>--field-fill</b><span>4.5%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--rail);"></div><b>--rail</b><span>home bar 30%</span></div>
+    <div class="tk"><div class="chip" style="background: var(--hairline);"></div><b>--hairline</b><span>dividers 7%</span></div>
+  </div>
+</body>
+</html>

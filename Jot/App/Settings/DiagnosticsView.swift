@@ -284,6 +284,13 @@ struct DiagnosticsView: View {
         case .appleDictation: return ("APPLE", Color.jotAccent)
         case .vocabularySaveFailed: return ("VOCAB/SAVE", Color.jotWarning)
         case .diarization: return ("DIARIZE", Color.jotAccent)
+        // AI rewrite / Automatic cleanup (features.md §7.14): a failed rewrite
+        // carries `rateLimited` + `error` metadata; the deferred pair brackets
+        // a cleanup that was queued while the app was rate-limited in the
+        // background and ran on the next foreground.
+        case .rewriteFailed: return ("REWRITE/FAIL", Color.jotWarning)
+        case .cleanupDeferred: return ("CLEANUP/DEFER", Color.jotAccent)
+        case .cleanupDeferredRan: return ("CLEANUP/RAN", Color.jotSuccess)
         }
     }
 

@@ -412,7 +412,7 @@ actor AppleStreamingSession: StreamingSession {
         // annotated `@Sendable`, so a captured mutable var trips Swift 6's
         // concurrent-capture check even though the block runs synchronously
         // inline. Mirrors `CaptureContext.ingest` in RecordingService.swift.
-        let suppliedSource = Mutex<Bool>(false)
+        let suppliedSource = OSAllocatedUnfairLock<Bool>(initialState: false)
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
             let firstCall = suppliedSource.withLock { supplied -> Bool in

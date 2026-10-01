@@ -1,0 +1,57 @@
+{
+  "persona": "teacher",
+  "display_name": "Teacher",
+  "transcripts": [
+    {
+      "text": "Note after third period. Marcus is really struggling with fractions, not the concept, the notation. Pull him for five minutes tomorrow and try the number line again.",
+      "source": "keyboard", "duration": 12.4, "days_ago": 0, "time": "11:35",
+      "label": "Student note"
+    },
+    {
+      "text": "Lesson idea. Open the photosynthesis unit with the elodea and baking soda demo. The bubbles hook them every year. Tie it back to the equation at the end.",
+      "source": "app", "duration": 11.0, "days_ago": 0, "time": "08:05"
+    },
+    {
+      "text": "Reminder. Field trip permission slips are due Thursday. I am still missing six. Send the reminder home in the folder, not just email, half the parents do not check email.",
+      "source": "app", "duration": 10.6, "days_ago": 0, "time": "07:40"
+    },
+    {
+      "text": "so i need to write the newsletter for the parents this week and i want to cover what we did in the reading unit the upcoming science fair the early dismissal on friday and a thank you to the volunteers who helped with the book fair keep it warm but short nobody reads a long one",
+      "cleaned": "Hello families,\n\nThis week in reading we wrapped our unit on character and setting — ask your child about their favorite character!\n\nA few notes:\n· Science Fair is coming up — projects due next Friday.\n· Early dismissal this Friday.\n· A huge thank you to the volunteers who made the Book Fair a success.\n\nWarmly,",
+      "instruction": "Email",
+      "source": "app", "duration": 34.2, "days_ago": 1, "time": "16:50",
+      "feature": true, "label": "Parent newsletter (rewrite)"
+    },
+    {
+      "text": "Grading note. The essay rubric is too vague on evidence. Half of them lost points and could not tell why. Rewrite that row before the next assignment.",
+      "source": "keyboard", "duration": 9.7, "days_ago": 1, "time": "14:18"
+    },
+    {
+      "text": "Observation prep. My evaluator comes Wednesday during the math block. Plan the gradual release lesson, I do, we do, you do, and have the exit tickets ready to show data.",
+      "source": "app", "duration": 13.5, "days_ago": 1, "time": "12:02"
+    },
+    {
+      "text": "Quick reminder to restock the reward box and grab more dry erase markers, the red ones are all dead.",
+      "source": "watch", "duration": 5.8, "days_ago": 2, "time": "15:22"
+    },
+    {
+      "text": "turn this into a list of what i need to prep for tomorrow copies of the worksheet set up the lab stations charge the tablets pull the small group for guided reading and call kevin's mom back about the behavior plan",
+      "cleaned": "Prep for tomorrow:\n\n1. Copy the worksheet (one per student)\n2. Set up the lab stations\n3. Charge the tablets\n4. Pull the small group for guided reading\n5. Call Kevin's mom re: the behavior plan",
+      "instruction": "Action Items",
+      "source": "app", "duration": 18.4, "days_ago": 3, "time": "17:15",
+      "feature": true, "label": "Tomorrow prep (action items)"
+    },
+    {
+      "text": "Idea for classroom management. Try the silent signal for bathroom so it stops interrupting the lesson. Model it Monday and practice it like a procedure.",
+      "source": "keyboard", "duration": 10.1, "days_ago": 4, "time": "13:44"
+    },
+    {
+      "text": "Note for the IEP meeting. Ava has made real progress on reading fluency, up to ninety words a minute. Bring the running records to show the growth.",
+      "source": "app", "duration": 11.3, "days_ago": 5, "time": "09:50"
+    },
+    {
+      "text": "Professional development takeaway. The retrieval practice strategy actually works, start every class with three questions from last week. Build it into the warm up.",
+      "source": "keyboard", "duration": 12.0, "days_ago": 6, "time": "10:30"
+    }
+  ]
+}

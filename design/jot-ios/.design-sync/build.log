@@ -1,0 +1,23 @@
+» @jot/design-system@1.0.0 → ./ds-bundle (window.JotDS)
+[DETECT] searched /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios (depth 4), found .storybook at [] → shape=package
+  source shape: package (from cfg.shape)
+  [DTS] parsed 1 .d.ts files from /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/dist
+  package: 18 components (0 src-matched)
+  bundle: 29 KB
+  inlined npm packages: 0
+  (decorator auto-detect skipped — no .storybook/ dir found)
+  css: dist/jot.css (15 KB, copied)
+  exported PascalCase symbols: 18
+  components: 18
+  (excluded 0 enum/type/context/hook exports; 18 components)
+  guidelines: 18 file(s) → guidelines/
+  docs: 18/18 components matched (cfg.docsDir=docs)
+  (preview override: CtaPill)
+  (preview override: IosToggle)
+  (preview override: SerifTitle)
+  (preview override: SourceRow)
+  previews: 0 generated → .design-sync/.cache/previews/ (4 user-owned)
+  [DTS] 18/18 components
+  styles.css: 1 @import(s) (incl. _ds_bundle.css — component styles ship to designs via this closure)
+  _ds_sync.json: 18 render hash(es) + source key(s) (verification anchor)
+✓ wrote ./ds-bundle: _ds_bundle.js + styles.css + 18 component previews

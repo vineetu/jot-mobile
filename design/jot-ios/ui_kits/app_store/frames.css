@@ -1,0 +1,141 @@
+/* ===========================================================================
+   Jot — App Store assets · shared frame / device / screen system
+   Authoring model:
+     - Each marketing .frame is a TRUE App Store pixel canvas (iPhone 1290×2796,
+       Watch 410×502) and is displayed scaled via --s on its wrapper.
+     - Phone SCREENS are authored in iPhone-logical px (393×852) inside .screen,
+       then scaled by --k (≈2.49) to fill the device glass. So inside a screen,
+       use natural values (16px body, etc.) just like the app prototypes.
+   =========================================================================== */
+
+:root{
+  --blue1:#2E9BFF; --blue2:#0E7AE6; --blue3:#0064CC; --blueflat:#1A8CFF;
+  --blue-grad:linear-gradient(180deg,#2E9BFF 0%,#0E7AE6 54%,#0064CC 100%);
+  --blue-soft:rgba(26,140,255,0.20);
+  --glow:rgba(26,140,255,0.44);
+  --amber:#E8841C; --green:#34C759;
+
+  /* dark theme (default app appearance) */
+  --ink:#FFFFFF;
+  --ink-sub:rgba(233,238,247,0.66);
+  --ink-cap:rgba(233,238,247,0.42);
+  --ink-ital:rgba(233,238,247,0.72);
+  --card:rgba(255,255,255,0.06);
+  --card-bord:rgba(255,255,255,0.11);
+  --chrome-fill:rgba(255,255,255,0.08);
+  --chrome-bord:rgba(255,255,255,0.16);
+
+  --screen-dark:
+    radial-gradient(128% 72% at 50% -8%, rgba(64,116,196,0.50) 0%, rgba(40,74,128,0.16) 36%, rgba(18,30,52,0) 60%),
+    radial-gradient(120% 84% at 88% 112%, rgba(120,72,56,0.20) 0%, rgba(120,72,56,0) 52%),
+    linear-gradient(177deg, #1b2c4f 0%, #15233c 32%, #0e1827 72%, #0a1019 100%);
+  --screen-light:
+    radial-gradient(128% 74% at 50% -8%, rgba(150,184,232,0.62) 0%, rgba(150,184,232,0.12) 40%, rgba(150,184,232,0) 62%),
+    radial-gradient(120% 84% at 88% 112%, rgba(222,170,150,0.24) 0%, rgba(222,170,150,0) 52%),
+    linear-gradient(177deg, #E9EEF7 0%, #DEE4EE 44%, #D0D6E0 100%);
+
+  --serif:'Fraunces', Georgia, serif;
+  --sys:-apple-system, 'SF Pro Text', 'SF Pro Display', system-ui, 'Segoe UI', sans-serif;
+
+  --k:2.49; /* logical screen -> frame px */
+}
+
+*{ box-sizing:border-box; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+html,body{ margin:0; padding:0; }
+
+/* ----------------------------------------------------------------- gallery */
+body{
+  background:#0a0e15;
+  background-image:
+    radial-gradient(80% 50% at 50% 0%, rgba(46,92,164,0.16), transparent 70%);
+  color:#e8eef7;
+  font-family:var(--sys);
+  min-height:100vh;
+  padding:56px 56px 120px;
+}
+.masthead{ max-width:1200px; margin:0 auto 14px; display:flex; align-items:flex-end; gap:20px; }
+.masthead svg{ height:34px; width:auto; }
+.masthead h1{ font-family:var(--serif); font-style:italic; font-weight:500; font-size:30px; margin:0; letter-spacing:-0.3px; color:#fff; }
+.masthead p{ margin:0 0 4px; color:#7e8ba3; font-size:14.5px; }
+.masthead .meta{ margin-left:auto; color:#5f6c84; font-size:12.5px; text-align:right; line-height:1.5; }
+
+.sec-head{ max-width:1200px; margin:54px auto 18px; display:flex; align-items:center; gap:14px; }
+.sec-head h2{ font-size:13px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:#8ea0bd; margin:0; }
+.sec-head .rule{ flex:1; height:1px; background:linear-gradient(90deg, rgba(142,160,189,0.28), transparent); }
+.sec-head .dims{ color:#5f6c84; font-size:12px; letter-spacing:0.3px; }
+
+.rail{ max-width:1200px; margin:0 auto; display:flex; gap:30px; flex-wrap:wrap; }
+
+/* a tile = scaled frame + caption */
+.tile{ display:flex; flex-direction:column; gap:12px; }
+.tile .scaler{ position:relative; cursor:zoom-in; border-radius:18px; overflow:hidden;
+  box-shadow:0 30px 60px -24px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04);
+  transition:transform .25s cubic-bezier(.2,.7,.2,1), box-shadow .25s; }
+.tile .scaler:hover{ transform:translateY(-4px); box-shadow:0 40px 80px -22px rgba(0,0,0,0.85), 0 0 0 1px rgba(120,170,255,0.18); }
+.tile .cap{ display:flex; align-items:baseline; gap:9px; padding:0 2px; }
+.tile .cap b{ font-size:13.5px; color:#cfd9ea; font-weight:600; }
+.tile .cap span{ font-size:12px; color:#66738c; }
+
+/* the scaled wrapper reserves the on-screen footprint; .frame is full-res */
+.wrap{ transform-origin:top left; }
+.wrap.ip{ width:calc(1290px * var(--s)); height:calc(2796px * var(--s)); }
+.wrap.wt{ width:calc(410px * var(--s));  height:calc(502px * var(--s)); }
+.wrap.ip .frame{ transform:scale(var(--s)); }
+.wrap.wt .frame{ transform:scale(var(--s)); }
+.frame{ transform-origin:top left; position:relative; overflow:hidden; }
+.rail.iphone{ --s:0.250; }
+.rail.watch{  --s:0.620; }
+
+/* ------------------------------------------------------- iPhone marketing frame */
+.frame.ip{ width:1290px; height:2796px;
+  background:
+    radial-gradient(120% 60% at 50% -6%, rgba(56,108,196,0.34) 0%, rgba(30,58,108,0.10) 42%, transparent 66%),
+    radial-gradient(130% 50% at 50% 108%, rgba(14,122,230,0.18) 0%, transparent 58%),
+    linear-gradient(170deg, #0c1830 0%, #0a1426 46%, #070f1e 100%);
+}
+.frame.ip.lite{
+  background:
+    radial-gradient(120% 60% at 50% -6%, rgba(150,184,232,0.55) 0%, rgba(150,184,232,0.12) 44%, transparent 66%),
+    linear-gradient(170deg, #dfe7f3 0%, #d3ddec 50%, #c7d2e3 100%);
+}
+.headline{ position:absolute; top:150px; left:96px; right:96px; text-align:center; z-index:3; }
+.headline h3{ font-family:var(--serif); font-style:italic; font-weight:500; font-size:104px; line-height:1.0;
+  letter-spacing:-2px; color:#fff; margin:0; text-wrap:balance; }
+.frame.ip.lite .headline h3{ color:#12203a; }
+.headline p{ font-family:var(--sys); font-weight:400; font-size:40px; line-height:1.34; letter-spacing:-0.2px;
+  color:var(--ink-sub); margin:26px 0 0; text-wrap:balance; }
+.frame.ip.lite .headline p{ color:rgba(40,58,92,0.7); }
+
+/* device */
+.device{ position:absolute; left:50%; transform:translateX(-50%); top:548px;
+  width:1024px; padding:21px; border-radius:150px; background:#05080e;
+  box-shadow:0 60px 120px -34px rgba(0,0,0,0.72), 0 0 0 2px rgba(255,255,255,0.05),
+    inset 0 0 0 6px #1a1e26; }
+.glass{ position:relative; width:982px; height:2128px; border-radius:128px; overflow:hidden; background:#000; }
+
+/* phone screen: authored at 393×852 logical, scaled to fill glass (393*2.49≈979) */
+.screen{ position:absolute; top:0; left:0; width:393px; height:855px; transform:scale(var(--k)); transform-origin:top left;
+  font-family:var(--sys); color:var(--ink); overflow:hidden; }
+.screen.dark{ background:var(--screen-dark); }
+.screen.light{ background:var(--screen-light); color:#16181D; }
+
+/* ------------------------------------------------------- iOS status bar (logical) */
+.sb{ position:absolute; top:0; left:0; right:0; height:54px; z-index:40; display:flex; align-items:center;
+  justify-content:space-between; padding:0 24px 0 32px; }
+.sb .t{ font-weight:600; font-size:16px; letter-spacing:0.2px; }
+.sb .island{ position:absolute; left:50%; top:13px; transform:translateX(-50%); width:122px; height:35px;
+  border-radius:19px; background:#05070b; }
+.sb .rt{ display:flex; align-items:center; gap:7px; }
+.sb .rt .dot{ width:9px; height:9px; border-radius:5px; background:var(--amber); }
+.sb svg{ display:block; }
+.screen.light .sb .island{ background:#0b0d12; }
+
+/* glyph helpers */
+.ico{ display:inline-block; vertical-align:middle; }
+
+/* ------------------------------------------------------- focus overlay */
+.focus{ position:fixed; inset:0; background:rgba(5,8,14,0.88); backdrop-filter:blur(12px);
+  z-index:200; display:none; align-items:center; justify-content:center; cursor:zoom-out; }
+.focus.on{ display:flex; }
+.focus-inner{ position:relative; }
+.focus-inner .frame{ transform-origin:center center; box-shadow:0 50px 120px -30px rgba(0,0,0,0.9); border-radius:8px; }

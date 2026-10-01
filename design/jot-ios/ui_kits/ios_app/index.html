@@ -1,0 +1,37 @@
+<!-- @dsCard group="iOS App" viewport="980x820" subtitle="Recording surface + Ask Jot — live interactive prototypes" name="iOS App" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jot · iOS App Kit</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #05070c; }
+  body { font-family: var(--font-sys); display: flex; flex-direction: column; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 18px 26px 10px; }
+  header h1 { margin: 0; font-family: var(--font-serif); font-style: italic; font-weight: 500; font-size: 22px; color: #fff; letter-spacing: -0.3px; }
+  header p { margin: 0; font-size: 12.5px; color: rgba(233,238,247,0.45); }
+  .panes { flex: 1; display: flex; gap: 18px; padding: 4px 22px 20px; min-height: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .pane .cap { font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: rgba(233,238,247,0.42); padding-left: 4px; }
+  .pane iframe { flex: 1; width: 100%; border: 0.5px solid rgba(255,255,255,0.12); border-radius: 18px; background: #05070c; min-height: 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Jot — iOS app</h1>
+    <p>Both panes are live prototypes (auto-playing). Open recording.html / ask.html directly to work full-screen.</p>
+  </header>
+  <div class="panes">
+    <div class="pane">
+      <span class="cap">Recording surface · swipe-back cue</span>
+      <iframe src="recording.html" title="Recording surface"></iframe>
+    </div>
+    <div class="pane">
+      <span class="cap">Ask Jot · listening → thinking → answer</span>
+      <iframe src="ask.html" title="Ask Jot"></iframe>
+    </div>
+  </div>
+</body>
+</html>

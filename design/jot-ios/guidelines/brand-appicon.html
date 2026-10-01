@@ -1,0 +1,21 @@
+<!-- @dsCard group="Brand" viewport="700x190" subtitle="Blue 168° gradient tile + white mark — full-bleed, OS applies the mask" name="App icon" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: var(--bg-screen); display: flex; align-items: center; gap: 26px; padding: 20px 26px; box-sizing: border-box; }
+  .ic { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .ic img { border-radius: 22.5%; box-shadow: 0 12px 28px -8px var(--jot-glow), 0 3px 8px -3px rgba(0,0,0,0.4); }
+  .ic small { font-size: 10.5px; color: var(--ink-caption); }
+  p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-sub); max-width: 270px; }
+</style>
+</head>
+<body>
+  <div class="ic"><img src="../assets/logo/jot-icon-1024.png" width="120" height="120" alt="Jot app icon"><small>iOS · 1024 master</small></div>
+  <div class="ic"><img src="../assets/logo/jot-icon-1024.png" width="76" height="76" alt=""><small>home screen</small></div>
+  <div class="ic"><img src="../assets/logo/jot-icon-1024.png" width="44" height="44" style="border-radius: 50%;" alt=""><small>watchOS · circle</small></div>
+  <p>Source: <b>assets/logo/jot-icon-1024.png</b> (+ SVG master). Tile gradient 168° #3AA0FF → #1483F2 → #0064CC with white top sheen. Ship full-bleed and opaque — never pre-round; iOS masks to squircle, watchOS to circle.</p>
+</body>
+</html>

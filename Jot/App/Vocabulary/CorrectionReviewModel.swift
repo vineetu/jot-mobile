@@ -81,27 +81,6 @@ final class CorrectionReviewModel {
     func reload() async {
         payload = await CorrectionProvenance.shared.reconciledPayload(
             transcriptID: transcript.id, currentText: transcript.text)
-        overrides = await CorrectionStore.shared.snapshot()
-    }
-
-    /// Learning snapshot for the grant offer (V2-4) — refreshed on reload.
-    private(set) var overrides: [CorrectionStore.OverrideEntry] = []
-
-    /// V2-4: this record's pair qualifies for the "Always replace" offer —
-    /// the owner has confirmed it at least twice and hasn't granted it yet.
-    func grantOfferEligible(_ r: CorrectionProvenance.Record) -> Bool {
-        let ow = CorrectionKey.normalize(r.originalWord)
-        guard let ov = overrides.first(where: {
-            $0.originalWord == ow && $0.term.lowercased() == r.term.lowercased()
-        }) else { return false }
-        return ov.net >= 2 && !ov.alwaysReplace
-    }
-
-    /// V2-4: grant "always replace" for this record's pair.
-    func grantAlwaysReplace(_ r: CorrectionProvenance.Record) async {
-        await CorrectionStore.shared.grantAlwaysReplace(
-            originalWord: r.originalWord, term: r.term)
-        await reload()
     }
 
     // MARK: - Verdicts
@@ -123,52 +102,56 @@ final class CorrectionReviewModel {
             // following words, e.g. "Claude code") with the longer term. The
             // find string was built from the gate-output span, so it matches
             // whichever word (term or original) is in the text plus its tail.
-            // Learning happens via the selected-mapping contributions ledger
-            // in setVerdict below (V2-2) — same ±1-per-transcript clamp as
-            // term/original picks; no direct store adjustment.
+            // The ask-ranking prior moves via the selected-mapping ledger in
+            // setVerdict below (V2-2); the correction itself is the apply below.
             await reportSelfEdit(editText(r, find: alt.find, replaceWith: alt.term), key: r.key)
         }
-        let deltas = await CorrectionProvenance.shared.setVerdict(transcriptID: transcript.id, record: r, verdict: choice)
+        // Learning (Learn from Corrections): picking the term is a correction,
+        // keeping the original pauses the pair, picking the wider alternate
+        // corrects THAT phrase — one `VocabularyLearning.apply`, the path every
+        // surface takes (a "term" pick adds the heard form as a visible
+        // sounds-like on the term; nothing learned auto-applies). Once per pair
+        // per transcript, on a genuine transition: a re-pick, or a sibling
+        // occurrence already answered the same way here or from the keyboard,
+        // has already taught it. The receipt is stored under this verdict so
+        // Undo reverses exactly it (a switch term → original keeps the term
+        // pick's receipt too).
+        var receipt: VocabularyLearning.Receipt?
+        if priorVerdict != choice,
+           !payload.records.contains(where: {
+               $0.key != r.key && $0.mappingKey == r.mappingKey && payload.verdicts[$0.key] == choice
+           }) {
+            switch choice {
+            case "term":
+                receipt = await VocabularyLearning.shared.apply(
+                    .correct(heard: r.originalWord, term: r.term))
+            case "original":
+                receipt = await VocabularyLearning.shared.apply(
+                    .keepOriginal(heard: r.originalWord, term: r.term))
+            case "alt0":
+                if let alt = r.alternates?.first {
+                    receipt = await VocabularyLearning.shared.apply(
+                        .correct(heard: alt.find, term: alt.term))
+                }
+            default:
+                break
+            }
+        }
+        // The provenance deltas move only the ask-ranking prior (`net`) — never
+        // an apply rule.
+        let deltas = await CorrectionProvenance.shared.setVerdict(
+            transcriptID: transcript.id, record: r, verdict: choice, receipt: receipt)
         await applyLearning(deltas)
         // R3 bootstrap (2026-07-13): log every verdict so the Diagnostics
         // timeline carries ground truth ("was this correction right?") that
         // joins — by pair + time — with the gate's per-proposal margin /
-        // netMargin logs. Together they calibrate the future un-boosted-
-        // margin gate (R3) from real usage. On-device only, like all
-        // diagnostics.
+        // netMargin logs. On-device only, like all diagnostics.
         DiagnosticsLog.record(
             source: "main-app",
             category: .vocabularyGate,
             message: "verdict \(r.originalWord) → \(r.term)",
             metadata: ["choice": choice, "outcome": r.outcome]
         )
-        // V2-3 teach lane: confirming a MERGE-shaped ask ("sri ram" really is
-        // "Sriram") writes the heard phrase as a sounds-like alias on the
-        // term — a candidate-generation hint for the engine's matcher, so
-        // the next dictation proposes it directly. Reuses the Find & Replace
-        // teaching path (dedup + file-safety + existing-term append). The
-        // alias is VISIBLE + removable in the Vocabulary screen's
-        // "Sounds like" row. Guarded on transition so a re-pick can't spam.
-        if choice == "term", r.shape == "merge", priorVerdict != "term" {
-            // Global conflict guard (diff-review): never write a sounds-like
-            // that collides with ANOTHER term's text or aliases — that would
-            // make two terms compete for the same heard phrase. Skip + log;
-            // the term itself still won this occurrence's verdict.
-            let phrase = CorrectionKey.normalize(r.originalWord)
-            let conflicts = VocabularyStore.shared.terms.contains { t in
-                t.text.compare(r.term, options: .caseInsensitive) != .orderedSame
-                    && (CorrectionKey.normalize(t.text) == phrase
-                        || t.aliases.contains { CorrectionKey.normalize($0) == phrase })
-            }
-            if conflicts {
-                DiagnosticsLog.record(
-                    source: "main-app", category: .vocabularyGate,
-                    message: "alias-conflict skipped \(r.originalWord) → \(r.term)",
-                    metadata: [:])
-            } else {
-                _ = VocabularyStore.shared.addTerm(r.term, heardAs: r.originalWord)
-            }
-        }
         // "Keep original" on a BLOCKED pair contributes 0 to `net` (demote needs an
         // APPLIED revert), so a common-word proposal like "okay"→"Okta" would be
         // re-asked forever no matter how often it's rejected. Count it separately so
@@ -186,23 +169,43 @@ final class CorrectionReviewModel {
         await reload()   // actor truth + anchor reconcile before the reverse edit (see pick)
         let r = record(forKey: r.key) ?? r
         let v = payload.verdicts[r.key]
+        // What this occurrence's verdicts taught (a pick, a keyboard answer, or
+        // a transcript edit that closed it), per verdict.
+        let receipts = payload.receipts(for: r)
+        // An edit-closed verdict's net delta reached the store only for rare
+        // originals (a common pair's −1 would lock it) — see `EditLearning`.
+        let editClosed = payload.isEditClosed(r)
+        let common = CorrectionStore.shared.refusesLearning(originalWord: r.originalWord)
         if v == "term", r.outcome == "kept" {
             await reportSelfEdit(editText(r, find: r.term, replaceWith: r.originalWord), key: r.key)
         } else if v == "original", r.outcome == "applied" {
             await reportSelfEdit(editText(r, find: r.originalWord, replaceWith: r.term), key: r.key)
         } else if v == "alt0", let alt = r.alternates?.first {
             // Reverse of the 3-option alt pick: put the gate-output span
-            // (whatever `find` held) back. The learning reversal flows from
-            // `clearVerdict`'s selected-mapping ledger recompute (V2-2).
+            // (whatever `find` held) back.
             await reportSelfEdit(editText(r, find: alt.term, replaceWith: alt.find), key: r.key)
         }
         let deltas = await CorrectionProvenance.shared.clearVerdict(transcriptID: transcript.id, record: r)
-        await applyLearning(deltas)
+        if !(editClosed && common) { await applyLearning(deltas) }
         // Symmetric with the blocked-keep increment in `pick`: undoing a "keep
         // original" on a blocked pair gives back its `blockedKeeps`, so the keyboard
         // suppression count never drifts above the real number of standing keeps.
         if v == "original", r.outcome == "kept" {
             await CorrectionStore.shared.clearBlockedKeep(originalWord: r.originalWord, term: r.term)
+        }
+        // Reverse each lesson — the current verdict's first (it is the latest) —
+        // unless a sibling occurrence of the same pair still holds that verdict:
+        // then the lesson still stands, and moves to the sibling for its Undo.
+        let ordered = receipts.filter { $0.key == v } + receipts.filter { $0.key != v }
+        for (verdict, receipt) in ordered {
+            if let sibling = payload.records.first(where: {
+                $0.key != r.key && $0.mappingKey == r.mappingKey && payload.verdicts[$0.key] == verdict
+            }) {
+                await CorrectionProvenance.shared.attachReceipt(
+                    receipt, verdict: verdict, transcriptID: transcript.id, record: sibling)
+            } else {
+                await VocabularyLearning.shared.apply(.undo(receipt))
+            }
         }
         await reload()
     }

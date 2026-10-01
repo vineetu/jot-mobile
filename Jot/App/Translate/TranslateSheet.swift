@@ -37,27 +37,9 @@ struct TranslateSheet: View {
     /// to one primary code each), alphabetical by name. English is included now
     /// that transcripts can be non-English. The transcript's own language is
     /// filtered out at render time (`targetLanguages`).
-    private let allLanguages: [Lang] = [
-        .init(code: "ar", name: "Arabic"),
-        .init(code: "zh", name: "Chinese"),
-        .init(code: "nl", name: "Dutch"),
-        .init(code: "en", name: "English"),
-        .init(code: "fr", name: "French"),
-        .init(code: "de", name: "German"),
-        .init(code: "hi", name: "Hindi"),
-        .init(code: "id", name: "Indonesian"),
-        .init(code: "it", name: "Italian"),
-        .init(code: "ja", name: "Japanese"),
-        .init(code: "ko", name: "Korean"),
-        .init(code: "pl", name: "Polish"),
-        .init(code: "pt", name: "Portuguese"),
-        .init(code: "ru", name: "Russian"),
-        .init(code: "es", name: "Spanish"),
-        .init(code: "th", name: "Thai"),
-        .init(code: "tr", name: "Turkish"),
-        .init(code: "uk", name: "Ukrainian"),
-        .init(code: "vi", name: "Vietnamese"),
-    ]
+    private var allLanguages: [Lang] {
+        TranslationLanguages.all.map { Lang(code: $0.code, name: $0.name) }
+    }
 
     /// Targets shown as chips: every supported language except the transcript's
     /// own (translating a note to the language it's already in is a no-op).

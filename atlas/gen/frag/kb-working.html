@@ -1,4 +1,4 @@
-<!-- Post-stop "Working" state (§5.5): transcription finishing on-device. -->
+<!-- Post-stop state (§5.5): the strip holds the live text still while the pipeline finishes; the pill names the stage. -->
 <div style="height:300px"></div>
 
 <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
@@ -14,36 +14,19 @@
 
 <div style="background:var(--jot-card-bot);border-radius:24px 24px 0 0;padding:14px 12px 18px;margin:0 -6px">
 
-  <!-- RECENT list card — the Working state does NOT show a "finishing up"
-       status card; per KeyboardView.swift's topStripContent, the strip only
-       branches on isRecording (→ StreamingStrip) vs full-access (→
-       fullAccessInstructions), so during Working it falls through to the
-       same RecentsStrip shown when idle. -->
-  <div class="jot-card" style="margin:0 0 14px">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 6px">
-      <span class="jot-section" style="margin:0">Recent</span>
-      <span style="color:var(--jot-accent);font-size:14px;font-weight:600">See all ›</span>
+  <!-- Streaming strip, HELD through the post-stop wait (§5.5): the strip
+       stays mounted while the pipeline runs — static hollow dot, clock frozen
+       at the recording's length, no waveform, the last live text held still
+       (no stepping tail) — and the header line names the wait. Crossfades back
+       into the RECENT strip once the text has pasted. -->
+  <div class="jot-card" style="margin:0 0 14px;padding:10px 12px">
+    <div style="display:flex;align-items:center;gap:8px;height:22px">
+      <span style="width:8px;height:8px;border-radius:50%;border:1.5px solid var(--jot-ink);flex:none"></span>
+      <span style="font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:600;color:var(--jot-ink)">0:14</span>
+      <span style="font-size:11px;font-weight:600;color:var(--jot-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">AI is tidying this before it pastes</span>
     </div>
-    <div class="jot-row" style="padding:10px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:23 PM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Hello, can you hear me? I think you can…</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
-    </div>
-    <div class="jot-row" style="padding:10px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:22 PM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">That's great. Cause from Thursday to…</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
-    </div>
-    <div class="jot-row" style="padding:10px 14px">
-      <span class="jot-row-sub" style="font-variant-numeric:tabular-nums;letter-spacing:0.3px;color:var(--jot-ink-cap);flex:none;width:58px">9:21 PM</span>
-      <span class="grow" style="color:var(--jot-accent);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Where will he be staying in San Francis…</span>
-      <span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;flex:none">
-        <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2.4"><path d="M8 16L16 8M9 8h7v7"/></svg>
-      </span>
+    <div style="margin-top:6px;height:66px;overflow:hidden;font-style:italic;font-size:14px;line-height:1.55;color:var(--jot-ink)">
+      Yes, can you confirm this for me? I think the meeting moved to Thursday, so let’s plan around that and I’ll send the notes tonight
     </div>
   </div>
 
@@ -54,7 +37,7 @@
     <div style="flex:1;height:54px;border-radius:13px;background:linear-gradient(var(--jot-accent),var(--jot-accent-deep));display:flex;align-items:center;justify-content:center;gap:10px;opacity:0.85">
       <!-- spinner ring -->
       <svg viewBox="0 0 24 24" style="width:20px;height:20px"><circle cx="12" cy="12" r="9" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="3"/><path d="M12 3a9 9 0 019 9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
-      <span style="color:#fff;font-size:18px;font-weight:600">Working</span>
+      <span style="color:#fff;font-size:18px;font-weight:600">Cleaning up</span>
     </div>
     <span style="width:72px;height:54px;border-radius:11px;background:rgba(120,120,128,0.28);display:flex;align-items:center;justify-content:center;flex:none">
       <svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:none;stroke:var(--jot-ink);stroke-width:2"><path d="M20 7v4a3 3 0 01-3 3H6m0 0l4-4m-4 4l4 4"/></svg>

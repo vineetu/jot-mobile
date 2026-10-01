@@ -32,10 +32,10 @@ struct RecentsStrip: View {
     let entries: [TranscriptHistoryMirror.Entry]
     let onInsertEntry: (TranscriptHistoryMirror.Entry) -> Void
 
-    /// Fired when the user taps the row-trailing Apple Intelligence button.
-    /// Caller is expected to bounce to `jot://transcript?id=<uuid>&ai=1` so
-    /// the main app pushes the transcript detail view AND starts the rewrite
-    /// flow (Writing Tools selection on Apple Intelligence). Distinct from
+    /// Fired when the user taps the row-trailing Rewrite button. Caller is
+    /// expected to bounce to `jot://transcript?id=<uuid>&ai=1` so the main app
+    /// pushes the transcript detail view AND rewrites the note right away with
+    /// the user's Cleanup prompt (features.md §5.2). Distinct from
     /// `onInsertEntry` (paste-at-cursor) so the row carries two clear
     /// affordances: paste on the body, rewrite in Jot on the trailing icon.
     let onOpenInApp: (TranscriptHistoryMirror.Entry) -> Void
@@ -43,6 +43,12 @@ struct RecentsStrip: View {
     /// "See all" header link — routes to `jot://history` via the
     /// keyboard controller (see `openHostHome()`).
     let onSeeAll: () -> Void
+
+    /// A dictation outcome to report inside the card (§5.10): shown as a slim
+    /// tinted row between the header and the entries, pushing them down while
+    /// it holds. Nil ⇒ nothing to say.
+    var status: KeyboardStatus? = nil
+    var onDismissStatus: () -> Void = {}
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -93,7 +99,17 @@ struct RecentsStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Self.headerToRowsSpacing) {
             header
-            rowsScrollView
+            // Clipped so the status row emerges from under the header — it
+            // grows out of the card's top edge rather than dropping in.
+            VStack(alignment: .leading, spacing: Self.headerToRowsSpacing) {
+                if let status {
+                    KeyboardStatusRow(status: status, reduceMotion: reduceMotion, onDismiss: onDismissStatus)
+                        .transition(KeyboardStatusRow.transition(reduceMotion: reduceMotion))
+                }
+                rowsScrollView
+            }
+            .clipped()
+            .animation(KeyboardStatusRow.animation(reduceMotion: reduceMotion), value: status)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -167,9 +183,13 @@ struct RecentsStrip: View {
     /// the bottom edge advertises "more below" when applicable.
     private var rowsScrollView: some View {
         let rows = topTen
-        let hasOverflow = rows.count > Int(Self.visibleRowCount)
+        // While a status row shows, the entries give up its height (the card
+        // itself can't grow — the keyboard's height is fixed) and scroll.
+        let statusInset: CGFloat = status == nil ? 0 : KeyboardStatusRow.height + Self.headerToRowsSpacing
+        let hasOverflow = rows.count > Int(Self.visibleRowCount) || statusInset > 0
         let scrollHeight = Self.rowHeight * Self.visibleRowCount
             + Self.rowDividerHeight * (Self.visibleRowCount - 1)
+            - statusInset
 
         return ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 0) {
@@ -182,6 +202,9 @@ struct RecentsStrip: View {
             }
         }
         .scrollIndicators(.never)
+        // The strip draws its own bottom fade; the system's iOS 26 scroll-edge
+        // effect would blur/wash the top row under the header.
+        .scrollEdgeEffectHidden(true, for: .all)
         .frame(height: scrollHeight)
         .mask(scrollFadeMask(showFade: hasOverflow))
     }
@@ -218,24 +241,21 @@ struct RecentsStrip: View {
     ///
     /// - **Body zone** (timestamp + transcript text + optional sparkles):
     ///   paste-at-cursor. Visually dominant — this is the primary action.
-    /// - **Trailing zone** (`apple.writing.tools` button): open the transcript
-    ///   detail view in the main app **and start the rewrite flow** — on Apple
-    ///   Intelligence that means the transcript arrives already selected for
-    ///   system Writing Tools (features.md §7.10). Distinct hit region with
-    ///   its own padding so a careless brush against the right edge doesn't
-    ///   accidentally bounce the user out of the host app when they meant
-    ///   to paste.
+    /// - **Trailing zone** (`wand.and.stars` button): open the note in the
+    ///   main app, which rewrites it immediately with the user's Cleanup
+    ///   prompt and lands on the Rewrite tab (features.md §5.2). Distinct hit
+    ///   region with its own padding so a careless brush against the right
+    ///   edge doesn't bounce the user out of the host app when they meant to
+    ///   paste.
     ///
-    /// This slot used to be a plain `arrow.up.forward.app` "open in app"
-    /// affordance (2026-07-25: replaced per owner direction — "that is kind
-    /// of useless, people are not using it; put AI there"). Apple's
-    /// `apple.writing.tools` SF Symbol is the same glyph the system edit
-    /// menu shows for Writing Tools, so the button names its destination
-    /// exactly; it is deliberately NOT `sparkles`, which the row body
-    /// already uses in coral to mark an entry that HAS a rewrite. The icon
-    /// uses `jotKeyboardAccent` (the blue accent the rest of the keyboard
-    /// already treats as the actionable color), so it reads as the row's
-    /// secondary CTA without competing with the body for visual weight.
+    /// History: this slot was a plain "open in app" arrow (replaced 2026-07-25
+    /// per owner direction — "put AI there"), then the system Writing Tools
+    /// glyph while the app only *taught* that menu; since 2026-09-15 the app
+    /// rewrites on arrival, so the icon is the wand. Deliberately NOT
+    /// `sparkles`, which the row body already uses in coral to mark an entry
+    /// that HAS a rewrite. The icon uses `jotKeyboardAccent` (the blue accent
+    /// the rest of the keyboard treats as the actionable color), so it reads
+    /// as the row's secondary CTA without competing with the body.
     private func normalRow(entry: TranscriptHistoryMirror.Entry) -> some View {
         HStack(spacing: 0) {
             Button {
@@ -289,7 +309,7 @@ struct RecentsStrip: View {
             Button {
                 onOpenInApp(entry)
             } label: {
-                Image(systemName: "apple.writing.tools")
+                Image(systemName: "wand.and.stars")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.jotKeyboardAccent)
                     // Hit zone is intentionally wider than the glyph so the
@@ -303,7 +323,7 @@ struct RecentsStrip: View {
                 pressHint = pressed ? .open : nil
             }))
             .accessibilityLabel("Rewrite in Jot")
-            .accessibilityHint("Opens this transcript in Jot, ready for Writing Tools")
+            .accessibilityHint("Opens this note in Jot and rewrites it with your Cleanup prompt")
             .accessibilityAddTraits(.isButton)
         }
     }

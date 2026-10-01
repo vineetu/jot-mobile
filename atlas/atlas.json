@@ -391,7 +391,8 @@
           "id": "kb-actions-dense",
           "title": "Actions Grid",
           "sections": [
-            "5.6"
+            "5.6",
+            "7.14"
           ],
           "image": "screens/keyboard/kb-actions-dense.png",
           "captured": false,
@@ -410,14 +411,13 @@
         },
         {
           "id": "kb-status-banner",
-          "title": "Status Banner",
+          "title": "Status Row",
           "sections": [
             "5.10"
           ],
           "image": "screens/keyboard/kb-status-banner.png",
           "captured": false,
-          "issue": "Adding a word to Vocabulary shows the SUCCESS confirmation (“Added ‘…’ to your dictionary”) in the RED error banner with an ✕ icon, floating over the recents pane — should be success/green. It also does not appear instantly: it only surfaces after a follow-up action (e.g. pressing Enter).",
-          "bug": "keyboard-vocab-banner"
+          "target": "Outcome reported INSIDE the Recents card (Option B, chosen 2026-09-17): a slim tinted row between the header and the entries; grows out of the card's top edge, holds ~3 s (success/heads-up) or until tapped (error), leaves the same way. Rewrite/translate outcomes use the same row above the actions-pane tiles. Toggles show no message."
         },
         {
           "id": "kb-full-access",
@@ -447,17 +447,6 @@
           ],
           "image": "screens/keyboard/kb-dark.png",
           "captured": true
-        },
-        {
-          "id": "kb-rewrite-guide",
-          "title": "Keyboard AI Rewrite Guide",
-          "sections": [
-            "5.6",
-            "7.10"
-          ],
-          "image": "screens/keyboard/kb-rewrite-guide.png",
-          "captured": false,
-          "target": "Revised AI Rewrite guide: title in New York serif (Jot's display font, no longer clashing with the system sans), and instead of the words 'Writing Tools' it shows the actual menu glyph + a preview of the iOS selection menu with it highlighted, so people recognize what to tap. Same treatment applies to the Translate guide."
         },
         {
           "id": "kb-upgrade-nudge",
@@ -587,18 +576,10 @@
           "id": "rewrite-saved-prompts",
           "title": "Saved Prompt Management",
           "sections": [
+            "6.3",
             "7.7"
           ],
           "image": "screens/ios/rewrite-saved-prompts.png",
-          "captured": false
-        },
-        {
-          "id": "rewrite-switch-model",
-          "title": "Switch Model Picker",
-          "sections": [
-            "7.9"
-          ],
-          "image": "screens/ios/rewrite-switch-model.png",
           "captured": false
         },
         {
@@ -624,41 +605,11 @@
           "title": "AI Settings",
           "sections": [
             "6.3",
-            "7.11"
+            "7.8",
+            "7.11",
+            "7.14"
           ],
           "image": "screens/ios/ai-settings.png",
-          "captured": false
-        },
-        {
-          "id": "rewrite-apple-intelligence",
-          "title": "Apple Intelligence Guide",
-          "sections": [
-            "7.3",
-            "7.10",
-            "3.3"
-          ],
-          "image": "screens/ios/rewrite-apple-intelligence.png",
-          "captured": false
-        },
-        {
-          "id": "ai-engine-apple",
-          "title": "AI Engine — Apple Intelligence",
-          "sections": [
-            "6.3",
-            "7.3"
-          ],
-          "image": "screens/ios/ai-engine-apple.png",
-          "captured": false
-        },
-        {
-          "id": "ai-engine-qwen",
-          "title": "AI Engine — Jot's AI",
-          "sections": [
-            "6.3",
-            "7.5",
-            "7.7"
-          ],
-          "image": "screens/ios/ai-engine-qwen.png",
           "captured": false
         }
       ]
@@ -822,15 +773,6 @@
           "captured": false
         },
         {
-          "id": "err-ai-download",
-          "title": "AI Model Download Failure",
-          "sections": [
-            "12.3"
-          ],
-          "image": "screens/ios/err-ai-download.png",
-          "captured": false
-        },
-        {
           "id": "err-rewrite",
           "title": "Rewrite Error",
           "sections": [
@@ -908,15 +850,6 @@
             "14.3"
           ],
           "image": "screens/ios/ask-answer-cited.png",
-          "captured": true
-        },
-        {
-          "id": "ask-indexing",
-          "title": "Library Indexing",
-          "sections": [
-            "14.4"
-          ],
-          "image": "screens/ios/ask-indexing.png",
           "captured": true
         },
         {

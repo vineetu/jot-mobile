@@ -504,9 +504,12 @@ final class DictationControllerImpl: DictationController {
         currentPhase = .cleaning
         defer { currentPhase = .idle }
 
-        return try await cleanupService.clean(
-            transcript: transcript,
-            instructions: settings.instructions
+        // Automatic cleanup is a saved prompt run through the same
+        // `RewriteClient` as a manual rewrite: on-device first, Private Cloud
+        // Compute for a dictation too long for the on-device model (iOS 27).
+        return try await RewriteClient.shared.rewrite(
+            text: transcript,
+            systemPrompt: settings.instructions
         )
     }
 

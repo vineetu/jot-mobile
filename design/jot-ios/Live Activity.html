@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot · Live Activity &amp; Dynamic Island</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --blue1:#2E9BFF; --blue2:#0E7AE6; --blue3:#0064CC; --blueflat:#1A8CFF;
+  --blue-grad:linear-gradient(180deg,#2E9BFF 0%,#0E7AE6 54%,#0064CC 100%);
+  --blue-soft:rgba(26,140,255,0.20); --glow:rgba(26,140,255,0.44);
+  --amber:#E8841C; --amber-soft:rgba(232,132,28,0.20);
+  --green:#34C759; --red:#FF5B4D;
+
+  --ink:#FFFFFF;
+  --ink-sub:rgba(233,238,247,0.66);
+  --ink-cap:rgba(233,238,247,0.42);
+  --card:rgba(255,255,255,0.06);
+  --card-bord:rgba(255,255,255,0.11);
+  --chrome-fill:rgba(255,255,255,0.08);
+  --chrome-bord:rgba(255,255,255,0.16);
+  --rail:rgba(233,238,247,0.30);
+  --hairline:rgba(255,255,255,0.07);
+
+  --screen-dark:
+    radial-gradient(128% 72% at 50% -8%, rgba(64,116,196,0.50) 0%, rgba(40,74,128,0.16) 36%, rgba(18,30,52,0) 60%),
+    radial-gradient(120% 84% at 88% 112%, rgba(120,72,56,0.20) 0%, rgba(120,72,56,0) 52%),
+    linear-gradient(177deg, #1b2c4f 0%, #15233c 32%, #0e1827 72%, #0a1019 100%);
+
+  --serif:'Fraunces', Georgia, serif;
+  --sys:-apple-system, 'SF Pro Text', 'SF Pro Display', system-ui, 'Segoe UI', sans-serif;
+  --mono:ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+}
+*{ box-sizing:border-box; -webkit-font-smoothing:antialiased; }
+html,body{ margin:0; padding:0; }
+body{
+  background:#0a0e15;
+  background-image:radial-gradient(80% 46% at 50% 0%, rgba(46,92,164,0.16), transparent 70%);
+  color:#e8eef7; font-family:var(--sys);
+  padding:52px 56px 120px;
+}
+
+/* ---------------- masthead ---------------- */
+.masthead{ max-width:1360px; margin:0 auto 6px; display:flex; align-items:flex-end; gap:20px; }
+.jmark{ display:flex; align-items:center; justify-content:center; width:46px; height:46px; border-radius:12px;
+  background:var(--blue-grad); box-shadow:0 10px 26px -8px var(--glow); flex:none; }
+.jmark span{ font-family:var(--serif); font-style:italic; font-weight:600; font-size:30px; color:#fff; line-height:1; transform:translateY(-1px); }
+.masthead h1{ font-family:var(--serif); font-style:italic; font-weight:500; font-size:30px; margin:0; letter-spacing:-0.3px; color:#fff; }
+.masthead p{ margin:0 0 5px; color:#7e8ba3; font-size:14.5px; }
+.masthead .meta{ margin-left:auto; color:#5f6c84; font-size:12.5px; text-align:right; line-height:1.55; }
+.masthead .meta b{ color:#9fb0cc; font-weight:600; }
+
+.sec-head{ max-width:1360px; margin:56px auto 22px; display:flex; align-items:center; gap:14px; }
+.sec-head h2{ font-size:12.5px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:#8ea0bd; margin:0; }
+.sec-head .rule{ flex:1; height:1px; background:linear-gradient(90deg, rgba(142,160,189,0.26), transparent); }
+.sec-head .dims{ color:#5f6c84; font-size:12px; }
+
+.board{ max-width:1360px; margin:0 auto; }
+
+/* ---------------- device frame ---------------- */
+.phones{ display:flex; gap:34px; flex-wrap:wrap; }
+.pcol{ display:flex; flex-direction:column; gap:14px; }
+.pcol .cap{ padding:0 4px; }
+.pcol .cap b{ font-size:13.5px; color:#cfd9ea; font-weight:600; }
+.pcol .cap span{ font-size:12px; color:#66738c; display:block; margin-top:2px; line-height:1.45; }
+
+.device{ position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden;
+  box-shadow:0 1px 0 2px rgba(255,255,255,0.06), 0 44px 100px -40px rgba(0,0,0,0.8);
+  transform-origin:top left; }
+.scalewrap{ transform:scale(0.68); transform-origin:top left; width:calc(393px*0.68); height:calc(852px*0.68); }
+.screen{ position:absolute; inset:0; overflow:hidden; font-family:var(--sys); color:var(--ink);
+  background:var(--screen-dark); }
+
+/* status bar (in-app screens) */
+.sb{ position:absolute; top:0; left:0; right:0; height:54px; padding:0 34px; display:flex; align-items:center;
+  justify-content:space-between; z-index:60; }
+.sb .t{ font-weight:600; font-size:16px; letter-spacing:0.2px; font-variant-numeric:tabular-nums; }
+.sb .rt{ display:flex; align-items:center; gap:7px; }
+.sb .rt .dot{ width:9px; height:9px; border-radius:5px; background:var(--amber); }
+.sb svg{ display:block; }
+
+/* ============================================================
+   LIVE ACTIVITY — DYNAMIC ISLAND
+   ============================================================ */
+
+/* compact — leading dot + trailing mono timer, camera gap in middle */
+.di-compact{ display:inline-flex; align-items:center; justify-content:space-between;
+  width:132px; height:37px; background:#000; border-radius:19px; padding:0 13px;
+  box-shadow:0 8px 24px -8px rgba(0,0,0,0.6); }
+.di-compact .lead{ display:flex; align-items:center; }
+.di-compact .tm{ font-family:var(--mono); font-size:14px; font-weight:600; color:#fff;
+  font-variant-numeric:tabular-nums; letter-spacing:0.2px; }
+
+/* status dots / glyphs */
+.sdot{ width:10px; height:10px; border-radius:50%; flex:none; }
+.sdot.rec{ background:var(--blueflat); box-shadow:0 0 0 0 var(--glow); animation:pulse 1.8s ease-out infinite; }
+.sdot.standby{ background:var(--amber); }
+.sdot.stale{ background:transparent; border:1.6px solid rgba(233,238,247,0.34); }
+@keyframes pulse{ 0%{ box-shadow:0 0 0 0 rgba(26,140,255,0.5);} 70%{ box-shadow:0 0 0 7px rgba(26,140,255,0);} 100%{ box-shadow:0 0 0 0 rgba(26,140,255,0);} }
+.spinner{ width:13px; height:13px; border-radius:50%; border:2px solid rgba(255,255,255,0.22);
+  border-top-color:var(--blueflat); animation:spin 0.9s linear infinite; flex:none; }
+@keyframes spin{ to{ transform:rotate(360deg);} }
+.chk{ width:14px; height:14px; flex:none; }
+
+.di-compact.stale .tm{ color:rgba(255,255,255,0.42); }
+
+/* expanded — hangs from notch: header row + control */
+.di-exp{ width:356px; background:#000; border-radius:40px; padding:17px 22px 19px;
+  box-shadow:0 26px 60px -18px rgba(0,0,0,0.75); }
+.di-exp .top{ display:flex; align-items:center; gap:13px; }
+.di-exp .jbadge{ width:34px; height:34px; border-radius:9px; background:var(--blue-grad); display:flex;
+  align-items:center; justify-content:center; flex:none; box-shadow:0 6px 16px -6px var(--glow); }
+.di-exp .jbadge span{ font-family:var(--serif); font-style:italic; font-weight:600; font-size:21px; color:#fff; transform:translateY(-1px); }
+.di-exp .meta{ flex:1; min-width:0; }
+.di-exp .meta .st{ display:flex; align-items:center; gap:7px; font-size:16px; font-weight:600; color:#fff; letter-spacing:-0.1px; }
+.di-exp .meta .sub{ font-size:12.5px; color:rgba(255,255,255,0.52); margin-top:3px; line-height:1.35; }
+.di-exp .bigtm{ font-family:var(--mono); font-size:22px; font-weight:600; color:#fff; font-variant-numeric:tabular-nums;
+  letter-spacing:0.3px; flex:none; }
+.di-exp .bigtm.dim{ color:rgba(255,255,255,0.4); }
+.di-exp .ctrls{ display:flex; gap:10px; margin-top:16px; }
+.libtn{ height:44px; border-radius:22px; display:flex; align-items:center; justify-content:center; gap:8px;
+  font-size:15.5px; font-weight:600; letter-spacing:-0.1px; border:0; cursor:default; }
+.libtn.primary{ flex:1; background:var(--blue-grad); color:#fff; box-shadow:0 10px 24px -8px var(--glow); }
+.libtn.glass{ flex:1; background:rgba(255,255,255,0.10); color:#fff; border:0.5px solid rgba(255,255,255,0.18); }
+.libtn.circle{ width:44px; height:44px; border-radius:50%; flex:none; background:rgba(255,255,255,0.10); border:0.5px solid rgba(255,255,255,0.18); color:#fff; }
+.libtn.circle.trash{ color:var(--red); }
+.libtn.sq{ width:16px; height:16px; border-radius:4px; background:#fff; }
+.di-exp.stale .jbadge{ background:rgba(255,255,255,0.12); box-shadow:none; }
+.di-exp.stale .jbadge span{ color:rgba(255,255,255,0.5); }
+.di-exp.stale .meta .st{ color:rgba(255,255,255,0.62); }
+
+/* ============================================================
+   LIVE ACTIVITY — LOCK-SCREEN BANNER
+   ============================================================ */
+.lsb{ width:356px; border-radius:24px; padding:15px 18px; display:flex; align-items:center; gap:13px;
+  background:rgba(22,30,46,0.55); border:0.5px solid rgba(255,255,255,0.12);
+  backdrop-filter:blur(24px) saturate(1.2); -webkit-backdrop-filter:blur(24px) saturate(1.2);
+  box-shadow:0 20px 50px -20px rgba(0,0,0,0.55); }
+.lsb .jbadge{ width:38px; height:38px; border-radius:10px; background:var(--blue-grad); display:flex;
+  align-items:center; justify-content:center; flex:none; box-shadow:0 6px 16px -6px var(--glow); }
+.lsb .jbadge span{ font-family:var(--serif); font-style:italic; font-weight:600; font-size:23px; color:#fff; transform:translateY(-1px); }
+.lsb .body{ flex:1; min-width:0; }
+.lsb .row1{ display:flex; align-items:center; gap:7px; }
+.lsb .row1 .nm{ font-size:15px; font-weight:700; color:#fff; letter-spacing:-0.1px; }
+.lsb .row1 .sep{ color:rgba(255,255,255,0.3); font-size:13px; }
+.lsb .row1 .state{ font-size:14px; color:rgba(255,255,255,0.7); }
+.lsb .row2{ font-size:12px; color:rgba(255,255,255,0.42); margin-top:2px; }
+.lsb .tm{ font-family:var(--mono); font-size:16px; font-weight:600; color:#fff; font-variant-numeric:tabular-nums; flex:none; }
+.lsb .tm.dim{ color:rgba(255,255,255,0.4); }
+.lsb.stale{ background:rgba(20,24,32,0.5); }
+.lsb.stale .jbadge{ background:rgba(255,255,255,0.12); box-shadow:none; }
+.lsb.stale .jbadge span{ color:rgba(255,255,255,0.5); }
+.lsb.stale .row1 .nm{ color:rgba(255,255,255,0.72); }
+
+/* ============================================================
+   IN-CONTEXT SCREEN CHROME
+   ============================================================ */
+
+/* the island docked to the notch, over any screen */
+.notch-dock{ position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:70; }
+
+/* --- Lock screen --- */
+.lock{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; }
+.lock .glyphs{ position:absolute; top:16px; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:0 40px; color:#fff; opacity:0.9; }
+.lock .glyphs svg{ display:block; }
+.lock .clock{ text-align:center; margin-top:78px; }
+.lock .clock .dt{ font-size:19px; font-weight:600; color:rgba(255,255,255,0.92); letter-spacing:0.2px; }
+.lock .clock .tm{ font-family:var(--sys); font-weight:600; font-size:88px; line-height:0.98; color:#fff; letter-spacing:-2px; margin-top:2px; font-variant-numeric:tabular-nums; }
+.lock .banners{ margin-top:34px; display:flex; flex-direction:column; gap:12px; }
+.lock .foot{ position:absolute; bottom:34px; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:0 42px; }
+.lock .fbtn{ width:52px; height:52px; border-radius:50%; background:rgba(255,255,255,0.14); display:flex; align-items:center; justify-content:center; color:#fff; }
+.rail-ind{ position:absolute; bottom:9px; left:50%; transform:translateX(-50%); width:138px; height:5px; border-radius:3px; background:var(--rail); }
+
+/* --- Home screen (Jot library) --- */
+.home{ position:absolute; inset:0; padding:60px 18px 22px; display:flex; flex-direction:column; }
+.home .top{ display:flex; align-items:center; justify-content:space-between; margin-top:6px; }
+.home .jotw{ display:flex; align-items:center; gap:9px; }
+.home .jotw .b{ width:28px; height:28px; border-radius:8px; background:var(--blue-grad); display:flex; align-items:center; justify-content:center; }
+.home .jotw .b span{ font-family:var(--serif); font-style:italic; font-weight:600; font-size:17px; color:#fff; transform:translateY(-1px); }
+.home .jotw b{ font-size:19px; font-weight:700; letter-spacing:-0.3px; }
+.home .acts{ display:flex; gap:14px; color:rgba(255,255,255,0.6); }
+.home .head{ font-family:var(--serif); font-style:italic; font-weight:500; font-size:29px; line-height:1.15; letter-spacing:-0.4px; margin:20px 2px 0; text-wrap:pretty; }
+.home .date{ font-size:13px; color:var(--ink-cap); margin:14px 2px 0; text-transform:uppercase; letter-spacing:1.2px; font-weight:600; }
+.home .srch{ display:flex; gap:9px; margin:11px 0 0; }
+.home .searchbar{ flex:1; height:42px; border-radius:13px; background:var(--field-fill,rgba(255,255,255,0.06)); border:0.5px solid var(--chrome-bord); display:flex; align-items:center; gap:9px; padding:0 14px; color:var(--ink-cap); font-size:15px; }
+.home .sparkbtn{ width:42px; height:42px; border-radius:13px; background:var(--blue-soft); border:0.5px solid rgba(26,140,255,0.32); display:flex; align-items:center; justify-content:center; }
+.home .tlist{ margin-top:16px; flex:1; display:flex; flex-direction:column; gap:11px; overflow:hidden; }
+.home .grp{ font-size:12px; font-weight:700; letter-spacing:0.6px; color:var(--ink-cap); }
+.home .trow{ }
+.home .trow .sn{ font-family:var(--serif); font-style:italic; font-weight:500; font-size:17.5px; line-height:1.34; color:rgba(233,238,247,0.9); display:block; }
+.home .trow .mt{ font-size:12px; color:var(--ink-cap); margin-top:4px; display:block; }
+.home .hair{ height:0.5px; background:var(--hairline); }
+.home .fab{ position:absolute; left:50%; bottom:26px; transform:translateX(-50%); height:56px; padding:0 26px; border-radius:28px; background:var(--blue-grad); color:#fff; font-weight:700; font-size:18px; display:flex; align-items:center; gap:10px; box-shadow:0 16px 34px -10px var(--glow); }
+
+/* --- Messages (foreign app) --- */
+.imsg{ position:absolute; inset:0; background:linear-gradient(180deg,#0b0f16,#0b0f16); display:flex; flex-direction:column; }
+.imsg .nav{ padding:60px 18px 10px; display:flex; flex-direction:column; align-items:center; gap:6px; border-bottom:0.5px solid rgba(255,255,255,0.08); }
+.imsg .nav .av{ width:44px; height:44px; border-radius:50%; background:linear-gradient(180deg,#8E97A6,#6E7686); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; font-size:17px; }
+.imsg .nav .nm{ font-size:13px; color:#fff; font-weight:600; }
+.imsg .thread{ flex:1; padding:16px 16px 8px; display:flex; flex-direction:column; gap:9px; }
+.imsg .bub{ max-width:74%; padding:10px 15px; border-radius:20px; font-size:16px; line-height:1.35; }
+.imsg .bub.in{ align-self:flex-start; background:#26262a; color:#fff; border-bottom-left-radius:6px; }
+.imsg .bub.out{ align-self:flex-end; background:#3576ff; color:#fff; border-bottom-right-radius:6px; }
+.imsg .composer{ display:flex; align-items:center; gap:10px; padding:10px 14px 12px; }
+.imsg .field{ flex:1; height:38px; border-radius:19px; border:1px solid rgba(255,255,255,0.18); display:flex; align-items:center; padding:0 15px; color:rgba(255,255,255,0.4); font-size:15px; }
+.imsg .plus{ width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,0.7); }
+
+/* ============================================================
+   REFERENCE RAIL — states × surfaces
+   ============================================================ */
+.matrix{ display:grid; grid-template-columns:186px 200px 380px 380px; gap:0; max-width:1360px; margin:0 auto;
+  border:0.5px solid var(--hairline); border-radius:20px; overflow:hidden; background:rgba(255,255,255,0.015); }
+.matrix .hcell{ padding:16px 20px; font-size:11.5px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#7c89a2; border-bottom:0.5px solid var(--hairline); }
+.matrix .rcell{ padding:26px 20px; display:flex; align-items:center; border-bottom:0.5px solid var(--hairline); background:linear-gradient(180deg,rgba(11,15,22,0.4),rgba(11,15,22,0.4)); }
+.matrix .row-lab{ flex-direction:column; align-items:flex-start; gap:5px; }
+.matrix .row-lab .rl{ font-size:15px; font-weight:600; color:#dfe7f4; letter-spacing:-0.1px; }
+.matrix .row-lab .rd{ font-size:12px; color:#6f7c95; line-height:1.4; }
+.matrix .cell-onblack{ background:
+  radial-gradient(120% 100% at 50% 0%, rgba(46,116,196,0.10), transparent 60%),
+  linear-gradient(180deg,#05070c,#05070c); justify-content:center; }
+.matrix .rcell:nth-last-child(-n+4){ border-bottom:0; }
+.rlab-note{ max-width:1360px; margin:14px auto 0; font-size:12.5px; color:#66738c; }
+
+/* notes strip */
+.notes{ max-width:1360px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.note{ border:0.5px solid var(--hairline); border-radius:16px; padding:20px 22px; background:rgba(255,255,255,0.02); }
+.note h3{ margin:0 0 12px; font-size:12px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#8ea0bd; }
+.note ul{ margin:0; padding-left:2px; list-style:none; display:flex; flex-direction:column; gap:9px; }
+.note li{ font-size:13.5px; color:#b9c4d6; line-height:1.5; display:flex; gap:9px; }
+.note li .mk{ flex:none; margin-top:1px; }
+.note li b{ color:#e6edf8; font-weight:600; }
+.note .no .mk{ color:var(--red); }
+.note .yes .mk{ color:var(--green); }
+.copychip{ display:inline-block; font-family:var(--mono); font-size:12px; color:#cfe0ff; background:rgba(26,140,255,0.12);
+  border:0.5px solid rgba(26,140,255,0.28); border-radius:6px; padding:2px 7px; }
+</style>
+</head>
+<body>
+
+<!-- ============ MASTHEAD ============ -->
+<div class="masthead">
+  <div class="jmark"><span>j</span></div>
+  <div>
+    <h1>Live Activity &amp; Dynamic Island</h1>
+    <p>A glanceable pill for every dictation — see Jot is recording and stop it without opening the app.</p>
+  </div>
+  <div class="meta"><b>Jot v2.0 · new surface</b><br>Built on the existing iOS system<br>5 states · 3 surfaces</div>
+</div>
+
+<!-- ============ IN CONTEXT ============ -->
+<div class="sec-head"><h2>In context</h2><span class="rule"></span><span class="dims">Live Activity over real screens</span></div>
+<div class="board">
+  <div class="phones">
+
+    <!-- 1 · Lock screen · Recording banner -->
+    <div class="pcol">
+      <div class="scalewrap"><div class="device"><div class="screen">
+        <div class="lock">
+          <div class="glyphs">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7"><path d="M7 11V8a5 5 0 0 1 10 0v3" stroke-linecap="round"/><rect x="5" y="11" width="14" height="9" rx="2.5"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="#fff"><path d="M6 10a6 6 0 0 1 12 0v4l1.6 3H4.4L6 14z"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0" stroke="#fff" fill="none" stroke-width="1.6"/></svg>
+          </div>
+          <div class="clock">
+            <div class="dt">Tuesday, July 1</div>
+            <div class="tm">9:41</div>
+          </div>
+          <div class="banners">
+            <div class="lsb">
+              <div class="jbadge"><span>j</span></div>
+              <div class="body">
+                <div class="row1"><span class="sdot rec"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Recording</span></div>
+                <div class="row2">Dictation in progress</div>
+              </div>
+              <div class="tm">0:14</div>
+            </div>
+          </div>
+          <div class="foot">
+            <div class="fbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M6 4l3 3-3 3zM11 3l7 9-7 9V3z" opacity="0"/><path d="M8 5a7 7 0 1 0 8 11 6 6 0 0 1-8-11z"/></svg></div>
+            <div class="fbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="4.5" y="8" width="15" height="11" rx="3" fill="#fff"/><circle cx="12" cy="13.5" r="2.6" fill="#0b0f16"/></svg></div>
+          </div>
+          <div class="rail-ind"></div>
+        </div>
+      </div></div></div>
+      <div class="cap"><b>Lock Screen · Recording</b><span>Banner under the clock. Dot · Jot · state · timer — never any transcript text.</span></div>
+    </div>
+
+    <!-- 2 · Home screen · Expanded island (Stop) -->
+    <div class="pcol">
+      <div class="scalewrap"><div class="device"><div class="screen">
+        <div class="sb"><span class="t">9:41</span><div class="rt">
+          <svg class="ico" width="18" height="12" viewBox="0 0 18 12" fill="#fff"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0.5" width="3" height="11.5" rx="1"/></svg>
+          <svg class="ico" width="17" height="12" viewBox="0 0 17 12" fill="#fff"><path d="M8.5 2.4c2.7 0 5.2 1 7 2.8l-1.6 1.7A7.6 7.6 0 0 0 8.5 4.7 7.6 7.6 0 0 0 3.1 6.9L1.5 5.2A9.9 9.9 0 0 1 8.5 2.4z"/><path d="M8.5 6.6c1.5 0 2.9.6 4 1.6L8.5 12 4.5 8.2a5.7 5.7 0 0 1 4-1.6z"/></svg>
+          <span style="display:inline-flex;align-items:center;gap:2px"><span style="width:25px;height:12.5px;border-radius:3.5px;border:1px solid #fff;opacity:0.5;padding:1.6px;display:block"><span style="display:block;width:78%;height:100%;border-radius:1.5px;background:#fff"></span></span><span style="width:1.5px;height:4.5px;border-radius:1px;background:#fff;opacity:0.5;display:block"></span></span>
+        </div></div>
+        <div class="home">
+          <div class="top">
+            <div class="jotw"><span class="b"><span>j</span></span><b>Jot</b></div>
+            <div class="acts">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9.2"/><path d="M9.3 9.3a2.8 2.8 0 1 1 4.2 2.6c-.9.6-1.5 1.1-1.5 2.2" stroke-linecap="round"/><circle cx="12" cy="16.8" r="0.6" fill="currentColor" stroke="none"/></svg>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.6v2.5M12 18.9v2.5M21.4 12h-2.5M5.1 12H2.6M18.6 5.4l-1.8 1.8M7.2 16.8l-1.8 1.8M18.6 18.6l-1.8-1.8M7.2 7.2 5.4 5.4" stroke-linecap="round"/></svg>
+            </div>
+          </div>
+          <div class="head">Speak it straight<br>into your app.</div>
+          <div class="date">Tuesday, July 1</div>
+          <div class="srch">
+            <div class="searchbar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4" stroke-linecap="round"/></svg> Search transcripts</div>
+            <div class="sparkbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2.5c.7 4.2 1.9 6.9 3.9 8.6 1.8 1.4 4.4 2.2 6.6 2-4.2.7-6.9 1.9-8.6 3.9-1.4 1.8-2.2 4.4-2 6.5-.7-4.2-1.9-6.9-3.9-8.5-1.8-1.4-4.4-2.2-6.5-2 4.2-.7 6.9-1.9 8.5-3.9C11.4 6.9 12.2 4.6 12 2.5z" fill="#1A8CFF"/></svg></div>
+          </div>
+          <div class="tlist">
+            <div class="grp">TODAY</div>
+            <div class="trow"><span class="sn">“Can you hear me? This is how it looks right now…”</span><span class="mt">11:58 AM · 0:58</span></div>
+            <div class="hair"></div>
+            <div class="trow"><span class="sn">So, researchers at September University did this, and on the third pass…</span><span class="mt">11:55 AM · 20:32</span></div>
+            <div class="hair"></div>
+            <div class="trow"><span class="sn">Buy it at that price — the price is nuts. And if you can’t sell it to…</span><span class="mt">10:59 AM · 0:42</span></div>
+          </div>
+          <div class="fab"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="9.5" y="3" width="5" height="10" rx="2.5" fill="#fff"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3.2M9 20.6h6" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg> Dictate</div>
+        </div>
+        <!-- expanded island docked to notch -->
+        <div class="notch-dock">
+          <div class="di-exp">
+            <div class="top">
+              <div class="jbadge"><span>j</span></div>
+              <div class="meta">
+                <div class="st"><span class="sdot rec"></span>Recording</div>
+                <div class="sub">Everything stays on device.</div>
+              </div>
+              <div class="bigtm">0:14</div>
+            </div>
+            <div class="ctrls">
+              <button class="libtn circle trash"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
+              <button class="libtn circle"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5"/><rect x="14" y="5" width="4" height="14" rx="1.5"/></svg></button>
+              <button class="libtn primary"><span class="sq"></span>Stop</button>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <div class="cap"><b>Home Screen · Expanded (long-press)</b><span>Island hangs from the notch: status + timer + transport controls — delete · pause · Stop, like the recording surface.</span></div>
+    </div>
+
+    <!-- 3 · Messages · Compact pill -->
+    <div class="pcol">
+      <div class="scalewrap"><div class="device"><div class="screen">
+        <div class="imsg">
+          <div class="nav">
+            <div class="av">R</div>
+            <div class="nm">Riya</div>
+          </div>
+          <div class="thread">
+            <div class="bub in">are we still on for the 3 o’clock?</div>
+            <div class="bub out">yep — moving the launch to June 12, will confirm scope by friday</div>
+            <div class="bub in">perfect. want me to loop in design?</div>
+            <div class="bub out">please 🙏</div>
+          </div>
+          <div class="composer">
+            <div class="plus"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
+            <div class="field">iMessage</div>
+          </div>
+        </div>
+        <!-- status bar time (left) shows under compact island edges -->
+        <div class="sb"><span class="t">9:41</span><div class="rt">
+          <svg class="ico" width="18" height="12" viewBox="0 0 18 12" fill="#fff"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0.5" width="3" height="11.5" rx="1"/></svg>
+          <svg class="ico" width="17" height="12" viewBox="0 0 17 12" fill="#fff"><path d="M8.5 2.4c2.7 0 5.2 1 7 2.8l-1.6 1.7A7.6 7.6 0 0 0 8.5 4.7 7.6 7.6 0 0 0 3.1 6.9L1.5 5.2A9.9 9.9 0 0 1 8.5 2.4z"/><path d="M8.5 6.6c1.5 0 2.9.6 4 1.6L8.5 12 4.5 8.2a5.7 5.7 0 0 1 4-1.6z"/></svg>
+          <span style="display:inline-flex;align-items:center;gap:2px"><span style="width:25px;height:12.5px;border-radius:3.5px;border:1px solid #fff;opacity:0.5;padding:1.6px;display:block"><span style="display:block;width:78%;height:100%;border-radius:1.5px;background:#fff"></span></span><span style="width:1.5px;height:4.5px;border-radius:1px;background:#fff;opacity:0.5;display:block"></span></span>
+        </div></div>
+        <div class="notch-dock">
+          <div class="di-compact">
+            <div class="lead"><span class="sdot rec"></span></div>
+            <span class="tm">0:14</span>
+          </div>
+        </div>
+      </div></div></div>
+      <div class="cap"><b>In another app · Compact (in notch)</b><span>Status dot + monospace timer. No text — recording keeps running while they work.</span></div>
+    </div>
+
+    <!-- 4 · Lock screen · STALE / app killed -->
+    <div class="pcol">
+      <div class="scalewrap"><div class="device"><div class="screen">
+        <div class="lock">
+          <div class="glyphs">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7"><path d="M7 11V8a5 5 0 0 1 10 0v3" stroke-linecap="round"/><rect x="5" y="11" width="14" height="9" rx="2.5"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="#fff"><path d="M6 10a6 6 0 0 1 12 0v4l1.6 3H4.4L6 14z"/></svg>
+          </div>
+          <div class="clock">
+            <div class="dt">Tuesday, July 1</div>
+            <div class="tm">9:47</div>
+          </div>
+          <div class="banners">
+            <div class="lsb stale">
+              <div class="jbadge"><span>j</span></div>
+              <div class="body">
+                <div class="row1"><span class="sdot stale"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Recording ended</span></div>
+                <div class="row2">Jot stopped unexpectedly — open to check your capture</div>
+              </div>
+              <div class="tm dim">--:--</div>
+            </div>
+          </div>
+          <div class="foot">
+            <div class="fbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5a7 7 0 1 0 8 11 6 6 0 0 1-8-11z"/></svg></div>
+            <div class="fbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="4.5" y="8" width="15" height="11" rx="3" fill="#fff"/><circle cx="12" cy="13.5" r="2.6" fill="#0b0f16"/></svg></div>
+          </div>
+          <div class="rail-ind"></div>
+        </div>
+      </div></div></div>
+      <div class="cap"><b>Lock Screen · Stale (app was killed)</b><span>Recording process died — hollow dot, dimmed, dashes. Never a live-looking, still-counting pill.</span></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ MATRIX ============ -->
+<div class="sec-head"><h2>Every surface × state</h2><span class="rule"></span><span class="dims">Atlas fragment reference</span></div>
+<div class="matrix">
+  <!-- header row -->
+  <div class="hcell">State</div>
+  <div class="hcell">Compact · notch</div>
+  <div class="hcell">Expanded · long-press</div>
+  <div class="hcell">Lock-screen banner</div>
+
+  <!-- RECORDING -->
+  <div class="rcell row-lab"><span class="rl">Recording</span><span class="rd">Live capture, counting up</span></div>
+  <div class="rcell cell-onblack">
+    <div class="di-compact"><div class="lead"><span class="sdot rec"></span></div><span class="tm">0:14</span></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="di-exp"><div class="top"><div class="jbadge"><span>j</span></div><div class="meta"><div class="st"><span class="sdot rec"></span>Recording</div><div class="sub">Everything stays on device.</div></div><div class="bigtm">0:14</div></div><div class="ctrls"><button class="libtn circle trash"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button><button class="libtn circle"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5"/><rect x="14" y="5" width="4" height="14" rx="1.5"/></svg></button><button class="libtn primary"><span class="sq"></span>Stop</button></div></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="lsb"><div class="jbadge"><span>j</span></div><div class="body"><div class="row1"><span class="sdot rec"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Recording</span></div><div class="row2">Dictation in progress</div></div><div class="tm">0:14</div></div>
+  </div>
+
+  <!-- TRANSCRIBING -->
+  <div class="rcell row-lab"><span class="rl">Transcribing</span><span class="rd">After stop — processing</span></div>
+  <div class="rcell cell-onblack">
+    <div class="di-compact"><div class="lead"><span class="spinner"></span></div><span class="tm">0:14</span></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="di-exp"><div class="top"><div class="jbadge"><span>j</span></div><div class="meta"><div class="st"><span class="spinner"></span>Transcribing</div><div class="sub">Working on it…</div></div><div class="bigtm dim">0:14</div></div></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="lsb"><div class="jbadge"><span>j</span></div><div class="body"><div class="row1"><span class="spinner"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Working on it…</span></div><div class="row2">Preparing your transcript</div></div></div>
+  </div>
+
+  <!-- STANDBY -->
+  <div class="rcell row-lab"><span class="rl">Mic on standby</span><span class="rd">Warm-hold ~60s · disclosure</span></div>
+  <div class="rcell cell-onblack">
+    <div class="di-compact"><div class="lead"><span class="sdot standby"></span></div><span class="tm">0:52</span></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="di-exp"><div class="top"><div class="jbadge"><span>j</span></div><div class="meta"><div class="st"><span class="sdot standby"></span>Mic on standby</div><div class="sub">Tap Jot down to capture again, or End to release the mic.</div></div><div class="bigtm">0:52</div></div><div class="ctrls"><button class="libtn glass">End</button><button class="libtn primary">Jot down</button></div></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="lsb"><div class="jbadge"><span>j</span></div><div class="body"><div class="row1"><span class="sdot standby"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Mic on standby</span></div><div class="row2">Releasing the mic soon</div></div><div class="tm">0:52</div></div>
+  </div>
+
+  <!-- SAVED -->
+  <div class="rcell row-lab"><span class="rl">Saved</span><span class="rd">2s confirmation, then ends</span></div>
+  <div class="rcell cell-onblack">
+    <div class="di-compact"><div class="lead"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg></div><span class="tm">0:14</span></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="di-exp"><div class="top"><div class="jbadge"><span>j</span></div><div class="meta"><div class="st"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>Saved &amp; copied</div><div class="sub">Pasted anywhere you like.</div></div><div class="bigtm">0:14</div></div></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="lsb"><div class="jbadge"><span>j</span></div><div class="body"><div class="row1"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span class="nm">Jot</span><span class="sep">·</span><span class="state">Saved &amp; copied</span></div><div class="row2">Transcript saved to your library</div></div></div>
+  </div>
+
+  <!-- STALE -->
+  <div class="rcell row-lab"><span class="rl">Stale</span><span class="rd">App was killed — inactive</span></div>
+  <div class="rcell cell-onblack">
+    <div class="di-compact stale"><div class="lead"><span class="sdot stale"></span></div><span class="tm">--:--</span></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="di-exp stale"><div class="top"><div class="jbadge"><span>j</span></div><div class="meta"><div class="st"><span class="sdot stale"></span>Recording ended</div><div class="sub">Jot stopped unexpectedly.</div></div><div class="bigtm dim">--:--</div></div><div class="ctrls"><button class="libtn glass">Open Jot</button></div></div>
+  </div>
+  <div class="rcell cell-onblack">
+    <div class="lsb stale"><div class="jbadge"><span>j</span></div><div class="body"><div class="row1"><span class="sdot stale"></span><span class="nm">Jot</span><span class="sep">·</span><span class="state">Recording ended</span></div><div class="row2">Open to check your capture</div></div><div class="tm dim">--:--</div></div>
+  </div>
+</div>
+<div class="rlab-note">Timers use tabular monospace figures. Recording counts up; Mic on standby counts down from 0:60. Transcribing shows a spinner and no live figure. Stale shows dashes and a hollow dot — never a running count.</div>
+
+<!-- ============ NOTES ============ -->
+<div class="sec-head"><h2>Copy &amp; guardrails</h2><span class="rule"></span></div>
+<div class="notes">
+  <div class="note">
+    <h3>Exact copy (locked)</h3>
+    <ul>
+      <li><span class="mk">›</span><span>State labels: <span class="copychip">Recording</span> <span class="copychip">Working on it…</span> <span class="copychip">Mic on standby</span> <span class="copychip">Saved &amp; copied</span></span></li>
+      <li><span class="mk">›</span><span>Standby disclosure: <b>“Tap Jot down to capture again, or End to release the mic.”</b></span></li>
+      <li><span class="mk">›</span><span>Buttons: <span class="copychip">Stop</span> <span class="copychip">End</span> <span class="copychip">Jot down</span></span></li>
+    </ul>
+  </div>
+  <div class="note">
+    <h3>Guardrails</h3>
+    <ul>
+      <li class="no"><span class="mk">✕</span><span>No live transcript text in any pill — privacy &amp; platform.</span></li>
+      <li class="no"><span class="mk">✕</span><span>No live amplitude / waveform meter — infeasible in a Live Activity.</span></li>
+      <li class="yes"><span class="mk">✓</span><span>Stale must read as clearly inactive — no still-counting, live-looking pill.</span></li>
+      <li class="yes"><span class="mk">✓</span><span>Banners carry buttons? No — lock-screen banner is dot · Jot · state · timer only.</span></li>
+    </ul>
+  </div>
+</div>
+
+<template id="__bundler_thumbnail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#0a1019"/><rect x="30" y="24" width="40" height="14" rx="7" fill="#000"/><circle cx="40" cy="31" r="3" fill="#1A8CFF"/><text x="60" y="34" font-family="monospace" font-size="7" fill="#fff" text-anchor="middle">0:14</text><text x="50" y="68" font-family="Georgia" font-style="italic" font-size="30" fill="#1A8CFF" text-anchor="middle">j</text></svg>
+</template>
+
+</body>
+</html>

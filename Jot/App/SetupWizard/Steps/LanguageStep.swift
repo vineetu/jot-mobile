@@ -8,8 +8,8 @@
 //
 //    - English → the bundled Parakeet v2 (or the 110M on sub-6GB devices) —
 //      NO download, instant, the common path.
-//    - Any European language → one shared Parakeet v3 multilingual model,
-//      downloaded once (~461 MB). One v3 download unlocks every European
+//    - Any European language → one shared Parakeet Ultra multilingual model
+//      (post-trained v3), downloaded once (~632 MB). One download unlocks every European
 //      language; switching among them later is free.
 //
 //  This is the wizard sibling of the Settings → Dictation language picker
@@ -24,7 +24,7 @@
 //
 //  Advance gate (design §5.2): Continue is enabled when the resolved model is
 //  on disk. English is always satisfied (bundled). A European language is
-//  satisfied once its v3 download completes; while downloading, Continue is
+//  satisfied once its Ultra download completes; while downloading, Continue is
 //  disabled. The step is also skippable — Skip leaves the system-locale default
 //  in place and the model can be fetched later from Settings.
 //
@@ -225,7 +225,7 @@ struct LanguageStep: View {
             if modelOnDisk {
                 return ("Ready — runs entirely on this iPhone.", Color.green, true)
             }
-            return ("Downloads a ~461 MB model that runs entirely on this iPhone.", Color.jotPageInkSecondary, false)
+            return ("Downloads a ~632 MB model that runs entirely on this iPhone.", Color.jotPageInkSecondary, false)
         }
     }
 

@@ -1,0 +1,33 @@
+<!-- @dsCard group="Colors" viewport="700x210" subtitle="JotDesign mirror — shipping accent, ink/page, status" name="Production palette" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: var(--jot-page-base); color: var(--jot-page-ink); }
+  .sec { padding: 12px 14px 2px; font-size: 10px; font-weight: 700; letter-spacing: 1.3px; text-transform: uppercase; color: var(--jot-page-ink-caption); }
+  .row { display: flex; gap: 8px; padding: 6px 14px 4px; }
+  .sw { flex: 1; height: 52px; border-radius: 10px; display: flex; flex-direction: column; justify-content: flex-end; padding: 6px 9px; box-sizing: border-box; color: #fff; border: 0.5px solid rgba(255,255,255,0.10); }
+  .sw b { font-size: 10.5px; font-weight: 600; }
+  .sw span { font-size: 9.5px; opacity: 0.78; }
+</style>
+</head>
+<body>
+  <div class="sec">Accent · jotAccent #1A8CFF is canonical app-wide</div>
+  <div class="row">
+    <div class="sw" style="background: var(--jot-accent);"><b>--jot-accent</b><span>#1A8CFF</span></div>
+    <div class="sw" style="background: var(--jot-accent-grad);"><b>--jot-accent-grad</b><span>Dictate pill · Recents</span></div>
+    <div class="sw" style="background: var(--jot-kb-accent);"><b>--jot-kb-accent</b><span>keyboard · iOS blue</span></div>
+    <div class="sw" style="background: var(--jot-blue-grad);"><b>--jot-blue-grad</b><span>wizard CTA 3-stop</span></div>
+  </div>
+  <div class="sec">Status · record red is the recording identity in-app</div>
+  <div class="row">
+    <div class="sw" style="background: var(--jot-success);"><b>success</b><span>#34C759</span></div>
+    <div class="sw" style="background: var(--jot-warning);"><b>warning</b><span>#FF9F30</span></div>
+    <div class="sw" style="background: var(--jot-record);"><b>record</b><span>#FF3B30</span></div>
+    <div class="sw" style="background: var(--jot-recording-dot); box-shadow: 0 0 0 5px var(--jot-recording-halo);"><b>recording dot</b><span>#E0173B + halo</span></div>
+    <div class="sw" style="background: var(--jot-page-base); border-color: var(--jot-page-separator);"><b>page-base</b><span>#15171C / #D1D3DA</span></div>
+  </div>
+</body>
+</html>

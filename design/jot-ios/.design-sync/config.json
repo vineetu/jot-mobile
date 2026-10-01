@@ -1,0 +1,72 @@
+{
+  "pkg": "@jot/design-system",
+  "globalName": "JotDS",
+  "projectId": "259f38b9-aef6-49f4-b760-9ba9d425916e",
+  "shape": "package",
+  "buildCmd": "npm run build",
+  "cssEntry": "dist/jot.css",
+  "docsDir": "docs",
+  "runtimeFontPrefixes": [
+    "Fraunces"
+  ],
+  "guidelinesGlob": [
+    "guidelines/*.md"
+  ],
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "CtaPill": {
+      "cardMode": "column"
+    },
+    "GlassButton": {
+      "cardMode": "column"
+    },
+    "GlassPill": {
+      "cardMode": "column"
+    },
+    "IosToggle": {
+      "cardMode": "column"
+    },
+    "TextLink": {
+      "cardMode": "column"
+    },
+    "HeroTile": {
+      "cardMode": "column"
+    },
+    "JotAppIcon": {
+      "cardMode": "column"
+    },
+    "JotGlyph": {
+      "cardMode": "column"
+    },
+    "JotMark": {
+      "cardMode": "column"
+    },
+    "CitationChip": {
+      "cardMode": "column"
+    },
+    "GlassCard": {
+      "cardMode": "column"
+    },
+    "ProgressDots": {
+      "cardMode": "column"
+    },
+    "SourceRow": {
+      "cardMode": "column"
+    },
+    "StopPill": {
+      "cardMode": "column"
+    },
+    "Waveform": {
+      "cardMode": "column"
+    },
+    "BodyText": {
+      "cardMode": "column"
+    },
+    "CapsLabel": {
+      "cardMode": "column"
+    },
+    "SerifTitle": {
+      "cardMode": "column"
+    }
+  }
+}

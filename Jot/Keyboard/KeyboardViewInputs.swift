@@ -44,6 +44,24 @@ final class KeyboardViewInputs {
     var showVocabNudge: Bool = false
     var keyboardAppearance: UIKeyboardAppearance = .default
     var hasSelection: Bool = false
+    /// Automatic cleanup (§7.14) on/off, read from the App Group each sync;
+    /// the actions pane's Cleanup tile shows and flips it.
+    var cleanupEnabled: Bool = false
+    /// Whether the app last saw Apple Intelligence able to run the cleanup
+    /// (`AppGroup.Keys.aiCleanupAvailable`; absent ⇒ true).
+    var cleanupAvailable: Bool = true
+    /// Whether Apple's on-device model can rewrite the host's selection right
+    /// here (§7.15). Refreshed when the actions pane opens. False ⇒ the
+    /// Rewrite tile is washed and its tap explains why via the status banner.
+    var rewriteAvailable: Bool = false
+    /// True while a keyboard rewrite is running (tile washed, double-tap guard).
+    var rewriteInFlight: Bool = false
+    /// Translate pane (§7.16): the target languages to offer for the current
+    /// selection (empty while the installed-pack check runs), the detected
+    /// source code, and the in-flight guard.
+    var translateOptions: [KeyboardTranslateOption] = []
+    var translateSource: String = "en"
+    var translateInFlight: Bool = false
     var showCorrectionNudge: Bool = false
     var correctionAsks: CorrectionBridge.Asks? = nil
     /// Ask-before-paste HOLD deck (F1) — the hub's deck snapshot while it is
@@ -72,6 +90,10 @@ struct KeyboardRootHostView: View {
     let onPaste: () -> Void
     let onUndoLastInsertion: () -> Void
     let onRedoInsertion: () -> Void
+    let onToggleCleanup: () -> Void
+    let onRewriteSelection: () -> Void
+    let onTranslateOpen: () -> Bool
+    let onTranslateSelection: (String) -> Void
     let onJumpToStart: () -> Void
     let onJumpToEnd: () -> Void
     let onTapToSpeak: () -> Void
@@ -123,11 +145,21 @@ struct KeyboardRootHostView: View {
             showVocabNudge: inputs.showVocabNudge,
             keyboardAppearance: inputs.keyboardAppearance,
             hasSelection: inputs.hasSelection,
+            cleanupEnabled: inputs.cleanupEnabled,
+            cleanupAvailable: inputs.cleanupAvailable,
+            rewriteAvailable: inputs.rewriteAvailable,
+            rewriteInFlight: inputs.rewriteInFlight,
+            translateOptions: inputs.translateOptions,
+            translateInFlight: inputs.translateInFlight,
             onCopy: onCopy,
             onAddToVocabulary: onAddToVocabulary,
             onPaste: onPaste,
             onUndoLastInsertion: onUndoLastInsertion,
             onRedoInsertion: onRedoInsertion,
+            onToggleCleanup: onToggleCleanup,
+            onRewriteSelection: onRewriteSelection,
+            onTranslateOpen: onTranslateOpen,
+            onTranslateSelection: onTranslateSelection,
             onJumpToStart: onJumpToStart,
             onJumpToEnd: onJumpToEnd,
             onTapToSpeak: onTapToSpeak,

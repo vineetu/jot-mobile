@@ -1,9 +1,10 @@
 # Ask help corpus — generator
 
-Builds `Jot/Resources/help-corpus.json`, the bundled, pre-embedded product-help
-corpus that powers Ask's "how do I use Jot" lane (`Jot/App/Ask/HelpCorpus.swift`).
-Design + the chunking experiment that picked this approach:
-`docs/ask-product-help/design.md`.
+Builds `Jot/Resources/help-corpus.json`, the bundled product-help corpus that
+powers Ask's "how do I use Jot" lane (`Jot/App/Ask/HelpCorpus.swift`). The Ask
+model reaches it through `JotHelpSearchTool`, which retrieves lexically (BM25)
+over the chunk text — no embedder, no model download. Design + the chunking
+experiment that picked this approach: `docs/ask-product-help/design.md`.
 
 ## Regenerate
 
@@ -23,18 +24,8 @@ stale help.
    never becomes a help answer.
 2. `make_chunks.py` — sections → structural chunks (one per `§N.M`,
    recursive-512 fallback for oversized subsections).
-3. `embedder/` (Swift) — embeds each chunk with the **same** bundled
-   EmbeddingGemma the app uses (CoreML-LLM `1.9.0`, 256-d), and stamps
-   `modelVersion` + `sourceHash`. The `modelVersion` must equal
-   `EmbeddingGemmaService.modelVersion`; the app disables the help lane on a
-   mismatch rather than scoring against incomparable vectors.
+3. `stamp_corpus.py` — writes the text-only bundle and stamps `sourceHash`.
 
 ## Requirements
 
-macOS with the bundled EmbeddingGemma model present at
-`Jot/Resources/Models/EmbeddingGemma/` (same out-of-band model the app ships).
-`embedder/` resolves CoreML-LLM on first `swift run` (network).
-
-> Keep the `CoreML-LLM` pin in `embedder/Package.swift` in sync with
-> `Jot/project.yml`. If the app's embedder model/dim ever changes, bump
-> `MODEL_VERSION` in `embedder/Sources/embed/main.swift` to match and regenerate.
+python3 only.

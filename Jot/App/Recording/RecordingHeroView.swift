@@ -221,6 +221,10 @@ struct RecordingHeroView: View {
     private static let heroStreamCaption =
         "A sharper transcriber takes a second pass when you stop and tidies the live text."
 
+    /// Name of the saved prompt Automatic cleanup runs, resolved at Stop for
+    /// the "Cleaning up with …" stage line.
+    @State private var cleanupPromptName: String = "Cleanup"
+
     var body: some View {
         ZStack {
             WallpaperBackground(tintOverlay: WallpaperBackground.recordingTint())
@@ -515,12 +519,30 @@ struct RecordingHeroView: View {
             // Pinned caption — shown ABOVE the live text on EVERY recording.
             // One hero panel: it does NOT matter whether dictation started from
             // the keyboard (cold-start) or the in-app Dictate button.
-            Text(Self.heroStreamCaption)
-                .font(.system(size: 12.5, weight: .regular))
-                .foregroundStyle(Color.jotPageInkSecondary)
+            // After Stop the caption becomes the stage line (§2.5): the live
+            // text holds still beneath "Finishing the transcript…" and then
+            // "Cleaning up with “Cleanup”…" while Automatic cleanup runs.
+            if phase == .transcribing {
+                SteppingEllipsis(
+                    leading: postStopStageLine,
+                    font: .system(size: 12.5, weight: .regular),
+                    textColor: Color.jotPageInkSecondary,
+                    dotColor: Color.jotPageInkSecondary,
+                    reduceMotion: reduceMotion
+                )
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 12)
+                .contentTransition(.opacity)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: postStopStageLine)
                 .accessibilityHidden(true)
+            } else {
+                Text(Self.heroStreamCaption)
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(Color.jotPageInkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 12)
+                    .accessibilityHidden(true)
+            }
 
             Group {
                 if text.isEmpty {
@@ -545,8 +567,10 @@ struct RecordingHeroView: View {
                         .accessibilityHidden(true)
                     }
                 } else {
+                    // The tail promises more text only while the mic is live:
+                    // paused and post-stop both hold the text still.
                     StreamingDictationText(text: text,
-                                           isTranscribing: !recordingService.isPaused,
+                                           isTranscribing: phase == .recording && !recordingService.isPaused,
                                            reduceMotion: reduceMotion)
                 }
             }
@@ -574,11 +598,13 @@ struct RecordingHeroView: View {
         .opacity(streamRevealed || !isExternalKeyboardLaunch ? 1 : 0)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            text.isEmpty
-                ? (isLoadingModel && modelLoadRevealed
-                    ? "Recording in progress. Getting the model ready."
-                    : "Recording in progress. Listening.")
-                : "Recording in progress. \(text)"
+            phase == .transcribing
+                ? "Recording finished. \(recordingService.postStopStageLabel)."
+                : text.isEmpty
+                    ? (isLoadingModel && modelLoadRevealed
+                        ? "Recording in progress. Getting the model ready."
+                        : "Recording in progress. Listening.")
+                    : "Recording in progress. \(text)"
         )
         .accessibilityFocused($recordingStatusFocused)
         // Deferred reveal: when a slow model load is in flight, wait out the
@@ -688,6 +714,12 @@ struct RecordingHeroView: View {
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Circle())
+        // Once Stop is tapped the recording is finished and being saved —
+        // trashing it mid-transcription would discard a completed take.
+        // Pre-recording states (cold-start "Getting ready…") stay cancellable.
+        .disabled(phase == .transcribing || phase == .finished || phase == .cancelled)
+        .opacity(phase == .transcribing || phase == .finished || phase == .cancelled ? 0.4 : 1)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: phase)
         .accessibilityLabel("Cancel recording")
         .accessibilityHint("Discards this recording.")
     }
@@ -698,6 +730,19 @@ struct RecordingHeroView: View {
                 if phase == .transcribing {
                     ProgressView()
                         .tint(Color.white)
+                    // Name the stage the user is waiting on — "Cleaning up"
+                    // while Automatic cleanup (features.md §7.14) runs, so the
+                    // extra seconds read as work, not a hang. One word, no
+                    // ellipsis (the spinner is the motion); pinned width so the
+                    // capsule doesn't breathe when the word changes.
+                    Text(recordingService.postStopStageLabel)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                        .frame(minWidth: 104, alignment: .leading)
+                        .contentTransition(.opacity)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                                   value: recordingService.postStopStageLabel)
                 } else {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(Color.white)
@@ -738,7 +783,19 @@ struct RecordingHeroView: View {
         }
         .buttonStyle(.plain)
         .disabled(phase == .transcribing || phase == .starting || phase == .preparing)
-        .accessibilityLabel(phase == .transcribing ? "Transcribing" : "Stop recording")
+        .accessibilityLabel(phase == .transcribing ? recordingService.postStopStageLabel : "Stop recording")
+    }
+
+    /// Stage line pinned above the held live text after Stop (§2.5). Reads
+    /// the same last-named pipeline stage the stop capsule shows, with the
+    /// cleanup prompt named so the user knows which of their prompts is
+    /// running.
+    private var postStopStageLine: String {
+        switch recordingService.lastNamedPipelineStage {
+        case .cleaning: return "Cleaning up with \u{201C}\(cleanupPromptName)\u{201D}"
+        case .rewriting: return "Applying your follow-up"
+        default: return "Finishing the transcript"
+        }
     }
 
     // MARK: - Recording flow
@@ -929,6 +986,8 @@ struct RecordingHeroView: View {
 
     private func stopTapped() {
         guard phase == .recording else { return }
+        // Resolve once at stop (a saved-prompt lookup) for the stage line.
+        cleanupPromptName = CleanupSettings.load().promptName
         let recordingStartedAt = recordingService.currentRecordingStartedAt ?? Date()
         recordingService.markStopInFlight()
         stopHaptic.impactOccurred()
@@ -1075,6 +1134,9 @@ private struct StreamingDictationText: View {
                 }
             }
             .defaultScrollAnchor(.bottom)
+            // The hero draws its own top fade (the mask below); iOS 26's
+            // automatic scroll-edge blur would double up on it.
+            .scrollEdgeEffectHidden(true, for: .all)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .mask(
                 LinearGradient(

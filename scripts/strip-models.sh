@@ -43,7 +43,6 @@ stash_root="$repo_root/.model-stash"
 leaves=(
   "Parakeet/parakeet-tdt-0.6b-v2"
   "Parakeet/parakeet-ctc-110m-coreml"
-  "EmbeddingGemma"
 )
 
 cmd="${1:-}"

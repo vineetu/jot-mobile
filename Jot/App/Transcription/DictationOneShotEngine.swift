@@ -145,7 +145,10 @@ enum DictationOneShotEngine {
             var error: NSError?
             // `Mutex` (not a plain `var`) because `AVAudioConverterInputBlock`
             // is annotated `@Sendable` — same reasoning as `AppleDictationEngine`.
-            let suppliedSource = Mutex<Bool>(false)
+            // `OSAllocatedUnfairLock` rather than `Mutex`: the Swift 6.4 (Xcode 27)
+            // compiler rejects capturing the noncopyable `Mutex` in this
+            // `@Sendable` input block ("copy of noncopyable typed value").
+            let suppliedSource = OSAllocatedUnfairLock(initialState: false)
             converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
                 let firstCall = suppliedSource.withLock { supplied -> Bool in
                     if supplied { return false }

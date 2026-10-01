@@ -1,0 +1,129 @@
+/* ============================================================
+   JotDesign — PRODUCTION token mirror (from the iOS codebase,
+   pasted from Claude Code, June 2026). These mirror what SHIPS.
+   The tokens in colors.css/typography.css mirror the design
+   prototypes (wizard / Ask Jot / recording handoffs).
+   → For in-app surfaces, prefer these; the handoff prototypes
+     remain authoritative for the screens they specify.
+   Dark values on :root (app default); light under [data-theme="light"].
+   ============================================================ */
+
+:root {
+  /* ---- Brand / accent (production) ---- */
+  --jot-accent: #1A8CFF;                  /* canonical brand blue, app-wide */
+  --jot-accent-deep: #0064CC;
+  --jot-accent-grad: linear-gradient(180deg, #1A8CFF 0%, #0064CC 100%); /* Dictate pill, Recents */
+  --jot-kb-accent: #0A84FF;               /* keyboard accent (iOS blue) */
+  --jot-kb-accent-deep: #0064CC;
+  /* wizard CTA keeps the 3-stop --jot-blue-grad from colors.css */
+
+  /* ---- Coral — AI surfaces ONLY: Rewrite/Cleanup tiles, ✦ sparkle on
+          AI-rewritten entries, "+ New prompt". Never on non-AI surfaces;
+          new AI features default to blue (Ask Jot is blue). ---- */
+  --jot-coral-top: #FF6B57;
+  --jot-coral-bottom: #E0533F;
+  --jot-ai-accent: #FF6B57;     /* the AI-surface marker */
+
+  /* ---- Ink / page (JotDesign adaptive — dark) ---- */
+  --jot-ink: rgba(255, 255, 255, 0.96);
+  --jot-mute: rgba(255, 255, 255, 0.60);
+  --jot-mute-weak: rgba(255, 255, 255, 0.30);
+  --jot-page-base: #15171C;               /* wallpaper */
+  --jot-page-ink: rgba(255, 255, 255, 0.96);
+  --jot-page-ink-secondary: rgba(255, 255, 255, 0.62);
+  --jot-page-ink-caption: rgba(255, 255, 255, 0.46);
+  --jot-page-separator: rgba(255, 255, 255, 0.10);
+
+  /* ---- Status ---- */
+  --jot-success: #34C759;
+  --jot-success-ink: #1B8E3E;
+  --jot-warning: #FF9F30;
+  --jot-warning-ink: #B87314;
+  --jot-record: #FF3B30;                  /* dot / stop / caret */
+  --jot-recording-dot: #E0173B;
+  --jot-recording-halo: rgba(224, 23, 59, 0.18);
+
+  /* ---- Keyboard v2 (dark) ---- */
+  --kb2-chrome-top: #25252A;
+  --kb2-chrome-bottom: #1A1A1D;
+  --kb2-rec-tint: rgba(10, 132, 255, 0.10);
+  --kb2-rec-hairline: rgba(10, 132, 255, 0.18);
+  --kb2-stream-text: #9CB3E5;             /* streaming dictation text */
+  --kb2-glass-fill1: rgba(70, 72, 82, 0.62);
+  --kb2-glass-fill2: rgba(54, 56, 66, 0.42);
+  --kb2-glass-highlight: rgba(255, 255, 255, 0.10);
+  --kb2-glass-hairline: rgba(255, 255, 255, 0.06);
+  --kb2-key-fill: rgba(110, 114, 126, 0.42);
+  --kb2-key-ink: rgba(255, 255, 255, 0.92);
+
+  /* ---- Settings/Wizard semantic icon tiles (top / shaded bottom) ---- */
+  --icon-speech-top: #1A8CFF;      --icon-speech-bottom: #1573D1;
+  --icon-vocab-top: #1FCED1;       --icon-vocab-bottom: #19A9AB;
+  --icon-ai-top: #FF6B57;          --icon-ai-bottom: #D15847;   /* the surviving coral */
+  --icon-privacy-top: #34C759;     --icon-privacy-bottom: #2BA349;
+  --icon-fullaccess-top: #7C5CFF;  --icon-fullaccess-bottom: #664BD1;
+  --icon-micready-top: #FF9A33;    --icon-micready-bottom: #D17E2A;
+  --icon-help-top: #1FCED1;        --icon-help-bottom: #19A9AB;
+  --icon-rerun-top: #1A8CFF;       --icon-rerun-bottom: #1573D1;
+  --icon-feedback-top: #7C5CFF;    --icon-feedback-bottom: #664BD1;
+  --icon-version-top: #8B8E96;     --icon-version-bottom: #72747B;
+  --icon-donations-top: #34C759;   --icon-donations-bottom: #2BA349;
+  --icon-backup-top: #007AFF;      --icon-backup-bottom: #0064CC;
+  --icon-privacypolicy-top: #7C5CFF; --icon-privacypolicy-bottom: #664BD1;
+  --icon-acknowledge-top: #FF4F6B; --icon-acknowledge-bottom: #D14158;
+
+  /* ---- Spacing & radii — JotDesign.Spacing ---- */
+  /* legacy */
+  --page-margin: 16px;
+  --card-gap: 12px;
+  --section-gap: 20px;
+  --card-radius: 16px;
+  --sheet-radius: 24px;
+  --status-pill-h: 28px;
+  --status-dot: 5px;
+  --section-label-tracking: 0.6px;
+  /* v0.9 */
+  --card-radius-v09: 18px;
+  --page-gutter: 18px;
+  --card-pad-h: 16px;
+  --card-pad-v: 14px;
+  --section-gap-v09: 18px;
+  --tile-row: 30px;
+  --tile-hero: 84px;
+  --pill-radius: 999px;
+
+  /* ---- Production type (Fraunces statics; see readme) ---- */
+  --ts-editorial-display: 38px;   /* Fraunces SemiBold — app home "Jot" */
+  --ts-editorial-title: 30px;     /* Fraunces SemiBold — transcript detail */
+  --ts-editorial-body: 24px;      /* Fraunces Regular — recording hero italic */
+  --ts-editorial-italic: 19px;    /* Fraunces 9pt-Italic — rewrite output */
+  --track-caps-prod: 0.6px;       /* captionLabel tracking (vs 1.4 in prototypes) */
+}
+
+[data-theme="light"] {
+  --jot-kb-accent: #007AFF;
+
+  --jot-ink: #1C1C1E;
+  --jot-mute: #8B8B95;
+  --jot-mute-weak: #C7C7CC;
+  --jot-page-base: #D1D3DA;
+  --jot-page-ink: #15171C;
+  --jot-page-ink-secondary: rgba(60, 60, 67, 0.72);
+  --jot-page-ink-caption: rgba(60, 60, 67, 0.62);
+  --jot-page-separator: rgba(60, 60, 67, 0.10);
+
+  --kb2-chrome-top: #D5D7DE;
+  --kb2-chrome-bottom: #C9CCD3;
+  --kb2-rec-tint: rgba(0, 122, 255, 0.06);
+  --kb2-rec-hairline: rgba(0, 122, 255, 0.10);
+  --kb2-stream-text: #3C5A99;
+  --kb2-glass-fill1: rgba(255, 255, 255, 0.78);
+  --kb2-glass-fill2: rgba(255, 255, 255, 0.58);
+  --kb2-glass-highlight: rgba(255, 255, 255, 0.85);
+  --kb2-glass-hairline: rgba(0, 0, 0, 0.04);
+  --kb2-key-fill: #FFFFFF;
+  --kb2-key-ink: #1C1C1E;
+
+  /* settings page bg gradient (light) */
+  --page-bg-grad: linear-gradient(180deg, #F5F5F5 0%, #E0E0E0 100%);
+}

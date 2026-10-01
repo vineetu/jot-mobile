@@ -49,26 +49,51 @@ enum AppGroup {
         static let lastDictation = "jot.lastDictation"
         static let lastAutoCopiedTranscript = "jot.lastAutoCopiedTranscript"
 
-        // User-configurable cleanup behavior, shared between main app and keyboard.
+        // User-configurable Automatic cleanup (features.md §7.14), shared
+        // between main app and keyboard. See `CleanupSettings`.
         static let cleanupEnabled = "jot.cleanup.enabled"
         static let cleanupInstructions = "jot.cleanup.instructions"
+        /// Saved-prompt id that cleans dictations (absent ⇒ built-in Cleanup).
+        static let cleanupPromptID = "jot.cleanup.promptID"
+        /// Whether the paste waits for the cleaned text (absent ⇒ true).
+        static let cleanupPasteCleaned = "jot.cleanup.pasteCleaned"
+        /// Main app → keyboard: whether Apple Intelligence can run the cleanup
+        /// right now (`RewriteClient.isAvailable`, mirrored on every app
+        /// foreground). The keyboard can't link FoundationModels, so its
+        /// Cleanup toggle (§5.6) reads this to explain an unusable "on".
+        /// Absent ⇒ assume available.
+        static let aiCleanupAvailable = "jot.ai.cleanupAvailable"
+        /// Last target language the keyboard's Translate pane used (§7.16), so
+        /// it is offered first next time.
+        static let keyboardTranslateTarget = "jot.keyboard.translateTarget"
         static let keyboardAutoPasteEnabled = "jot.keyboard.autoPaste"
         // v7: per-session pending paste record. Replaces the v6 pair
         // (pendingAutoPasteFlag + pendingAutoPasteCreatedAt). See
         // `Shared/PendingPasteSession.swift` for the encoded shape.
         static let pendingPasteSession = "jot.keyboard.pendingPasteSession"
 
-        /// Queue of words the keyboard staged for "Add to Vocabulary" (its
-        /// "..." popover). The keyboard can't write the main-app-private
-        /// vocabulary file, so it appends here and the main app drains via
-        /// `VocabularyAddInbox` on its next foreground. JSON-encoded `[String]`.
+        /// LEGACY queue of plain words an older keyboard build staged for "Add
+        /// to Vocabulary". JSON-encoded `[String]`. No longer written; still
+        /// drained by `VocabularyAddInbox` (as a plain add) so a word queued
+        /// before an update isn't lost.
         static let pendingVocabAdds = "jot.vocab.pendingAdds"
 
-        /// Hidden "Text-to-Speech (Lab)" opt-in toggle (Settings → About reveal).
-        /// Gates the experimental on-device Kokoro TTS + Apple-Translation
-        /// transcript playback; default off, and turning it on is what triggers
-        /// the model download. See `docs/tts-lab/design.md`.
-        static let ttsLabEnabled = "jot.tts.labEnabled"
+        /// Queue of vocabulary corrections the keyboard staged (Learn from
+        /// Corrections). The keyboard can't write the main-app-private
+        /// vocabulary list, so it appends JSON-encoded `[JotVocabCore.Correction]`
+        /// here and the main app runs each through `VocabularyLearning.apply`
+        /// (`VocabularyAddInbox`) — on the `vocabAddRequested` ping when it is
+        /// running, otherwise on its next foreground.
+        static let pendingVocabCorrections = "jot.vocab.pendingCorrections"
+
+        /// Whether the hidden Settings rows (revealed by tapping Version 5×)
+        /// stay revealed across launches. The raw string is the retired TTS
+        /// Lab's key, kept so an existing reveal survives the TTS removal.
+        static let hiddenSettingsRevealed = "jot.tts.labEnabled"
+        /// TEMPORARY owner test: English dictation's final transcript comes from
+        /// Moonshine v2 (Medium Streaming) instead of Parakeet. Hidden Settings
+        /// switch; see `MoonshineEnglishTest`.
+        static let moonshineEnglishTest = "jot.test.moonshineEnglish"
         /// Prefer Apple's on-device `SpeechTranscriber` over FluidAudio Parakeet
         /// for English dictation, while keeping the existing CTC vocabulary
         /// boost unchanged on top. English only. Default ON — Apple is the
@@ -80,11 +105,6 @@ enum AppGroup {
         /// instead of the Neural Engine, to test whether it avoids the ~60s
         /// post-update ANE device-specialization. Default off (= Neural Engine).
         static let asrUseCPUGPU = "jot.asr.useCPUGPU"
-        /// JSON-encoded registry of the user's cloned PocketTTS voices
-        /// (`[{name, fileName}]`). The `.bin` conditioning files live in
-        /// `ApplicationSupport/TTSVoices/<uuid>.bin`; this key holds only the
-        /// display-name ⇄ file mapping. See `TTSService.clonedVoices`.
-        static let ttsClonedVoices = "jot.tts.clonedVoices"
         static let recordingAmplitude = "jot.recording.amplitude"
         // v7: pipeline phase projection (single source of truth for cross-
         // process observation of the pipeline's current state). See
@@ -126,20 +146,19 @@ enum AppGroup {
         static let streamingLoadStartedAt = "jot.streaming.loadStartedAt"
         static let streamingLoadEstimateSeconds = "jot.streaming.loadEstimateSeconds"
 
-        /// Selected AI rewrite backend. String value matches an
-        /// `LLMProvider` raw value. Currently the only valid value is
-        /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values
-        /// (`"phi4"`, `"gemma"`, `"appleIntelligence"`) are recognized
-        /// but treated as `"qwen35"` by the factory's fallback. The key
-        /// is preserved so the Switch Model picker UI has something to
-        /// bind against when a second backend is added.
-        static let aiRewriteProvider = "jot.ai.rewriteProvider"
 
-        /// Which rewrite ENGINE the user has chosen: Apple Intelligence (system
-        /// Writing Tools, no Jot prompts) vs Jot's AI (Qwen + saved prompts).
-        /// Absent ⇒ default to Apple Intelligence when the device has it.
-        /// See `RewriteMode`. features.md §6.3 / §7.10.
+        /// Legacy rewrite-ENGINE choice. There is one engine now — the user's
+        /// saved prompts on Apple Intelligence — so any stored value (including
+        /// the retired "appleIntelligence" / Writing Tools choice) resolves to
+        /// it. Kept only so old installs' keys stay understood. See `RewriteMode`.
         static let rewriteMode = "jot.ai.rewriteMode"
+
+        /// Transient banner string set by the dictation pipeline when a
+        /// chained follow-up falls back to raw paste (model timeout, error,
+        /// etc.). The keyboard reads it on appearance / on `transcriptReady`,
+        /// renders an auto-fading banner over the streaming-preview strip for
+        /// ~3 seconds, then clears the slot. `nil` (key absent) = no banner.
+        static let lastDictationStatusMessage = "jot.dictation.lastStatusMessage"
 
         /// User-facing master toggle for the warm-hold feature. When `false`
         /// (default), Jot fully cools after each dictation. Users opt in via
@@ -234,15 +253,6 @@ enum AppGroup {
         /// who just answered one nudge isn't hit by the next immediately.
         static let lastNudgeResolvedAt = "jot.nudges.lastResolvedAt"
 
-        /// Default-ON Lab kill-switch for the MiniLM embedding writer.
-        /// Read by `TranscriptStore.append`, `PhoneSideWCSession.saveTranscript`,
-        /// and `EmbeddingBackfillTask` before any encode work. Default `true`
-        /// (treated as ON by `AppGroup.isEmbeddingsEnabled`). Stored here in
-        /// `AppGroup.defaults` for symmetry with the prior classifier toggle.
-        /// Surfaced in Settings → About as a one-row toggle. See
-        /// `docs/plans/minilm-embeddings.md` §Lab kill-switch for rationale.
-        static let embeddingsEnabled = "jot.embeddings.enabled"
-
         /// JSON-encoded `[SavedPrompt]`, written by the AI Rewrite settings
         /// page (add/edit/delete/reorder) and read by the keyboard's Magic
         /// menu to populate the prompt picker. See `Shared/SavedPrompt.swift`
@@ -290,31 +300,8 @@ enum AppGroup {
         /// W5 dictation already requires it.
         static let keyboardActiveHeartbeat = "jot.keyboard.active.heartbeat"
 
-        /// Which LLM answers Ask-mode questions. `"appleIntelligence"` (default —
-        /// no download) or `"qwen"` (on-board, better answers, needs the 2.5 GB
-        /// download). Read by `AskController.pickBackend()`; bound to the
-        /// Settings → AI "Use on-board Qwen for Ask" toggle.
-        static let askBackend = "jot.ask.backend"
     }
 
-    /// MiniLM embedding writer toggle. **Default `true`** — users opt OUT
-    /// rather than in, because embeddings are foundation work the rest of
-    /// Jot will depend on. Surfaced in Settings → About as an emergency
-    /// kill-switch if a field MLTensor OOM regression slips past the
-    /// pre-merge memory gate.
-    ///
-    /// Custom getter (not `bool(forKey:)`) so the missing-key state reads
-    /// as `true` (default-ON). Setter writes through to the underlying
-    /// `Bool` so the SwiftUI `Toggle` binding works naturally.
-    static var isEmbeddingsEnabled: Bool {
-        get {
-            guard defaults.object(forKey: Keys.embeddingsEnabled) != nil else {
-                return true
-            }
-            return defaults.bool(forKey: Keys.embeddingsEnabled)
-        }
-        set { defaults.set(newValue, forKey: Keys.embeddingsEnabled) }
-    }
 
     /// User-facing master toggle for the warm-hold feature. Default
     /// `false` (feature off), so users explicitly opt in via the wizard step
@@ -521,25 +508,19 @@ enum AppGroup {
         return Date().timeIntervalSince1970 - last < nudgeQuietPeriodSeconds
     }
 
-    /// Selected AI rewrite backend. Currently the only valid value is
-    /// `"qwen35"` (Qwen 3.5 4B 4-bit via MLX). Legacy values (`"phi4"`,
-    /// `"gemma"`, `"appleIntelligence"`) are recognized but treated as
-    /// `"qwen35"` by `LLMClientFactory`. Default (key missing) is
-    /// `"qwen35"`.
-    static var aiRewriteProvider: String {
-        get { defaults.string(forKey: Keys.aiRewriteProvider) ?? "qwen35" }
-        set { defaults.set(newValue, forKey: Keys.aiRewriteProvider) }
-    }
 
-    /// Ask-mode answer backend. The user-facing "Use on-board Qwen for Ask"
-    /// toggle was removed (2026-06-16) — Ask now ALWAYS uses Apple Intelligence.
-    /// The getter returns `"appleIntelligence"` UNCONDITIONALLY so a device that
-    /// had previously persisted `"qwen"` isn't stranded on the on-board model
-    /// with no UI left to turn it off. Setter retained (nothing writes it now);
-    /// restore the stored read if the toggle is ever reintroduced.
-    static var askBackend: String {
-        get { "appleIntelligence" }
-        set { defaults.set(newValue, forKey: Keys.askBackend) }
+    /// See `Keys.lastDictationStatusMessage`. Cancellation cases write `nil`
+    /// here — a user-initiated cancel is a silent fallback to raw paste, not a
+    /// status to surface.
+    static var lastDictationStatusMessage: String? {
+        get { defaults.string(forKey: Keys.lastDictationStatusMessage) }
+        set {
+            if let value = newValue {
+                defaults.set(value, forKey: Keys.lastDictationStatusMessage)
+            } else {
+                defaults.removeObject(forKey: Keys.lastDictationStatusMessage)
+            }
+        }
     }
 
 

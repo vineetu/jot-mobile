@@ -1,0 +1,57 @@
+{
+  "persona": "lawyer",
+  "display_name": "Lawyer / legal audit",
+  "transcripts": [
+    {
+      "text": "Audit note, vendor contract review. Section twelve caps liability at the fees paid in the prior twelve months. That is below our risk threshold. Flag for renegotiation.",
+      "source": "keyboard", "duration": 13.2, "days_ago": 0, "time": "10:08",
+      "label": "Contract audit note"
+    },
+    {
+      "text": "Privilege reminder. This recording is work product. Do not sync to anything off device. The whole point of using this app is that nothing leaves the phone.",
+      "source": "app", "duration": 9.4, "days_ago": 0, "time": "09:20"
+    },
+    {
+      "text": "Deposition takeaway. The witness contradicted the email timeline twice. First said the call was Monday, the thread shows Wednesday. Pin this down on the record.",
+      "source": "keyboard", "duration": 12.7, "days_ago": 0, "time": "08:15"
+    },
+    {
+      "text": "so the compliance findings memo needs to go to the partner and right now my notes are a mess i found three issues the data retention policy is out of date the access logs are not being reviewed quarterly like the policy says and there is no documented approval for the two new processors make this read like a proper memo",
+      "cleaned": "MEMORANDUM — Compliance Findings\n\nThree issues identified:\n\n1. Data-retention policy is outdated and inconsistent with current practice.\n2. Access logs are not reviewed quarterly as the policy requires.\n3. No documented approval exists for the two new data processors.\n\nRecommend remediation before the next audit cycle.",
+      "instruction": "Articulate",
+      "source": "app", "duration": 36.8, "days_ago": 1, "time": "18:05",
+      "feature": true, "label": "Compliance memo (rewrite)"
+    },
+    {
+      "text": "Research note. The 2021 amendment narrowed the safe harbor. Check whether our indemnity clause still relies on the old language. If so, it is exposed.",
+      "source": "keyboard", "duration": 11.9, "days_ago": 1, "time": "14:40"
+    },
+    {
+      "text": "Billing note. Two point four hours on the merger due diligence this morning. Document review and the call with opposing counsel. Log it before I forget.",
+      "source": "watch", "duration": 6.6, "days_ago": 1, "time": "12:30"
+    },
+    {
+      "text": "Client call summary. They want to settle but not admit fault. The number they floated is workable. Get authority confirmed in writing before the next call.",
+      "source": "app", "duration": 12.2, "days_ago": 2, "time": "16:18"
+    },
+    {
+      "text": "pull my audit review into a clean checklist of follow ups confirm the signed copy of exhibit c request the missing board minutes verify the insurance certificate is current and ask the controller about the unreconciled account",
+      "cleaned": "Audit follow-ups:\n\n1. Confirm the signed copy of Exhibit C\n2. Request the missing board minutes\n3. Verify the insurance certificate is current\n4. Ask the controller about the unreconciled account",
+      "instruction": "Action Items",
+      "source": "app", "duration": 19.7, "days_ago": 3, "time": "20:25",
+      "feature": true, "label": "Audit follow-ups (action items)"
+    },
+    {
+      "text": "Drafting note. The non compete is probably unenforceable in this state past one year. Soften it to twelve months and a tighter geographic scope or it gets struck entirely.",
+      "source": "keyboard", "duration": 13.8, "days_ago": 4, "time": "11:10"
+    },
+    {
+      "text": "Reminder. File the response by the fourteenth. The court does not grant extensions in this division, do not assume one.",
+      "source": "app", "duration": 7.1, "days_ago": 5, "time": "08:55"
+    },
+    {
+      "text": "Hearing prep. Lead with the standing argument, it is the cleanest win. Keep the damages discussion short, the judge cut it off last time.",
+      "source": "keyboard", "duration": 10.9, "days_ago": 6, "time": "15:35"
+    }
+  ]
+}

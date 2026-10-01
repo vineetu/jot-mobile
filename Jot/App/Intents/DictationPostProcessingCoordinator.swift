@@ -17,6 +17,16 @@ final class DictationPostProcessingCoordinator {
 
     static let shared = DictationPostProcessingCoordinator()
 
+    /// Automatic cleanup (features.md §7.14) holds the paste for at most this
+    /// long. Past it the raw transcript pastes and the cleanup keeps running;
+    /// `CleanupTimedOut.pending` hands the still-running task to the caller so
+    /// the result can still land on the saved note's Rewrite tab.
+    static let cleanupPasteWait: Duration = .seconds(20)
+
+    struct CleanupTimedOut: Error {
+        let pending: Task<String, Error>
+    }
+
     private(set) var stage: Stage = .idle
     private(set) var isCancellationRequested = false
 
@@ -71,6 +81,23 @@ final class DictationPostProcessingCoordinator {
         }
         cleanupTask = task
         defer { cleanupTask = nil }
-        return try await task.value
+        // Race the model against the paste-wait cap. Cancelling the group's
+        // children does NOT cancel `task` (it is unstructured), so on timeout
+        // the cleanup keeps running for the background attach.
+        let outcome: Result<String, Error> = await withTaskGroup(of: Result<String, Error>.self) { group in
+            group.addTask { await task.result }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: Self.cleanupPasteWait)
+                    return .failure(CleanupTimedOut(pending: task))
+                } catch {
+                    return .failure(CancellationError())
+                }
+            }
+            let first = await group.next() ?? .failure(CancellationError())
+            group.cancelAll()
+            return first
+        }
+        return try outcome.get()
     }
 }

@@ -120,43 +120,22 @@ struct ContentView: View {
                 // don't rely on SwiftData identity semantics inside NavigationPath.
                 // Fetch the live model from the scene context at render time.
                 if let transcript = fetchTranscript(byID: transcriptID) {
-                    TranscriptDetailView(
-                        transcript: transcript,
-                        keyboardRewriteIntent: nil
-                    )
+                    TranscriptDetailView(transcript: transcript)
                 } else {
                     EmptyView()
                 }
             }
             .navigationDestination(for: KeyboardRewriteRouter.OpenTranscriptTarget.self) { target in
                 // Keyboard recents-row open. Same detail view as the UUID push
-                // above; the target only adds "…and start the rewrite flow on
-                // arrival" for the row's Apple Intelligence button.
+                // above; the target only adds "…and run the rewrite on arrival"
+                // for the row's Apple Intelligence button.
                 if let transcript = fetchTranscript(byID: target.id) {
                     TranscriptDetailView(
                         transcript: transcript,
-                        keyboardRewriteIntent: nil,
-                        openInRewrite: target.writingTools
+                        autoRewrite: target.autoRewrite
                     )
                 } else {
                     EmptyView()
-                }
-            }
-            .navigationDestination(for: KeyboardRewriteRouter.KeyboardRewriteTarget.self) { target in
-                let fetched = fetchTranscript(byID: target.id)
-                if let fetched {
-                    TranscriptDetailView(
-                        transcript: fetched,
-                        keyboardRewriteIntent: target
-                    )
-                } else {
-                    // Fetch miss: JotApp.handleRewriteURL already cleared
-                    // pendingRewriteRequest and stamped rewriteJobID, so the
-                    // keyboard's Darwin observer is waiting on a postCompleted
-                    // that would otherwise never fire (60s timeout). Surface a
-                    // terminal error so the keyboard unblocks immediately.
-                    EmptyView()
-                        .onAppear { releaseStrandedKeyboard(target: target) }
                 }
             }
         }
@@ -208,37 +187,8 @@ struct ContentView: View {
                 JotForMacView()
             }
         }
-        .onAppear {
-            // External-keyboard hero — FIRST-APPEAR re-check (cold process). The
-            // keyboard's `jot://dictate` bounce set `pendingExternalKeyboardHero`
-            // during launch, BEFORE this view's `.onChange` was installed, so a
-            // freshly-launched process must re-check it here. The warm-process
-            // case (app already alive in the background) is handled by the
-            // `.onChange` below. Both call the SAME helper so cold and warm can
-            // never diverge — see `presentExternalKeyboardHeroIfPending`.
-            if let target = keyboardRewriteRouter.consumePending() {
-                navPath.append(target)
-            }
-            // Cold-process counterpart of the `.onChange` below: on a launch
-            // FROM the keyboard's recents row, `onOpenURL` sets the pending
-            // target before this view's observers exist, so the change never
-            // fires. Consuming here (and there) is safe either way — whichever
-            // runs second sees nil.
-            if let openTarget = keyboardRewriteRouter.consumePendingOpenTranscript() {
-                navPath.append(openTarget)
-            }
-            presentExternalKeyboardHeroIfPending()
-        }
-        .onChange(of: keyboardRewriteRouter.pendingTarget) { _, newTarget in
-            guard let newTarget else { return }
-            navPath.append(newTarget)
-            _ = keyboardRewriteRouter.consumePending()
-        }
-        .onChange(of: keyboardRewriteRouter.pendingOpenTranscript) { _, newTarget in
-            guard let newTarget else { return }
-            navPath.append(newTarget)
-            _ = keyboardRewriteRouter.consumePendingOpenTranscript()
-        }
+        .onAppear(perform: handleRootAppear)
+        .onChange(of: keyboardRewriteRouter.pendingOpenTranscript) { _, target in handlePendingOpenTranscript(target) }
         // External-keyboard hero — WARM-process path. The keyboard set the flag
         // via `jot://dictate` while Jot was already alive in the background (no
         // warm mic, so it had to open the app). Present the hero the instant the
@@ -254,8 +204,51 @@ struct ContentView: View {
         // recording's return-pill when a stale UI flag stranded it (see
         // `reconcileHomeRecordingIndicator`). Donation-card / warm-hold-nudge
         // refreshes live in `HomeScreen` (their state is home-local).
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { _, phase in handleScenePhaseChange(phase) }
+    }
+
+    // MARK: - Root lifecycle handlers
+    //
+    // Bodies live here as named methods rather than inline closures: with the
+    // Xcode 27 (Swift 6.4) type checker, the root modifier chain with these
+    // closures inline exceeded the "reasonable time" budget and failed to
+    // compile. Same behaviour, cheaper to type-check.
+
+    private func handleRootAppear() {
+            RewriteClient.mirrorAvailabilityToAppGroup()
+            // Cleanups the background rate limit refused run now, in the
+            // foreground (features.md §7.14).
+            DictationPipeline.drainDeferredCleanups()
+            // External-keyboard hero — FIRST-APPEAR re-check (cold process). The
+            // keyboard's `jot://dictate` bounce set `pendingExternalKeyboardHero`
+            // during launch, BEFORE this view's `.onChange` was installed, so a
+            // freshly-launched process must re-check it here. The warm-process
+            // case (app already alive in the background) is handled by the
+            // `.onChange` below. Both call the SAME helper so cold and warm can
+            // never diverge — see `presentExternalKeyboardHeroIfPending`.
+            // Cold-process counterpart of the `.onChange` below: on a launch
+            // FROM the keyboard's recents row, `onOpenURL` sets the pending
+            // target before this view's observers exist, so the change never
+            // fires. Consuming here (and there) is safe either way — whichever
+            // runs second sees nil.
+            if let openTarget = keyboardRewriteRouter.consumePendingOpenTranscript() {
+                navPath.append(openTarget)
+            }
+            presentExternalKeyboardHeroIfPending()
+    }
+
+    private func handlePendingOpenTranscript(_ target: KeyboardRewriteRouter.OpenTranscriptTarget?) {
+        guard let target else { return }
+        navPath.append(target)
+        _ = keyboardRewriteRouter.consumePendingOpenTranscript()
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
             if phase == .active {
+                // Keep the keyboard's view of Apple Intelligence current.
+                RewriteClient.mirrorAvailabilityToAppGroup()
+                // Cleanups the background rate limit refused run now (§7.14).
+                DictationPipeline.drainDeferredCleanups()
                 // Deferred one runloop hop: when the app foregrounds STRAIGHT
                 // into a legitimately-presented hero (warm `jot://dictate`
                 // resume, or a cold dictate that lands on the hero), SwiftUI
@@ -269,7 +262,6 @@ struct ContentView: View {
                 // only resets a GENUINELY desynced binding (swipe-back case).
                 DispatchQueue.main.async { reconcileHomeRecordingIndicator() }
             }
-        }
     }
 
     // MARK: - External-keyboard hero
@@ -352,29 +344,6 @@ struct ContentView: View {
         return (try? modelContext.fetch(descriptor))?.first
     }
 
-    /// Terminal-error write path for the keyboard-rewrite destination when
-    /// the SwiftData fetch returns nil. Without this, the keyboard's Darwin
-    /// observer waits up to `rewriteRoundTripTimeoutSeconds` (60s) before
-    /// surfacing its own timeout. Guarded on `rewriteJobID == target.jobID`
-    /// so a stale fetch-miss view doesn't clobber a newer job's slot.
-    private func releaseStrandedKeyboard(target: KeyboardRewriteRouter.KeyboardRewriteTarget) {
-        rootLog.error(
-            "Keyboard rewrite target fetched nil transcript; releasing keyboard sessionID=\(target.sessionID, privacy: .public) jobID=\(target.jobID, privacy: .public) transcriptID=\(target.id, privacy: .public)"
-        )
-        // Whole terminal write must be guarded on jobID match — without
-        // this, a stale `EmptyView().onAppear` from a transient fetch
-        // miss can clobber the result slots of a NEWER job that's
-        // already mid-flight. Drop silently when the slot has moved on.
-        guard AppGroup.rewriteJobID == target.jobID else {
-            rootLog.notice("releaseStrandedKeyboard: jobID slot moved on; skipping terminal write")
-            return
-        }
-        AppGroup.rewriteError = "Couldn't open transcript."
-        AppGroup.rewriteResult = nil
-        AppGroup.rewriteResultSessionID = target.sessionID
-        AppGroup.rewriteJobID = nil
-        RewriteNotifications.postCompleted()
-    }
 }
 
 #Preview {

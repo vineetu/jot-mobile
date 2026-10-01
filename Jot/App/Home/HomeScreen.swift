@@ -68,17 +68,11 @@ struct HomeScreen: View {
     private var transcripts: [Transcript]
 
     @State private var searchText = ""
-    /// Semantic-search controller driving the "meaning" half of the
-    /// hybrid Recents filter. Substring matching still happens inline
-    /// in `filteredTranscripts`; this controller publishes the set of
-    /// transcript IDs whose embedding cosine ≥ 0.50 to the query.
-    @State private var semanticSearch = SemanticSearchController()
 
-    /// Whether the Ask entry point (the sparkles pill) is shown. Gated on
-    /// the on-board Qwen weights being *downloaded* (on disk) — not loaded
-    /// into memory — so Ask only appears once the user has a capable
-    /// on-device model. Re-evaluated on appear and whenever the Settings
-    /// sheet (where the download happens) is dismissed.
+    /// Whether the Ask entry point (the sparkles pill) is shown. Ask runs on
+    /// Apple's Private Cloud Compute with Spotlight retrieval (iOS 27), so the
+    /// pill appears only where that is available. Re-evaluated on appear and
+    /// whenever the Settings sheet is dismissed.
     @State private var askAvailable = AskController.isAvailable
     @State private var pendingDeletion: Transcript?
     @State private var isSelectionMode = false
@@ -153,9 +147,6 @@ struct HomeScreen: View {
 
                     HStack(spacing: 8) {
                         searchBar
-                            .onChange(of: searchText) { _, new in
-                                semanticSearch.search(query: new)
-                            }
                         if askAvailable {
                             askPill
                         }
@@ -228,6 +219,15 @@ struct HomeScreen: View {
                 }
                 .padding(.bottom, 16)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if isFinishingInline {
+                // The recording that was running inline has stopped and its
+                // note is on the way: hold the pill in its finishing variant
+                // (spinner + stage word, nothing to tap) so the surface never
+                // snaps from "Recording" straight back to the Dictate button
+                // while work is still running.
+                RecordingReturnPill(finishingLabel: recordingService.postStopStageLabel) {}
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
                 DictateFAB {
                     // Fresh user action: tell the hero to actually start a
@@ -455,6 +455,18 @@ struct HomeScreen: View {
             && !pendingExternalKeyboardHero
     }
 
+    /// The post-stop tail of a recording that was running inline: the mic is
+    /// off but the pipeline (transcribing → cleaning → saving) is still on its
+    /// way to the list. Same exclusions as `isLiveRecordingInline`.
+    private var isFinishingInline: Bool {
+        recordingService.isPipelineInFlight
+            && !recordingService.isRecording
+            && !recordingService.ownsActiveRecording
+            && !router.showRecordingHero
+            && !isWizardPresented
+            && !pendingExternalKeyboardHero
+    }
+
     // MARK: - WS-B unified keyboard-dictate receiver
 
     /// Install or tear down the `keyboardDictateTapped` observer so it is live
@@ -640,21 +652,15 @@ struct HomeScreen: View {
 
     // MARK: - Grouping
 
-    /// Source of truth for what gets rendered in the grouped list.
-    /// Hybrid filter (build 53): a transcript matches if it's a literal
-    /// substring hit OR if `SemanticSearchController` has classified it
-    /// as semantically similar to the query (cosine ≥ 0.50).
-    /// Substring hits surface immediately on keystroke; semantic hits
-    /// fill in ~250-400ms later after the debounce + embed + cosine
-    /// pass completes. Date-grouping downstream preserves chronological
-    /// ordering regardless of match source.
+    /// Source of truth for what gets rendered in the grouped list: a
+    /// case-insensitive substring filter over the displayed text and the raw
+    /// transcript. (Meaning-based search lives in Ask, which retrieves through
+    /// the system Spotlight index; the home filter stays instant and literal.)
     private var filteredTranscripts: [Transcript] {
         guard !searchText.isEmpty else { return transcripts }
-        let semanticIDs = semanticSearch.semanticMatches
         return transcripts.filter { transcript in
-            let substring = transcript.displayText.localizedCaseInsensitiveContains(searchText)
+            transcript.displayText.localizedCaseInsensitiveContains(searchText)
                 || transcript.text.localizedCaseInsensitiveContains(searchText)
-            return substring || semanticIDs.contains(transcript.id)
         }
     }
 
@@ -1100,47 +1106,67 @@ struct HomeScreen: View {
 /// without overwhelming the editorial home. A soft outer blue halo (via
 /// shadow) signals "live" without a hard ring.
 struct RecordingReturnPill: View {
+    /// Non-nil puts the pill in its post-stop *finishing* variant: a small
+    /// spinner and the stage word ("Transcribing" / "Cleaning up"), no
+    /// timer, no return arrow, nothing to tap. The pill simply holds until
+    /// the note lands and the Dictate button returns.
+    var finishingLabel: String? = nil
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulseOn = false
 
+    private var isFinishing: Bool { finishingLabel != nil }
+
     var body: some View {
         let startedAt = DictationActivityCoordinator.shared.recordingStartedAt
         Button(action: action) {
             HStack(spacing: 12) {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 10, height: 10)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.30), lineWidth: 4)
-                    )
-                    .opacity(pulseOn ? 0.55 : 1.0)
-                    .accessibilityHidden(true)
+                if let finishingLabel {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.white)
+                        .accessibilityHidden(true)
 
-                Text("Recording")
-                    .font(.system(size: 15.5, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    Text(finishingLabel)
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .contentTransition(.opacity)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: finishingLabel)
+                } else {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 10, height: 10)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.30), lineWidth: 4)
+                        )
+                        .opacity(pulseOn ? 0.55 : 1.0)
+                        .accessibilityHidden(true)
 
-                Rectangle()
-                    .fill(Color.white.opacity(0.30))
-                    .frame(width: 1, height: 16)
-                    .accessibilityHidden(true)
+                    Text("Recording")
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .foregroundStyle(Color.white)
 
-                if let startedAt {
-                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                        Text(elapsedString(from: startedAt, to: context.date))
-                            .font(.system(size: 15, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.white.opacity(0.92))
+                    Rectangle()
+                        .fill(Color.white.opacity(0.30))
+                        .frame(width: 1, height: 16)
+                        .accessibilityHidden(true)
+
+                    if let startedAt {
+                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                            Text(elapsedString(from: startedAt, to: context.date))
+                                .font(.system(size: 15, weight: .medium, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.white.opacity(0.92))
+                        }
                     }
-                }
 
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.85))
-                    .accessibilityHidden(true)
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .accessibilityHidden(true)
+                }
             }
             .padding(.horizontal, 22)
             .frame(minHeight: 56)
@@ -1166,14 +1192,17 @@ struct RecordingReturnPill: View {
             .shadow(color: Color.jotBlueBottom.opacity(0.25), radius: 8, x: 0, y: 6)
         }
         .buttonStyle(.plain)
+        .disabled(isFinishing)
         .onAppear {
-            guard !reduceMotion else { return }
+            guard !reduceMotion, !isFinishing else { return }
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 pulseOn = true
             }
         }
-        .accessibilityLabel("Return to recording")
-        .accessibilityHint("Recording is still in progress. Double-tap to return to the recording surface.")
+        .accessibilityLabel(finishingLabel ?? "Return to recording")
+        .accessibilityHint(isFinishing
+                           ? "Your note lands in the list when this finishes."
+                           : "Recording is still in progress. Double-tap to return to the recording surface.")
     }
 
     private func elapsedString(from start: Date, to now: Date) -> String {

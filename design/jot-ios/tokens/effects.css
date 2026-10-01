@@ -1,0 +1,26 @@
+/* ============================================================
+   Jot — shadows, glows, blur & motion tokens
+   ============================================================ */
+
+:root {
+  /* ---- Glass ---- */
+  --blur-chrome: blur(16px);     /* glass pills/buttons backdrop-filter */
+  --blur-nav: blur(20px);        /* nav bars */
+
+  /* ---- Shadows ---- */
+  --shadow-cta: 0 10px 32px -6px var(--jot-glow), 0 2px 6px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  --shadow-send: 0 8px 22px -5px var(--jot-glow);
+  --shadow-fab: 0 18px 40px -8px var(--jot-glow), inset 0 2px 2px rgba(255, 255, 255, 0.42);
+  --shadow-stop: 0 12px 30px -8px var(--jot-glow);
+  --shadow-toast: 0 12px 30px -8px rgba(0, 0, 0, 0.5);
+  --shadow-card-float: 0 18px 40px -16px rgba(0, 0, 0, 0.5);
+  /* hero tiles: inset top highlight + colored glow below */
+  --tile-inner: inset 0 1.5px 0 rgba(255, 255, 255, 0.38), inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+
+  /* ---- Motion ---- */
+  --ease-jot: cubic-bezier(0.45, 0.02, 0.2, 1);   /* signature ease (swipe cue) */
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);   /* bottom-sheet slide */
+  --dur-press: 0.12s;          /* button press scale (0.975 pills, 0.9 circles) */
+  --dur-reveal: 0.4s;          /* rise/fade reveals */
+  --dur-caret: 1s;             /* caret blink, steps(1,end) */
+}

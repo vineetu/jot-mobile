@@ -1,0 +1,47 @@
+/* ============================================================
+   Jot — spacing, radii & control sizes
+   Authored in iPhone logical px (390–393 wide canvases).
+   ============================================================ */
+
+:root {
+  /* ---- Screen layout ---- */
+  --pad-screen: 24px;        /* wizard horizontal padding */
+  --pad-screen-app: 20px;    /* in-app screens (library, ask) */
+  --sb-height: 54px;         /* status bar */
+
+  /* ---- Radii ---- */
+  --r-sheet: 40px;           /* full-height sheet top corners */
+  --r-card-lg: 28px;         /* transcript card */
+  --r-card: 18px;            /* step cards, settings cards */
+  --r-field: 13px;           /* search bar / inputs */
+  --r-tile: 9px;             /* small source tiles */
+  --r-chip: 7px;             /* inline citation chips */
+  /* hero icon tiles: radius = 0.245–0.30 × size (squircle approximation) */
+  --r-tile-factor: 0.245;
+
+  /* ---- Controls ---- */
+  --cta-h: 62px;             /* primary CTA pill (wizard 62–64) */
+  --cta-r: 31px;
+  --btn-control: 56px;       /* recording transport circles + stop pill */
+  --btn-send: 60px;          /* Ask Jot send-stop circle */
+  --btn-chrome: 46px;        /* wizard back/close glass circles */
+  --btn-chrome-sm: 42px;     /* in-app back chevron circle */
+  --pill-h: 38px;            /* glass pill (Done) */
+  --pill-r: 19px;
+  --pill-h-sm: 34px;         /* small glass pill (Ask another) */
+
+  /* ---- iOS artifacts ---- */
+  --toggle-w: 52px;          /* iOS switch */
+  --toggle-h: 31px;
+  --toggle-knob: 27px;
+  --homebar-w: 138px;
+  --homebar-h: 5px;
+
+  /* ---- Progress dots ---- */
+  --dot-size: 6.5px;
+  --dot-size-active: 7.5px;
+  --dot-gap: 8px;
+
+  /* ---- Misc ---- */
+  --hairline-w: 0.5px;       /* ALL borders are 0.5px hairlines */
+}

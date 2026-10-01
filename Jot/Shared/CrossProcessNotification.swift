@@ -57,6 +57,15 @@ enum CrossProcessNotification {
         rawValue: "com.vineetu.jot.mobile.history-mirror-updated"
     )
 
+    /// Posted by the keyboard after it queues a correction verdict (an answer
+    /// to a vocabulary ask). The app — alive in the background while it holds
+    /// the mic — applies the answer right away, so the NEXT dictation's gate
+    /// and asks already know it. Without this the answer waited for the next
+    /// time Jot came to the front, and the same question came back meanwhile.
+    static let correctionVerdictQueued = Name(
+        rawValue: "com.vineetu.jot.mobile.correction-verdict-queued"
+    )
+
     /// Posted by the keyboard extension when the user taps the Dictate
     /// (mic CTA) pill AND the host app is detected as Jot itself
     /// (typically: setup wizard W5 keyboard-try step). iOS silently refuses

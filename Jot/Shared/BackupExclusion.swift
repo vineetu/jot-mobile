@@ -92,33 +92,6 @@ enum BackupExclusion {
     /// Walk the tree rooted at `url`, set `isExcludedFromBackup = true`
     /// on the root + every descendant file/dir. Returns the number of
     /// items successfully flagged. Errors on individual items are logged
-    /// Sets `isExcludedFromBackup = true` on
-    /// `~/Library/Application Support/CoreMLLLM/` AND every file + subdirectory
-    /// inside it.
-    ///
-    /// **Why a third sweep.** The EmbeddingGemma bundle's on-disk home
-    /// (`CoreMLLLM/embeddinggemma-300m/`, ~330 MB — the carry-forward /
-    /// download destination from `docs/plans/model-externalization-sub-50mb.md`)
-    /// is OUTSIDE the `FluidAudio/` tree the first sweep covers, and the
-    /// CoreML-LLM package sets no backup flags of its own. Without this
-    /// sweep the model would be the one externalized asset that silently
-    /// lands in the user's iCloud Device Backup — the exact 1.0.2 failure
-    /// mode again (see `excludeFluidAudioModels`). Same per-launch recursive
-    /// re-assert; no-op until the directory first exists.
-    static func excludeCoreMLLLM() {
-        guard let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first else {
-            log.error("Couldn't resolve applicationSupportDirectory")
-            return
-        }
-        let dir = appSupport.appendingPathComponent("CoreMLLLM", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: dir.path) else {
-            return
-        }
-        let count = setExcludedFromBackupRecursively(at: dir)
-        log.info("Set isExcludedFromBackup on \(count, privacy: .public) item(s) under \(dir.path, privacy: .public)")
-    }
 
     /// Walk the tree rooted at `url`, set `isExcludedFromBackup = true`
     /// on the root + every descendant file/dir. Returns the number of

@@ -54,9 +54,6 @@ Jot/design_handoff_setup_wizard/
 scripts/bootstrap-testflight.local.sh
 .testflight.env
 
-# Exception: Jot/Shared/DerivedData is SOURCE (ChunkStore.swift), not Xcode build output.
-# The bare DerivedData/ rule above would swallow it (broke fresh clones/worktrees).
-!Jot/Shared/DerivedData/
 
 # Build B strip-all move-aside location (scripts/strip-models.sh)
 .model-stash/

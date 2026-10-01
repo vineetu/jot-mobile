@@ -29,11 +29,8 @@ enum BoostModelStatus: Equatable {
 }
 
 struct VocabularySettingsView: View {
-    @Environment(RecordingService.self) private var recordingService
-    @Environment(StreamingPartial.self) private var streamingPartial
     @State private var store = VocabularyStore.shared
     @State private var boostModelStatus: BoostModelStatus = .notDownloaded
-    @State private var teachingTerm: VocabTerm?
     @FocusState private var focusedID: VocabTerm.ID?
 
     var body: some View {
@@ -74,13 +71,6 @@ struct VocabularySettingsView: View {
                 Task { await VocabularyRescorerHolder.shared.unload() }
             }
         }
-        .sheet(item: $teachingTerm) { term in
-            VocabularyTeachingSheet(
-                term: term,
-                recording: recordingService,
-                streamingPartial: streamingPartial
-            )
-        }
     }
 
     // MARK: - Sections
@@ -100,28 +90,6 @@ struct VocabularySettingsView: View {
         }
     }
 
-    /// Why voice teaching can't run right now, or `nil` when it can.
-    ///
-    /// The two conditions are the exact pair the vocabulary apply is gated on in
-    /// the transcription path — voice teaching's sentence test runs that apply,
-    /// so the entry point has to answer the same question or the test can only
-    /// ever report that the term wasn't found. The button is REPLACED by the
-    /// reason rather than silently absent: a missing control with no explanation
-    /// reads as a bug, and both causes are one tap from being fixed.
-    ///
-    /// `LanguageChoice.current` is a plain read, not observable, so this does
-    /// not refresh if the dictation language changes while the pane is open.
-    /// Acceptable: the language picker lives on another screen, and the teach
-    /// sheet snapshots its own state at open anyway.
-    private var teachBlockedReason: String? {
-        if !store.isEnabled {
-            return "Turn on vocabulary boosting above to teach a term by voice."
-        }
-        if !LanguageChoice.current.isVocabEligible {
-            return "Teaching by voice isn't available for your dictation language."
-        }
-        return nil
-    }
 
     private var headerSubtext: String {
         store.isEnabled
@@ -139,9 +107,7 @@ struct VocabularySettingsView: View {
                     VocabRow(
                         term: binding(for: term.id),
                         focusedID: $focusedID,
-                        rowID: term.id,
-                        teachBlockedReason: teachBlockedReason,
-                        onTeach: { teachingTerm = term }
+                        rowID: term.id
                     )
                 }
                 .onDelete { offsets in
@@ -348,14 +314,15 @@ struct VocabularySettingsView: View {
         }
     }
 
-    /// Returns a binding that reads from the store and writes through
-    /// `update(id:text:aliases:)` so every keystroke is persisted
-    /// without the row having to know about the store.
+    /// Returns a binding that reads from the store and writes the term's TEXT
+    /// through `update(id:text:)` — a plain list write, so every keystroke is
+    /// persisted (a rename; the term's pairs go with it). Sounds-likes never
+    /// write through here: the row's chips call `VocabularyLearning.apply`.
     private func binding(for id: VocabTerm.ID) -> Binding<VocabTerm> {
         Binding(
             get: { store.terms.first(where: { $0.id == id }) ?? VocabTerm(text: "") },
             set: { newValue in
-                store.update(id: id, text: newValue.text, aliases: newValue.aliases)
+                store.update(id: id, text: newValue.text)
             }
         )
     }
@@ -373,10 +340,6 @@ private struct VocabRow: View {
     @Binding var term: VocabTerm
     var focusedID: FocusState<VocabTerm.ID?>.Binding
     let rowID: VocabTerm.ID
-    /// Why the voice-teaching sentence test can't run, or `nil` when it can —
-    /// see the gate's rationale at `teachBlockedReason`.
-    let teachBlockedReason: String?
-    let onTeach: () -> Void
 
     /// Draft for the "add a misheard form…" field. Committed on return/blur
     /// only — the row's binding writes through to `VocabularyStore.save()`,
@@ -396,13 +359,14 @@ private struct VocabRow: View {
                     .autocorrectionDisabled(true)
                     .focused(focusedID, equals: rowID)
 
-                if let warning = warningMessage {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                        .help(warning)
-                        .accessibilityLabel(warning)
-                }
+            }
+            // The warning is WRITTEN under the term as it's typed (an icon's
+            // `.help` tooltip never shows on iPhone, so the reason was invisible).
+            if let warning = warningMessage {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // "Sounds like" (aliases) — VISIBLE + editable (owner ask,
             // 2026-07-14; round-2 review flagged hidden aliases as unsafe:
@@ -461,28 +425,6 @@ private struct VocabRow: View {
                 }
             }
 
-            // Phase 2 of teaching applies the user's vocabulary through the real
-            // pipeline, and that apply is gated on the master toggle plus the
-            // language's vocab eligibility. Offering the button without them
-            // would run a sentence test that reports "not found" 100% of the
-            // time, on every CJK / LatAm-Spanish language and with the toggle
-            // off — teaching the user their vocabulary doesn't work.
-            if !isBlank {
-                if let reason = teachBlockedReason {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 6)
-                } else {
-                    Button(action: onTeach) {
-                        Label("Teach it by voice", systemImage: "waveform.and.mic")
-                            .font(.caption.weight(.medium))
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.bottom, 6)
-                    .accessibilityHint("Record the term so Jot can learn how it is misheard")
-                }
-            }
         }
         .frame(minHeight: 44)
     }
@@ -502,8 +444,7 @@ private struct VocabRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Button {
-                guard term.aliases.indices.contains(index) else { return }
-                term.aliases.remove(at: index)
+                removeAlias(at: index)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.caption2)
@@ -517,41 +458,49 @@ private struct VocabRow: View {
         .background(Capsule().fill(Color.secondary.opacity(0.15)))
     }
 
+    /// A sounds-like typed here is a correction ("when I say this, write
+    /// that") and deleting one forgets it — both go through the one learning
+    /// path by this row's id (Learn from Corrections), not the row's plain
+    /// per-keystroke text write. The list's own scrub (`cleanEntry`) keeps
+    /// ":" / "," out of the file; a duplicate (any casing) is a no-op add.
     private func commitNewAlias() {
-        // Same sanitizing choke point the teaching flows use: ":" and ","
-        // are structural in the vocabulary file and a raw paste carrying one
-        // would corrupt the line on the next parse.
-        let candidate = VocabularyStore.fileSafeAlias(newAliasDraft)
+        let typed = newAliasDraft
         newAliasDraft = ""
-        guard !candidate.isEmpty else { return }
-        term.aliases = TeachSentenceLocator.mergeAliases(
-            latestAliases: term.aliases, provisionalAliases: [candidate]
-        )
+        guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let correction = Correction.correct(
+            heard: typed, term: term.text, userCasing: true, termID: rowID)
+        Task { @MainActor in
+            // Put the draft back when the list refused it (too long, or the
+            // file is unreadable), so the typing isn't silently lost.
+            if case .rejected = await VocabularyLearning.shared.apply(correction).outcome,
+               newAliasDraft.isEmpty {
+                newAliasDraft = typed
+            }
+        }
     }
 
+    private func removeAlias(at index: Int) {
+        guard term.aliases.indices.contains(index) else { return }
+        let correction = Correction.forget(heard: term.aliases[index], term: term.text, termID: rowID)
+        Task { @MainActor in await VocabularyLearning.shared.apply(correction) }
+    }
+
+    /// "Too short" for two characters or fewer (the corrector and spotter skip
+    /// them), otherwise the shared `VocabularyHygiene` warning over the active
+    /// dictation language's everyday-word list — the same rule Mac and Windows
+    /// show: a term whose first word is an everyday word, or (English) opens
+    /// with one ("And…" in "Andalamma"), is easily mixed up with ordinary
+    /// speech.
     private var warningMessage: String? {
-        let t = term.text.trimmingCharacters(in: .whitespaces).lowercased()
+        let t = term.text.trimmingCharacters(in: .whitespaces)
         if t.isEmpty { return nil }
         if t.count <= 2 {
             return "Too short — terms under 3 characters are skipped to avoid false replacements."
         }
-        if Self.commonEnglishWatchlist.contains(t) {
-            return "Common English word — may cause false replacements in transcripts that use the word normally."
-        }
-        return nil
+        return JotVocabCore.VocabularyHygiene.warning(
+            for: t,
+            commonWords: AppVocabCore.activeCommonWords(),
+            language: LanguageChoice.current.correctorLanguageCode
+        )?.message
     }
-
-    // Curated watchlist of common English words very likely to collide
-    // with ordinary speech. Same shape as the desktop's list.
-    private static let commonEnglishWatchlist: Set<String> = [
-        "the", "and", "for", "that", "with", "this", "from", "have",
-        "they", "will", "one", "all", "would", "their", "what", "out",
-        "about", "which", "when", "make", "like", "time", "just", "him",
-        "know", "take", "into", "year", "your", "good", "some", "could",
-        "them", "see", "other", "than", "then", "now", "look", "only",
-        "come", "over", "think", "also", "back", "after", "use", "two",
-        "how", "our", "work", "first", "well", "way", "even", "new",
-        "want", "any", "give", "day", "most", "very", "find", "thing",
-        "tell", "say", "get", "made", "part", "yes", "yeah"
-    ]
 }

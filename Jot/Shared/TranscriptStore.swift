@@ -355,11 +355,10 @@ enum TranscriptStore {
         // written" signal — see `CrossProcessNotification.swift`.
         CrossProcessNotification.post(name: CrossProcessNotification.historyMirrorUpdated)
 
-        // Snapshot id + text BEFORE the detached hop — Transcript is a
-        // SwiftData @Model bound to the short-lived ModelContext above.
-        // TranscriptIndexer runs the embed + classify pipeline on a
-        // detached `.utility` task so the encode happens off MainActor.
-        TranscriptIndexer.index(transcriptID: transcript.id, text: transcript.text)
+        // Project the new note into Core Spotlight (system search + Ask's
+        // retrieval). Fire-and-forget on a detached task; the index is a
+        // derived view of this store, never a source of truth.
+        TranscriptSpotlightIndex.index(ids: [transcript.id])
 
         return transcript
     }
@@ -448,8 +447,8 @@ enum TranscriptStore {
     // the `try`, because every method throws so existing `catch` blocks fire.
     //
     // The "quadruplet" each persistence write performs is
-    // `save → TranscriptHistoryMirror.refresh → post historyMirrorUpdated`
-    // (+ `TranscriptIndexer.index` for new-row appends). `setRewriteRating` is
+    // `save → TranscriptHistoryMirror.refresh → post historyMirrorUpdated`.
+    // `setRewriteRating` is
     // the one deliberate exception that skips mirror/notify — see its doc.
 
     /// Fetch a single transcript by id on the given context, or `nil` if no
@@ -478,6 +477,7 @@ enum TranscriptStore {
     /// row exists. Quadruplet (minus the indexer — this is an edit of an
     /// existing row, not an append).
     static func setText(id: UUID, newText: String) throws {
+        defer { TranscriptSpotlightIndex.index(ids: [id]) }
         let context = ModelContext(JotModelContainer.shared)
         guard let transcript = try fetch(id: id, in: context) else { return }
         transcript.text = newText
@@ -499,6 +499,7 @@ enum TranscriptStore {
     /// and only calls when there is a real change. `rewriteUserEdit` is the
     /// final desired value — pass `nil` to clear it.
     static func update(id: UUID, text: String? = nil, rewriteUserEdit: String?? = nil, language: String? = nil) throws {
+        defer { TranscriptSpotlightIndex.index(ids: [id]) }
         let context = ModelContext(JotModelContainer.shared)
         guard let transcript = try fetch(id: id, in: context) else { return }
         if let text { transcript.text = text }
@@ -562,6 +563,7 @@ enum TranscriptStore {
     /// writes + `postCompleted`) stays in the caller — it is not transcript
     /// persistence.
     static func setCleanedText(id: UUID, cleanedText: String) throws {
+        defer { TranscriptSpotlightIndex.index(ids: [id]) }
         let context = ModelContext(JotModelContainer.shared)
         guard let transcript = try fetch(id: id, in: context) else { return }
         transcript.cleanedText = cleanedText
@@ -580,6 +582,8 @@ enum TranscriptStore {
     /// `rewriteUserEdit`, and `rewriteUpvoted` (a user-edit/rating against a
     /// discarded rewrite is meaningless), then quadruplet.
     static func discardRewrite(id: UUID) throws {
+        defer { TranscriptSpotlightIndex.index(ids: [id]) }
+        RewriteProvenance.remove([id])
         let context = ModelContext(JotModelContainer.shared)
         guard let transcript = try fetch(id: id, in: context) else { return }
         transcript.cleanedText = nil
@@ -616,7 +620,9 @@ enum TranscriptStore {
         // Drop any retained source audio for the deleted transcripts so it can't
         // outlive the row (best-effort; the 3-day sweep is the backstop).
         for id in ids { RetainedAudioStore.delete(for: id) }
+        RewriteProvenance.remove(Array(ids))
         fanOutMirror(from: context)
+        TranscriptSpotlightIndex.delete(ids: Array(ids))
     }
 
     /// Delete a single transcript by id. Derived from `delete(ids:)` so the

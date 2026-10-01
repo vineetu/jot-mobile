@@ -26,7 +26,7 @@ Prefer reading and editing files under `Jot/`. Only touch root-level files when 
 
 - `project.yml` is the XcodeGen source of truth for targets, package dependencies, bundle IDs, build settings, and schemes.
 - The primary app target is `Jot`. It includes `App/`, `Shared/`, and `Resources/`, and links the speech, LLM, and app-framework dependencies needed by the full app.
-- The keyboard extension target is `JotKeyboard`. It includes `Keyboard/`, shared files, and selected design files. Keep it light: do not add MLX, Apple Foundation Models, heavy model loading, network sync, or long-running disk work to the keyboard target.
+- The keyboard extension target is `JotKeyboard`. It includes `Keyboard/`, shared files, and selected design files. Keep it light: do not add Apple Foundation Models, FluidAudio, heavy model loading, network sync, or long-running disk work to the keyboard target.
 - `Tests/` is currently narrow. Add focused tests when touching shared command parsing, transcript persistence behavior, or other logic that can be exercised without device-only frameworks.
 
 ## Build, Run, And Test

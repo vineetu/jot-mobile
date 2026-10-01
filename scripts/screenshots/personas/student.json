@@ -1,0 +1,57 @@
+{
+  "persona": "student",
+  "display_name": "Student",
+  "transcripts": [
+    {
+      "text": "Lecture note, organic chem. The professor said the midterm covers everything through chapter seven, not chapter eight. Stereochemistry is fair game. Reaction mechanisms will be half the points.",
+      "source": "keyboard", "duration": 13.8, "days_ago": 0, "time": "10:22",
+      "label": "Lecture note"
+    },
+    {
+      "text": "Reminder. Email the TA about switching lab sections before the deadline on Friday. Section B fits my schedule way better.",
+      "source": "app", "duration": 7.4, "days_ago": 0, "time": "09:15"
+    },
+    {
+      "text": "Idea for the history paper. Argue that the railroad did not cause the boom, it just accelerated something already happening. Use the population data from the 1880 census to back it up.",
+      "source": "app", "duration": 12.1, "days_ago": 0, "time": "08:30"
+    },
+    {
+      "text": "ok so for the study group tomorrow we need to cover the practice problems from set four and set five and someone needs to bring the answer key and we should meet at the library not the union because the union closes early and also remind everyone to actually do the reading first this time",
+      "cleaned": "Study group, tomorrow — Library (not the Union; it closes early).\n\n· Cover practice sets 4 and 5\n· Someone bring the answer key\n· Everyone: do the reading first this time",
+      "instruction": "Action Items",
+      "source": "app", "duration": 27.6, "days_ago": 1, "time": "21:40",
+      "feature": true, "label": "Study group plan (action items)"
+    },
+    {
+      "text": "Flashcard. Mitochondria is the site of the citric acid cycle and oxidative phosphorylation. The inner membrane folds are called cristae.",
+      "source": "keyboard", "duration": 8.9, "days_ago": 1, "time": "15:05"
+    },
+    {
+      "text": "Quote for the essay. He writes that memory is not a recording but a reconstruction. Page two forty one. Double check the page number against the library copy.",
+      "source": "keyboard", "duration": 10.3, "days_ago": 1, "time": "13:12"
+    },
+    {
+      "text": "Note to self, the financial aid office needs my parents tax form by the end of the month or the scholarship does not renew.",
+      "source": "watch", "duration": 6.2, "days_ago": 2, "time": "11:48"
+    },
+    {
+      "text": "um i need to email professor about missing class i was sick and i want to ask if i can get the lecture slides and whether the quiz can be made up i don't want it to sound like an excuse just honest and short",
+      "cleaned": "Dear Professor,\n\nI was unwell and had to miss today's class. Could I get the lecture slides, and is it possible to make up the quiz? Apologies for the absence — thank you for understanding.\n\nBest,",
+      "instruction": "Email",
+      "source": "app", "duration": 22.0, "days_ago": 3, "time": "19:30",
+      "feature": true, "label": "Email professor (rewrite)"
+    },
+    {
+      "text": "Group project. Maya is doing the slides, I am doing the intro and the data section, Jordan has the conclusion. Everything due to the shared drive Sunday night.",
+      "source": "keyboard", "duration": 11.7, "days_ago": 4, "time": "16:20"
+    },
+    {
+      "text": "Random thought for the philosophy response. If the ship of Theseus keeps its name, maybe identity is about continuity not material. Develop this.",
+      "source": "app", "duration": 9.1, "days_ago": 5, "time": "23:14"
+    },
+    {
+      "text": "Reading list for next week. Two chapters of the textbook, the supplementary article on the portal, and the case study handout. Start the case study early, it is long.",
+      "source": "keyboard", "duration": 10.8, "days_ago": 6, "time": "14:00"
+    }
+  ]
+}

@@ -1,4 +1,0 @@
-module CMLXStructured {
-    header "mlx_structured.h"
-    export *
-}

@@ -462,6 +462,12 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // A rewrite finishing after the keyboard is gone must not write into
+        // whatever field is focused next.
+        rewriteTask?.cancel()
+        KeyboardRewriter.shared.cancel()
+        translateTask?.cancel()
+        KeyboardTranslator.shared.cancel()
         tearDownControllerScopedResources()
         // Close any open in-flight-paste window (cure §4-B) so a textDidChange in
         // a re-presented keyboard can't confirm a stale session, and mark it
@@ -692,6 +698,10 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             onPaste: { [weak self] in self?.handlePasteMenuSelection() },
             onUndoLastInsertion: { [weak self] in self?.handleUndoMenuSelection() },
             onRedoInsertion: { [weak self] in self?.handleRedoMenuSelection() },
+            onToggleCleanup: { [weak self] in self?.handleCleanupToggle() },
+            onRewriteSelection: { [weak self] in self?.handleRewriteSelection() },
+            onTranslateOpen: { [weak self] in self?.handleTranslateOpen() ?? false },
+            onTranslateSelection: { [weak self] code in self?.handleTranslateSelection(code) },
             onJumpToStart: { [weak self] in self?.handleJumpToStart() },
             onJumpToEnd: { [weak self] in self?.handleJumpToEnd() },
             onTapToSpeak: { [weak self] in self?.handleMicCTATap() },
@@ -766,6 +776,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         keyboardInputs.canRedoInsertion = canRedoInsertion
         keyboardInputs.undoDepth = undoLedger.undoStackDepth
         keyboardInputs.redoDepth = undoLedger.redoStackDepth
+        keyboardInputs.cleanupEnabled = AppGroup.defaults.bool(forKey: AppGroup.Keys.cleanupEnabled)
+        keyboardInputs.cleanupAvailable = AppGroup.defaults.object(forKey: AppGroup.Keys.aiCleanupAvailable) as? Bool ?? true
         keyboardInputs.lastPastedText = lastPastedText
         keyboardInputs.lastPastedAt = lastPastedAt
         keyboardInputs.isStopRequestPending = stopRequestPosted
@@ -794,6 +806,9 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     /// user-initiated event (~one toast per Actions open) but would be
     /// hostile on every keystroke — see `refreshPasteState`'s comment.
     private func handleActionsTapped() {
+        // The pane's Rewrite tile needs to know whether the on-device model can
+        // run; ask once per open rather than on every render.
+        keyboardInputs.rewriteAvailable = KeyboardRewriter.isAvailable
         refreshPasteState()
         renderRootView()
     }
@@ -1351,7 +1366,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             hasPasteboardContent = false
             // Paste is always offered, so a tap with an empty clipboard lands here —
             // tell the user why rather than silently doing nothing.
-            setStatusBanner("Nothing to paste yet")
+            setStatusBanner("Clipboard empty")
             renderRootView()
             return
         }
@@ -1369,7 +1384,7 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func copySelectionToPasteboard() {
         guard hasFullAccess else { return }
         guard let selected = textDocumentProxy.selectedText, !selected.isEmpty else {
-            setStatusBanner("Select text first to copy")
+            setStatusBanner("Select text")
             return
         }
         UIPasteboard.general.string = selected
@@ -1385,14 +1400,15 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     }
 
     /// "Add to Vocabulary" — queue the host's current selection for the main
-    /// app's vocabulary. The keyboard can't run the (CTC-rescore) vocabulary
-    /// add itself, so it appends the word to a JSON `[String]` queue in the
-    /// App Group and pings the app via a Darwin notification; the app drains
-    /// `pendingVocabAdds` on next foreground (`VocabularyAddInbox`). Common
-    /// words are filtered here so we never enqueue noise like "the".
+    /// app's vocabulary. The keyboard can't write the app's list, so it queues
+    /// a `Correction` (Codable, JotVocabCore) in the App Group and
+    /// pings the app via a Darwin notification; the app runs it through
+    /// `VocabularyLearning.apply` — the one correction path — when it is
+    /// running, else on next foreground (`VocabularyAddInbox`). Common words
+    /// are filtered here so we never enqueue noise like "the".
     private func handleAddToVocabulary() {
         guard let raw = textDocumentProxy.selectedText else {
-            setStatusBanner("Select a word first")
+            setStatusBanner("Select a word")
             return
         }
         let word = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1401,13 +1417,16 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
             setStatusBanner("‘\(word)’ is a common word — not added")
             return
         }
-        // Append to the App-Group queue (JSON [String]) so multiple adds before
-        // the app foregrounds all land.
-        var pending = AppGroup.defaults.data(forKey: AppGroup.Keys.pendingVocabAdds)
-            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
-        pending.append(word)
+        // Append to the App-Group queue (JSON [Correction]) so multiple adds
+        // before the app foregrounds all land. The selection is an
+        // already-correct word — nothing was misheard — so it is a term with no
+        // heard form. Not user-cased: the selection's casing can be a sentence
+        // start ("Ebay"), so an existing term keeps the list's spelling.
+        var pending = AppGroup.defaults.data(forKey: AppGroup.Keys.pendingVocabCorrections)
+            .flatMap { try? JSONDecoder().decode([Correction].self, from: $0) } ?? []
+        pending.append(.correct(heard: "", term: word))
         if let data = try? JSONEncoder().encode(pending) {
-            AppGroup.defaults.set(data, forKey: AppGroup.Keys.pendingVocabAdds)
+            AppGroup.defaults.set(data, forKey: AppGroup.Keys.pendingVocabCorrections)
         }
         CrossProcessNotification.post(name: CrossProcessNotification.vocabAddRequested)
         setStatusBanner("Added ‘\(word)’ to your dictionary")
@@ -1426,6 +1445,170 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
     private func handleRedoMenuSelection() {
         fireMenuSelectionFeedback()
         redoInsertion()
+    }
+
+    /// In-flight keyboard rewrite (§7.15); cancelled if the keyboard goes away.
+    private var rewriteTask: Task<Void, Never>?
+
+    /// The actions pane's Rewrite tile (features.md §5.6 / §7.15): rewrite the
+    /// host's selected text IN PLACE with the user's Cleanup prompt on Apple's
+    /// on-device model — no system-menu tutorial, no round trip to the app.
+    /// The selection is re-read right before the insert; if the host moved on
+    /// (focus change, new selection) nothing is written. The replacement lands
+    /// on the undo stack so Undo restores the original words.
+    private func handleRewriteSelection() {
+        fireMenuSelectionFeedback()
+        guard let original = textDocumentProxy.selectedText,
+              !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setStatusBanner("Select text")
+            return
+        }
+        guard KeyboardRewriter.isAvailable else {
+            setStatusBanner("Turn on Apple Intelligence in Settings to rewrite here")
+            return
+        }
+        guard !keyboardInputs.rewriteInFlight else { return }
+
+        // The same prompt Automatic cleanup runs (§7.14): the user's chosen
+        // saved prompt, else the built-in Cleanup prompt.
+        let prompt = CleanupSettings.load().instructions
+        keyboardInputs.rewriteInFlight = true
+        setStatusBanner("Rewriting…")
+        rewriteTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                keyboardInputs.rewriteInFlight = false
+                rewriteTask = nil
+            }
+            do {
+                let rewritten = try await KeyboardRewriter.shared.rewrite(original, prompt: prompt)
+                guard !Task.isCancelled else { return }
+                guard textDocumentProxy.selectedText == original else {
+                    setStatusBanner("Selection changed — rewrite not applied")
+                    return
+                }
+                // Typing over a selection replaces it; the undo ledger's
+                // `.replacement` entry reverses exactly this.
+                textDocumentProxy.insertText(rewritten)
+                undoLedger.recordReplacement(deleted: original, inserted: rewritten)
+                keyboardLog.info("keyboard rewrite applied: \(original.count) → \(rewritten.count) chars")
+                setStatusBanner("Rewritten — Undo brings back your words")
+                syncKeyboardInputs()
+                renderRootView()
+            } catch is CancellationError {
+                // Keyboard went away mid-rewrite: drop the "Rewriting…" row so
+                // it isn't still there when the keyboard comes back.
+                setStatusBanner(nil)
+            } catch {
+                setStatusBanner("Couldn't rewrite — \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// In-flight keyboard translation (§7.16); cancelled if the keyboard goes away.
+    private var translateTask: Task<Void, Never>?
+
+    /// Translate tile tapped with a selection (§7.16): detect the selection's
+    /// language, find which target packs are on the phone, and hand the pane
+    /// its chips (last-used language first, installed ones next). Returns
+    /// false — after a banner — when there is nothing selected.
+    private func handleTranslateOpen() -> Bool {
+        fireMenuSelectionFeedback()
+        guard let selected = textDocumentProxy.selectedText,
+              !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setStatusBanner("Select text")
+            return false
+        }
+        let source = KeyboardTranslator.detectSource(of: selected)
+        keyboardInputs.translateSource = source
+        keyboardInputs.translateOptions = []
+        let lastUsed = AppGroup.defaults.string(forKey: AppGroup.Keys.keyboardTranslateTarget)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let installed = await KeyboardTranslator.shared.installedTargets(from: source)
+            var options = TranslationLanguages.all
+                .filter { $0.code != source }
+                .map { KeyboardTranslateOption(code: $0.code, name: $0.name, installed: installed.contains($0.code)) }
+            options.sort { a, b in
+                if (a.code == lastUsed) != (b.code == lastUsed) { return a.code == lastUsed }
+                if a.installed != b.installed { return a.installed }
+                return a.name < b.name
+            }
+            keyboardInputs.translateOptions = options
+        }
+        return true
+    }
+
+    /// A language chip tapped (§7.16): translate the host's selection IN PLACE
+    /// with Apple's on-device translation and record the replacement so Undo
+    /// restores the original. A language whose pack isn't on the phone explains
+    /// itself — the download can only happen from the app.
+    private func handleTranslateSelection(_ code: String) {
+        fireMenuSelectionFeedback()
+        let name = TranslationLanguages.name(for: code)
+        guard let option = keyboardInputs.translateOptions.first(where: { $0.code == code }) else { return }
+        guard option.installed else {
+            setStatusBanner("\(name) isn't downloaded yet — translate a note to \(name) in Jot once to get it")
+            return
+        }
+        guard let original = textDocumentProxy.selectedText,
+              !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setStatusBanner("Select the text to translate first")
+            return
+        }
+        guard !keyboardInputs.translateInFlight else { return }
+
+        let source = keyboardInputs.translateSource
+        AppGroup.defaults.set(code, forKey: AppGroup.Keys.keyboardTranslateTarget)
+        keyboardInputs.translateInFlight = true
+        setStatusBanner("Translating to \(name)…")
+        translateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                keyboardInputs.translateInFlight = false
+                translateTask = nil
+            }
+            do {
+                let translated = try await KeyboardTranslator.shared.translate(original, from: source, to: code)
+                guard !Task.isCancelled else { return }
+                guard textDocumentProxy.selectedText == original else {
+                    setStatusBanner("Selection changed — translation not applied")
+                    return
+                }
+                textDocumentProxy.insertText(translated)
+                undoLedger.recordReplacement(deleted: original, inserted: translated)
+                keyboardLog.info("keyboard translate applied \(source, privacy: .public)→\(code, privacy: .public): \(original.count) → \(translated.count) chars")
+                setStatusBanner("Translated to \(name) — Undo brings back your words")
+                syncKeyboardInputs()
+                renderRootView()
+            } catch is CancellationError {
+                setStatusBanner(nil)
+            } catch {
+                setStatusBanner("Couldn't translate — \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The actions pane's Cleanup tile (features.md §5.6): flips Automatic
+    /// cleanup (§7.14) without opening the app. Writes the same App-Group key
+    /// the app's AI settings card reads, so both surfaces stay in step. A tap
+    /// that can't take effect explains itself in the status banner instead of
+    /// silently doing nothing (same rule as every other tile).
+    private func handleCleanupToggle() {
+        fireMenuSelectionFeedback()
+        guard hasFullAccess else {
+            setStatusBanner("Enable Full Access to change AI cleanup")
+            return
+        }
+        let isOn = AppGroup.defaults.bool(forKey: AppGroup.Keys.cleanupEnabled)
+        let available = AppGroup.defaults.object(forKey: AppGroup.Keys.aiCleanupAvailable) as? Bool ?? true
+        if !isOn, !available {
+            setStatusBanner("Turn on Apple Intelligence in Settings to use AI cleanup")
+            return
+        }
+        AppGroup.defaults.set(!isOn, forKey: AppGroup.Keys.cleanupEnabled)
+        syncKeyboardInputs()
+        // No message (§5.6): the tile's On/Off chip is the confirmation.
     }
 
     /// Shifts the host caret backward through the focused text field.
@@ -1704,6 +1887,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         }
         keyboardLog.info(
             "Pending session \(sessionID) — no projection within \(Int(Self.launchDeadline))s; treating as failed-to-launch and clearing."
+        )
+        DiagnosticsLog.record(
+            source: "keyboard", category: .pasteSkipOther,
+            message: "Gave up on paste — Jot never picked up the dictation (15s)",
+            metadata: ["sessionID": sessionID.uuidString]
         )
         clearPendingPasteSession()
         endDeck(sessionID: sessionID)
@@ -2204,9 +2392,8 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 // arm (which resolves through `finalizeSuccess`, so this closure
                 // short-circuits), and by Option G downgrading this branch's
                 // banner copy. A disconnect with only partial evidence stays
-                // INCONCLUSIVE and is still classified not-survived: the banner
-                // + clipboard are a one-tap recovery, a false success is a
-                // silently lost dictation.
+                // INCONCLUSIVE and is classified not-survived — which is now only
+                // LOGGED (see the note where `survived` is consumed below).
                 let contextDidNotShrink = (settledLen >= immediateAfterLen)
                 // REVIEW BLOCKER FIX: a "settled partial + non-shrink" pair is
                 // NOT independent corroboration — both derive from the same
@@ -2238,33 +2425,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                     decisionBranch = "settled-shrank"
                 }
 
-                // Option G — the honest floor. `disconnect-inconclusive` is the
-                // one not-survived branch with NO affirmative evidence of
-                // failure: the input connection went away and the paste was too
-                // long for the window to prove anything. The clipboard fallback
-                // still runs (it is the recovery, and consuming the payload is
-                // what prevents the double-paste class), but the banner must
-                // stop telling the owner a landed paste failed. Every other
-                // branch here has real evidence — a context that SHRANK, or a
-                // field with no text — and keeps the red copy unchanged.
-                let fallbackCopy: PasteFallbackCopy
-                if decisionBranch == "disconnect-inconclusive" {
-                    // Evidence-aware wording, decision UNCHANGED (still
-                    // not-survived; the payload is still consumed, the
-                    // clipboard floor still set). A strong immediate tail
-                    // match — far above the 24-char calibration floor; the
-                    // owner's real case matched all 499 chars the host
-                    // exposes — makes "it probably landed" the honest read,
-                    // while a weak/absent one keeps the neutral hedge. Only
-                    // the banner copy varies; a stale-cache false positive
-                    // here costs a slightly optimistic sentence, not a
-                    // consumed dictation.
-                    fallbackCopy = immediateEvidence.isPartial(atLeast: 128)
-                        ? .likelyLanded : .inconclusive
-                } else {
-                    fallbackCopy = .failed
-                }
-
                 DiagnosticsLog.record(
                     source: "keyboard",
                     category: .pasteVerifyDeferred,
@@ -2290,85 +2450,38 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
                 // (B) already classified this paste a success — nothing to do.
                 guard !self.inFlightPasteResolved else { return }
 
-                if survived {
-                    finalizeSuccess(false, settledLen)
-                    return
+                // The settled read is RECORDED, never turned into a "couldn't
+                // paste" verdict. It is not an oracle in either direction:
+                // build 103-108 (Claude Code) showed it reading "landed" over a
+                // paste the screen never showed, and build 313 (2026-09-26,
+                // session F5FCEDE4) showed the opposite — it fell back to the
+                // exact pre-paste context (settledLen 104 = beforeLen, overlap
+                // 0, branch settled-shrank) while the 339 chars had landed and
+                // stayed. The same reading means both things, so no rule built
+                // on it can be right, and every error it raised over a good
+                // paste told the owner something false. The keyboard now claims
+                // only what it can prove: an insert into a connected field
+                // (`landed`, checked before we got here) is delivered. The
+                // transcript stays on the clipboard from publish as the quiet
+                // floor for the rare host that drops a paste, and it tops the
+                // Recents card, one tap from re-inserting.
+                if !survived {
+                    DiagnosticsLog.record(
+                        source: "keyboard",
+                        category: .pasteRevertedAfterLanding,
+                        message: "Settled read disagrees with the insert — treated as landed (the read can't tell a dropped paste from a stale one)",
+                        metadata: [
+                            "sessionID": pendingSessionID.uuidString,
+                            "chars": "\(pasteText.count)",
+                            "settledLen": "\(settledLen)",
+                            "hasText": "\(hasTextNow)",
+                            "settledEvidence": settledEvidence.logLabel,
+                            "immediateEvidence": immediateEvidence.logLabel,
+                            "branch": decisionBranch,
+                        ]
+                    )
                 }
-
-                // FAILURE floor. Guard so a racing (B) doesn't also fire.
-                guard !self.inFlightPasteResolved else { return }
-                self.inFlightPasteResolved = true
-                self.clearInFlightPasteWindow()
-                self.isAutoPasteInsertInFlight = false
-
-                // The pending session may have been consumed/cleared by another
-                // path while we waited. If so, the work is already done — bail
-                // without re-consuming or re-pasting (but never leave the deck
-                // holding a session that no longer exists).
-                guard let pending = self.readPendingPasteSession(),
-                      pending.id == pendingSessionID else {
-                    self.endDeck(sessionID: pendingSessionID)
-                    return
-                }
-
-                // The immediate read lied: the host's live field did not
-                // keep the text. CONSUME the payload + clear pending so NO
-                // later flush (post-publish historyMirrorUpdated, a
-                // keyboard re-presentation, the launch-deadline backstop)
-                // can re-insert it — the 350ms in-flight guard only covers
-                // this window, so keeping it pending would DOUBLE-PASTE on
-                // a host that committed slower than 350ms (the exact
-                // double-paste class that burned builds 103-106). Recovery
-                // is the clipboard banner instead of an in-place retry:
-                // the transcript is already on UIPasteboard.general from
-                // publish (re-stamped with a 1-hour expiration), so the
-                // user taps once to paste. Silent false-success → VISIBLE
-                // one-tap recovery, with no double-paste risk.
-                // Windowed = the paste was longer than the host's context
-                // window and our own read-back matched its tail. `.full` can't
-                // reach here (it would have taken the disconnect-immediate-full
-                // arm), so this cleanly separates "too long to prove" from
-                // "nothing was ever visible".
-                let immediateWasWindowed = immediateEvidence.isPartial(atLeast: 1)
-                DiagnosticsLog.record(
-                    source: "keyboard",
-                    category: .pasteRevertedAfterLanding,
-                    // The inconclusive branch covers TWO shapes and the copy
-                    // must not assert the wrong one: a LONG paste the host
-                    // window could only ever evidence partially, and a SHORT
-                    // paste whose immediate read showed nothing at all before
-                    // the connection went away. Only the former is "exceeds
-                    // window"; say so only when the immediate evidence was
-                    // actually partial.
-                    message: fallbackCopy == .inconclusive
-                        ? (immediateWasWindowed
-                            ? "Settled read inconclusive (proxy disconnected, paste exceeds host window); consumed + neutral clipboard fallback (no retry, no double-paste)"
-                            : "Settled read inconclusive (disconnected before anything could be verified); consumed + neutral clipboard fallback (no retry, no double-paste)")
-                        : "Immediate read said landed but settled read disagrees; consumed + clipboard fallback (no retry, no double-paste)",
-                    metadata: [
-                        "sessionID": pendingSessionID.uuidString,
-                        "chars": "\(pasteText.count)",
-                        "settledLen": "\(settledLen)",
-                        "stillEndsWith": "\(stillEndsWith)",
-                        "hasText": "\(hasTextNow)",
-                        "settledEvidence": settledEvidence.logLabel,
-                        "settledOverlap": "\(settledEvidence.matchedLength(pasteLength: pasteText.count))",
-                        "immediateEvidence": immediateEvidence.logLabel,
-                        "immediateOverlap": "\(immediateEvidence.matchedLength(pasteLength: pasteText.count))",
-                        "overlapFloor": "\(Self.pasteEvidenceOverlapFloor)",
-                        "branch": decisionBranch,
-                        "copyVariant": fallbackCopy.logLabel,
-                    ]
-                )
-                ClipboardHandoff.markConsumed()
-                self.clearPendingPasteSession()
-                // TERMINAL for the deck too. Before F1 this branch consumed the
-                // payload and cleared pending WITHOUT touching deck state, so a
-                // deck outlived the very paste it was gating.
-                if deck != nil {
-                    self.endDeck(sessionID: pendingSessionID)
-                }
-                self.fallbackToClipboardWithBanner(text: pasteText, copy: fallbackCopy)
+                finalizeSuccess(false, settledLen)
             }
         }
 
@@ -2578,13 +2691,13 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // mirror the failure modes we want visible in Help → Diagnostics:
         //   - no payload at all (publish hasn't landed yet, or never will)
         //   - payload exists but sessionID doesn't match (cross-session race)
+        // "No payload yet" is the normal state of every flush between Stop and
+        // publish (phase changes + 3s heartbeats fire several per dictation);
+        // recording it evicted the real paste evidence from the 100-entry
+        // ring. It stays in os_log only. The silent CLEARS below — where a
+        // dictation is actually given up on — are what reach Diagnostics.
         if payload == nil {
-            DiagnosticsLog.record(
-                source: "keyboard",
-                category: .pasteSkipNoPayload,
-                message: "Flush ran with no fresh transcript",
-                metadata: ["pendingSessionID": session.id.uuidString]
-            )
+            keyboardLog.debug("Flush ran with no fresh transcript for \(session.id)")
         } else if let payload {
             DiagnosticsLog.record(
                 source: "keyboard",
@@ -2624,6 +2737,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // `.idle` (hadPublish=true) was observed after freshness expired.
         if TerminalSessionLog.contains(sessionID: session.id) {
             keyboardLog.info("Pending session \(session.id) appears in terminal log; clearing.")
+            DiagnosticsLog.record(
+                source: "keyboard", category: .pasteSkipOther,
+                message: "Gave up on paste — session ended with no transcript to paste",
+                metadata: ["sessionID": session.id.uuidString]
+            )
             clearPendingPasteSession()
             // Session-scoped: a deck for a DIFFERENT session is untouched.
             endDeck(sessionID: session.id)
@@ -2638,6 +2756,11 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
            projection.sessionID == session.id,
            projection.phase == .failed {
             keyboardLog.info("Pending session \(session.id) — projection synthesizes .failed (likely dead writer); clearing.")
+            DiagnosticsLog.record(
+                source: "keyboard", category: .pasteSkipOther,
+                message: "Gave up on paste — Jot stopped responding",
+                metadata: ["sessionID": session.id.uuidString]
+            )
             clearPendingPasteSession()
             endDeck(sessionID: session.id)
             renderRootView()
@@ -3170,10 +3293,21 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         // dies and the strip flashes "Starting", THIS line in Diagnostics says
         // the bounce fired (the W6 bug's LINK-B suspect). One tap should log
         // either the inline-Darwin line OR this — never both.
+        // What the warm/cold decision saw, so a cold start while Jot still
+        // holds the mic says WHY: a stale liveness stamp (the app stopped
+        // stamping — suspended, or its stamper died), a non-warm phase, or an
+        // expired warm window.
+        let record = PipelinePhaseProjection.read()
+        let now = Date()
         DiagnosticsLog.record(
             source: "keyboard",
             category: .recordingOutcome,
-            message: "Dictate tap took the URL-bounce (cold) path"
+            message: "Dictate tap took the URL-bounce (cold) path",
+            metadata: [
+                "phase": record.map { "\($0.phase)" } ?? "none",
+                "livenessAgeS": record.map { String(format: "%.1f", now.timeIntervalSince($0.livenessOrLegacy)) } ?? "none",
+                "warmExpiresInS": record?.warmExpiresAt.map { String(format: "%.0f", $0.timeIntervalSince(now)) } ?? "none",
+            ]
         )
     }
 
@@ -3344,74 +3478,6 @@ final class JotKeyboardViewController: UIInputViewController, UIInputViewAudioFe
         AppGroup.lastDictationStatusMessage = message
         setStatusBanner(message)
         renderRootView()
-    }
-
-    /// Option-3 safety net (docs/plans/bug-keyboard-paste-fails-claude-code.md §6):
-    /// when the settled landed-verify reclassifies an insert as failed, convert the
-    /// silent false-success into a VISIBLE failure with a one-tap recovery. The
-    /// transcript is already on `UIPasteboard.general` (publish wrote it,
-    /// `ClipboardHandoff.swift:53`); re-stamp it with a 1-hour expiration so the
-    /// dictation isn't readable by other apps after the user has had a chance to
-    /// paste it (leak mitigation per bug-slack-silent-paste.md), then surface the
-    /// status banner. The caller CONSUMES the payload + clears the pending session
-    /// before calling this (NOT an in-place retry) — keeping it pending would
-    /// double-paste on a host that committed slower than the 350ms verify window
-    /// (the build-103..106 double-paste class). The clipboard banner IS the
-    /// recovery; in-place retry is the held Option 2, gated on the on-device probe.
-    /// Copy for the clipboard fallback banner. Two variants, because the verify
-    /// has two very different reasons to land here (F4 / option G):
-    ///
-    /// - `.failed` — we have AFFIRMATIVE evidence the host did not keep the
-    ///   text: a non-nil settled context that SHRANK, or a field reporting no
-    ///   text at all. Saying "couldn't paste" is accurate, and the red chip is
-    ///   the right urgency.
-    /// - `.inconclusive` — the host's input connection went away and the paste
-    ///   was longer than the window iOS exposes, so we have no proof either
-    ///   way and the text has most likely landed. Calling that a failure was
-    ///   the visible bug: the owner watched a correct paste get a red error.
-    ///   Neutral copy tells the truth (the clipboard is there if it didn't) and,
-    ///   because `KeyboardView.bannerSeverity` derives severity from substrings,
-    ///   wording free of "couldn't"/"can't"/"cannot"/"failed"/"error" renders as
-    ///   the calm warning chip rather than the red alarm — no view change needed.
-    private enum PasteFallbackCopy {
-        case failed
-        case inconclusive
-        case likelyLanded
-
-        var message: String {
-            switch self {
-            case .failed:
-                return "Couldn't paste here — saved to clipboard, tap to paste"
-            case .inconclusive:
-                return "Also saved to clipboard — tap to paste if it didn't land"
-            case .likelyLanded:
-                // Owner device feedback (2026-08-31): a long paste that clearly
-                // landed (his immediate read matched the host window's entire
-                // 499 chars) still drew the `.inconclusive` line, which he read
-                // as "could not paste". When the immediate evidence is strong,
-                // say what is almost certainly true — the clipboard remains the
-                // quiet safety net, not the headline.
-                return "Looks pasted — copied to clipboard too, just in case"
-            }
-        }
-
-        var logLabel: String {
-            switch self {
-            case .failed: return "failed"
-            case .inconclusive: return "inconclusive"
-            case .likelyLanded: return "likely-landed"
-            }
-        }
-    }
-
-    private func fallbackToClipboardWithBanner(text: String,
-                                               copy: PasteFallbackCopy = .failed) {
-        UIPasteboard.general.setItems(
-            [[UTType.utf8PlainText.identifier: text]],
-            options: [.expirationDate: Date(timeIntervalSinceNow: 3600)]
-        )
-        self.hasPasteboardContent = UIPasteboard.general.hasStrings
-        surfaceDictationStatusBanner(copy.message)
     }
 
     /// Opens the keyboard's containing app via custom URL scheme.

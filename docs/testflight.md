@@ -1,311 +1,99 @@
 # TestFlight Runbook
 
-This is the exact release path that worked for `jot-mobile` on April 22, 2026.
+The release path that works for `jot-mobile` as of 2026-09-14 (build 301, Xcode 27.0 on
+macOS 27). Use it when an agent or a person needs to push a TestFlight build without
+rediscovering the Apple setup. An earlier version of this file described a different owner's
+team and bundle IDs; everything below reflects the current project.
 
-Use this document when another agent needs to push a new TestFlight build without rediscovering Apple setup, bundle IDs, or the current Xcode packaging issue.
+## Identifiers
 
-## Repo and Apple identifiers
+- Main app: `com.vineetu.jot.mobile.Jot`
+- Keyboard extension: `com.vineetu.jot.mobile.Jot.Keyboard`
+- Share extension: `com.vineetu.jot.mobile.Jot.ShareExtension`
+- Watch app / widgets: `com.vineetu.jot.mobile.Jot.watch` / `.watch.widgets`
+- App Group: `group.com.vineetu.jot.mobile.shared`
+- Apple Developer team: `8VB2ULDN22` (pinned as `DEVELOPMENT_TEAM` in `Jot/project.yml`)
 
-- Main app bundle ID: `com.jot.mobile.Jot`
-- Keyboard extension bundle ID: `com.jot.mobile.Jot.Keyboard`
-- Widget extension bundle ID: `com.jot.mobile.Jot.Widget`
-- Shared App Group: `group.com.jot.mobile.shared`
-- Paid Apple Developer Team ID: `6966SNKBNF`
-- Team name in Xcode: `Tejas D Channappa`
-- Apple account used in Xcode and upload tooling: `tejastej.dc@gmail.com`
-- App Store Connect app Apple ID: `6763163205`
+Only the main app has an App Store Connect record; the extensions and the watch app ride
+inside it (the watch app is embedded by the `Embed Watch Content` post-build script).
 
-Only the main app has an App Store Connect app record. The keyboard and widget are embedded targets and are uploaded inside the main app.
+## Credentials (never in the repo)
 
-## What is already configured
+Uploads authenticate with an **App Store Connect API key**, shared with the Ori app on the
+same Mac:
 
-- Paid Apple Developer membership is active for team `6966SNKBNF`.
-- Xcode on this Mac is signed into `tejastej.dc@gmail.com`.
-- The App Store Connect app record already exists for `com.jot.mobile.Jot`.
-- The project is wired so app and extensions all inherit versioning from:
-  - `MARKETING_VERSION`
-  - `CURRENT_PROJECT_VERSION`
+- The `.p8` lives at `~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8` — `altool`
+  finds it there by key ID.
+- The key ID, issuer ID and key path are exported by the gitignored env file the Ori
+  project uses: `ori-cognitive-health/website/scripts/testflight.env` (sibling repo). Source
+  it, or export the same three variables by hand:
+  `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_PATH`.
+- The same key is passed to `xcodebuild` as `-authenticationKey*`, which is what lets
+  `-allowProvisioningUpdates` register the App Group and Increased Memory Limit
+  capabilities on the automatic profiles. Without it — e.g. on a Mac where Xcode has no
+  signed-in Apple account — the archive fails with "Provisioning profile … doesn't include
+  the com.apple.security.application-groups entitlement".
 
-## Important Apple flow clarification
+An Apple-ID + app-specific-password upload (`APP_STORE_CONNECT_USERNAME` / `_PASSWORD`)
+also works for the upload step, but it does not fix provisioning, so prefer the API key.
 
-There are two different Apple flows that are easy to confuse:
+## Build outputs must live outside iCloud Drive
 
-1. `Distribute App` in Xcode means "upload a signed archive to App Store Connect".
-2. `Add for Review` in App Store Connect is the public App Store submission flow.
+`~/Documents` is synced by iCloud Drive on this Mac. Any directory a build creates under
+the repo picks up `com.apple.FinderInfo` / `com.apple.fileprovider.*` attributes, and
+`codesign` then fails with *"resource fork, Finder information, or similar detritus not
+allowed"*. So:
 
-For TestFlight, you only need the upload first. You do not need to complete the public App Store review page in order to get internal TestFlight testing working.
+- Point `JOT_DERIVED_DATA_PATH`, `JOT_ARCHIVE_PATH` and `JOT_EXPORT_DIR` somewhere outside
+  Documents — `~/Library/Developer/Xcode/{DerivedData,Archives}` works and makes the
+  archive show up in Xcode's Organizer.
+- If a source resource that is copied verbatim (e.g. `Resources/Settings.bundle`) ever
+  picks up Finder attributes, strip them: `xattr -cr Jot/Resources`.
 
-Internal testers can be added once the build finishes processing.
+## Standard command
 
-External testers require Beta App Review later.
-
-## One-time credential storage on this Mac
-
-Do not store Apple credentials in `.env` files or commit them to the repo.
-
-The current workflow stores the Apple app-specific password in the macOS login Keychain:
-
-- Keychain service name: `JOT_TESTFLIGHT_UPLOAD`
-- Keychain account name: `tejastej.dc@gmail.com`
-
-To overwrite it on this Mac:
-
-```bash
-security add-generic-password \
-  -U \
-  -a 'tejastej.dc@gmail.com' \
-  -s 'JOT_TESTFLIGHT_UPLOAD' \
-  -w '<APP_SPECIFIC_PASSWORD>'
-```
-
-To let Apple tooling read it without prompting:
+Bump `CURRENT_PROJECT_VERSION` in `Jot/project.yml` first (every upload needs a new, higher
+build number; keep the repo in sync), then:
 
 ```bash
-xcrun altool ... -u 'tejastej.dc@gmail.com' -p '@keychain:JOT_TESTFLIGHT_UPLOAD'
+cd /Users/jamyc3/Documents/projects/jot-mobile
+source /Users/jamyc3/Documents/projects/ori-cognitive-health/website/scripts/testflight.env
+OUT=$HOME/Library/Developer/Xcode
+
+JOT_DEVELOPMENT_TEAM=8VB2ULDN22 \
+JOT_BUILD_NUMBER=<n> \
+JOT_ARCHIVE_PATH="$OUT/Archives/Jot-testflight-<n>.xcarchive" \
+JOT_EXPORT_DIR="$OUT/Archives/Jot-export-<n>" \
+JOT_DERIVED_DATA_PATH="$OUT/DerivedData/Jot-testflight-<n>" \
+bash scripts/testflight.sh all
 ```
 
-Do not print the secret to logs unless there is a debugging emergency.
-
-## Standard archive command
-
-Use the paid team and bump the build number every upload:
-
-```bash
-cd /Users/tejasdc/workspace/jot-mobile
-
-JOT_DEVELOPMENT_TEAM=6966SNKBNF \
-JOT_MARKETING_VERSION=0.1.0 \
-JOT_BUILD_NUMBER=5 \
-JOT_ARCHIVE_PATH=/Users/tejasdc/workspace/jot-mobile/tmp/releases/Jot-testflight-5.xcarchive \
-JOT_DERIVED_DATA_PATH=/Users/tejasdc/workspace/jot-mobile/tmp/DerivedData-testflight-5 \
-bash scripts/testflight.sh archive
-```
-
-Expected result:
-
-- `** ARCHIVE SUCCEEDED **`
-
-## Known Xcode 26 export problem on this Mac
-
-`xcodebuild -exportArchive` fails on macOS 26.0.1 with Xcode 26.3 because Apple’s distribution pipeline invokes `/usr/bin/rsync`, and on this system that binary is `openrsync`, which does not support the flags Xcode expects.
-
-Observed failure in the export logs:
-
-- `rsync: on remote machine: --extended-attributes: unknown option`
-- `Step "<IDEDistributionCreateIPAStep ...>" failed with error "Copy failed"`
-
-This affects both:
-
-- `bash scripts/testflight.sh export`
-- Organizer GUI upload from Xcode
-
-Do not waste time trying the same export repeatedly unless the OS or Xcode version changed.
-
-## Current working workaround
-
-The workaround is:
-
-1. Let Xcode run the export until it fails.
-2. Grab the re-signed distribution payload from the temp `XcodeDistPipeline.*` directory.
-3. Zip `Payload` and optional `Symbols` into the final `.ipa`.
-4. Upload the `.ipa` with `altool`.
-
-### Force Xcode to prepare the re-signed distribution payload
-
-```bash
-cd /Users/tejasdc/workspace/jot-mobile
-
-JOT_DEVELOPMENT_TEAM=6966SNKBNF \
-JOT_ARCHIVE_PATH=/Users/tejasdc/workspace/jot-mobile/tmp/releases/Jot-testflight-5.xcarchive \
-JOT_EXPORT_DIR=/Users/tejasdc/workspace/jot-mobile/tmp/releases/Jot-export-5 \
-bash scripts/testflight.sh export || true
-```
-
-After failure, inspect the latest distribution temp directory under:
-
-```bash
-ls -td /var/folders/*/*/*/T/XcodeDistPipeline.* | head
-```
-
-On April 22, 2026 the successful build `5` payload was here:
-
-```bash
-/var/folders/6k/z4pfhlgx0c3c6b30tkdq6mz80000gn/T/XcodeDistPipeline.~~~5MeuGu
-```
-
-### Create the manual IPA
-
-```bash
-set -euo pipefail
-
-src=/var/folders/6k/z4pfhlgx0c3c6b30tkdq6mz80000gn/T/XcodeDistPipeline.~~~5MeuGu
-stage=/Users/tejasdc/workspace/jot-mobile/tmp/releases/manual-upload-5
-ipa=/Users/tejasdc/workspace/jot-mobile/tmp/releases/Jot-manual-5.ipa
-
-rm -rf "$stage"
-mkdir -p "$stage"
-cp -R "$src/Root/Payload" "$stage/"
-
-if [ -d "$src/Symbols" ]; then
-  cp -R "$src/Symbols" "$stage/"
-fi
-
-rm -f "$ipa"
-(cd "$stage" && /usr/bin/zip -qry "$ipa" Payload Symbols)
-```
-
-## Upload command that worked
-
-This is the upload shape that succeeded:
-
-```bash
-cd /Users/tejasdc/workspace/jot-mobile
-
-xcrun altool \
-  --upload-app \
-  -f '/Users/tejasdc/workspace/jot-mobile/tmp/releases/Jot-manual-5.ipa' \
-  -u 'tejastej.dc@gmail.com' \
-  -p '@keychain:JOT_TESTFLIGHT_UPLOAD' \
-  --output-format json
-```
-
-Successful delivery details from April 22, 2026:
-
-- Delivery UUID: `53935f0f-16cd-4c73-916d-09206d25a522`
-- Uploaded file: `tmp/releases/Jot-manual-5.ipa`
-- Uploaded build: `0.1.0 (5)`
-
-Replacement upload after the Siri metadata fix:
-
-- Delivery UUID: `4835a52f-16ed-42e2-b5f8-cf75c8ca20c3`
-- Uploaded file: `tmp/releases/Jot-manual-6.ipa`
-- Uploaded build: `0.1.0 (6)`
-
-## Build status check
-
-Use this to see whether the build is still processing or has entered TestFlight:
-
-```bash
-cd /Users/tejasdc/workspace/jot-mobile
-
-xcrun altool \
-  --build-status \
-  --apple-id 6763163205 \
-  --bundle-version 5 \
-  --bundle-short-version-string 0.1.0 \
-  --platform ios \
-  -u 'tejastej.dc@gmail.com' \
-  -p '@keychain:JOT_TESTFLIGHT_UPLOAD' \
-  --output-format json
-```
-
-If you want the command to block until processing finishes:
-
-```bash
-xcrun altool \
-  --build-status \
-  --wait \
-  --apple-id 6763163205 \
-  --bundle-version 5 \
-  --bundle-short-version-string 0.1.0 \
-  --platform ios \
-  -u 'tejastej.dc@gmail.com' \
-  -p '@keychain:JOT_TESTFLIGHT_UPLOAD' \
-  --output-format json
-```
-
-## Validation issue already found and fixed
-
-The first upload attempt failed because the 1024 App Store icon had an alpha channel:
-
-- file: `Jot/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png`
-- Apple error: `Invalid large app icon ... can’t be transparent or contain an alpha channel`
-
-That icon was flattened and rebuilt before build `5`.
-
-If this happens again, verify with:
-
-```bash
-sips -g hasAlpha Jot/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png
-```
-
-Expected output:
-
-- `hasAlpha: no`
-
-## App Intents validation issue already found and fixed
-
-Build `5` uploaded successfully but failed App Store Connect processing with:
-
-- code: `90626`
-- error: `Invalid Siri Support`
-- reason: the App Intent description contained the word `iPhone`
-
-The failing text was in:
-
-- [Jot/App/Intents/TranscribeAudioFileIntent.swift](/Users/tejasdc/workspace/jot-mobile/Jot/App/Intents/TranscribeAudioFileIntent.swift)
-
-Old text:
-
-```text
-Fully local — nothing leaves your iPhone.
-```
-
-Fixed text:
-
-```text
-Fully local — nothing leaves your device.
-```
-
-If Apple rejects another build on Siri/App Intents metadata, inspect App Intent descriptions first before rebuilding.
-
-## App Store Connect UI caveat on this machine
-
-The browser automation path to App Store Connect has been inconsistent:
-
-- The app record was created successfully by hand in the browser.
-- The generic `Apps` page sometimes shows `No Apps` even though the app exists.
-- `altool` upload is reliable enough to use as the source of truth for delivery success.
-- `altool --build-status` is flaky on this machine and can fail with:
-  - `The file "Defaults.properties" couldn't be opened.`
-  - a crash in JSON output mode
-
-Use App Store Connect manually to confirm final processing state if `altool --build-status` keeps failing.
-
-If you need to navigate manually in the browser, go directly to the app record rather than relying on the list page:
-
-```text
-https://appstoreconnect.apple.com/apps/6763163205
-```
-
-And TestFlight directly:
-
-```text
-https://appstoreconnect.apple.com/apps/6763163205/testflight/ios
-```
-
-## Recommended next release procedure
-
-For build `N`:
-
-1. Pick the next unused build number.
-2. Run `scripts/testflight.sh archive` with `JOT_DEVELOPMENT_TEAM=6966SNKBNF`.
-3. Run the export step once, expecting the `rsync` failure.
-4. Package the manual IPA from the newest `XcodeDistPipeline.*` temp directory.
-5. Upload with `xcrun altool --upload-app` using `@keychain:JOT_TESTFLIGHT_UPLOAD`.
-6. Poll `xcrun altool --build-status` until Apple finishes processing.
-7. In App Store Connect, use the `TestFlight` tab to add internal testers.
-
-## Files involved in this workflow
-
-- Script entrypoint: [scripts/testflight.sh](/Users/tejasdc/workspace/jot-mobile/scripts/testflight.sh)
-- This runbook: [docs/testflight.md](/Users/tejasdc/workspace/jot-mobile/docs/testflight.md)
-- Project config: [Jot/project.yml](/Users/tejasdc/workspace/jot-mobile/Jot/project.yml)
-- App icon set: [Jot/Resources/Assets.xcassets/AppIcon.appiconset](/Users/tejasdc/workspace/jot-mobile/Jot/Resources/Assets.xcassets/AppIcon.appiconset)
-
-## What not to do
-
-- Do not use the App Store `Add for Review` checklist as the TestFlight checklist.
-- Do not save the app-specific password in `.env`.
-- Do not commit any Apple credentials or private keys into this repo.
-- Do not assume `scripts/testflight.sh export` alone will produce a valid IPA on this OS/Xcode combination.
+`all` = XcodeGen regenerate → Release archive (models excluded by
+`EXCLUDED_SOURCE_FILE_NAMES`, guarded by the script) → export with an automatic-signing
+`app-store-connect` ExportOptions plist → `xcrun altool --upload-app`. The `archive`,
+`export` and `upload` subcommands run the stages individually against the same paths.
+
+## After the upload
+
+- App Store Connect → TestFlight shows the build as "Processing" for ~10–30 minutes, then it
+  is installable for internal testers.
+- Apple's post-upload metadata scan can still bounce a build a few minutes AFTER `altool`
+  reports success — the verdict arrives as an "App Store Connect" email (ITMS-xxxxx). A build
+  is only really in TestFlight once it shows there without such an email.
+
+## App Store Connect metadata rules that bounce a build
+
+- App Intent titles/descriptions must not contain "Siri" (build 155) or "Apple" (build 300,
+  ITMS-90626). Say "the private cloud built into iOS", not "Apple's Private Cloud Compute".
+- `UIBackgroundModes` `processing` requires a `BGTaskSchedulerPermittedIdentifiers` list
+  (ITMS-90771). Jot declares only `audio` now.
+- Every upload needs a build number higher than anything App Store Connect has ever seen for
+  the app, including builds uploaded from other machines (299 was taken).
+
+## Xcode 27 notes
+
+- A fresh Xcode 27 install needs `sudo xcodebuild -runFirstLaunch` before simulators work;
+  device archives work without it.
+- No package build plug-ins remain in the dependency graph (the MLX stack that needed
+  `-skipPackagePluginValidation` is gone), so the script's plain `xcodebuild` invocations
+  are enough.

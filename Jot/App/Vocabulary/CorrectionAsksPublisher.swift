@@ -49,10 +49,15 @@ enum CorrectionAsksPublisher {
             return false
         }
 
-        // Shared decision core. `AskPolicy.select` derives `prior` and the
-        // always-replace `granted` exclusion from `overrides` itself, applies
+        // Shared decision core. `AskPolicy.select` derives the ask-ranking
+        // `prior` from `overrides` itself (nothing learned auto-applies, so no
+        // pair is excluded as "granted" any more), applies
         // the keyboard-suppression / merge-teach one-shot / mixed-payload rules,
-        // ranks closest-to-automatic first, and caps at `AskPolicy.maxAsks`.
+        // ranks weakest evidence first (a spelling-only change before an
+        // acoustic one), then closest-to-automatic, and caps at
+        // `AskPolicy.maxAsks`. A KEPT record whose heard word is an everyday
+        // word is never asked (the store would refuse to learn the answer); an
+        // APPLIED one still is — that ask is the undo.
         // Pairs the owner has rejected (kept ≥ threshold) or "Stop asking"-ed
         // are keyboard-only suppression — the transcript review reads neither.
         let overrides = await CorrectionStore.shared.snapshot()
@@ -62,7 +67,8 @@ enum CorrectionAsksPublisher {
             unresolved: unresolved,
             overrides: overrides,
             keyboardSuppressed: keyboardSuppressed,
-            mergeAsked: mergeAsked)
+            mergeAsked: mergeAsked,
+            isCommonOriginal: AppVocabCore.isCommonOriginal)
 
         // ── F3: producer-side exact-edit validation ─────────────────────────
         // (docs/plans/vocab-hold-deck-reliability.md §F3.) Every PASTE-GATING

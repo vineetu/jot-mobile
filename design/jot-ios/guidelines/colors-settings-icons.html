@@ -1,0 +1,34 @@
+<!-- @dsCard group="Colors" viewport="700x190" subtitle="Settings/Wizard semantic tile pairs (top → shaded bottom)" name="Settings icon tiles" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: var(--jot-page-base); }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px 8px; padding: 16px 14px; }
+  .t { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .tile { width: 44px; height: 44px; border-radius: 11px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.3); }
+  .t small { font-size: 9px; color: var(--jot-page-ink-caption); text-align: center; line-height: 1.25; }
+  .ai small { color: #FF6B57; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-speech-top), var(--icon-speech-bottom));"></div><small>Speech Model</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-vocab-top), var(--icon-vocab-bottom));"></div><small>Vocabulary</small></div>
+    <div class="t ai"><div class="tile" style="background: linear-gradient(180deg, var(--icon-ai-top), var(--icon-ai-bottom));"></div><small>AI · Rewrite</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-privacy-top), var(--icon-privacy-bottom));"></div><small>On-Device</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-fullaccess-top), var(--icon-fullaccess-bottom));"></div><small>Full Access</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-micready-top), var(--icon-micready-bottom));"></div><small>Mic Ready</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-help-top), var(--icon-help-bottom));"></div><small>Help</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-rerun-top), var(--icon-rerun-bottom));"></div><small>Re-run Wizard</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-feedback-top), var(--icon-feedback-bottom));"></div><small>Feedback</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-version-top), var(--icon-version-bottom));"></div><small>Version</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-donations-top), var(--icon-donations-bottom));"></div><small>Donations</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-backup-top), var(--icon-backup-bottom));"></div><small>Backup</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-privacypolicy-top), var(--icon-privacypolicy-bottom));"></div><small>Privacy Policy</small></div>
+    <div class="t"><div class="tile" style="background: linear-gradient(180deg, var(--icon-acknowledge-top), var(--icon-acknowledge-bottom));"></div><small>Acknowledge­ments</small></div>
+  </div>
+</body>
+</html>

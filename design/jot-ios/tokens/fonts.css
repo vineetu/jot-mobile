@@ -1,0 +1,5 @@
+/* Jot — webfonts.
+   Fraunces (editorial serif, used ITALIC almost everywhere) from Google Fonts.
+   SF Pro is the system font on Apple platforms — no webfont needed; the
+   -apple-system stack falls back gracefully off-device. */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap');

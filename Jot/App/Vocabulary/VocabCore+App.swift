@@ -60,11 +60,89 @@ enum AppVocabCore {
 /// keyboard never touches this (it reads `CorrectionBridge`).
 extension CorrectionStore {
     static let shared = CorrectionStore(
-        containerRoot: AppVocabCore.containerRoot, diagnostics: AppVocabCore.diagnostics)
+        containerRoot: AppVocabCore.containerRoot, diagnostics: AppVocabCore.diagnostics,
+        isCommonOriginal: AppVocabCore.isCommonOriginal)
+}
+
+extension AppVocabCore {
+    /// The ONE common-original predicate (jot-shared design R9): the gate's own
+    /// `VocabularyGate.isCommonOriginal` (ANY word is an everyday word) over the
+    /// ACTIVE dictation language's list. Used by the store's learning guard —
+    /// Jot never learns to replace an everyday word ("not → Jot") — and by the
+    /// ask selection, so it never asks a question whose answer it would refuse
+    /// to learn. The provider caches and locks, so this is cheap off any actor.
+    @Sendable static func isCommonOriginal(_ original: String) -> Bool {
+        JotVocabCore.VocabularyGate.isCommonOriginal(original, commonWords: activeCommonWords())
+    }
+
+    /// The active dictation language's everyday-word set (empty when no list
+    /// ships for it — the guard then no-ops, as the gate does).
+    static func activeCommonWords() -> Set<String> {
+        commonWords.words(forResource: LanguageChoice.current.commonWordsResource)
+    }
+
+    private static let commonRuleMigrationKey = "jot.vocabulary.commonRuleMigrationDone"
+
+    /// One-time (A3): drop rules learned for an everyday word before the guard
+    /// existed. Marked done only when the active language has a list AND the
+    /// ledger was actually read (`dropCommonOriginalRules` returns nil
+    /// otherwise), so a missing list or an unreadable file retries next launch.
+    static func migrateCommonOriginalRulesIfNeeded() async {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: commonRuleMigrationKey),
+              !activeCommonWords().isEmpty,
+              let dropped = await CorrectionStore.shared.dropCommonOriginalRules() else { return }
+        defaults.set(true, forKey: commonRuleMigrationKey)
+        if dropped > 0 {
+            DiagnosticsLog.record(
+                source: "main-app", category: .vocabularyGate,
+                message: "dropped learned rules for everyday words",
+                metadata: ["count": "\(dropped)"])
+        }
+    }
 }
 
 /// The single main-app provenance store (was `CorrectionProvenance.shared`).
 extension CorrectionProvenance {
     static let shared = CorrectionProvenance(
         containerRoot: AppVocabCore.containerRoot, diagnostics: AppVocabCore.diagnostics)
+}
+
+/// **Learn from Corrections** (jot-shared `VocabularyLearning`, Mac 1.23): the
+/// one correction path. Every surface — transcript Edit → Save, Add to
+/// Vocabulary (in-app and keyboard-queued), the review list, the keyboard ask
+/// deck's verdicts, Settings sounds-like chips, Find & Replace's learn offer,
+/// teach-by-voice — describes what the user did as a `Correction` and calls
+/// `VocabularyLearning.shared.apply`. Nothing else writes a sounds-like or the
+/// store's learning counters.
+extension VocabularyLearning {
+    @MainActor static let shared = VocabularyLearning(
+        list: VocabularyStore.shared, store: CorrectionStore.shared)
+}
+
+extension AppVocabCore {
+    /// Whether the active dictation language ships an everyday-word list.
+    /// Learn-from-edits runs only when it does (no D8 brake ⇒ every edit would
+    /// teach), the same rule the model-free corrector follows.
+    static var hasActiveCommonWords: Bool { !activeCommonWords().isEmpty }
+
+    private static let editPairMigrationKey = "jot.vocabulary.editPairsInListMigrationDone"
+
+    /// One-time (Revision 2 review #1): pairs learned from transcript edits
+    /// before the list became the only home of corrections are written into it
+    /// as sounds-likes. Marked done only when the list and corrections.json were
+    /// both read (`migrateEditLearnedPairs` returns nil otherwise → retry).
+    @MainActor
+    static func migrateEditLearnedPairsIfNeeded() async {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: editPairMigrationKey),
+              let added = await VocabularyLearning.shared.migrateEditLearnedPairs() else { return }
+        defaults.set(true, forKey: editPairMigrationKey)
+        if added > 0 {
+            DiagnosticsLog.record(
+                source: "main-app", category: .vocabularyGate,
+                message: "moved edit-learned pairs into the vocabulary list",
+                metadata: ["count": "\(added)"])
+        }
+    }
 }

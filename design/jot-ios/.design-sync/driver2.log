@@ -1,0 +1,120 @@
+» @jot/design-system@1.0.0 → /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle (window.JotDS)
+[DETECT] searched /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios (depth 4), found .storybook at [] → shape=package
+  source shape: package (from cfg.shape)
+  [DTS] parsed 1 .d.ts files from /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/dist
+  package: 18 components (0 src-matched)
+  bundle: 29 KB
+  inlined npm packages: 0
+  (decorator auto-detect skipped — no .storybook/ dir found)
+  css: dist/jot.css (15 KB, copied)
+  exported PascalCase symbols: 18
+  components: 18
+  (excluded 0 enum/type/context/hook exports; 18 components)
+  docs: 18/18 components matched (cfg.docsDir=docs)
+  (preview override: BodyText)
+  (preview override: CapsLabel)
+  (preview override: CitationChip)
+  (preview override: CtaPill)
+  (preview override: GlassButton)
+  (preview override: GlassCard)
+  (preview override: GlassPill)
+  (preview override: HeroTile)
+  (preview override: IosToggle)
+  (preview override: JotAppIcon)
+  (preview override: JotGlyph)
+  (preview override: JotMark)
+  (preview override: ProgressDots)
+  (preview override: SerifTitle)
+  (preview override: SourceRow)
+  (preview override: StopPill)
+  (preview override: TextLink)
+  (preview override: Waveform)
+  previews: 0 generated → .design-sync/.cache/previews/ (18 user-owned)
+  [DTS] 18/18 components
+  styles.css: 1 @import(s) (incl. _ds_bundle.css — component styles ship to designs via this closure)
+  readmeHeader: stitching .design-sync/conventions.md
+  _ds_sync.json: 18 render hash(es) + source key(s) (verification anchor)
+✓ wrote /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle: _ds_bundle.js + styles.css + 18 component previews
+verify: 18 verified-by-upload (skip capture/grade), 0 changed, 0 new, 0 removed [keyed on sourceKeys]
+upload: 0 component(s), 0 delete(s), styling (+ _ds_sync.json last)
+→ /Users/jamyc3/Documents/projects/jot-mobile/design/jot-ios/ds-bundle/.sync-diff.json
+  .ds-build-meta.json: 18 components (package)
+  _ds_bundle.js: 34 KB, syntax OK
+  _ds_bundle.js header: window.JotDS, 18 components, 0 inlined externals
+  _ds_sync.json: 18 render hash(es), anchor matches the bundle
+  _ds_sync.json render hashes match disk (18 recomputed)
+  styles.css: 1 @import(s), all resolve
+  _ds_bundle.css: 15 KB
+  tokens: 194 defined, 1 referenced
+  components/: 18 previews, 18 .prompt.md
+  all .d.ts parse cleanly
+  window.JotDS: 18 exports (18 fn + 0 compound)
+  render check: 18/18 previews render cleanly (screenshots in _screenshots/)
+  contact sheets: 2 sheet(s) → _screenshots/contact-sheet-1.png … contact-sheet-2.png
+
+✓ bundle is complete
+capture skipped — no capturable changed or added components
+{
+  "version": 2,
+  "ok": true,
+  "shape": "package",
+  "anchor": "ok",
+  "learningsUnmerged": [],
+  "stages": {
+    "build": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "diff": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "validate": {
+      "ok": true,
+      "exit": 0,
+      "skipped": null
+    },
+    "capture": {
+      "ok": null,
+      "exit": null,
+      "skipped": "empty_worklist"
+    }
+  },
+  "verification": {
+    "unchanged": [
+      "BodyText",
+      "CapsLabel",
+      "CitationChip",
+      "CtaPill",
+      "GlassButton",
+      "GlassCard",
+      "GlassPill",
+      "HeroTile",
+      "IosToggle",
+      "JotAppIcon",
+      "JotGlyph",
+      "JotMark",
+      "ProgressDots",
+      "SerifTitle",
+      "SourceRow",
+      "StopPill",
+      "TextLink",
+      "Waveform"
+    ],
+    "changed": [],
+    "added": [],
+    "removed": [],
+    "pendingGrade": [],
+    "canary": null
+  },
+  "upload": {
+    "any": true,
+    "components": [],
+    "deletePaths": [],
+    "bundle": false,
+    "styling": true,
+    "aux": false
+  }
+}

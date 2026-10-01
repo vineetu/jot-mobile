@@ -18,7 +18,9 @@ struct FeaturedLatestRow: View {
 
                 Spacer(minLength: 8)
 
-                if transcript.cleanedText != nil {
+                if CleanupActivity.shared.isCleaning(transcript.id) {
+                    RecentsCleaningBadge()
+                } else if transcript.cleanedText != nil {
                     RecentsRewriteBadge()
                 }
 
@@ -41,10 +43,15 @@ struct FeaturedLatestRow: View {
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentTransition(.opacity)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
         .contentShape(Rectangle())
+        // The newest note is usually the one a background cleanup (§7.14)
+        // lands on: fade the text/badge swap rather than snapping it.
+        .animation(.easeInOut(duration: 0.35), value: transcript.cleanedText)
+        .animation(.easeInOut(duration: 0.35), value: CleanupActivity.shared.isCleaning(transcript.id))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
     }

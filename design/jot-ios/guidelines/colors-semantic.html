@@ -1,0 +1,34 @@
+<!-- @dsCard group="Colors" viewport="700x200" subtitle="Functional colors only — and the coral ban" name="Semantic tiles & functional colors" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; font-family: var(--font-sys); background: #fff; color: #16181D; }
+  .row { display: flex; gap: 10px; padding: 14px 14px 8px; }
+  .sw { flex: 1; height: 96px; border-radius: 16px; display: flex; flex-direction: column; justify-content: flex-end; padding: 9px 11px; box-sizing: border-box; color: #fff; }
+  .sw b { font-size: 12px; font-weight: 600; }
+  .sw span { font-size: 10.5px; opacity: 0.8; }
+  .ban { margin: 0 14px 14px; border-radius: 12px; background: #FCE9E5; border: 0.5px solid rgba(200,60,40,0.25); padding: 10px 14px; display: flex; align-items: center; gap: 12px; }
+  .ban .x { width: 34px; height: 34px; border-radius: 9px; background: #F0593D; position: relative; flex-shrink: 0; }
+  .ban .x::after { content: ""; position: absolute; inset: -4px; border: 2.5px solid #B3261E; border-radius: 12px; }
+  .ban .x::before { content: ""; position: absolute; left: -8px; right: -8px; top: 50%; height: 2.5px; background: #B3261E; transform: rotate(-45deg); }
+  .ban p { margin: 0; font-size: 12.5px; line-height: 1.45; color: #7A2A1E; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sw" style="background: linear-gradient(180deg, var(--tile-mic-from), var(--tile-mic-to));"><b>mic tile</b><span>onboarding hero only</span></div>
+    <div class="sw" style="background: linear-gradient(180deg, var(--tile-key-from), var(--tile-key-to)); color: var(--tile-key-glyph);"><b>keyboard tile</b><span>parchment</span></div>
+    <div class="sw" style="background: linear-gradient(180deg, var(--tile-success-from), var(--tile-success-to));"><b>success tile</b><span>done / ready</span></div>
+    <div class="sw" style="background: var(--jot-red);"><b>--jot-red</b><span>trash icon only</span></div>
+    <div class="sw" style="background: var(--ios-toggle-on);"><b>iOS toggle on</b><span>OS control</span></div>
+    <div class="sw" style="background: var(--ios-mic-dot);"><b>mic privacy dot</b><span>OS status bar</span></div>
+  </div>
+  <div class="ban">
+    <div class="x"></div>
+    <p><b>Coral = AI surfaces only.</b> The ramp #FF6B57 → #E0533F (--jot-ai-accent) marks AI Rewrite surfaces: the Rewrite icon tiles, the ✦ sparkle on rewritten entries, "+ New prompt". Never on non-AI surfaces; new AI features default to blue (Ask Jot is blue). Blue is the brand accent.</p>
+  </div>
+</body>
+</html>

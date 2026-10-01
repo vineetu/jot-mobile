@@ -2,17 +2,20 @@ import FluidAudio
 import Foundation
 import OSLog
 
-/// Owns the offline speaker-diarization model — FluidAudio's VBx pipeline
-/// (pyannote community-1: segmentation + embedding + PLDA, ~22 MB total).
-/// Experimental **Diarization Lab** feature (Settings → About, revealed by the
-/// same 5-tap-on-Version gesture as the TTS Lab).
+/// Owns the NVIDIA Nemotron 3 speaker diarizer (FluidAudio `Nemotron3Diarizer`,
+/// `fast128` preset, ~190 MB one-time download) — the engine behind "Detect
+/// speakers" and the share-import auto-diarize. Replaces the pyannote/VBx
+/// pipeline, as Jot for Mac did (its `docs/speaker-diarization/nemotron-migration.md`:
+/// AMI speaker confusion 10.1 % → 0.9 %; VBx collapsed whole meetings to one
+/// speaker). Nemotron separates voices inside one mixed stream, so it works on
+/// one-mic meetings and calls, up to 8 speakers. It has no voice fingerprint:
+/// speakers are anonymous ("Speaker 1", "Speaker 2", …).
 ///
-/// Ported from the validated Mac Jot research at
-/// `docs/speaker-diarization/design.md` (D1: offline VBx over every streaming
-/// alternative — 12% DER, 120–220× real-time on Mac, no hardware gate needed).
-/// Mirrors `VocabularyRescorerHolder`'s generation-guarded actor shape: a
-/// monotonic `generation` defends every resume point after an `await` so a
-/// stale/cancelled prepare can't clobber a newer one's state.
+/// The only file that touches FluidAudio's diarization types: `diarize` hands
+/// back Jot-owned `DiarSegment`s (`DiarizationProjection`).
+///
+/// Mirrors the actor + monotonic-`generation` shape of `VocabularyRescorerHolder`
+/// so a stale/cancelled prepare can't clobber a newer one's state.
 actor DiarizerHolder {
     static let shared = DiarizerHolder()
 
@@ -26,8 +29,17 @@ actor DiarizerHolder {
 
     private(set) var modelState: ModelState = .notLoaded
     private(set) var isProcessing = false
-    private var manager: ManagerBox?
+    private var models: ModelsBox?
     private var generation = 0
+
+    /// Monolithic `fast128`: 10.24 s of audio per model call, the largest chunk
+    /// that still compiles for the ANE, and the best-measured preset (Mac bench:
+    /// 0.9 % speaker confusion on AMI).
+    nonisolated static let config: Nemotron3Config = .fast128
+
+    /// Audio fed per detached inference block. Cancellation is checked between
+    /// blocks, so a cancelled import never waits on a whole hour-long file.
+    nonisolated static let blockSeconds: Double = 45
 
     private let log = Logger(subsystem: "com.vineetu.jot.mobile.Jot", category: "Diarizer")
 
@@ -36,19 +48,42 @@ actor DiarizerHolder {
         return false
     }
 
-    /// Whether the offline diarizer weights are already on disk — a best-effort
-    /// existence check of the default models directory. `nonisolated` (touches
-    /// no actor state) so the launch prefetch can consult it synchronously to
-    /// skip a needless network monitor when nothing needs downloading.
-    nonisolated static var modelsAreDownloaded: Bool {
-        let dir = OfflineDiarizerModels.defaultModelsDirectory()
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        return !contents.isEmpty
+    /// `<Application Support>/Models/Diarizer/` — FluidAudio nests
+    /// `nemotron-3-diarization/` inside it.
+    nonisolated static var cacheDirectory: URL {
+        let appSupport = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return appSupport.appendingPathComponent("Models/Diarizer", isDirectory: true)
     }
 
-    /// Downloads (first run only — cached after) and loads the offline
-    /// diarizer models. Safe to call repeatedly; a second caller mid-flight
-    /// just no-ops until the first completes.
+    nonisolated static var repoDirectory: URL {
+        cacheDirectory.appendingPathComponent(Repo.nemotron3Diarization.folderName, isDirectory: true)
+    }
+
+    /// Whether a complete copy of the CURRENT weights is on disk: the compiled
+    /// bundle's manifest, the silence embedding, and a weights-version marker
+    /// whose content matches this FluidAudio build (an older checkpoint reads
+    /// as "not downloaded" — the loader would purge and re-fetch it).
+    /// `nonisolated` so the launch prefetch can consult it synchronously.
+    nonisolated static var modelsAreDownloaded: Bool {
+        let fm = FileManager.default
+        let repo = repoDirectory
+        let manifest = repo
+            .appendingPathComponent(config.hubSubdirectory, isDirectory: true)
+            .appendingPathComponent(config.modelFileName, isDirectory: true)
+            .appendingPathComponent("coremldata.bin")
+        let silence = repo.appendingPathComponent(ModelNames.Nemotron3.silenceEmbeddingFile)
+        let marker = repo.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile)
+        guard fm.fileExists(atPath: manifest.path), fm.fileExists(atPath: silence.path) else { return false }
+        let cached = (try? String(contentsOf: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cached == ModelNames.Nemotron3.weightsVersion
+    }
+
+    /// Downloads (first run only — cached after) and loads the diarizer. Safe
+    /// to call repeatedly; a second caller mid-flight no-ops until the first
+    /// completes.
     func prepareIfNeeded() async {
         switch modelState {
         case .ready, .downloading, .loading: return
@@ -56,24 +91,21 @@ actor DiarizerHolder {
         }
         generation += 1
         let myGeneration = generation
-        modelState = .downloading(0)
+        modelState = Self.modelsAreDownloaded ? .loading : .downloading(0)
         do {
-            let directory = OfflineDiarizerModels.defaultModelsDirectory()
-            let models = try await OfflineDiarizerModels.load(
-                from: directory,
+            let loaded = try await Nemotron3Models.loadFromHuggingFace(
+                config: Self.config,
+                cacheDirectory: Self.cacheDirectory,
+                computeUnits: .all,
                 progressHandler: { [weak self] progress in
                     guard let self else { return }
                     Task { await self.updateDownloadProgress(progress.fractionCompleted, generation: myGeneration) }
                 }
             )
             guard myGeneration == generation else { return }
-            modelState = .loading
-            let mgr = OfflineDiarizerManager()
-            mgr.initialize(models: models)
-            guard myGeneration == generation else { return }
-            manager = ManagerBox(manager: mgr)
+            models = ModelsBox(models: loaded)
             modelState = .ready
-            log.info("offline diarizer models ready")
+            log.info("Nemotron 3 diarizer ready")
         } catch {
             guard myGeneration == generation else { return }
             modelState = .failed(error.localizedDescription)
@@ -83,36 +115,88 @@ actor DiarizerHolder {
 
     private func updateDownloadProgress(_ fraction: Double, generation myGeneration: Int) {
         guard myGeneration == generation, case .downloading = modelState else { return }
-        modelState = .downloading(fraction)
+        // Subdirectory downloads report 0…1 with no compile phase; at 1 the
+        // model load is what's left.
+        modelState = fraction >= 1 ? .loading : .downloading(fraction)
     }
 
-    /// Runs the offline VBx pipeline over a retained-audio file (FluidAudio
-    /// auto-converts sample rate / channels from the file). Single-in-flight —
-    /// mirrors `TranscriptionService.isTranscribing`'s fast-fail shape. Callers
-    /// should also check `TranscriptionService.shared.isBusy` first: FluidAudio's
-    /// shared CoreML/BNNS state is not safe under two concurrently-running
-    /// inference graphs from different pipelines.
-    func diarize(audioFileURL url: URL) async throws -> DiarizationResult {
+    /// Diarize a retained-audio file into exclusive speech runs
+    /// (`DiarizationProjection.project`) plus the audio duration. Callers turn
+    /// the runs into a speaker timeline with `DiarizationProjection.speakerRuns`
+    /// (nil = single speaker).
+    ///
+    /// Single-in-flight, mirroring `TranscriptionService.isTranscribing`.
+    /// Callers should also check `TranscriptionService.shared.isBusy` first:
+    /// two CoreML graphs from different pipelines must not run concurrently.
+    /// Runs the streaming API (`appendAudio` / `processBufferedAudio` /
+    /// `finishStream` — frame-exact with `processComplete`) in `blockSeconds`
+    /// blocks off the actor, checking cancellation between blocks.
+    func diarize(audioFileURL url: URL) async throws -> (runs: [DiarSegment], duration: Double) {
         guard !isProcessing else { throw DiarizerHolderError.busy }
         await prepareIfNeeded()
-        guard let manager, isReady else { throw DiarizerHolderError.notReady }
+        guard let models, isReady else { throw DiarizerHolderError.notReady }
         isProcessing = true
         defer { isProcessing = false }
-        return try await manager.process(url)
+
+        let samples = try await Task.detached(priority: .userInitiated) {
+            try AudioConverter().resampleAudioFile(url)
+        }.value
+        let duration = Double(samples.count) / 16_000
+        let run = BlockRun(diarizer: Nemotron3Diarizer(config: Self.config, models: models.models))
+        let blockSize = Int(Self.blockSeconds * 16_000)
+
+        var probabilities: [Float] = []
+        var frameCount = 0
+        var offset = 0
+        repeat {
+            try Task.checkCancellation()
+            let end = min(offset + blockSize, samples.count)
+            let block = Array(samples[offset..<end])
+            let isLast = end == samples.count
+            let chunks = try await Task.detached(priority: .userInitiated) {
+                try run.feed(block, finish: isLast)
+            }.value
+            for chunk in chunks {
+                probabilities.append(contentsOf: chunk.probabilities)
+                frameCount += chunk.frameCount
+            }
+            offset = end
+        } while offset < samples.count
+        try Task.checkCancellation()
+
+        let runs = DiarizationProjection.project(
+            probabilities: probabilities,
+            frameCount: frameCount,
+            numSpeakers: Self.config.numSpeakers
+        )
+        return (runs, duration)
+    }
+
+    /// One run's `Nemotron3Diarizer` (a synchronous, non-`Sendable` class
+    /// holding the streaming state). `diarize` hands it to exactly one detached
+    /// task at a time and awaits each before the next, so it is never touched
+    /// concurrently — hence `@unchecked`.
+    private final class BlockRun: @unchecked Sendable {
+        private let diarizer: Nemotron3Diarizer
+        init(diarizer: Nemotron3Diarizer) { self.diarizer = diarizer }
+
+        func feed(_ samples: [Float], finish: Bool) throws -> [Nemotron3ChunkResult] {
+            diarizer.appendAudio(samples)
+            var results = try diarizer.processBufferedAudio()
+            if finish {
+                results += try diarizer.finishStream()
+            }
+            return results
+        }
     }
 }
 
-/// `@unchecked Sendable` wrapper: `OfflineDiarizerManager` is a non-`Sendable`
-/// reference type (FluidAudio documents its `models` property as
-/// `nonisolated(unsafe)`, written only once during `initialize` and read-only
-/// after). The wrapper confines the reference so the actor can `await` its
-/// `process` call without a "sending risks data races" diagnostic. Same shape
-/// as `DictationLiveActivityController`'s `ActivityHandle`.
-private struct ManagerBox: @unchecked Sendable {
-    let manager: OfflineDiarizerManager
-    func process(_ url: URL) async throws -> DiarizationResult {
-        try await manager.process(url)
-    }
+/// `@unchecked Sendable` wrapper: `Nemotron3Models` holds the loaded `MLModel`
+/// and preallocated I/O buffers; it is written once in `prepareIfNeeded` and
+/// only read afterwards, and every model call happens inside `diarize`'s
+/// single-in-flight guard.
+private struct ModelsBox: @unchecked Sendable {
+    let models: Nemotron3Models
 }
 
 enum DiarizerHolderError: Error, LocalizedError {
@@ -121,7 +205,7 @@ enum DiarizerHolderError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notReady: return "The speaker diarization model isn't ready yet."
+        case .notReady: return "The speaker-recognition model isn't ready yet."
         case .busy: return "Already detecting speakers in another recording."
         }
     }

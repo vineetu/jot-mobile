@@ -1,0 +1,44 @@
+<!-- @startingPoint section="iOS App" subtitle="Ask Jot — voice Q&A sheet (listening → thinking → answer)" viewport="430x880" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot · Ask Jot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap" rel="stylesheet">
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <rect width="64" height="64" rx="14" fill="#16233c"/>
+    <path d="M32 14c1 6.6 3 11 6.2 13.8C41 30 45.3 31.4 49 31c-6.6 1-11 3-13.8 6.2C32.4 40 31 44.3 31.4 48 30.4 41.4 28.4 37 25.2 34.2 22.4 31.6 18.1 30.2 14.4 30.6 21 29.6 25.4 27.6 28.2 24.4 31 21.6 32.4 17.3 32 14z" fill="#fff"/>
+  </svg>
+</template>
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #05070c; overflow: hidden; }
+  #root { height: 100%; }
+  @keyframes askPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.82); } }
+  @keyframes askCaret { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+  @keyframes askShimmer { 0% { background-position: -220px 0; } 100% { background-position: 220px 0; } }
+  @keyframes askRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes askFade { from { opacity: 0; } to { opacity: 1; } }
+  /* reactive waveform bars */
+  @keyframes wv1 { 0%,100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+  @keyframes wv2 { 0%,100% { transform: scaleY(0.5); } 50% { transform: scaleY(0.85); } }
+  @keyframes wv3 { 0%,100% { transform: scaleY(0.7); } 50% { transform: scaleY(0.28); } }
+  .ask-scroll::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="wizard-ui.jsx"></script>
+  <script type="text/babel" src="ask-ui.jsx"></script>
+  <script type="text/babel" src="ask-states.jsx"></script>
+  <script type="text/babel" src="ask-app.jsx"></script>
+</body>
+</html>

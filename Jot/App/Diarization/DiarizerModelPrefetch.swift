@@ -3,7 +3,7 @@ import Foundation
 import Network
 import OSLog
 
-/// Opportunistic launch-time prefetch of the ~22 MB offline diarizer models so
+/// Opportunistic launch-time prefetch of the ~190 MB Nemotron 3 diarizer so
 /// Speaker Notes works instantly the moment it's announced (owner: "downloaded
 /// at night, so it's ready"). Only downloads on an UNMETERED path (effectively
 /// Wi-Fi) and only when the weights aren't already on disk. Kicked from the very

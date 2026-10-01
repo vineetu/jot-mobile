@@ -224,14 +224,16 @@ enum CorrectionBridge {
 
     // MARK: - Keyboard → app (verdict queue)
 
-    /// Append a verdict the owner gave in the keyboard. The app drains these when
-    /// it next becomes active.
+    /// Append a verdict the owner gave in the keyboard and tell the app. The
+    /// app applies it at once if it is running (`correctionVerdictQueued`),
+    /// otherwise the next time it becomes active.
     static func enqueueVerdict(_ event: VerdictEvent) {
         var queue = pendingVerdicts()
         queue.append(event)
         if let data = try? JSONEncoder().encode(queue) {
             AppGroup.defaults.set(data, forKey: verdictsKey)
         }
+        CrossProcessNotification.post(name: CrossProcessNotification.correctionVerdictQueued)
     }
 
     /// Read the verdict queue WITHOUT clearing — the app applies these, then

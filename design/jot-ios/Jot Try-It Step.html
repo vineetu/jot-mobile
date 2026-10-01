@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jot · Try It (onboarding)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&display=swap" rel="stylesheet">
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <rect width="64" height="64" rx="14" fill="#1A8CFF"/>
+    <rect x="26" y="15" width="9" height="18" rx="4.5" fill="#fff"/>
+    <path d="M19 31a11.5 11.5 0 0 0 23 0" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round"/>
+    <path d="M30.5 42v4.5c0 4.2-2.7 6.5-5.6 6.5" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round"/>
+  </svg>
+</template>
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; }
+  #root { height: 100%; }
+
+  @keyframes jotpulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.78); } }
+
+  /* invite composer: breathing glow ring + sheen sweep */
+  @keyframes tryGlowPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(10,132,255,0); }
+    50%     { box-shadow: 0 0 0 4px rgba(10,132,255,.14); }
+  }
+  .try-glow { animation: tryGlowPulse 2.2s ease-in-out infinite; }
+  @keyframes trySheen { 0% { transform: translateX(-180%); } 100% { transform: translateX(320%); } }
+  .try-sheen { position: absolute; top: 0; left: 0; height: 100%; width: 45%; pointer-events: none;
+    background: linear-gradient(100deg, transparent, rgba(120,180,255,.55), transparent); transform: translateX(-180%);
+    animation: trySheen 2.6s ease-in-out infinite; }
+
+  /* Jot down record invite glow */
+  @keyframes tryDictGlow {
+    0%,100% { box-shadow: 0 6px 20px -4px rgba(10,132,255,.5), inset 0 1px 0 rgba(255,255,255,.32); }
+    50%     { box-shadow: 0 8px 28px -2px rgba(10,132,255,.78), 0 0 0 5px rgba(10,132,255,.14), inset 0 1px 0 rgba(255,255,255,.32); }
+  }
+  .try-dictglow { animation: tryDictGlow 1.7s ease-in-out infinite; }
+
+  /* Stop pill invite glow */
+  @keyframes tryStopGlow {
+    0%,100% { box-shadow: 0 6px 20px -4px rgba(10,132,255,.5), inset 0 1px 0 rgba(255,255,255,.32); }
+    50%     { box-shadow: 0 0 0 6px rgba(10,132,255,.16), 0 0 26px rgba(10,132,255,.6), inset 0 1px 0 rgba(255,255,255,.32); }
+  }
+  .try-stopglow { animation: tryStopGlow 1.5s ease-in-out infinite; }
+
+  /* streaming caret */
+  @keyframes tryCaret { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+  .try-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; background: currentColor; vertical-align: -2px;
+    animation: tryCaret 1s steps(1) infinite; }
+
+  /* Option A — breathing waveform */
+  @keyframes tryBreathe { 0%,100% { transform: scaleY(.32); } 50% { transform: scaleY(1); } }
+  .try-breathe .try-bar { animation: tryBreathe 1.5s ease-in-out infinite; }
+  .try-breathe .try-bar:nth-child(1) { animation-delay: 0s; }
+  .try-breathe .try-bar:nth-child(2) { animation-delay: .15s; }
+  .try-breathe .try-bar:nth-child(3) { animation-delay: .3s; }
+  .try-breathe .try-bar:nth-child(4) { animation-delay: .15s; }
+  .try-breathe .try-bar:nth-child(5) { animation-delay: 0s; }
+
+  /* meter — lively bars (recording + Option C) */
+  @keyframes tryMeter1 { 0%,100% { transform: scaleY(.3); } 50% { transform: scaleY(.95); } }
+  @keyframes tryMeter2 { 0%,100% { transform: scaleY(.5); } 40% { transform: scaleY(1); } }
+  @keyframes tryMeter3 { 0%,100% { transform: scaleY(.78); } 60% { transform: scaleY(.32); } }
+  .try-meter .try-bar { animation: tryMeter1 .9s ease-in-out infinite; }
+  .try-meter .try-bar:nth-child(2n) { animation-name: tryMeter2; animation-duration: 1.1s; }
+  .try-meter .try-bar:nth-child(3n) { animation-name: tryMeter3; animation-duration: .8s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .try-glow, .try-sheen, .try-dictglow, .try-stopglow, .try-caret,
+    .try-breathe .try-bar, .try-meter .try-bar { animation: none !important; }
+  }
+
+  /* light/dark toggle */
+  .tt-toggle { position: fixed; top: 14px; right: 16px; z-index: 200; display: flex; gap: 2px; padding: 3px;
+    background: rgba(255,255,255,.86); border: 0.5px solid rgba(20,30,50,.12); border-radius: 999px;
+    box-shadow: 0 4px 16px rgba(20,30,50,.14); backdrop-filter: blur(12px); font-family: -apple-system, system-ui, sans-serif; }
+  .tt-toggle button { border: none; cursor: pointer; background: transparent; color: #3a4252; font-size: 13px; font-weight: 600;
+    padding: 6px 14px; border-radius: 999px; transition: background .15s, color .15s; }
+  .tt-toggle button.on { background: #1A8CFF; color: #fff; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="jot-tryit/design-canvas.jsx"></script>
+  <script type="text/babel" src="jot-tryit/tryit-tokens.jsx"></script>
+  <script type="text/babel" src="jot-tryit/tryit-wizard.jsx"></script>
+  <script type="text/babel" src="jot-tryit/tryit-keyboard.jsx"></script>
+  <script type="text/babel" src="jot-tryit/tryit-screen.jsx"></script>
+  <script type="text/babel">
+    const AB = { width: 390, height: 844 };
+
+    function App() {
+      const [theme, setTheme] = React.useState('light');
+      return (
+        <>
+          <div className="tt-toggle">
+            <button className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')}>Light</button>
+            <button className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')}>Dark</button>
+          </div>
+          <DesignCanvas>
+            <DCSection id="flow" title="Wizard · “Now try the keyboard”"
+              subtitle="The hands-on step (5 of 7) · one clear action at a time · Fraunces italic = spoken">
+              <DCArtboard id="s1" label="01 · Invite" {...AB}><TryItScreen theme={theme} state="invite" /></DCArtboard>
+              <DCArtboard id="s2" label="02 · Jot down" {...AB}><TryItScreen theme={theme} state="rise" /></DCArtboard>
+              <DCArtboard id="s3" label="03 · First-time setup" {...AB}><TryItScreen theme={theme} state="init" /></DCArtboard>
+              <DCArtboard id="s4" label="04 · Streaming in keyboard" {...AB}><TryItScreen theme={theme} state="stream" /></DCArtboard>
+              <DCArtboard id="s5" label="05 · Stop glows" {...AB}><TryItScreen theme={theme} state="stop" /></DCArtboard>
+              <DCArtboard id="s6" label="06 · It works ✓" {...AB}><TryItScreen theme={theme} state="done" /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="init" title="First-time setup — model warm-up"
+              subtitle="The ~30–40s one-time load, before any text streams. Reassure + “keep talking.” No waveform, no fill bar — only the dot blinks.">
+              <DCArtboard id="setup" label="First-time setup" {...AB}><TryItScreen theme={theme} state="init" /></DCArtboard>
+              <DCPostIt top={150} left={520} rotate={2} width={232}>
+                Text only: the wry line “This is the slow part. It’s the only slow part.” The single pulsing dot is the only motion — no distracting waveform.
+              </DCPostIt>
+            </DCSection>
+
+            <DCSection id="copy" title="Microcopy &amp; notes" subtitle="Every final string in Jot’s voice.">
+              <DCArtboard id="copycard" label="Copy deck" width={620} height={844}><MicrocopyCard theme={theme} /></DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

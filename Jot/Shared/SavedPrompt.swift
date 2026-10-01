@@ -56,7 +56,7 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
     /// preserves every distinct idea the speaker introduced. Drops the
     /// earlier voice-fidelity constraint (which capped how much the
     /// model could reorganize) in favor of idea-fidelity. The
-    /// "do not invent" guardrail keeps Qwen from embellishing.
+    /// "do not invent" guardrail keeps the model from embellishing.
     ///
     /// Seed-only: this copy reaches fresh installs only. Existing
     /// users keep whatever Articulate prompt is already in their
@@ -92,7 +92,7 @@ struct SavedPrompt: Codable, Equatable, Identifiable, Hashable, Sendable {
     /// context principles, mapped to markdown sections rather than
     /// XML tags so the output stays readable + editable for the
     /// user AND parseable for the receiving assistant. Cross-checked
-    /// against Qwen 3's prompting guidance — Qwen's chat template
+    /// against Apple's Foundation Models prompting guidance — the chat template
     /// handles wrapping internally, so XML inside user prompts
     /// would actually confuse it; markdown is the safer producer-
     /// side choice.

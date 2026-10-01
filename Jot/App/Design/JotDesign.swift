@@ -571,55 +571,18 @@ fileprivate struct SurfaceModifier: ViewModifier {
     }
 }
 
-// MARK: - Active rewrite model display name
+// MARK: - Active rewrite engine display name
 
 extension JotDesign {
-    /// Single source for the rewrite-model name surfaced in UI.
+    /// Single source for the rewrite-engine name surfaced in UI — the
+    /// transcript-detail attribution line, the rewrite-empty CTA copy, the
+    /// rewrite picker subline and the edit-prompt test sheet footer.
     ///
-    /// Resolves from `LLMClientFactory.shared.currentProvider` (main app
-    /// only) so every surface — Settings model strip, Switch model picker,
-    /// AI offer wizard step, transcript-detail attribution line, rewrite
-    /// picker subline, edit-prompt test sheet footer, download pitch sheet —
-    /// stays honest with the active provider without each call site doing
-    /// its own switch.
-    ///
-    /// `JotDesign.swift` is compiled into BOTH the main app and the
-    /// `JotKeyboard` extension. `LLMClientFactory` lives only in the main
-    /// app (`JOT_APP_HOST`-gated), so the keyboard branch uses a static
-    /// fallback. The keyboard never renders model-name strings — it
-    /// URL-bounces to the main app for rewrite — so the fallback exists
-    /// only to keep the symbol resolvable inside the extension's
-    /// compilation unit.
-    ///
-    /// Wrapped in `@MainActor` because `LLMClientFactory` is MainActor-isolated.
-    /// SwiftUI views are already MainActor-isolated so no `await` is needed
-    /// at call sites; the body is a synchronous getter.
-    @MainActor
-    static var activeRewriteModelDisplayName: String {
-        #if JOT_APP_HOST
-        return LLMClientFactory.shared.currentProvider.displayName
-        #else
-        // Keyboard extension fallback — never rendered, see doc above.
-        return "Qwen 3.5 4B"
-        #endif
-    }
-
-    /// Single source for the user-facing on-disk size of the active rewrite
-    /// model. Surfaced in the download pitch sheet, the AI Rewrite settings
-    /// page, the wizard's AI offer step, and the Help screen.
-    ///
-    /// Resolves from the active provider — Qwen 3.5 4B is ~2.5 GB at
-    /// 4-bit. Update the per-provider value on `LLMProvider.displaySize`,
-    /// not here.
-    @MainActor
-    static var activeRewriteModelSize: String {
-        #if JOT_APP_HOST
-        return LLMClientFactory.shared.currentProvider.displaySize
-        #else
-        // Keyboard extension fallback — never rendered, see displayName doc.
-        return "2.5 GB"
-        #endif
-    }
+    /// Jot's prompts run on Apple Foundation Models (on-device, with Private
+    /// Cloud Compute as the iOS 27 fallback), so the brand is Apple's. The
+    /// same constant compiles into the keyboard extension, which never
+    /// renders it.
+    static let activeRewriteModelDisplayName = "Apple Intelligence"
 }
 
 // MARK: - v0.9 Color tokens

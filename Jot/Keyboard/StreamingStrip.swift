@@ -68,6 +68,18 @@ struct StreamingStrip: View {
     /// space on narrow keyboards.
     var statusLine: String? = nil
 
+    /// §5.5 — true from the moment the recording stopped until the text is
+    /// pasted (transcribing → cleaning → publishing). The strip stays mounted
+    /// with the last live text held still: static hollow dot, the elapsed
+    /// clock frozen at stop, no waveform, no "still transcribing" tail, and
+    /// `finishingLine` in the header saying what the wait is for.
+    var isFinishing: Bool = false
+    /// Elapsed seconds frozen at stop, for the header clock while finishing.
+    var finishingElapsedSeconds: TimeInterval? = nil
+    /// Header copy while finishing ("Finishing the transcript", "AI is tidying
+    /// this before it pastes", "Applying your follow-up").
+    var finishingLine: String? = nil
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Height of the scrollable streaming pane. WS-A re-cap: trimmed from 130 →
@@ -92,6 +104,7 @@ struct StreamingStrip: View {
                 partialText: partialText,
                 loadingLabel: loadingLabel,
                 isPaused: isPaused,
+                isFinishing: isFinishing,
                 paneHeight: Self.paneHeight,
                 reduceMotion: reduceMotion
             )
@@ -122,27 +135,35 @@ struct StreamingStrip: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            if isPaused {
+            if isPaused || isFinishing {
                 // WS-C / §10 paused cue: static hollow dot (not pulsing) +
                 // plain-language "mic ready, not capturing" so the held mic
                 // never reads as covert recording. No waveform while paused.
+                // The post-stop tail (§5.5) borrows the same still treatment:
+                // the mic is off, the clock is frozen at stop, and the line
+                // names the wait ("Finishing the transcript" / "AI is tidying
+                // this before it pastes").
                 Circle()
                     .strokeBorder(Color.jotKeyboardStreamText, lineWidth: 1.5)
                     .frame(width: 8, height: 8)
                     .accessibilityHidden(true)
 
                 if showsHeaderTimer {
-                    Text(pausedHeaderTime)
+                    Text(frozenHeaderTime)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Color.jotKeyboardStreamText)
                         .monospacedDigit()
                 }
 
-                Text("Paused · mic ready, not capturing")
+                Text(isFinishing
+                     ? (finishingLine ?? "Finishing the transcript")
+                     : "Paused · mic ready, not capturing")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.jotKeyboardStreamText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
+                    .contentTransition(.opacity)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: finishingLine)
 
                 Spacer(minLength: 0)
             } else {
@@ -188,9 +209,11 @@ struct StreamingStrip: View {
         }
     }
 
-    /// Frozen MM:SS shown in the header while paused (§10.4).
-    private var pausedHeaderTime: String {
-        let total = max(0, Int((pausedElapsedSeconds ?? 0).rounded(.down)))
+    /// Frozen MM:SS shown in the header while paused (§10.4) or while the
+    /// post-stop tail runs (§5.5, frozen at the moment of stop).
+    private var frozenHeaderTime: String {
+        let seconds = isPaused ? pausedElapsedSeconds : finishingElapsedSeconds
+        let total = max(0, Int((seconds ?? 0).rounded(.down)))
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
@@ -246,6 +269,9 @@ private struct StreamingPane: View {
     /// While paused the mic isn't capturing, so the trailing "still
     /// transcribing" ellipsis is dropped — nothing should promise more text.
     let isPaused: Bool
+    /// Post-stop tail (§5.5): the text is held still (no tail) and an empty
+    /// pane says "Finishing" instead of "Listening".
+    let isFinishing: Bool
     let paneHeight: CGFloat
     let reduceMotion: Bool
 
@@ -289,7 +315,19 @@ private struct StreamingPane: View {
                         // so the custom scroll indicator can size itself.
                         VStack(alignment: .leading, spacing: 0) {
                             Group {
-                                if partialText.isEmpty, let loadingLabel, loadRevealed {
+                                if partialText.isEmpty, isFinishing {
+                                    // Stopped before any live text arrived:
+                                    // the final transcriber is still working,
+                                    // so say that rather than "Listening".
+                                    SteppingEllipsis(
+                                        leading: "Finishing",
+                                        font: Font.custom(JotType.frauncesItalicText, size: 14),
+                                        textColor: Color.jotKeyboardStreamText,
+                                        dotColor: Color.jotKeyboardAccent,
+                                        reduceMotion: reduceMotion
+                                    )
+                                    .accessibilityHidden(true)
+                                } else if partialText.isEmpty, let loadingLabel, loadRevealed {
                                     // Cold-start line — shown ONLY after a load
                                     // passes `ColdStartCopy.revealThreshold` (the
                                     // `.task` below gates `loadRevealed`). A warm
@@ -330,7 +368,7 @@ private struct StreamingPane: View {
                                         font: Font.custom(JotType.frauncesItalicText, size: 14),
                                         textColor: Color.jotKeyboardStreamText,
                                         dotColor: Color.jotKeyboardAccent,
-                                        isTranscribing: !isPaused,
+                                        isTranscribing: !isPaused && !isFinishing,
                                         reduceMotion: reduceMotion
                                     )
                                     .lineSpacing(14 * 0.55) // ~line-height 1.55
@@ -367,6 +405,12 @@ private struct StreamingPane: View {
                         )
                     }
                     .coordinateSpace(name: "streamingPane")
+                    // iOS 26's automatic scroll-edge effect blurs and washes
+                    // whatever has scrolled under the top edge — with the pane
+                    // auto-following the newest words, that is ALWAYS the top
+                    // line of live text. The pane is not a page under a bar;
+                    // no edge treatment belongs here.
+                    .scrollEdgeEffectHidden(true, for: .all)
                     .defaultScrollAnchor(.bottom)
                     .onPreferenceChange(ContentHeightKey.self) { height in
                         contentHeight = height

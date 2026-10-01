@@ -1,6 +1,7 @@
 @preconcurrency import AVFAudio
 import BackgroundTasks
 import Combine
+import CoreSpotlight
 import Network
 import SwiftUI
 import SwiftData
@@ -14,8 +15,8 @@ private let lifecycleLog = Logger(subsystem: "com.vineetu.jot.mobile.Jot", categ
 /// SwiftUI's `App` lifecycle has no equivalent hook. It routes the completion
 /// handler to whichever fetcher owns the session identifier and implements
 /// nothing else, so all scene/lifecycle behaviour continues to flow through
-/// `JotApp`. Two owners today: the overnight EmbeddingGemma fetch and the
-/// Parakeet-upgrade download-on-charge fetch.
+/// `JotApp`. Owners today: the Parakeet-upgrade download-on-charge fetch and
+/// the unified English model fetch.
 final class JotAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
@@ -23,11 +24,6 @@ final class JotAppDelegate: NSObject, UIApplicationDelegate {
         completionHandler: @escaping () -> Void
     ) {
         switch identifier {
-        case EmbeddingModelFetcher.sessionIdentifier:
-            EmbeddingModelFetcher.shared.handleBackgroundSessionEvents(
-                identifier: identifier,
-                completionHandler: completionHandler
-            )
         case ParakeetModelFetcher.sessionIdentifier:
             ParakeetModelFetcher.shared.handleBackgroundSessionEvents(
                 completionHandler: completionHandler
@@ -71,6 +67,12 @@ struct JotApp: App {
     private let stopRequestObserver: CrossProcessNotification.Observer
     private let cancelRequestObserver: CrossProcessNotification.Observer
     private let warmResumeObserver: CrossProcessNotification.Observer
+    /// Applies keyboard ask answers as soon as they're queued (see
+    /// `CrossProcessNotification.correctionVerdictQueued`).
+    private let correctionVerdictObserver: CrossProcessNotification.Observer
+    /// Applies keyboard "Add to Vocabulary" corrections as soon as they're
+    /// queued (see `CrossProcessNotification.vocabAddRequested`).
+    private let vocabAddObserver: CrossProcessNotification.Observer
     @State private var recordingService: RecordingService
     @State private var transcriptionService: TranscriptionService
     @State private var streamingPartial: StreamingPartial
@@ -138,6 +140,20 @@ struct JotApp: App {
             name: CrossProcessNotification.cancelRequested
         ) {
             CrossProcessRecordingStopCoordinator.shared.handleCancelRequested()
+        }
+
+        correctionVerdictObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.correctionVerdictQueued
+        ) {
+            Task { @MainActor in
+                await CorrectionInbox.drain(modelContext: ModelContext(JotModelContainer.shared))
+            }
+        }
+
+        vocabAddObserver = CrossProcessNotification.addObserver(
+            name: CrossProcessNotification.vocabAddRequested
+        ) {
+            Task { @MainActor in await VocabularyAddInbox.drain() }
         }
 
         warmResumeObserver = CrossProcessNotification.addObserver(
@@ -315,34 +331,27 @@ struct JotApp: App {
             // any userInitiated work; `prewarm()` coalesces concurrent callers,
             // so a dictation that races this shares the same in-flight load.
             Task(priority: .utility) {
-                try? await EmbeddingGemmaService.shared.prewarm()
                 // LAST in the chain: warm the NON-selected dictation model(s)
                 // (e.g. European v3 while English is active) so a later language
-                // switch is instant. Runs after the selected model + vocab +
-                // embeddings, lowest priority, and bails if a recording/
+                // switch is instant. Runs after the selected model + vocab,
+                // lowest priority, and bails if a recording/
                 // transcription is in flight — so it never delays or contends
                 // with the model the user's next dictation actually needs.
                 await TranscriptionService.shared.warmNonSelectedDictationModelsWhenIdle()
 
                 // TAIL of the serial warm chain: opportunistically prefetch the
-                // ~22 MB offline diarizer models so Speaker Notes is ready the
-                // moment it's announced. Positioned dead-last so it never
+                // ~190 MB Nemotron 3 diarizer so Speaker Notes is ready when
+                // needed (and delete retired features' files first). Positioned dead-last so it never
                 // contends with the dictation model loads above; gated to an
                 // unmetered (Wi-Fi) path and skipped while a recording/
                 // transcription is in flight (prepareIfNeeded downloads AND loads
                 // a CoreML graph, same caveat as the non-selected warm). See
                 // docs/plans/speaker-notes-productization.md "Model availability".
+                RetiredFeatureCleanup.run()
+                // TEMPORARY owner test: load Moonshine English if switched on.
+                if MoonshineEnglishTest.isEnabled { MoonshineEnglishTest.shared.prepareIfNeeded() }
                 DiarizerModelPrefetch.prefetchWhenOnUnmeteredWiFi()
 
-                // TAIL (order-free): enqueue the overnight EmbeddingGemma fetch
-                // if the model is absent (stripped Build B / iCloud restore /
-                // fresh install). This is an OUT-OF-PROCESS background URLSession
-                // — no ANE contention with the chain above, so its position is
-                // immaterial; it sits here only to keep the documented 256
-                // warm-chain tail order (⚠️REVIEW-2). No-op while the model is
-                // bundled (Build A) or already carried-forward. Presence-checked
-                // + idempotent, so it also recovers a force-quit-cancelled fetch.
-                EmbeddingModelFetcher.shared.enqueueIfNeeded()
 
                 // TAIL (order-free): resume an in-flight Parakeet-upgrade
                 // download-on-charge fetch. Another OUT-OF-PROCESS background
@@ -422,46 +431,36 @@ struct JotApp: App {
         // re-assert. No-op when nothing has been retained yet. Idempotent.
         BackupExclusion.excludeRetainedAudio()
 
-        // Per-launch defensive: third sweep for the CoreML-LLM tree
-        // (`Application Support/CoreMLLLM/`) — EmbeddingGemma's on-disk home
-        // once the model externalization lands (carry-forward + download,
-        // docs/plans/model-externalization-sub-50mb.md). It sits OUTSIDE the
-        // FluidAudio tree the first sweep covers and the package flags
-        // nothing itself, so without this a ~330 MB model would silently
-        // enter iCloud Device Backup (the 1.0.2 failure mode). No-op until
-        // the directory first exists, so it's safe to ship ahead of the
-        // externalization build.
-        BackupExclusion.excludeCoreMLLLM()
 
-        // One-shot cleanup: drop any stale `classify-transcripts`
-        // `BGProcessingTaskRequest` iOS may still hold from a pre-build-47
-        // install. The previous build called `cancelAllTaskRequests()`
-        // unconditionally — which also wiped our OWN pending
-        // `backfill-embeddings` request on every launch, defeating the
-        // BG backstop. Specific-identifier cancel + one-shot guard means
-        // (a) we only drop the legacy classifier request, and
-        // (b) we only do it once per install.
-        let bgCleanupKey = "jot.didCleanLegacyClassifierBGRequest_v1"
+        // One-shot cleanup: drop any stale `BGTaskRequest`s iOS may still hold
+        // for background tasks Jot no longer registers — the pre-build-47 Qwen
+        // classifier and the EmbeddingGemma backfill (retired with the move to
+        // Core Spotlight retrieval). Specific-identifier cancels + a one-shot
+        // guard, so nothing else's pending requests are touched.
+        let bgCleanupKey = "jot.didCleanLegacyBGRequests_v2"
         if !UserDefaults.standard.bool(forKey: bgCleanupKey) {
-            BGTaskScheduler.shared.cancel(
-                taskRequestWithIdentifier: "com.vineetu.jot.mobile.Jot.classify-transcripts"
-            )
+            for identifier in [
+                "com.vineetu.jot.mobile.Jot.classify-transcripts",
+                "com.vineetu.jot.mobile.Jot.backfill-embeddings",
+            ] {
+                BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+            }
             UserDefaults.standard.set(true, forKey: bgCleanupKey)
         }
 
-        // Register the MiniLM embedding backfill identifier
-        // (`com.vineetu.jot.mobile.Jot.backfill-embeddings`,
-        // `BGAppRefreshTask`). Replaces the deprecated Qwen classifier
-        // task. iOS requires registration before any submission;
-        // identifier is declared in Info.plist's
-        // BGTaskSchedulerPermittedIdentifiers. See `EmbeddingBackfillTask`.
-        EmbeddingBackfillTask.register()
 
-        // One-shot UserDefaults cleanup: drop the residual `jot.classifier.enabled`
-        // key from devices that had the Qwen classifier Lab toggle ON in
-        // a prior build. Idempotent — `removeObject` on a missing key is
-        // a no-op, so leaving this call in place forever is safe.
-        AppGroup.defaults.removeObject(forKey: "jot.classifier.enabled")
+        // UserDefaults cleanup: drop residual keys from retired features — the
+        // Qwen classifier Lab toggle, the embeddings kill-switch, the Qwen
+        // rewrite-provider and Ask-backend selectors. Idempotent —
+        // `removeObject` on a missing key is a no-op, so this can stay forever.
+        for key in [
+            "jot.classifier.enabled",
+            "jot.embeddings.enabled",
+            "jot.ai.rewriteProvider",
+            "jot.ask.backend",
+        ] {
+            AppGroup.defaults.removeObject(forKey: key)
+        }
 
         // One-shot migration: reclaim ~530 MB of Application Support disk
         // from upgrading users whose pre-bundle (0.9.0/0.9.1) installs had
@@ -478,23 +477,24 @@ struct JotApp: App {
         TranscriptionService.sweepNemotronAppSupportWeights()
 
         // §A carry-forward (docs/plans/model-externalization-sub-50mb.md §A1):
-        // copy the THREE bundled models — Parakeet 600M v2, the CTC 110M
-        // vocabulary scorer, and EmbeddingGemma-300M — into the exact private
-        // directories a future stripped build's loaders fall through to, so the
-        // eventual bundle strip (Build B) is a zero-download data move. v2 is
-        // gated on Parakeet-capable devices; CTC + EmbeddingGemma copy on every
-        // device (vocab + Ask work on all hardware). Each is gated on its bundle
-        // still shipping (this build STILL bundles all three — NOT the strip).
+        // copy the TWO bundled models — Parakeet 600M v2 and the CTC 110M
+        // vocabulary scorer — into the exact private directories a future
+        // stripped build's loaders fall through to, so the eventual bundle
+        // strip (Build B) is a zero-download data move. v2 is gated on
+        // Parakeet-capable devices; CTC copies on every device (vocab works on
+        // all hardware). Each is gated on its bundle still shipping (this build
+        // STILL bundles both — NOT the strip). EmbeddingGemma is gone: Ask
+        // retrieval is Core Spotlight now.
         // Idempotent presence+verify check every launch, serial + off the main
         // thread, atomic temp→verify→rename; a no-op once complete.
         ModelCarryForward.runAllIfNeeded()
 
-        // One-shot migration: reclaim ~2.4 GB of HuggingFace cache from
-        // upgrading users who downloaded Phi-4 mini under prior builds.
-        // Now that Qwen 3.5 is the sole rewrite backend, those weights
-        // are dead disk. Gated by a `UserDefaults` flag so this runs at
-        // most once per install.
-        Phi4WeightsPurge.runIfNeeded()
+        // One-shot migrations: reclaim the dead weights of every retired
+        // model backend — Phi-4 mini (~2.4 GB) and Qwen 3.5 (~2.5 GB) in the
+        // HuggingFace cache, EmbeddingGemma (~330 MB) under CoreMLLLM/.
+        // Rewrite and Ask run on Apple Foundation Models now; nothing here
+        // is needed. Each leg is flag-gated to run at most once per install.
+        LegacyModelPurge.runAllIfNeeded()
 
         // One-shot migration: overwrite the bundled Articulate prompt's
         // copy with the current canonical text (matched by stable UUID).
@@ -616,19 +616,16 @@ struct JotApp: App {
                 } message: { message in
                     Text(message)
                 }
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    // A note tapped in system Spotlight (Core Spotlight index —
+                    // `TranscriptSpotlightIndex`). Same open path as the
+                    // keyboard's `jot://transcript` recents tap.
+                    guard let raw = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                          let id = UUID(uuidString: raw) else { return }
+                    keyboardRewriteRouter.setPendingOpenTranscript(id: id, autoRewrite: false)
+                }
                 .onOpenURL { url in
                     guard url.scheme == "jot" else { return }
-                    // Branch on host: `jot://rewrite` is the keyboard's
-                    // saved-prompt rewrite handoff (URL-scheme replacement
-                    // for the broken `RewriteWithPromptIntent.perform()`
-                    // direct call from the keyboard). Everything else
-                    // (`jot://dictate`, plain `jot://`) falls through to the
-                    // existing dictation auto-start path.
-                    if url.host == "rewrite" {
-                        handleRewriteURL(url)
-                        return
-                    }
-
                     // `jot://history` — keyboard's "See all" recents-card
                     // header link. Brings the main app to the foreground at
                     // home (where the recents list lives) WITHOUT triggering
@@ -648,15 +645,15 @@ struct JotApp: App {
                     // uses, just for a "view" instead of a "rewrite" intent.
                     //
                     // `ai=1` (the Apple Intelligence button, features.md §5.2)
-                    // additionally asks the detail view to fire its own Rewrite
-                    // action on arrival, so the user lands on the selected
-                    // transcript / Writing Tools state in one tap.
+                    // additionally asks the detail view to run the rewrite on
+                    // arrival (Cleanup prompt on Apple Intelligence) — or, when
+                    // the note already has one, to land on the Rewrite tab.
                     if url.host == "transcript" {
                         if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
                            let idParam = comps.queryItems?.first(where: { $0.name == "id" })?.value,
                            let id = UUID(uuidString: idParam) {
                             let wantsAI = comps.queryItems?.first(where: { $0.name == "ai" })?.value == "1"
-                            keyboardRewriteRouter.setPendingOpenTranscript(id: id, writingTools: wantsAI)
+                            keyboardRewriteRouter.setPendingOpenTranscript(id: id, autoRewrite: wantsAI)
                         }
                         return
                     }
@@ -772,13 +769,21 @@ struct JotApp: App {
                         // Parakeet); we turn it into a transcript here, on
                         // foreground (Model B — the extension never opened us).
                         PendingShareDrainer.drain()
-                        // Finalize any words the user added to vocabulary from
-                        // the keyboard's "..." popover while we were away (vocab
-                        // storage is main-app-private; the keyboard only queues).
-                        VocabularyAddInbox.drain()
-                        // Apply any correction verdicts the owner gave in the
-                        // keyboard quick-review while Jot was backgrounded.
                         Task { @MainActor in
+                            // One-time: drop rules learned for everyday words
+                            // before the learning guard existed (no-op once done).
+                            await AppVocabCore.migrateCommonOriginalRulesIfNeeded()
+                            // One-time: pairs learned from edits before the
+                            // vocabulary list became their only home move into
+                            // it as sounds-likes (no-op once done).
+                            await AppVocabCore.migrateEditLearnedPairsIfNeeded()
+                            // Finalize any words the user added to vocabulary
+                            // from the keyboard's "..." popover while we were
+                            // away (vocab storage is main-app-private; the
+                            // keyboard only queues `Correction`s).
+                            await VocabularyAddInbox.drain()
+                            // Apply any correction verdicts the owner gave in the
+                            // keyboard quick-review while Jot was backgrounded.
                             await CorrectionInbox.drain(modelContext: ModelContext(JotModelContainer.shared))
                         }
                     } else if newPhase == .background {
@@ -791,13 +796,6 @@ struct JotApp: App {
                         // the hero instead of recording inline. Keep it alive
                         // through `.inactive`; only `.background` clears it.
                         stopForegroundHeartbeat()
-                    }
-                    if newPhase == .background {
-                        // Submit a BGAppRefreshTask request for the MiniLM
-                        // embedding backfill. No-op when the kill switch
-                        // is off or there's nothing to embed. See
-                        // `EmbeddingBackfillTask` for lifecycle details.
-                        EmbeddingBackfillTask.submitIfBacklog()
                     }
                     // Intentionally NO forceStop on .background: iOS lets us keep
                     // recording in the background (Info.plist UIBackgroundModes
@@ -870,11 +868,16 @@ struct JotApp: App {
                     TranscriptHistoryMirror.refresh(
                         from: ModelContext(JotModelContainer.shared)
                     )
-                    // LLM weights are warmed lazily on first rewrite call
-                    // (`Qwen35Client.rewrite()` auto-calls `warm()`
-                    // internally). No scene-activation pre-warm here —
-                    // that would impose a ~2.5 GB HF cache touch on every
-                    // app launch even when the user isn't about to rewrite.
+                    // Core Spotlight projection of every note (system search +
+                    // Ask's retrieval). Detached + version-gated: a no-op on
+                    // every launch after the first, or after an index-mapping
+                    // bump. Spotlight's own reindex requests route through
+                    // `CSSearchableIndex.default().indexDelegate`.
+                    CSSearchableIndex.default().indexDelegate = TranscriptSpotlightIndex.shared
+                    TranscriptSpotlightIndex.reindexAllIfNeeded()
+                    // No language-model pre-warm here: rewrites and Ask run
+                    // on Apple Foundation Models, which the system keeps
+                    // resident out-of-process.
                 }
         }
         // Bind the process-wide SwiftData container into the scene so
@@ -940,79 +943,6 @@ struct JotApp: App {
         )
     }
 
-    /// Handles `jot://rewrite?session=<uuid>` — the keyboard's URL-scheme
-    /// handoff for the saved-prompt rewrite path. Valid requests are converted
-    /// into a transcript-detail navigation target so the user can watch the
-    /// rewrite generate. Legacy dispatcher fallback is preserved for malformed
-    /// prompt/selection/persistence edges so the keyboard still gets a terminal
-    /// App Group write.
-    ///
-    /// This is the URL-scheme replacement for the previous (broken) direct
-    /// `RewriteWithPromptIntent.perform()` call from the keyboard process.
-    /// See `RewriteRequestDispatcher` for rationale.
-    private func handleRewriteURL(_ url: URL) {
-        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let sessionParam = comps.queryItems?.first(where: { $0.name == "session" })?.value,
-              let sessionID = UUID(uuidString: sessionParam)
-        else {
-            lifecycleLog.error("rewrite URL missing/invalid session param url=\(url.absoluteString, privacy: .public)")
-            return
-        }
-        guard let request = AppGroup.pendingRewriteRequest else {
-            lifecycleLog.notice("rewrite URL sessionID=\(sessionID, privacy: .public) missing pending request stash; ignoring.")
-            return
-        }
-
-        guard request.id == sessionID else {
-            lifecycleLog.error(
-                "rewrite URL session mismatch — url=\(sessionID, privacy: .public) stash=\(request.id, privacy: .public). Ignoring."
-            )
-            return
-        }
-
-        guard let promptID = UUID(uuidString: request.promptID),
-              SavedPromptStore.all().contains(where: { $0.id == promptID })
-        else {
-            lifecycleLog.error("rewrite URL prompt not found sessionID=\(sessionID, privacy: .public) promptID=\(request.promptID, privacy: .public); falling back to dispatcher.")
-            RewriteRequestDispatcher.dispatch(sessionID: sessionID)
-            return
-        }
-
-        let transcript: Transcript
-        do {
-            guard let appended = try TranscriptStore.append(raw: request.selection) else {
-                lifecycleLog.error("rewrite URL empty selection sessionID=\(sessionID, privacy: .public); falling back to dispatcher.")
-                RewriteRequestDispatcher.dispatch(sessionID: sessionID)
-                return
-            }
-            transcript = appended
-        } catch {
-            lifecycleLog.error("rewrite URL transcript append failed sessionID=\(sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public); falling back to dispatcher.")
-            RewriteRequestDispatcher.dispatch(sessionID: sessionID)
-            return
-        }
-
-        AppGroup.pendingRewriteRequest = nil
-
-        let jobID = UUID()
-        AppGroup.rewriteJobID = jobID
-        AppGroup.rewriteResult = nil
-        AppGroup.rewriteError = nil
-        AppGroup.rewriteCancelRequested = false
-        AppGroup.rewriteSelectionLength = request.selectionLength
-
-        let target = KeyboardRewriteRouter.KeyboardRewriteTarget(
-            id: transcript.id,
-            sessionID: sessionID,
-            jobID: jobID,
-            promptID: promptID,
-            selectionLength: request.selectionLength
-        )
-        keyboardRewriteRouter.setPending(target)
-        lifecycleLog.info(
-            "rewrite URL routed to transcript detail sessionID=\(sessionID, privacy: .public) jobID=\(jobID, privacy: .public) transcriptID=\(transcript.id, privacy: .public) promptID=\(promptID, privacy: .public)"
-        )
-    }
 
     private func handleSceneActive() {
         // A foreground dictation App Intent (RecordAndTranscribeIntent /

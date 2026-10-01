@@ -2,8 +2,8 @@
 # Guard: fail if the bundled Ask help corpus is stale vs features.md.
 #
 # The help lane (App/Ask/HelpCorpus.swift) answers "how do I use Jot" questions
-# from Jot/Resources/help-corpus.json, which is distilled + pre-embedded from
-# Jot/features.md at build time. If features.md changes but the corpus isn't
+# from Jot/Resources/help-corpus.json, which is distilled from Jot/features.md
+# (text-only chunks; the app retrieves lexically). If features.md changes but the corpus isn't
 # regenerated, Ask would answer product questions from stale docs — invisibly.
 # This mirrors scripts/check-schema-frozen.sh's freeze discipline.
 #

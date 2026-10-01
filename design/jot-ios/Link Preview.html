@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jot — Link Preview</title>
+<style>
+  :root {
+    --font-sys: -apple-system, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", sans-serif;
+    /* brand blues */
+    --b-top: #3A93F5;
+    --b-mid: #2A6FE0;
+    --b-deep: #1647B8;
+    --icon-grad: linear-gradient(168deg, #3AA0FF 0%, #1483F2 48%, #0064CC 100%);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #050608;
+    font-family: var(--font-sys);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 40px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Stage: fixed-size card scaled to viewport ---- */
+  .stage {
+    width: 920px;
+    flex: 0 0 auto;
+  }
+
+  .card {
+    width: 920px;
+    border-radius: 26px;
+    overflow: hidden;
+    background: #2b2b2e;
+    box-shadow:
+      0 40px 90px -30px rgba(0, 0, 0, 0.8),
+      0 2px 0 rgba(255, 255, 255, 0.04) inset;
+  }
+
+  /* ---- Hero (the OG image region) ---- */
+  .hero {
+    position: relative;
+    aspect-ratio: 1200 / 630;
+    display: flex;
+    align-items: center;
+    gap: 58px;
+    padding: 0 74px;
+    background:
+      radial-gradient(120% 120% at 50% 0%, #4E78B4 0%, #345C95 30%, #244472 62%, #1A3258 100%);
+    isolation: isolate;
+  }
+  /* subtle top sheen */
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 38%);
+    pointer-events: none;
+  }
+
+  /* ---- App icon tile (real asset) ---- */
+  .icon {
+    flex: 0 0 auto;
+    width: 232px;
+    height: 232px;
+    display: block;
+    border-radius: 22.5%;
+    box-shadow: 0 18px 40px -12px rgba(0, 32, 90, 0.5);
+  }
+
+  /* ---- Text column ---- */
+  .copy { position: relative; z-index: 1; color: #fff; }
+  .copy h1 {
+    margin: 0;
+    font-size: 70px;
+    font-weight: 700;
+    letter-spacing: -1.6px;
+    line-height: 1.0;
+  }
+  .copy .tag {
+    margin: 16px 0 0;
+    font-size: 35px;
+    font-weight: 600;
+    letter-spacing: -0.6px;
+    color: rgba(255, 255, 255, 0.97);
+  }
+  .copy .feats {
+    margin: 18px 0 0;
+    font-size: 23px;
+    font-weight: 500;
+    letter-spacing: -0.1px;
+    color: rgba(255, 255, 255, 0.66);
+  }
+  .pill {
+    margin-top: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 14px 24px;
+    border-radius: 100px;
+    background: rgba(255, 255, 255, 0.13);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+    color: #fff;
+    font-size: 23px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+  }
+  .pill svg { width: 17px; height: 17px; }
+
+  /* ---- Footer chrome band ---- */
+  .band {
+    padding: 26px 34px 30px;
+    background: #2b2b2e;
+  }
+  .band .t {
+    margin: 0;
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    color: #f4f4f5;
+  }
+  .band .d {
+    margin: 9px 0 0;
+    font-size: 22px;
+    font-weight: 400;
+    color: rgba(235, 235, 240, 0.52);
+  }
+
+  /* ---- Scale to fit small viewports ---- */
+  @media (max-width: 1000px) {
+    .stage { width: 92vw; }
+    .card { width: 100%; }
+    .icon { width: 25%; height: auto; aspect-ratio: 1; }
+    .copy h1 { font-size: 7.6vw; }
+    .copy .tag { font-size: 3.8vw; }
+    .copy .feats { font-size: 2.5vw; }
+    .pill { font-size: 2.5vw; }
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="card">
+      <div class="hero">
+        <!-- App icon (real master asset) -->
+        <img class="icon" src="assets/logo/jot-icon-1024.png" alt="Jot app icon" width="232" height="232">
+
+        <!-- Copy -->
+        <div class="copy">
+          <h1>Jot Transcribe</h1>
+          <p class="tag">Dictate in any app. On device.</p>
+          <p class="feats">Free · On-device · No cloud · No account</p>
+          <span class="pill">
+            View on App Store
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M7 17 L17 7"/>
+              <path d="M8 7 H17 V16"/>
+            </svg>
+          </span>
+        </div>
+      </div>
+
+      <!-- Browser chrome footer -->
+      <div class="band">
+        <p class="t">Jot — Speak, and it's written.</p>
+        <p class="d">jot-transcribe.com</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

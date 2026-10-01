@@ -122,7 +122,18 @@ enum DiagnosticsCategory: String, Codable {
     /// attributed to "the spotter never found it" (no record) vs "the gate
     /// blocked it" (BLOCK record + numbers to tune).
     case vocabularyGate
-    /// TTS Lab read-aloud playback trace — synth sample counts, engine start,
+    /// A rewrite / cleanup call to Apple's model failed (features.md §7.14, §12.3).
+    /// Metadata carries the route and the error; `rateLimited` is the one to
+    /// look for when "cleanup stops working after a while" — the on-device
+    /// model rate-limits apps running in the background.
+    case rewriteFailed
+    /// Automatic cleanup was rate-limited in the background: the raw text
+    /// pasted and the cleanup was queued for the next foreground.
+    case cleanupDeferred
+    /// A queued cleanup ran on foreground (metadata: outcome).
+    case cleanupDeferredRan
+    /// RETIRED with the TTS Lab (2026-09-27). Kept only so stored diagnostics
+    /// written before the removal still decode. Was: TTS Lab read-aloud playback trace — synth sample counts, engine start,
     /// per-chunk playback, and any error. Lets a "play does nothing" report be
     /// diagnosed cable-free (Help → Diagnostics → Copy).
     case tts

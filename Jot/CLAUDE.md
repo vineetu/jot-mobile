@@ -66,7 +66,7 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 
 ## Style rules when editing `features.md`
 
-- **User-facing only.** No file paths, Swift class/struct/func/var names, framework names (`NotificationCenter`, `UserDefaults`, `App Group`, SwiftUI primitives), or library names (`FluidAudio`, `MLXLLM`, `Phi-4`). Exception: user-visible model labels shown in Settings UI (e.g. "Parakeet 600M (more accurate)") are fine because the user sees them on screen.
+- **User-facing only.** No file paths, Swift class/struct/func/var names, framework names (`NotificationCenter`, `UserDefaults`, `App Group`, SwiftUI primitives), or library names (`FluidAudio`, `FoundationModels`, `CoreSpotlight`). Exception: user-visible model labels shown in Settings UI (e.g. "Parakeet 600M (more accurate)") are fine because the user sees them on screen.
 - **One paragraph max per feature.** Split into sub-features if longer.
 - **Cross-link bidirectionally.** If §A mentions §B, §B should mention §A.
 - **Deliberate caveats — do NOT "clean up":**
@@ -82,11 +82,11 @@ This step is REQUIRED for feature-shaped requests. It's skippable for: pure bug 
 
 - **Regenerate Xcode project:** `xcodegen` from `Jot/` (reads `project.yml`).
 - **Local iteration:** open `Jot.xcodeproj` in Xcode and `Cmd+R`. This is the preferred way for the user to test changes — no TestFlight cycle needed.
-- **TestFlight uploads:** `scripts/testflight.sh all`. ONLY run when the user explicitly says "deploy", "cut a new version", "ship to TestFlight", or equivalent in the current turn. Never auto-deploy after fixing a bug. One deploy = one explicit user command.
+- **TestFlight uploads:** `scripts/testflight.sh all` (see `docs/testflight.md` for the exact env + paths). **Owner rule (2026-09-25): after any substantial piece of work builds clean, ship it to TestFlight without waiting to be asked** — the owner tests from TestFlight and a build that sits unshipped is work they can't see. Bump `CURRENT_PROJECT_VERSION` first, one upload per completed chunk (not per file edit), never upload a build that failed to build or whose validate/tests failed, and say in the report which build number carries what.
 
 ## Keyboard extension constraints
 
-- The `JotKeyboard` target has a ~60 MB memory ceiling and **must not link MLX or Apple Foundation Models**. The main app handles rewrite (Phi-4 on MLX) and cleanup (Apple FM); the keyboard bounces requests via a deep link rather than running inference in-process.
+- The `JotKeyboard` target has a ~60 MB memory ceiling and **must not link FluidAudio or Core ML** (no model weights in-process). Apple's **FoundationModels** is allowed: its inference runs in the system's model service, so the client is tiny — the keyboard uses it for the actions pane's Rewrite tile (`KeyboardRewriter`, on-device only, never Private Cloud Compute). Apple's **Translation** framework is likewise fine (`KeyboardTranslator`, installed language packs only — downloads happen in the app). The main app still handles cleanup at dictation time, note rewrites and Ask; the keyboard's recents-row Apple Intelligence button opens the transcript in the main app via a deep link.
 - The keyboard is **dictation-only** by design — no QWERTY. This is intentional and is surfaced in onboarding (W6 "How it works").
 
 ## Recording-start instrumentation

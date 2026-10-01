@@ -82,11 +82,11 @@ struct AcknowledgementsView: View {
                         showDivider: true
                     )
                     AcknowledgementRow(
-                        title: "Qwen 3.5 4B",
-                        author: "Alibaba Cloud / Qwen Team",
-                        license: "Apache 2.0",
+                        title: "Nemotron 3 Diarization",
+                        author: "NVIDIA",
+                        license: "OpenMDW-1.1",
                         version: nil,
-                        url: "https://huggingface.co/Qwen/Qwen3.5-4B",
+                        url: "https://huggingface.co/FluidInference/nemotron-3-diarization-coreml",
                         showDivider: true
                     )
                     AcknowledgementRow(

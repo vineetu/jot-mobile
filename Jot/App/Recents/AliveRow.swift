@@ -25,7 +25,9 @@ struct AliveRow: View {
             }
 
             HStack(spacing: 4) {
-                if transcript.cleanedText != nil {
+                if CleanupActivity.shared.isCleaning(transcript.id) {
+                    RecentsCleaningBadge()
+                } else if transcript.cleanedText != nil {
                     RecentsRewriteBadge()
                 }
                 Text(metadataText)
@@ -40,6 +42,11 @@ struct AliveRow: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .contentShape(Rectangle())
+        // A background cleanup landing (§7.14) swaps the row's text and its
+        // badge — fade rather than snap, so the change reads as "the cleaned
+        // version arrived", not a glitch.
+        .animation(.easeInOut(duration: 0.35), value: transcript.cleanedText)
+        .animation(.easeInOut(duration: 0.35), value: CleanupActivity.shared.isCleaning(transcript.id))
         .accessibilityElement(children: .combine)
     }
 
@@ -76,5 +83,22 @@ struct RecentsRewriteBadge: View {
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(Color.jotCoralTop)
             .accessibilityLabel("Rewritten")
+    }
+}
+
+/// Shown in place of the rewrite badge while Automatic cleanup (§7.14, paste-
+/// right-away mode) is still producing this note's cleaned text.
+struct RecentsCleaningBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(Color.jotPageInkSecondary)
+            Text("Cleaning up")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.jotPageInkSecondary)
+                .lineLimit(1)
+        }
+        .accessibilityLabel("Cleaning up")
     }
 }

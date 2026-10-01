@@ -24,7 +24,7 @@ settings:
     # is minimal — scripts can already do anything they want during a
     # build; the sandbox is defense-in-depth, not a security boundary.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    CURRENT_PROJECT_VERSION: "298"
+    CURRENT_PROJECT_VERSION: "325"
     MARKETING_VERSION: "2.0.2"
     # Vineet's team — same one used for Mac Jot. Pinned so xcodegen
     # regeneration doesn't wipe the signing team out of Xcode every time.
@@ -36,37 +36,7 @@ packages:
     # Bumped 0.14.7 -> 0.15.4 for the Parakeet Unified 0.6B English backend
     # (`UnifiedAsrManager`), which does not exist in 0.14.7. See
     # `App/Transcription/UnifiedEnglishModel.swift`.
-    exactVersion: "0.15.4"
-  # MLX backend stack for the on-device Qwen 3.5 rewrite path. Declared
-  # at the project level so xcodegen emits the package refs, but only the
-  # `Jot` target depends on the products — JotKeyboard MUST NOT pull in
-  # MLX (60MB extension ceiling; the keyboard URL-bounces to the main app
-  # for rewrite calls).
-  MLXSwiftLM:
-    url: https://github.com/ml-explore/mlx-swift-lm
-    exactVersion: "3.31.3"
-  SwiftHuggingFace:
-    url: https://github.com/huggingface/swift-huggingface
-    minVersion: "0.9.0"
-    maxVersion: "1.0.0"
-  SwiftTransformers:
-    url: https://github.com/huggingface/swift-transformers
-    minVersion: "1.3.0"
-    maxVersion: "2.0.0"
-  # Vendored fork of mlx-swift-structured with 3.x dep pin bumps and the
-  # `tokenizerSource` 2→3 API patch. Path is relative to `Jot/project.yml`,
-  # so `..` is the repo root and `../Vendor/mlx-swift-structured` is the
-  # top-level Vendor dir promoted from the prototype.
-  MLXSwiftStructured:
-    path: ../Vendor/mlx-swift-structured
-  # EmbeddingGemma-300M sentence embedder via CoreML/ANE — the Ask RAG
-  # retrieval substrate (chunk + query embeddings). Model is bundled
-  # out-of-band in Resources/Models (not downloaded at runtime). Main-app
-  # only — keyboard never embeds (60MB extension ceiling). Replaces the
-  # MiniLM/swift-embeddings path. See docs/plans/ask-retrieval-architecture.md.
-  CoreMLLLM:
-    url: https://github.com/john-rocky/CoreML-LLM
-    exactVersion: "1.9.0"
+    exactVersion: "0.17.4"
   # Shared jot-shared Swift package. Two Foundation-only products, no
   # ASR/CoreML deps: `JotTextPipeline` (filler strip, number ITN, paragraph
   # segmentation) and `JotVocabCore` (the vocabulary-correction brains — gate,
@@ -78,6 +48,13 @@ packages:
   # linked into JotKeyboard too (it serves the keyboard's common-word guard).
   JotTextPipeline:
     path: ../../jot-shared
+  # TEMPORARY owner test (2026-09-27): Moonshine v2 (moonshine-ai, MIT, ONNX
+  # Runtime) as an English engine behind a hidden Settings switch, to judge it
+  # before the Arabic/Vietnamese plan (docs/plans/moonshine-languages-plan.md).
+  # Main-app only. Remove with `MoonshineEnglishTest` if the test is dropped.
+  MoonshineVoice:
+    url: https://github.com/moonshine-ai/moonshine-swift
+    exactVersion: "0.1.5"
 
 targets:
   Jot:
@@ -179,10 +156,11 @@ targets:
       # copies (they were byte-identical; shipping both wasted ~5 MB). See
       # LanguageChoice.commonWordsResource (still maps a language → the
       # resource base name the provider loads).
-      # Bundled product-help corpus (distilled from features.md, pre-embedded
-      # with EmbeddingGemma) powering Ask's "how do I use Jot" lane. Regenerate
-      # via scripts/make-help-corpus.sh when features.md changes;
-      # scripts/check-help-corpus-fresh.sh guards staleness at build time.
+      # Bundled product-help corpus (text chunks distilled from features.md)
+      # powering Ask's "how do I use Jot" lane. Ask's model reaches it through
+      # the `JotHelpSearchTool` (BM25 over the chunks — no embedder, no
+      # download). Regenerate via scripts/make-help-corpus.sh when features.md
+      # changes; scripts/check-help-corpus-fresh.sh guards staleness.
       # See App/Ask/HelpCorpus.swift + docs/ask-product-help/design.md.
       - path: Resources/help-corpus.json
         buildPhase: resources
@@ -193,12 +171,6 @@ targets:
       # to the model. See App/Transcription/PunctuationRestorer.swift.
       - path: Resources/punct_cap_seg_vocab.json
         buildPhase: resources
-      # TTS Lab voice presets REMOVED from the bundle (owner, 2026-07-06):
-      # the Supertonic-3 voice-style JSONs (F1-F5, M1-M5, ~2.9 MB) were cut
-      # along with the paused TTS feature (`ttsFeatureEnabled = false`).
-      # `TTSService.loadVoiceStyle` fails guarded (no eager load), so the
-      # paused code is safe without them. Restore from git history
-      # (Resources/SupertonicVoices/) if TTS is ever revived.
       # Fraunces editorial typeface (SIL OFL). Phase 1 of the UX overhaul
       # bundles the 72pt opsz-keyed statics; UIAppFonts in
       # Resources/Info.plist registers them at runtime.
@@ -238,24 +210,14 @@ targets:
           - UIInterfaceOrientationPortrait
         NSMicrophoneUsageDescription: "Jot records your voice on-device so you can dictate text. Audio never leaves your iPhone."
         NSSpeechRecognitionUsageDescription: "Jot can use Apple's on-device dictation as an experimental alternative engine. Audio never leaves your iPhone."
+        # `audio` keeps the mic live across app switches (swipe-back-to-host
+        # recordings, warm hold). No `processing` mode: nothing registers a
+        # BGTask any more (the embedding backfill and the Qwen classifier are
+        # gone), and App Store Connect rejects `processing` without a
+        # `BGTaskSchedulerPermittedIdentifiers` list (ITMS-90771). Model
+        # downloads use background URLSessions, which need no background mode.
         UIBackgroundModes:
           - audio
-          # `processing` enables BGProcessingTask scheduling. Kept after
-          # the classifier rip-out because future heavy BG work may want
-          # the longer (~10-min) budget. The current EmbeddingGemma backfill
-          # task is a BGAppRefreshTask (lighter, no charging requirement) —
-          # see `EmbeddingBackfillTask`.
-          - processing
-        BGTaskSchedulerPermittedIdentifiers:
-          # BGAppRefreshTask handler registered in `JotApp.init`. Drains
-          # any transcripts whose inline embedding write missed (app
-          # backgrounded before the detached encode completed). 30s budget
-          # per fire; gated by the `jot.embeddings.enabled` Lab toggle
-          # (default ON). The prior `classify-transcripts` identifier was
-          # removed when the Qwen classifier was ripped out; any pending
-          # iOS-scheduled requests under the old ID are cleared at
-          # `JotApp.init` via `BGTaskScheduler.shared.cancelAllTaskRequests()`.
-          - com.vineetu.jot.mobile.Jot.backfill-embeddings
         CFBundleURLTypes:
           - CFBundleURLName: com.vineetu.jot.mobile
             CFBundleURLSchemes:
@@ -280,14 +242,18 @@ targets:
         com.apple.security.application-groups:
           - group.com.vineetu.jot.mobile.shared
         # Bumps the per-app memory ceiling on devices with 6 GB+ RAM
-        # (iPhone 14 Pro and newer). Required because Qwen 3.5 4B
-        # weights are ~2.5 GB resident and Parakeet 600M is ~2 GB —
-        # default budget on a 6 GB device is ~3 GB and we run both
-        # routinely. No-op on older devices; no Apple review needed.
+        # (iPhone 14 Pro and newer). Parakeet 600M is ~2 GB resident and
+        # sits alongside the CTC vocabulary scorer, punctuation model and
+        # diarizer — default budget on a 6 GB device is ~3 GB. No-op on
+        # older devices; no Apple review needed. (The 2.5 GB Qwen weights
+        # that originally motivated this are gone — Apple Foundation
+        # Models run out-of-process.)
         com.apple.developer.kernel.increased-memory-limit: true
     dependencies:
       - package: FluidAudio
         product: FluidAudio
+      - package: MoonshineVoice
+        product: MoonshineVoice
       # Shared deterministic text-cleanup pipeline. Main-app-only — the
       # keyboard/watch never reference these components.
       - package: JotTextPipeline
@@ -297,33 +263,20 @@ targets:
       - package: JotTextPipeline
         product: JotVocabCore
       - sdk: AppIntents.framework
-      # MLX stack for Qwen 3.5. Main-app-only — extensions stay MLX-free.
-      - package: MLXSwiftLM
-        product: MLXLLM
-      - package: MLXSwiftLM
-        product: MLXLMCommon
-      - package: MLXSwiftLM
-        product: MLXHuggingFace
-      - package: SwiftHuggingFace
-        product: HuggingFace
-      - package: SwiftTransformers
-        product: Tokenizers
-      - package: MLXSwiftStructured
-        product: MLXStructured
-      # Apple Foundation Models is linked into the main-app target
-      # because `CleanupService` uses `SystemLanguageModel` for non-rewrite
-      # transcript cleanup. It is NOT a rewrite provider — Qwen 3.5 on
-      # MLX is the sole rewrite backend.
+      # Apple Foundation Models is the ONLY language-model backend: transcript
+      # cleanup (`CleanupService`), prompt rewrites (`RewriteClient`, on-device
+      # with a Private Cloud Compute fallback on iOS 27) and Ask
+      # (`AskController`, Private Cloud Compute + the Spotlight search tool on
+      # iOS 27). No model download, no MLX, no third-party inference.
       - sdk: FoundationModels.framework
-      # Apple Translation framework (iOS 18+) — on-device offline translation for
-      # the TTS Lab (translate a transcript before Kokoro reads it in a non-English
-      # voice). SwiftUI-tied API; main-app target only.
+      # Core Spotlight indexes every transcript (`TranscriptSpotlightIndex`)
+      # so system Spotlight finds notes and, on iOS 27, so Ask's model can
+      # retrieve them through `SpotlightSearchTool`.
+      - sdk: CoreSpotlight.framework
+      # Apple Translation framework (iOS 18+) — on-device offline translation of
+      # a transcript (Translate sheet, `TranslationGateway`). SwiftUI-tied API;
+      # main-app target only.
       - sdk: Translation.framework
-      # EmbeddingGemma-300M sentence encoder (CoreML/ANE). Main-app-only —
-      # `JotKeyboard` and `JotWatch` never link this. Hides the package API
-      # behind `EmbeddingGemmaService` (single import site).
-      - package: CoreMLLLM
-        product: CoreMLLLM
       - target: JotKeyboard
       # "Send to Jot" Share Extension — embedded into the app's PlugIns/ so it
       # registers in the iOS share sheet for audio. Default embed (app-extension).
@@ -339,12 +292,8 @@ targets:
         # one-handed dictation UX. MVP target is iPhone 15 Pro+, so iPhone-only.
         TARGETED_DEVICE_FAMILY: "1"
       # `JOT_APP_HOST` gates main-app-only bodies inside files that live in
-      # `Shared/` and are therefore also compiled into the keyboard extension.
-      # Used by `RewriteWithPromptIntent` so its `perform()` body can reference
-      # main-app-only code (`LLMClientFactory`, `SavedPromptStore`) without
-      # breaking extension compilation. The keyboard fires the intent via a
-      # `jot://rewrite?session=<uuid>` URL bounce; only the main-app body ever
-      # runs.
+      # `Shared/` and are therefore also compiled into the keyboard extension
+      # (see ARCHITECTURE.md — "app-only code is gated `#if JOT_APP_HOST`").
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG JOT_APP_HOST
@@ -461,10 +410,10 @@ targets:
     # The keyboard links exactly ONE package product: JotVocabCore, the
     # Foundation-only vocabulary core, for its common-word guard (via the
     # `CommonWords` shim over BundledCommonWordsProvider). It pulls in no
-    # FluidAudio/CoreML/MLX — those stay main-app-only (the keyboard's 60 MB
-    # ceiling can't host the ~2.5 GB LLM weights anyway). Keyboard rewrite
-    # still URL-bounces into the main app (Qwen 3.5 on MLX); Apple FM stays
-    # main-app-only (for `CleanupService`).
+    # FluidAudio/CoreML — those stay main-app-only (60 MB extension ceiling).
+    # The keyboard never runs a language model itself: its Apple Intelligence
+    # affordance opens the transcript in the main app
+    # (`jot://transcript?id=…&ai=1`).
     dependencies:
       - package: JotTextPipeline
         product: JotVocabCore
