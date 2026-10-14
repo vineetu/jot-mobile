@@ -51,14 +51,15 @@ enum BackupExclusion {
             return
         }
 
-        let fluidAudioDir = appSupport.appendingPathComponent("FluidAudio", isDirectory: true)
-
-        guard FileManager.default.fileExists(atPath: fluidAudioDir.path) else {
-            return
+        // Every downloaded-model root, not just FluidAudio's: the Nemotron
+        // diarizer lives in `Models/Diarizer/` and the Moonshine test model in
+        // `MoonshineModels/` — both re-downloadable, neither belongs in iCloud.
+        for name in ["FluidAudio", "Models", "MoonshineModels"] {
+            let dir = appSupport.appendingPathComponent(name, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: dir.path) else { continue }
+            let count = setExcludedFromBackupRecursively(at: dir)
+            log.info("Set isExcludedFromBackup on \(count, privacy: .public) item(s) under \(dir.path, privacy: .public)")
         }
-
-        let count = setExcludedFromBackupRecursively(at: fluidAudioDir)
-        log.info("Set isExcludedFromBackup on \(count, privacy: .public) item(s) under \(fluidAudioDir.path, privacy: .public)")
     }
 
     /// Sets `isExcludedFromBackup = true` on the App Group's

@@ -133,6 +133,10 @@ struct TranscriptDetailView: View {
     /// The edited field's text when Edit was pressed — the "before" side of
     /// learn-from-edits (`EditLearning`) on Save.
     @State private var editBaseline: String = ""
+    /// An AI prompt rewrote the draft during this edit session. AI-written
+    /// text never teaches vocabulary (owner rule), and its changes can't be
+    /// told apart from the user's own, so such a save learns nothing.
+    @State private var draftWasAIRewritten = false
 
     /// Shared correction-review state (marks + accordion + bubble). Owned HERE,
     /// above the `transcriptScrollContent` `.id(selectedTab)` boundary, so it
@@ -1748,6 +1752,7 @@ struct TranscriptDetailView: View {
                     return
                 }
                 editorText = trimmed
+                draftWasAIRewritten = true
                 detailLog.info(
                     "Draft rewrite applied prompt=\(prompt.id, privacy: .public) inputChars=\(source.count) outputChars=\(trimmed.count)"
                 )
@@ -2147,6 +2152,7 @@ struct TranscriptDetailView: View {
             editorText = transcript.text
         }
         editBaseline = editorText
+        draftWasAIRewritten = false
         editError = nil
         // Fresh edit session: dismiss any prior learn-it card and reset find state.
         replaceVocabOffer = nil
@@ -2278,7 +2284,8 @@ struct TranscriptDetailView: View {
         //     written by the AI, so an edit there fixes the AI's wording, not a
         //     word the speech model misheard.
         let learnBefore = editBaseline.trimmingCharacters(in: .whitespacesAndNewlines)
-        let learnAfter: String? = newText
+        //   - An AI prompt run inside edit mode: teaches NOTHING, same reason.
+        let learnAfter: String? = draftWasAIRewritten ? nil : newText
         let learnRaw = ""
         let transcriptID = transcript.id
         exitEditMode()

@@ -347,7 +347,8 @@ struct JotApp: App {
                 // transcription is in flight (prepareIfNeeded downloads AND loads
                 // a CoreML graph, same caveat as the non-selected warm). See
                 // docs/plans/speaker-notes-productization.md "Model availability".
-                RetiredFeatureCleanup.run()
+                // Off the main thread: the first post-update run removes ~0.5 GB.
+                await Task.detached(priority: .utility) { RetiredFeatureCleanup.run() }.value
                 // TEMPORARY owner test: load Moonshine English if switched on.
                 if MoonshineEnglishTest.isEnabled { MoonshineEnglishTest.shared.prepareIfNeeded() }
                 DiarizerModelPrefetch.prefetchWhenOnUnmeteredWiFi()

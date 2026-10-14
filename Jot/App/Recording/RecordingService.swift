@@ -135,7 +135,16 @@ final class RecordingService {
 
     private(set) var isRecording: Bool = false
     private(set) var isStopInFlight: Bool = false
-    private(set) var isPipelineInFlight: Bool = false
+    /// While a stopped dictation is still transcribing/publishing, Jot holds a
+    /// UIKit background task so iOS can't suspend it mid-pipeline. Build 298
+    /// survived this only because it kept the mic active through the stop; the
+    /// shared-session rule may now release the mic at Stop (a capture that
+    /// began in the background can't be made mixable), and without this the
+    /// transcript then sat half-finished until Jot was next opened.
+    private(set) var isPipelineInFlight: Bool = false {
+        didSet { updatePipelineBackgroundTask() }
+    }
+    @ObservationIgnored private var pipelineBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private(set) var isWarm: Bool = false
     /// The active session is in `sharedSessionConfig` (mixable
     /// `.playAndRecord`) — the one configuration used for BOTH capture and
@@ -1612,6 +1621,25 @@ final class RecordingService {
     /// hold the mic at all (an exclusive warm window silences other apps'
     /// video for up to 30 minutes — the Reddit bug).
     @discardableResult
+    private func updatePipelineBackgroundTask() {
+        if isPipelineInFlight {
+            guard pipelineBackgroundTask == .invalid else { return }
+            pipelineBackgroundTask = UIApplication.shared.beginBackgroundTask(
+                withName: "jot.finishDictation"
+            ) { [weak self] in
+                MainActor.assumeIsolated { self?.endPipelineBackgroundTask() }
+            }
+        } else {
+            endPipelineBackgroundTask()
+        }
+    }
+
+    private func endPipelineBackgroundTask() {
+        guard pipelineBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(pipelineBackgroundTask)
+        pipelineBackgroundTask = .invalid
+    }
+
     private func makeWarmIdleSessionMixable() -> Bool {
         let session = AVAudioSession.sharedInstance()
         // Mark BEFORE the swap so the async config-change echo is inside the

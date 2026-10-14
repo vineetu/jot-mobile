@@ -35,6 +35,25 @@ background capture started in `ContentView.updateDictateTapObserver`.
 
 ---
 
+## 🛑 NEVER BREAK — owner-protected behaviour (read before ANY change)
+
+The owner tests by using the app; these broke before and cost days. Any change that
+touches one of these needs an explicit check that it still holds, stated in the report.
+
+1. **Other apps' audio plays while Jot holds the mic** (Reddit/YouTube autoplay during warm
+   hold). One shared `.playAndRecord` + `.mixWithOthers` session; never hold the mic in an
+   exclusive session. See `docs/research/warmhold-reddit-coexistence.md`.
+2. **Warm hold: the next keyboard dictation starts without opening Jot.**
+3. **Downloaded models are never deleted** except a retired model's OWN repo folder, verified
+   against the FluidAudio source. `Application Support/FluidAudio/Models/` holds every live
+   model (Release builds bundle none); builds 301–325 wiped it on every launch.
+4. **Stop always finishes**: transcribe, paste, save — even if Jot is in the background.
+5. **No new dictation while one is finishing** — home shows the finishing spinner — but the
+   finish itself must never stall.
+6. **AI-written text never teaches vocabulary** (Rewrite tab, AI prompts run in edit mode).
+7. **AI = Apple Intelligence only.** Qwen and other bundled LLMs are gone for good.
+8. **Number cleanup** ($150, years like 2020) — replay real sentences before changing it.
+
 ## Feature work: consult `features.md` FIRST
 
 `features.md` is the single source of truth for what Jot does at a product level — ~100 user-facing features across 13 surfaces, with anchor cross-links between related ones. It was hand-verified across many review rounds; treat it as authoritative.

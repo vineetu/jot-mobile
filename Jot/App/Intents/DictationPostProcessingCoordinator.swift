@@ -81,23 +81,33 @@ final class DictationPostProcessingCoordinator {
         }
         cleanupTask = task
         defer { cleanupTask = nil }
-        // Race the model against the paste-wait cap. Cancelling the group's
-        // children does NOT cancel `task` (it is unstructured), so on timeout
-        // the cleanup keeps running for the background attach.
-        let outcome: Result<String, Error> = await withTaskGroup(of: Result<String, Error>.self) { group in
-            group.addTask { await task.result }
-            group.addTask {
-                do {
-                    try await Task.sleep(for: Self.cleanupPasteWait)
-                    return .failure(CleanupTimedOut(pending: task))
-                } catch {
-                    return .failure(CancellationError())
-                }
+        // Race the model against the paste-wait cap. Not a task group: a group
+        // waits for every child before returning, and `await task.result` on an
+        // unstructured task ignores cancellation — so the cap never fired and a
+        // slow cleanup held the paste for the full model run. Whichever side
+        // finishes first resumes; on timeout `task` keeps running for the
+        // background attach.
+        let outcome: Result<String, Error> = await withCheckedContinuation { cont in
+            let gate = FirstResultGate(cont)
+            Task { @MainActor in gate.resume(await task.result) }
+            Task { @MainActor in
+                try? await Task.sleep(for: Self.cleanupPasteWait)
+                gate.resume(.failure(CleanupTimedOut(pending: task)))
             }
-            let first = await group.next() ?? .failure(CancellationError())
-            group.cancelAll()
-            return first
         }
         return try outcome.get()
+    }
+}
+
+/// Resumes a continuation with the first result offered and ignores the rest.
+@MainActor
+private final class FirstResultGate {
+    private var continuation: CheckedContinuation<Result<String, Error>, Never>?
+    init(_ continuation: CheckedContinuation<Result<String, Error>, Never>) {
+        self.continuation = continuation
+    }
+    func resume(_ result: Result<String, Error>) {
+        continuation?.resume(returning: result)
+        continuation = nil
     }
 }

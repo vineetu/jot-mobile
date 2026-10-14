@@ -143,14 +143,28 @@ final class TranscriptionService {
         // speed; FLEURS 24-language mean WER 14.81 → 11.67 %, better in every
         // language). One shared multilingual model, downloaded on first
         // selection. Replaced v3 on 2026-09-27 (FluidAudio 0.17.4).
-        LanguageChoice.current.isEnglish ? .v2 : .ultra
+        // Until Ultra has downloaded, a phone that still has v3 keeps dictating
+        // on it (build ≤298 behaviour) instead of blocking the first European
+        // dictation on a ~632 MB fetch; `RetiredFeatureCleanup` deletes v3 only
+        // once Ultra is on disk.
+        if LanguageChoice.current.isEnglish { return .v2 }
+        return europeanFallsBackToV3 ? .v3 : .ultra
+    }
+
+    /// Ultra isn't on disk yet but the retired v3 still is.
+    nonisolated static var europeanFallsBackToV3: Bool {
+        !AsrModels.modelsExist(
+            at: MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetUltra), version: .ultra)
+            && AsrModels.modelsExist(
+                at: MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetV3), version: .v3)
     }
 
     /// FluidAudio `Repo` paired with `selectedVersion`. Used for
     /// `MLModelConfigurationUtils.defaultModelsDirectory(for:)` and for
     /// the user-facing speech-model identifier.
     private static var selectedRepo: Repo {
-        LanguageChoice.current.isEnglish ? .parakeetV2 : .parakeetUltra
+        if LanguageChoice.current.isEnglish { return .parakeetV2 }
+        return europeanFallsBackToV3 ? .parakeetV3 : .parakeetUltra
     }
 
     /// Whether Parakeet can actually run on THIS device — the owner's
